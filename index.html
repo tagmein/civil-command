@@ -3,18 +3,23 @@
  <head>
   <style>
    :root {
-    align-items: center;
     background-color: black;
+    box-sizing: border-box;
     color: white;
     display: grid;
-    justify-content: center;
     min-height: 100dvh;
-    overflow: scroll;
+    min-width: 100%;
+    overflow: auto;
+    padding: 1em;
+    width: fit-content;
    }
    body {
+    box-sizing: border-box;
+    margin: auto;
     padding: 0.75em 1em;
     min-height: 1em;
     min-width: 1em;
+    width: max-content;
     border-radius: 1em;
     border: 1px solid #20202020;
     box-shadow: 0 0 0.25em #00000040, inset -2px -2px 2px #ffffff08, inset -1px -1px 1px #ffffff08, inset 4px 4px 4px #00000020, inset 2px 2px 2px #00000040;
