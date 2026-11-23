@@ -1,8 +1,15 @@
-export function httpKV({ baseUrl }) {
+export function httpKV({ baseUrl, namespace = '' }) {
+ const qualify = key => (namespace ? `${namespace}.${key}` : key)
  return {
+  prefix: namespace,
+
+  namespace(name) {
+   return httpKV({ baseUrl, namespace: qualify(name) })
+  },
+
   async get(key) {
    const url = new URL(baseUrl)
-   url.searchParams.set('key', key)
+   url.searchParams.set('key', qualify(key))
    const finalUrl = url.toString()
    const resp = await fetch(finalUrl)
 
@@ -23,7 +30,7 @@ export function httpKV({ baseUrl }) {
 
   async set(key, value) {
    const url = new URL(baseUrl)
-   url.searchParams.set('key', key)
+   url.searchParams.set('key', qualify(key))
    const finalUrl = url.toString()
    const method = 'POST'
    const resp = await fetch(finalUrl, {
@@ -41,7 +48,7 @@ export function httpKV({ baseUrl }) {
 
   async delete(key) {
    const url = new URL(baseUrl)
-   url.searchParams.set('key', key)
+   url.searchParams.set('key', qualify(key))
    const finalUrl = url.toString()
    const method = 'DELETE'
    const resp = await fetch(finalUrl, { method })
