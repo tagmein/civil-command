@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+ <head>
+  <style>
+   :root {
+    align-items: center;
+    background-color: black;
+    color: white;
+    display: grid;
+    justify-content: center;
+    min-height: 100dvh;
+    overflow: scroll;
+   }
+   body {
+    padding: 0.75em 1em;
+    min-height: 1em;
+    min-width: 1em;
+    border-radius: 1em;
+    border: 1px solid #20202020;
+    box-shadow: 0 0 0.25em #00000040, inset -2px -2px 2px #ffffff08, inset -1px -1px 1px #ffffff08, inset 4px 4px 4px #00000020, inset 2px 2px 2px #00000040;
+   }
+   
+   body * {
+    white-space: pre-wrap;
+   }
+   
+   body *::selection {
+    background: #ffffff80;
+    color: black;
+   }
+  </style>
+  <script type="module" src="./field.mjs"></script>
+ </head>
+ <body>
+  <script type="module">
+   import { field } from './field.mjs'
+   import { data } from './data.mjs'
+   const main = globalThis.main = field({
+	  console,
+    data,
+    document
+   })
+   await main.load('./src/main.fs')
+  </script>
+ </body>
+</html>

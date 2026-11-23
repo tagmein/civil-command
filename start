@@ -1,0 +1,74 @@
+#!/usr/bin/env node
+const http = require('http')
+const fs = require('fs')
+const path = require('path')
+
+const rootDir = path.resolve('.')
+const indexPath = path.join(rootDir, 'index.html')
+
+const mimeTypes = {
+ '.html': 'text/html charset=utf-8',
+ '.js': 'text/javascript charset=utf-8',
+ '.mjs': 'text/javascript charset=utf-8',
+ '.css': 'text/css charset=utf-8',
+ '.json': 'application/json charset=utf-8',
+ '.svg': 'image/svg+xml',
+ '.png': 'image/png',
+ '.jpg': 'image/jpeg',
+ '.wasm': 'application/wasm',
+}
+
+function serveFile(filePath, res) {
+ const ext = path.extname(filePath).toLowerCase()
+ const contentType = mimeTypes[ext] || 'application/octet-stream'
+
+ fs.createReadStream(filePath)
+ .on('open', () => {
+  res.writeHead(200, { 'Content-Type': contentType })
+ })
+ .on('error', () => {
+  if (!res.headersSent) {
+   res.writeHead(404, { 'Content-Type': 'text/plain charset=utf-8' })
+  }
+  res.end('Not found')
+ })
+ .pipe(res)
+}
+
+http.createServer((req, res) => {
+ if (req.url.startsWith('/api/data')) {
+  const p = http.request({
+   hostname: 'localhost',
+   port: 3333,
+   path: req.url.replace('/api/data', '/'),
+   method: req.method,
+   headers: req.headers,
+  }, r => {
+   res.writeHead(r.statusCode, r.headers)
+   r.pipe(res)
+  })
+  p.on('error', err => {
+   res.writeHead(502)
+   res.end('Bad gateway: ' + err.message)
+  })
+  return req.pipe(p)
+ }
+
+ const reqPath = (req.url === '/' ? '/index.html' : req.url.split('?')[0])
+ const filePath = path.resolve(rootDir, '.' + reqPath)
+
+ if (!filePath.startsWith(rootDir + path.sep) && filePath !== rootDir) {
+  res.writeHead(403)
+  return res.end('Forbidden')
+ }
+
+ fs.stat(filePath, (err, stat) => {
+  if (!err && stat.isFile()) {
+   return serveFile(filePath, res)
+  }
+  // SPA fallback for client-side routes (e.g., /dashboard/settings)
+  serveFile(indexPath, res)
+ })
+}).listen(8080, () => {
+ console.log('Serving on http://localhost:8080')
+})
