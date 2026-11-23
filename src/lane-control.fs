@@ -1,9 +1,16 @@
 -- file lane-control.fs
 ; to lane-notebook ; load /src/lane-notebook.fs
+; to lane-inputs ; load /src/lane-inputs.fs
 ; to lane-config-modal ; load /src/lane-config-modal.fs
-; to scope ; object { lanes {} } { lane-ids {} } { by-id ; object } { catalog ; object }
+; to lane-import-modal ; load /src/lane-import-modal.fs
+; to confirm-modal-mod ; load /src/confirm-modal.fs
+; to scope ; object { lanes {} } { lane-ids {} } { by-id ; object } { catalog ; object } { active-imports ; object }
 ; to config-modal !lane-config-modal.create $scope
 ; set $config-modal scope.config-modal
+; to import-modal !lane-import-modal.create $scope
+; set $import-modal scope.import-modal
+; to confirm-modal !confirm-modal-mod.create
+; set $confirm-modal scope.confirm-modal
 ; to scope.load-catalog (
  -- Loads known lanes index from persistent KV and merges into scope.catalog
  ; to stored !data.get lanes
@@ -39,9 +46,158 @@
    ; set $title lane.title-el.textContent
    !lane.data.set title $title
    !scope.register $id $title
+   !scope.refresh-import-labels $id
   ) }
  ]
  $lane
+)
+; to scope.get-lane-title (
+ -- Returns the display title for a lane ID from open lanes or catalog, falling back to the ID
+ ; to { id } $argv
+ ; to open-lane [ get scope.by-id $id ]
+ ; to cat-entry [ get scope.catalog $id ]
+ [ match
+  { $open-lane.title : $open-lane.title }
+  { $cat-entry.title : $cat-entry.title }
+  { true : $id }
+ ]
+)
+; to scope.pick-import (
+ -- Opens the Import from Lane picker modal
+ ; to { opts } $argv
+ !import-modal.open $opts
+)
+; to scope.refresh-import-labels (
+ -- Updates import picker button labels across all open lanes after a lane rename
+ ; to { id } $argv
+ ; each $scope.lanes (
+  ; to { lane } $argv
+  [ match
+   { $lane.notebook.refresh-import-labels : !lane.notebook.refresh-import-labels $id }
+  ]
+ )
+)
+; to scope.evaluate-stored-lane (
+ -- Evaluates an unmounted lane's persisted script and inputs to completion and returns its final state
+ ; to { target-id } $argv
+ ; to target-data !data.namespace $target-id
+ ; to stored-script !target-data.get script
+ ; to stored-inputs !target-data.get inputs
+ ; to stored-tables !target-data.get tables
+ ; to lines !lane-notebook.parse-stored $stored-script
+ ; to inputs !lane-inputs.parse-stored $stored-inputs
+ ; to tables !parseStoredTables $stored-tables
+ ; to env [ object
+  { console $console }
+  { data $target-data }
+  { Math $window.Math }
+  { JSON $window.JSON }
+  { Date $window.Date }
+  { importLane (
+   ; to { nested-id ...nested-path } $argv
+   [ match
+    { [ propertyIs '' nested-id ] : undefined }
+    { [ propertyIs undefined nested-id ] : undefined }
+    { true (
+     ; to res !scope.get-lane-final-state $nested-id $target-id
+     !resolveImportValue $res $nested-path
+    ) }
+   ]
+  ) }
+ ]
+ ; each $inputs (
+  ; to { entry } $argv
+  ; to trimmed !entry.name.trim
+  [ match
+   { [ propertyIs '' trimmed ] : null }
+   { true (
+    ; to val !defaultValueForType $entry.type
+    ; to env $trimmed $val
+   ) }
+  ]
+ )
+ ; to scoped-tables !buildTablesScope $tables
+ ; assign $env $scoped-tables
+ ; to run-opts [ object { filename $target-id } { initialState $env } ]
+ ; to outcome !runLines $lines $run-opts
+ ; object { ok true } { state $outcome.state } { error null }
+)
+; to scope.get-lane-final-state (
+ -- Awaits completion of another lane once idle and returns its final scope state, guarding against cycles
+ ; to { target-id requester-id } $argv
+ [ match
+  { [ propertyIs '' target-id ] : ; object { ok false } { state null } { error 'No target lane selected' } }
+  { [ propertyIs undefined target-id ] : ; object { ok false } { state null } { error 'No target lane selected' } }
+  { [ propertyIs $target-id requester-id ] : ; object { ok false } { state null } { error 'Cannot import from the same lane' } }
+  { [ !hasImportCycle $scope.active-imports $requester-id $target-id ] : ; object { ok false } { state null } { error 'Circular lane import detected' } }
+  { true (
+   ; to tracked-list null
+   [ match
+    { $requester-id (
+     ; to existing [ get scope.active-imports $requester-id ]
+     ; to list [ match
+      { $existing : $existing }
+      { true (
+       ; to fresh {}
+       ; to scope.active-imports $requester-id $fresh
+       $fresh
+      ) }
+     ]
+     !list.push $target-id
+     ; set $list tracked-list
+    ) }
+   ]
+   ; to open-lane [ get scope.by-id $target-id ]
+   ; to res [ match
+    { $open-lane.notebook (
+     !open-lane.notebook.when-idle
+     ; to completed !open-lane.notebook.has-run
+     [ match
+      { $completed : ; object { ok true } { state $open-lane.notebook.state } { error null } }
+      { true : !scope.evaluate-stored-lane $target-id }
+     ]
+    ) }
+    { true : !scope.evaluate-stored-lane $target-id }
+   ]
+   [ match
+    { $tracked-list (
+     ; to idx !tracked-list.indexOf $target-id
+     ; condition { propertyIsGreaterThanOrEqual 0 idx } : !tracked-list.splice $idx 1
+    ) }
+   ]
+   $res
+  ) }
+ ]
+)
+; to scope.notify-lane-idle (
+ -- Re-runs mounted lanes that import from a lane once that lane finishes running and becomes idle
+ ; to { source-id visited } $argv
+ ; to seen [ match
+  { $visited : $visited }
+  { true : ; object }
+ ]
+ ; to already [ get seen $source-id ]
+ [ match
+  { $already : null }
+  { true (
+   ; to seen $source-id true
+   ; each $scope.lanes (
+    ; to { lane } $argv
+    ; to is-other [ ternary [ propertyIs $source-id lane.id ] false true ]
+    ; to not-seen [ ternary [ get seen $lane.id ] false true ]
+    ; condition { propertyIs true is-other } (
+     ; condition { propertyIs true not-seen } (
+      [ match
+       { $lane.notebook.imports-from (
+        ; to depends !lane.notebook.imports-from $source-id
+        ; condition { propertyIs true depends } : !lane.notebook.run $seen
+       ) }
+      ]
+     )
+    )
+   )
+  ) }
+ ]
 )
 ; to scope.configure (
  -- Opens the configuration modal for a mounted lane
@@ -52,8 +208,9 @@
  ]
 )
 ; to scope.mount (
- -- Mounts a lane DOM header, gear config button, close button, notebook body, and registers it on scope
- ; to { id title lane-data } $argv
+ -- Mounts a lane DOM header, gear config button, reload button, close button, notebook body, and registers it on scope
+ ; to { id title lane-data initial-tab } $argv
+ ; to tab !normalizeLaneTab $initial-tab
  ; to created !scope.create-lane
  ; to element [ match
   { $created.header : $created.header }
@@ -80,21 +237,28 @@
  ; assign id-el.style { fontFamily '"IBM Plex Mono", monospace' } { fontSize 10px } { fontWeight normal } { opacity '0.65' }
  !meta-el.appendChild $title-el
  !meta-el.appendChild $id-el
+ ; to reload-btn !document.createElement button
+ ; assign $reload-btn { type button } { className lane-reload-btn } { textContent '↻' } { title 'Reload lane' }
+ !reload-btn.setAttribute aria-label 'Reload lane'
+ !reload-btn.addEventListener click : !scope.reload $id
  ; to close-btn !document.createElement button
  ; assign $close-btn { type button } { className lane-close-btn } { textContent '×' } { title 'Close lane' }
  !close-btn.addEventListener click : !scope.close $id
  !header-top.appendChild $config-btn
  !header-top.appendChild $meta-el
+ !header-top.appendChild $reload-btn
  !header-top.appendChild $close-btn
  !element.appendChild $header-top
  ; to lane [ object
   { id $id }
+  { tab $tab }
   { title $title }
   { title-el $title-el }
   { data $lane-data }
   { element $element }
   { body $body-el }
   { config-btn $config-btn }
+  { reload-btn $reload-btn }
   { close-btn $close-btn }
  ]
  !scope.lanes.push $lane
@@ -104,16 +268,63 @@
  [ match
   { $body-el (
    !body-el.setAttribute data-lane-id $id
-   !lane-notebook.mount $lane $body-el
+   !lane-notebook.mount $lane $body-el $scope $tab
   ) }
  ]
  $lane
 )
 ; to scope.update-url (
- -- Updates browser URL pathname to reflect current lane IDs
- ; to joined !scope.lane-ids.join /
- ; to url ; add / $joined
- !history.pushState null '' $url
+ -- Updates browser URL pathname to reflect current lane IDs and active tabs
+ ; to url !formatLaneRoutes $scope.lanes
+ [ match
+  { [ propertyIs $location.pathname url ] : null }
+  { true : !history.pushState null '' $url }
+ ]
+)
+; to scope.reload (
+ -- Reloads an open lane from scratch from persisted KV storage (title, script, inputs, tables, output) while preserving its position and selected tab
+ ; to { id } $argv
+ ; to lane [ get scope.by-id $id ]
+ [ match
+  { $lane (
+   ; to raw-tab [ match
+    { $lane.notebook.active-tab : $lane.notebook.active-tab }
+    { true : $lane.tab }
+   ]
+   ; to current-tab !normalizeLaneTab $raw-tab
+   ; set $current-tab lane.tab
+   ; to stored-title !lane.data.get title
+   [ match
+    { $stored-title (
+     ; set $stored-title lane.title
+     ; set $stored-title lane.title-el.textContent
+     !scope.register $id $stored-title
+     !scope.refresh-import-labels $id
+    ) }
+   ]
+   [ match
+    { $lane.body (
+     [ match
+      { $lane.body.replaceChildren : !lane.body.replaceChildren }
+      { true (
+       ; while { propertyIsGreaterThan 0 lane.body.children.length } (
+        ; to child !lane.body.children.pop
+        [ match
+         { $child.remove : !child.remove }
+        ]
+       )
+      ) }
+     ]
+     !lane-notebook.mount $lane $lane.body $scope $current-tab
+     [ match
+      { [ propertyIs input current-tab ] : !scope.notify-lane-idle $id }
+      { [ propertyIs data current-tab ] : !scope.notify-lane-idle $id }
+     ]
+    ) }
+   ]
+  ) }
+ ]
+ $lane
 )
 ; to scope.close (
  -- Safely closes an open lane from the view while preserving its persisted data
@@ -150,12 +361,25 @@
  $lane
 )
 ; to scope.open (
- -- Loads or initializes a lane by ID, registers it, and mounts it if not already open
- ; to { id } $argv
+ -- Loads or initializes a lane by ID on an optional tab, registers it, and mounts it if not already open
+ ; to { id tab } $argv
  ; to existing [ get scope.by-id $id ]
  [ match
-  { $existing : $existing }
+  { $existing (
+   [ match
+    { [ propertyIs undefined tab ] : null }
+    { true (
+     ; to normalized-tab !normalizeLaneTab $tab
+     ; set $normalized-tab existing.tab
+     [ match
+      { $existing.notebook.set-tab : !existing.notebook.set-tab $normalized-tab true }
+     ]
+    ) }
+   ]
+   $existing
+  ) }
   { true (
+   ; to normalized-tab !normalizeLaneTab $tab
    ; to lane-data !data.namespace $id
    ; to stored-title !lane-data.get title
    ; to number ; add $scope.lanes.length 1
@@ -168,7 +392,7 @@
     ) }
    ]
    !scope.register $id $title
-   ; to lane !scope.mount $id $title $lane-data
+   ; to lane !scope.mount $id $title $lane-data $normalized-tab
    $lane
   ) }
  ]
@@ -186,14 +410,12 @@
  ; to scope.by-id ; object
 )
 ; to scope.sync (
- -- Synchronizes mounted lanes from the current URL pathname
+ -- Synchronizes mounted lanes and their active tabs from the current URL pathname
  !scope.clear
- ; to raw-segments !location.pathname.split /
- ; to non-empty !raw-segments.filter $window.Boolean
- ; to pending-ids !non-empty.map $window.decodeURIComponent
- ; each $pending-ids (
-  ; to { next-id } $argv
-  !scope.open $next-id
+ ; to routes !parseLaneRoutes $location.pathname
+ ; each $routes (
+  ; to { route } $argv
+  !scope.open $route.id $route.tab
  )
 )
 ; to scope.init (

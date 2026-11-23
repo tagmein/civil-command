@@ -15,6 +15,20 @@ function isCommentNode(node) {
  return Array.isArray(node) && node[0] === '@' && node[1] === 'comment'
 }
 
+function isThenable(value) {
+ return value != null && (typeof value === 'object' || typeof value === 'function') && typeof value.then === 'function'
+}
+
+function then(value, onFulfilled) {
+ return isThenable(value) ? value.then(onFulfilled) : onFulfilled(value)
+}
+
+function wrapErrorCatch(result, node) {
+ return isThenable(result)
+  ? result.catch(err => { throw wrapRuntimeError(err, node) })
+  : result
+}
+
 function formatLoc(loc) {
  if (!loc) {
   return ''
@@ -48,7 +62,283 @@ function wrapRuntimeError(err, node) {
  return wrapped
 }
 
-export function field(initialState={}) {
+export const TRANSPORT_PACKET_TYPE = 'field-transport/script'
+const TRANSPORT_TAG = '__fieldTransport'
+const TRANSPORT_UNSERIALIZABLE = Symbol('transportUnserializable')
+const TRANSPORT_EXCLUDED_BINDINGS = new Set([
+ 'argv',
+ 'console',
+ 'data',
+ 'Date',
+ 'document',
+ 'importLane',
+ 'JSON',
+ 'Math',
+ 'output',
+ 'window',
+])
+
+function encodeTransportValue(value, seen = new Set(), strict = true) {
+ if (value === undefined) {
+  return { [TRANSPORT_TAG]: 'undefined' }
+ }
+ if (value === null || typeof value === 'boolean' || typeof value === 'string') {
+  return value
+ }
+ if (typeof value === 'number') {
+  if (Number.isNaN(value)) {
+   return { [TRANSPORT_TAG]: 'number', value: 'NaN' }
+  }
+  if (value === Infinity) {
+   return { [TRANSPORT_TAG]: 'number', value: 'Infinity' }
+  }
+  if (value === -Infinity) {
+   return { [TRANSPORT_TAG]: 'number', value: '-Infinity' }
+  }
+  if (Object.is(value, -0)) {
+   return { [TRANSPORT_TAG]: 'number', value: '-0' }
+  }
+  return value
+ }
+ if (typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint') {
+  if (strict) {
+   throw new TypeError(`Cannot transport ${typeof value} value across code transport`)
+  }
+  return TRANSPORT_UNSERIALIZABLE
+ }
+ if (value instanceof Date) {
+  const iso = Number.isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString()
+  return { [TRANSPORT_TAG]: 'date', value: iso }
+ }
+ if (seen.has(value)) {
+  if (strict) {
+   throw new TypeError('Cannot transport circular value across code transport')
+  }
+  return TRANSPORT_UNSERIALIZABLE
+ }
+ if (Array.isArray(value)) {
+  seen.add(value)
+  const out = []
+  for (let i = 0; i < value.length; i++) {
+   const encoded = encodeTransportValue(value[i], seen, strict)
+   if (encoded === TRANSPORT_UNSERIALIZABLE) {
+    seen.delete(value)
+    return TRANSPORT_UNSERIALIZABLE
+   }
+   out.push(encoded)
+  }
+  seen.delete(value)
+  return out
+ }
+ const proto = Object.getPrototypeOf(value)
+ if (proto !== null && proto !== Object.prototype) {
+  if (strict) {
+   throw new TypeError('Cannot transport non-plain object across code transport')
+  }
+  return TRANSPORT_UNSERIALIZABLE
+ }
+ seen.add(value)
+ const entries = Object.entries(value)
+ const hasReservedTag = Object.hasOwn(value, TRANSPORT_TAG)
+ const out = {}
+ for (const [k, v] of entries) {
+  const encoded = encodeTransportValue(v, seen, strict)
+  if (encoded === TRANSPORT_UNSERIALIZABLE) {
+   seen.delete(value)
+   return TRANSPORT_UNSERIALIZABLE
+  }
+  out[k] = encoded
+ }
+ seen.delete(value)
+ if (hasReservedTag) {
+  return { [TRANSPORT_TAG]: 'object', entries: Object.entries(out) }
+ }
+ return out
+}
+
+function decodeTransportValue(value) {
+ if (value === null || typeof value !== 'object') {
+  return value
+ }
+ if (Array.isArray(value)) {
+  return value.map(decodeTransportValue)
+ }
+ if (Object.hasOwn(value, TRANSPORT_TAG)) {
+  const tag = value[TRANSPORT_TAG]
+  if (tag === 'undefined') {
+   return undefined
+  }
+  if (tag === 'number') {
+   if (value.value === 'NaN') { return NaN }
+   if (value.value === 'Infinity') { return Infinity }
+   if (value.value === '-Infinity') { return -Infinity }
+   if (value.value === '-0') { return -0 }
+   return Number(value.value)
+  }
+  if (tag === 'date') {
+   return value.value === 'Invalid Date' ? new Date(NaN) : new Date(value.value)
+  }
+  if (tag === 'object' && Array.isArray(value.entries)) {
+   return Object.fromEntries(value.entries.map(([k, v]) => [k, decodeTransportValue(v)]))
+  }
+ }
+ const out = {}
+ for (const [k, v] of Object.entries(value)) {
+  out[k] = decodeTransportValue(v)
+ }
+ return out
+}
+
+function snapshotSerializableState(state) {
+ const bindings = {}
+ if (!state || typeof state !== 'object') {
+  return bindings
+ }
+ const seenKeys = new Set()
+ let cur = state
+ while (cur && cur !== Object.prototype) {
+  for (const key of Object.keys(cur)) {
+   if (seenKeys.has(key) || TRANSPORT_EXCLUDED_BINDINGS.has(key)) {
+    continue
+   }
+   seenKeys.add(key)
+   try {
+    const val = state[key]
+    const encoded = encodeTransportValue(val, new Set(), false)
+    if (encoded !== TRANSPORT_UNSERIALIZABLE) {
+     bindings[key] = decodeTransportValue(encoded)
+    }
+   }
+   catch {
+    // skip throwing getters
+   }
+  }
+  cur = Object.getPrototypeOf(cur)
+ }
+ return bindings
+}
+
+export function serializeTransportPacket(packet) {
+ if (!packet || typeof packet !== 'object' || !Array.isArray(packet.ast)) {
+  throw new TypeError('serializeTransportPacket expects a transport packet with an AST array')
+ }
+ const encoded = encodeTransportValue(
+  {
+   type: TRANSPORT_PACKET_TYPE,
+   index: packet.index ?? 0,
+   lineNumber: packet.lineNumber ?? null,
+   ast: packet.ast,
+   args: Array.isArray(packet.args) ? packet.args : [],
+   bindings: packet.bindings && typeof packet.bindings === 'object' ? packet.bindings : {},
+  },
+  new Set(),
+  true
+ )
+ return JSON.stringify(encoded)
+}
+
+export function deserializeTransportPacket(wire) {
+ const parsed = typeof wire === 'string' ? JSON.parse(wire) : wire
+ const decoded = decodeTransportValue(parsed)
+ if (!decoded || typeof decoded !== 'object' || decoded.type !== TRANSPORT_PACKET_TYPE || !Array.isArray(decoded.ast)) {
+  throw new TypeError('Invalid FieldScript code transport packet')
+ }
+ return {
+  type: TRANSPORT_PACKET_TYPE,
+  index: decoded.index ?? 0,
+  lineNumber: decoded.lineNumber ?? null,
+  ast: decoded.ast,
+  args: Array.isArray(decoded.args) ? decoded.args : [],
+  bindings: decoded.bindings && typeof decoded.bindings === 'object' ? decoded.bindings : {},
+ }
+}
+
+export function isTransportPacket(value) {
+ return Boolean(
+  value &&
+  typeof value === 'object' &&
+  value.type === TRANSPORT_PACKET_TYPE &&
+  Array.isArray(value.ast)
+ )
+}
+
+export function isDomElement(value) {
+ if (!value || typeof value !== 'object') {
+  return false
+ }
+ if (typeof Element === 'function' && value instanceof Element) {
+  return true
+ }
+ if (typeof DocumentFragment === 'function' && value instanceof DocumentFragment) {
+  return true
+ }
+ if (value.nodeType === 1 || value.nodeType === 11) {
+  return true
+ }
+ if (
+  typeof value.tag === 'string' &&
+  typeof value.appendChild === 'function' &&
+  typeof value.setAttribute === 'function'
+ ) {
+  return true
+ }
+ return false
+}
+
+export function createTransport() {
+ const queue = []
+ let currentLineNumber = null
+ return {
+  setLineNumber(lineNumber) {
+   currentLineNumber = lineNumber
+  },
+  send(block, args = [], meta = {}) {
+   let ast
+   let baseArgs = []
+   let baseBindings = {}
+   if (typeof block === 'function' && Array.isArray(block.ast)) {
+    ast = block.ast
+   }
+   else if (isTransportPacket(block)) {
+    ast = block.ast
+    baseArgs = Array.isArray(block.args) ? block.args : []
+    baseBindings = block.bindings && typeof block.bindings === 'object' ? block.bindings : {}
+   }
+   else {
+    throw new TypeError('send expects a deferred ( ... ) block')
+   }
+   const resolvedArgs = args.length > 0 ? args : baseArgs
+   const stateBindings = meta.state ? snapshotSerializableState(meta.state) : {}
+   const bindings = { ...baseBindings, ...stateBindings }
+   const index = queue.length
+   const lineNumber = meta.lineNumber ?? currentLineNumber
+   const wire = serializeTransportPacket({
+    type: TRANSPORT_PACKET_TYPE,
+    index,
+    lineNumber,
+    ast,
+    args: resolvedArgs,
+    bindings,
+   })
+   const packet = deserializeTransportPacket(wire)
+   packet.wire = wire
+   queue.push(packet)
+   return packet
+  },
+  packets() {
+   return queue.slice()
+  },
+  wires() {
+   return queue.map(item => item.wire)
+  },
+  clear() {
+   queue.length = 0
+  },
+ }
+}
+
+export function field(initialState={}, options={}) {
+ const transport = options.transport || createTransport()
  function createScope(state, argv = []) {
   function get(a, ...p) {
    const [root, ...path] = splitRootPath(a, p)
@@ -199,48 +489,102 @@ export function field(initialState={}) {
     return invokeBranch(t)
    }
   }
-  async function match(...pairs) {
-   for (const pair of pairs) {
-    if (!Array.isArray(pair) || pair.length !== 2) {
-     throw new TypeError(`match expects { condition ( will ) } pairs, got: ${JSON.stringify(pair)}`)
+  function match(...pairs) {
+   const step = i => {
+    while (i < pairs.length) {
+     const pair = pairs[i]
+     if (!Array.isArray(pair) || pair.length !== 2) {
+      throw new TypeError(`match expects { condition ( will ) } pairs, got: ${JSON.stringify(pair)}`)
+     }
+     const [cond, body] = pair
+     const matched = Array.isArray(cond) && typeof cond[0] === 'string' && typeof me[cond[0]] === 'function'
+      ? me[cond[0]](...cond.slice(1))
+      : cond
+     if (isThenable(matched)) {
+      return matched.then(m => (m ? invokeBranch(body) : step(i + 1)))
+     }
+     if (matched) {
+      return invokeBranch(body)
+     }
+     i++
     }
-    const [cond, body] = pair
-    const matched = Array.isArray(cond) && typeof cond[0] === 'string' && typeof me[cond[0]] === 'function'
-     ? await me[cond[0]](...cond.slice(1))
-     : cond
-    if (matched) {
-     return invokeBranch(body)
-    }
+    return undefined
    }
-   return undefined
+   return step(0)
   }
-  async function each(iterable, fn) {
+  function each(iterable, fn) {
    if (iterable == null || typeof iterable[Symbol.iterator] !== 'function') {
     throw new TypeError(`each expects an iterable, got: ${iterable}`)
    }
    if (typeof fn !== 'function') {
     throw new TypeError(`each expects a function, got: ${fn}`)
    }
+   const iter = iterable[Symbol.iterator]()
    let index = 0
    let last
-   for (const item of iterable) {
-    last = await fn(item, index)
-    index++
+   const step = () => {
+    while (true) {
+     const next = iter.next()
+     if (next.done) {
+      return last
+     }
+     const res = fn(next.value, index++)
+     if (isThenable(res)) {
+      return res.then(v => {
+       last = v
+       return step()
+      })
+     }
+     last = res
+    }
    }
-   return last
+   return step()
   }
-  async function whileLoop(cond, body) {
+  function whileLoop(cond, body) {
    let last
-   while (
-    Array.isArray(cond) && typeof cond[0] === 'string' && typeof me[cond[0]] === 'function'
-     ? await me[cond[0]](...cond.slice(1))
-     : typeof cond === 'function'
-      ? await invokeBranch(cond)
-      : cond
-   ) {
-    last = await invokeBranch(body)
+   const loop = () => {
+    while (true) {
+     const c = Array.isArray(cond) && typeof cond[0] === 'string' && typeof me[cond[0]] === 'function'
+      ? me[cond[0]](...cond.slice(1))
+      : typeof cond === 'function'
+       ? invokeBranch(cond)
+       : cond
+     if (isThenable(c)) {
+      return c.then(ok => {
+       if (!ok) { return last }
+       return then(invokeBranch(body), v => {
+        last = v
+        return loop()
+       })
+      })
+     }
+     if (!c) {
+      return last
+     }
+     const res = invokeBranch(body)
+     if (isThenable(res)) {
+      return res.then(v => {
+       last = v
+       return loop()
+      })
+     }
+     last = res
+    }
    }
-   return last
+   return loop()
+  }
+
+  function tryBlock(body, onError) {
+   try {
+    const res = invokeBranch(body)
+    if (isThenable(res)) {
+     return res.catch(err => (typeof onError === 'function' ? onError(err) : onError))
+    }
+    return res
+   }
+   catch (err) {
+    return typeof onError === 'function' ? onError(err) : onError
+   }
   }
 
   function willInvoke(a, ...b) {
@@ -265,79 +609,137 @@ export function field(initialState={}) {
   function ternary(a, b, c) { return a ? b : c }
   function modulus(a, b) { return a % b }
 
-  async function seriesAll(source, fn) {
+  function seriesAll(source, fn) {
    const out = []
-   for (const x of source) {
-    out.push(await fn(x))
+   const step = i => {
+    while (i < source.length) {
+     const res = fn(source[i])
+     if (isThenable(res)) {
+      return res.then(v => {
+       out.push(v)
+       return step(i + 1)
+      })
+     }
+     out.push(res)
+     i++
+    }
+    return out
    }
-   return out
+   return step(0)
   }
 
-  async function evalCondition(condAst) {
+  function evalCondition(condAst) {
    if (
     Array.isArray(condAst) &&
     condAst[0] !== '@' &&
     typeof condAst[0] === 'string' &&
     typeof me[condAst[0]] === 'function'
    ) {
-    return me[condAst[0]](...(await seriesAll(condAst.slice(1), compile)))
+    return then(seriesAll(condAst.slice(1), compile), args => me[condAst[0]](...args))
    }
    if (Array.isArray(condAst) && condAst[0] === '@' && condAst[1] === 'will') {
-    const fn = await compile(condAst)
-    return invokeBranch(fn)
+    return then(compile(condAst), fn => invokeBranch(fn))
    }
    return compile(condAst)
   }
 
-  async function evalMatch(armAsts) {
-   for (const armAst of armAsts) {
-    if (Array.isArray(armAst) && armAst[0] !== '@' && armAst.length === 2) {
-     const [condAst, bodyAst] = armAst
-     if (await evalCondition(condAst)) {
-      const body = await compile(bodyAst)
-      return invokeBranch(body)
+  function evalMatch(armAsts) {
+   const step = i => {
+    while (i < armAsts.length) {
+     const armAst = armAsts[i]
+     if (Array.isArray(armAst) && armAst[0] !== '@' && armAst.length === 2) {
+      const [condAst, bodyAst] = armAst
+      const matched = evalCondition(condAst)
+      if (isThenable(matched)) {
+       return matched.then(m =>
+        m ? then(compile(bodyAst), invokeBranch) : step(i + 1)
+       )
+      }
+      if (matched) {
+       return then(compile(bodyAst), invokeBranch)
+      }
      }
+     else {
+      const handlePair = pair => {
+       if (!Array.isArray(pair) || pair.length !== 2) {
+        throw new TypeError(`match expects { condition ( will ) } pairs, got: ${JSON.stringify(pair)}`)
+       }
+       const [cond, body] = pair
+       const matched = Array.isArray(cond) && typeof cond[0] === 'string' && typeof me[cond[0]] === 'function'
+        ? me[cond[0]](...cond.slice(1))
+        : cond
+       return then(matched, m => (m ? invokeBranch(body) : step(i + 1)))
+      }
+      const pair = compile(armAst)
+      return isThenable(pair) ? pair.then(handlePair) : handlePair(pair)
+     }
+     i++
     }
-    else {
-     const pair = await compile(armAst)
-     if (!Array.isArray(pair) || pair.length !== 2) {
-      throw new TypeError(`match expects { condition ( will ) } pairs, got: ${JSON.stringify(pair)}`)
-     }
-     const [cond, body] = pair
-     const matched = Array.isArray(cond) && typeof cond[0] === 'string' && typeof me[cond[0]] === 'function'
-      ? await me[cond[0]](...cond.slice(1))
-      : cond
-     if (matched) {
-      return invokeBranch(body)
-     }
-    }
+    return undefined
    }
-   return undefined
+   return step(0)
   }
 
-  async function evalWhile(condAst, bodyAst) {
+  function evalWhile(condAst, bodyAst) {
    const isWillBody = Array.isArray(bodyAst) && bodyAst[0] === '@' && bodyAst[1] === 'will'
-   const compiledBody = isWillBody ? await compile(bodyAst) : null
-   let last
-   while (await evalCondition(condAst)) {
-    const body = isWillBody ? compiledBody : await compile(bodyAst)
-    last = await invokeBranch(body)
-   }
-   return last
-  }
-
-  async function evalBlock(stmts) {
-   let last
-   for (const stmt of stmts) {
-    const value = await compile(stmt)
-    if (!isCommentNode(stmt)) {
-     last = value
+   const runWithBody = compiledBody => {
+    let last
+    const loop = () => {
+     while (true) {
+      const cond = evalCondition(condAst)
+      if (isThenable(cond)) {
+       return cond.then(c => {
+        if (!c) { return last }
+        const bodyRes = isWillBody ? invokeBranch(compiledBody) : then(compile(bodyAst), invokeBranch)
+        return then(bodyRes, v => {
+         last = v
+         return loop()
+        })
+       })
+      }
+      if (!cond) {
+       return last
+      }
+      const bodyRes = isWillBody ? invokeBranch(compiledBody) : then(compile(bodyAst), invokeBranch)
+      if (isThenable(bodyRes)) {
+       return bodyRes.then(v => {
+        last = v
+        return loop()
+       })
+      }
+      last = bodyRes
+     }
     }
+    return loop()
    }
-   return last
+   return isWillBody ? then(compile(bodyAst), runWithBody) : runWithBody(null)
   }
 
-  async function compile(x) {
+  function evalBlock(stmts) {
+   let last
+   const step = i => {
+    while (i < stmts.length) {
+     const stmt = stmts[i]
+     const value = compile(stmt)
+     if (isThenable(value)) {
+      return value.then(v => {
+       if (!isCommentNode(stmt)) {
+        last = v
+       }
+       return step(i + 1)
+      })
+     }
+     if (!isCommentNode(stmt)) {
+      last = value
+     }
+     i++
+    }
+    return last
+   }
+   return step(0)
+  }
+
+  function compile(x) {
    switch (true) {
     case x && Array.isArray(x):
      if (x[0] === '@') {
@@ -352,14 +754,16 @@ export function field(initialState={}) {
         return me[x[1]]([ '@', ...x.slice(2) ])
        }
        if (x[1] === 'match') {
-        return await evalMatch(x.slice(2))
+        return wrapErrorCatch(evalMatch(x.slice(2)), x)
        }
        if (x[1] === 'while') {
-        return await evalWhile(x[2], x[3])
+        return wrapErrorCatch(evalWhile(x[2], x[3]), x)
        }
-       return await me[x[1]](
-        ...(await seriesAll(x.slice(2), compile))
+       const res = then(
+        seriesAll(x.slice(2), compile),
+        args => me[x[1]](...args)
        )
+       return wrapErrorCatch(res, x)
       }
       catch (err) {
        throw wrapRuntimeError(err, x)
@@ -367,11 +771,12 @@ export function field(initialState={}) {
      }
      return seriesAll(x, compile)
     case typeof x === 'object' && x:
-     return Object.fromEntries(
-      await seriesAll(
+     return then(
+      seriesAll(
        Object.entries(x),
-       async ([k, v]) => [k, await compile(v)]
-      )
+       ([k, v]) => then(compile(v), val => [k, val])
+      ),
+      entries => Object.fromEntries(entries)
      )
     default:
      return x
@@ -441,11 +846,15 @@ export function field(initialState={}) {
    return result
   }
 
+  function send(block, ...args) {
+   return transport.send(block, args, { state })
+  }
+
   function will(...blocks) {
    const stmts = blocks.length === 1 && blocks[0][0] === '@'
     ? blocks[0].slice(1)
     : blocks
-   async function fn(...a) {
+   function fn(...a) {
     const child = createScope(Object.create(state), a)
     return child.evalBlock(stmts)
    }
@@ -477,11 +886,14 @@ export function field(initialState={}) {
    propertyIsGreaterThan,
    propertyIsLessThanOrEqual,
    propertyIsGreaterThanOrEqual,
+   send,
    series,
    set,
    state,
    tap,
    to,
+   transport,
+   'try': tryBlock,
    'while': whileLoop,
    will,
    willInvoke,
@@ -494,7 +906,9 @@ export function field(initialState={}) {
   return me
  }
 
- return createScope({ ...initialState }, [])
+ const rootState = options.preservePrototype ? initialState : { ...initialState }
+ const rootArgv = Array.isArray(options.argv) ? options.argv : []
+ return createScope(rootState, rootArgv)
 }
 
 export function parse(text, filename, startRow = 0) {
@@ -672,6 +1086,7 @@ export function parse(text, filename, startRow = 0) {
    if (inEscape) {
     pendingWord +=
      chr === 'n' ? '\n' :
+     chr === 'r' ? '\r' :
      chr === 't' ? '\t' :
      chr
     inEscape = false
@@ -853,6 +1268,1403 @@ export function parse(text, filename, startRow = 0) {
  return output
 }
 
+export const PRIMITIVE_TYPES = ['string', 'number', 'boolean', 'null', 'undefined']
+
+export const LANE_TABS = ['source', 'input', 'scope', 'data', 'view']
+export const DEFAULT_LANE_TAB = 'source'
+
+export function normalizeLaneTab(tab) {
+ if (typeof tab === 'string') {
+  const lower = tab.trim().toLowerCase()
+  if (LANE_TABS.includes(lower)) {
+   return lower
+  }
+ }
+ return DEFAULT_LANE_TAB
+}
+
+function safeDecodeURIComponent(value) {
+ try {
+  return decodeURIComponent(value)
+ }
+ catch {
+  return value
+ }
+}
+
+export function parseLaneRouteSegment(segment) {
+ if (typeof segment !== 'string' || segment.length === 0) {
+  return null
+ }
+ const semiIdx = segment.lastIndexOf(';')
+ if (semiIdx !== -1) {
+  const rawId = segment.slice(0, semiIdx)
+  const rawTab = segment.slice(semiIdx + 1)
+  const id = safeDecodeURIComponent(rawId)
+  if (id.length === 0) {
+   return null
+  }
+  return {
+   id,
+   tab: normalizeLaneTab(safeDecodeURIComponent(rawTab)),
+  }
+ }
+ const encodedMatch = /^(.*)%3[bB]([^%]*)$/.exec(segment)
+ if (encodedMatch) {
+  const candidateTab = encodedMatch[2].trim().toLowerCase()
+  if (LANE_TABS.includes(candidateTab)) {
+   const id = safeDecodeURIComponent(encodedMatch[1])
+   if (id.length > 0) {
+    return {
+     id,
+     tab: candidateTab,
+    }
+   }
+  }
+ }
+ const id = safeDecodeURIComponent(segment)
+ if (id.length === 0) {
+  return null
+ }
+ return {
+  id,
+  tab: DEFAULT_LANE_TAB,
+ }
+}
+
+export function parseLaneRoutes(pathname) {
+ if (typeof pathname !== 'string' || pathname.length === 0) {
+  return []
+ }
+ const clean = pathname.split('?')[0].split('#')[0]
+ const segments = clean.split('/').filter(Boolean)
+ const routes = []
+ for (const seg of segments) {
+  const parsed = parseLaneRouteSegment(seg)
+  if (parsed) {
+   routes.push(parsed)
+  }
+ }
+ return routes
+}
+
+export function formatLaneRouteSegment(id, tab = DEFAULT_LANE_TAB) {
+ const encodedId = encodeURIComponent(String(id ?? ''))
+ const normalizedTab = normalizeLaneTab(tab)
+ return normalizedTab === DEFAULT_LANE_TAB ? encodedId : `${encodedId};${normalizedTab}`
+}
+
+export function formatLaneRoutes(lanes) {
+ if (!Array.isArray(lanes) || lanes.length === 0) {
+  return '/'
+ }
+ const segments = []
+ for (const item of lanes) {
+  if (typeof item === 'string') {
+   if (item.length > 0) {
+    segments.push(formatLaneRouteSegment(item, DEFAULT_LANE_TAB))
+   }
+   continue
+  }
+  if (!item || typeof item !== 'object' || !item.id) {
+   continue
+  }
+  const tab = item.notebook && typeof item.notebook['active-tab'] === 'string'
+   ? item.notebook['active-tab']
+   : item.tab
+  segments.push(formatLaneRouteSegment(item.id, tab))
+ }
+ return `/${segments.join('/')}`
+}
+
+export function normalizePrimitiveType(type) {
+ return PRIMITIVE_TYPES.includes(type) ? type : 'string'
+}
+
+export function defaultValueForType(type) {
+ switch (type) {
+  case 'number':
+   return 0
+  case 'boolean':
+   return false
+  case 'null':
+   return null
+  case 'undefined':
+   return undefined
+  case 'string':
+  default:
+   return ''
+ }
+}
+
+export const DATA_COLUMN_TYPES = [
+ 'integer',
+ 'decimal',
+ 'fixed',
+ 'text',
+ 'boolean',
+ 'date',
+ 'datetime',
+ 'url',
+ 'email',
+ 'json',
+]
+
+export const DEFAULT_FIXED_DECIMALS = 2
+export const MIN_COLUMN_WIDTH = 48
+export const MAX_COLUMN_WIDTH = 1200
+const MAX_FIXED_DECIMALS = 12
+const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER)
+const MIN_SAFE_BIGINT = BigInt(Number.MIN_SAFE_INTEGER)
+
+export function normalizeColumnWidth(width) {
+ if (width === null || width === undefined || width === '') {
+  return null
+ }
+ const num = typeof width === 'number' ? width : Number(String(width).replace(/px$/i, '').trim())
+ if (!Number.isFinite(num) || num <= 0) {
+  return null
+ }
+ return Math.min(MAX_COLUMN_WIDTH, Math.max(MIN_COLUMN_WIDTH, Math.round(num)))
+}
+
+export function normalizeFixedDecimals(decimals) {
+ if (decimals === null || decimals === undefined || decimals === '') {
+  return DEFAULT_FIXED_DECIMALS
+ }
+ if (typeof decimals === 'number') {
+  if (!Number.isFinite(decimals)) {
+   return DEFAULT_FIXED_DECIMALS
+  }
+  const n = Math.trunc(decimals)
+  return Math.min(MAX_FIXED_DECIMALS, Math.max(0, n))
+ }
+ const trimmed = String(decimals).trim()
+ if (!/^\d+$/.test(trimmed)) {
+  return DEFAULT_FIXED_DECIMALS
+ }
+ const n = Number(trimmed)
+ if (!Number.isFinite(n)) {
+  return DEFAULT_FIXED_DECIMALS
+ }
+ return Math.min(MAX_FIXED_DECIMALS, Math.max(0, n))
+}
+
+function parseTypeString(raw) {
+ const str = typeof raw === 'string' ? raw.trim() : ''
+ const isArr = str.endsWith('[]')
+ const body = isArr ? str.slice(0, -2) : str
+ const fixedMatch = /^fixed\((\d+)\)$/.exec(body)
+ if (fixedMatch) {
+  return {
+   type: 'fixed',
+   multiple: isArr,
+   decimals: normalizeFixedDecimals(fixedMatch[1]),
+   hasDecimals: true,
+  }
+ }
+ return {
+  type: DATA_COLUMN_TYPES.includes(body) ? body : 'text',
+  multiple: isArr,
+  decimals: undefined,
+  hasDecimals: false,
+ }
+}
+
+function numberToPlainDecimalString(num) {
+ const str = String(num)
+ if (!/[eE]/.test(str)) {
+  return str
+ }
+ const neg = str.startsWith('-')
+ const unsigned = neg ? str.slice(1) : str
+ const [coeff, expStr] = unsigned.split(/[eE]/)
+ const exp = Number(expStr)
+ const [intPart, fracPart = ''] = coeff.split('.')
+ const digits = intPart + fracPart
+ const pointPos = intPart.length + exp
+ let out
+ if (pointPos <= 0) {
+  out = `0.${'0'.repeat(-pointPos)}${digits}`
+ }
+ else if (pointPos >= digits.length) {
+  out = digits + '0'.repeat(pointPos - digits.length)
+ }
+ else {
+  out = `${digits.slice(0, pointPos)}.${digits.slice(pointPos)}`
+ }
+ return neg ? `-${out}` : out
+}
+
+function scaleDecimalStringToFixed(rawStr, decimals, { allowRounding = false } = {}) {
+ const dec = normalizeFixedDecimals(decimals)
+ const trimmed = String(rawStr).trim()
+ if (trimmed === '') {
+  return { ok: true, value: null, error: null }
+ }
+ if (dec === 0 && !allowRounding) {
+  if (!/^[+-]?\d+$/.test(trimmed)) {
+   return { ok: false, value: null, error: 'Must be a whole number (0 decimal places)' }
+  }
+  const big = BigInt(trimmed)
+  if (big > MAX_SAFE_BIGINT || big < MIN_SAFE_BIGINT) {
+   return { ok: false, value: null, error: 'Value out of safe range' }
+  }
+  const num = Number(big)
+  return { ok: true, value: num === 0 ? 0 : num, error: null }
+ }
+ const match = /^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))$/.exec(trimmed)
+ if (!match) {
+  const unit = dec === 1 ? 'place' : 'places'
+  return {
+   ok: false,
+   value: null,
+   error: dec === 0 ? 'Must be a whole number (0 decimal places)' : `Must be a fixed-point number (up to ${dec} decimal ${unit})`,
+  }
+ }
+ const neg = match[1] === '-'
+ const intPart = match[2] ?? '0'
+ const fracPart = match[3] ?? match[4] ?? ''
+ if (!allowRounding && fracPart.length > dec) {
+  const unit = dec === 1 ? 'place' : 'places'
+  return { ok: false, value: null, error: `At most ${dec} decimal ${unit} allowed` }
+ }
+ let keptFrac
+ let roundUp = false
+ if (fracPart.length > dec) {
+  keptFrac = fracPart.slice(0, dec)
+  roundUp = Number(fracPart[dec]) >= 5
+ }
+ else {
+  keptFrac = fracPart.padEnd(dec, '0')
+ }
+ const combined = `${intPart}${keptFrac}`.replace(/^0+(?=\d)/, '') || '0'
+ let big = BigInt(combined)
+ if (roundUp) {
+  big += 1n
+ }
+ const signedBig = neg ? -big : big
+ if (signedBig > MAX_SAFE_BIGINT || signedBig < MIN_SAFE_BIGINT) {
+  return { ok: false, value: null, error: 'Value out of safe range' }
+ }
+ const value = Number(signedBig)
+ return { ok: true, value: value === 0 ? 0 : value, error: null }
+}
+
+function formatFixedInteger(value, decimals) {
+ if (value === null || value === undefined) {
+  return ''
+ }
+ const num = typeof value === 'number' ? value : Number(value)
+ if (!Number.isFinite(num)) {
+  return ''
+ }
+ const intVal = Math.trunc(num)
+ const dec = normalizeFixedDecimals(decimals)
+ if (dec === 0) {
+  return String(intVal === 0 ? 0 : intVal)
+ }
+ const neg = intVal < 0
+ const digits = String(Math.abs(intVal)).padStart(dec + 1, '0')
+ const splitAt = digits.length - dec
+ const formatted = `${digits.slice(0, splitAt)}.${digits.slice(splitAt)}`
+ return neg ? `-${formatted}` : formatted
+}
+
+function rescaleFixedInteger(value, fromDecimals, toDecimals) {
+ if (value === null || value === undefined || value === '') {
+  return null
+ }
+ const num = typeof value === 'number' ? value : Number(value)
+ if (!Number.isFinite(num)) {
+  return null
+ }
+ const intVal = Math.trunc(num)
+ const fromDec = normalizeFixedDecimals(fromDecimals)
+ const toDec = normalizeFixedDecimals(toDecimals)
+ if (fromDec === toDec) {
+  return Number.isSafeInteger(intVal) ? (intVal === 0 ? 0 : intVal) : null
+ }
+ const formatted = formatFixedInteger(intVal, fromDec)
+ const scaled = scaleDecimalStringToFixed(formatted, toDec, { allowRounding: true })
+ return scaled.ok ? scaled.value : null
+}
+
+export function normalizeDataColumnType(type) {
+ if (typeof type === 'string') {
+  return parseTypeString(type).type
+ }
+ if (type && typeof type === 'object' && typeof type.type === 'string') {
+  return parseTypeString(type.type).type
+ }
+ return 'text'
+}
+
+export function parseColumnType(spec, multiple, decimals) {
+ if (spec && typeof spec === 'object') {
+  const parsed = parseTypeString(typeof spec.type === 'string' ? spec.type : 'text')
+  const resolvedMultiple = multiple !== undefined ? Boolean(multiple) : Boolean(spec.multiple || parsed.multiple)
+  if (parsed.type === 'fixed') {
+   const resolvedDecimals = decimals !== undefined
+    ? normalizeFixedDecimals(decimals)
+    : spec.decimals !== undefined
+     ? normalizeFixedDecimals(spec.decimals)
+     : parsed.hasDecimals
+      ? parsed.decimals
+      : DEFAULT_FIXED_DECIMALS
+   return {
+    type: 'fixed',
+    multiple: resolvedMultiple,
+    decimals: resolvedDecimals,
+   }
+  }
+  return {
+   type: parsed.type,
+   multiple: resolvedMultiple,
+  }
+ }
+ const parsed = parseTypeString(spec)
+ const resolvedMultiple = Boolean(multiple || parsed.multiple)
+ if (parsed.type === 'fixed') {
+  const resolvedDecimals = decimals !== undefined
+   ? normalizeFixedDecimals(decimals)
+   : parsed.hasDecimals
+    ? parsed.decimals
+    : DEFAULT_FIXED_DECIMALS
+  return {
+   type: 'fixed',
+   multiple: resolvedMultiple,
+   decimals: resolvedDecimals,
+  }
+ }
+ return {
+  type: parsed.type,
+  multiple: resolvedMultiple,
+ }
+}
+
+export function formatColumnType(type, multiple, decimals) {
+ const parsed = parseColumnType(type, multiple, decimals)
+ const base = parsed.type === 'fixed' ? `fixed(${parsed.decimals})` : parsed.type
+ return parsed.multiple ? `${base}[]` : base
+}
+
+export function defaultDataValue(type, multiple, decimals) {
+ const parsed = parseColumnType(type, multiple, decimals)
+ if (parsed.multiple) {
+  return []
+ }
+ switch (parsed.type) {
+  case 'integer':
+  case 'decimal':
+  case 'fixed':
+   return 0
+  case 'boolean':
+   return false
+  case 'json':
+   return null
+  case 'date':
+  case 'datetime':
+  case 'url':
+  case 'email':
+  case 'text':
+  default:
+   return ''
+ }
+}
+
+export function parseCellValue(raw, type, decimals) {
+ const parsed = parseColumnType(type, false, decimals)
+ const base = parsed.type
+ switch (base) {
+  case 'integer': {
+   if (raw === null || raw === undefined) {
+    return { ok: true, value: null, error: null }
+   }
+   if (typeof raw === 'number') {
+    return Number.isSafeInteger(raw)
+     ? { ok: true, value: raw, error: null }
+     : { ok: false, value: null, error: 'Must be a whole integer' }
+   }
+   const trimmed = String(raw).trim()
+   if (trimmed === '') {
+    return { ok: true, value: null, error: null }
+   }
+   if (!/^[+-]?\d+$/.test(trimmed)) {
+    return { ok: false, value: null, error: 'Must be a whole integer' }
+   }
+   const num = Number(trimmed)
+   if (!Number.isSafeInteger(num)) {
+    return { ok: false, value: null, error: 'Integer out of safe range' }
+   }
+   return { ok: true, value: num, error: null }
+  }
+  case 'decimal': {
+   if (raw === null || raw === undefined) {
+    return { ok: true, value: null, error: null }
+   }
+   if (typeof raw === 'number') {
+    return Number.isFinite(raw)
+     ? { ok: true, value: raw, error: null }
+     : { ok: false, value: null, error: 'Must be a decimal number' }
+   }
+   const trimmed = String(raw).trim()
+   if (trimmed === '') {
+    return { ok: true, value: null, error: null }
+   }
+   const num = Number(trimmed)
+   if (!Number.isFinite(num)) {
+    return { ok: false, value: null, error: 'Must be a decimal number' }
+   }
+   return { ok: true, value: num, error: null }
+  }
+  case 'fixed': {
+   if (raw === null || raw === undefined) {
+    return { ok: true, value: null, error: null }
+   }
+   if (typeof raw === 'number') {
+    if (!Number.isFinite(raw)) {
+     return { ok: false, value: null, error: 'Must be a fixed-point number' }
+    }
+    return scaleDecimalStringToFixed(numberToPlainDecimalString(raw), parsed.decimals, { allowRounding: false })
+   }
+   return scaleDecimalStringToFixed(String(raw), parsed.decimals, { allowRounding: false })
+  }
+  case 'boolean': {
+   if (typeof raw === 'boolean') {
+    return { ok: true, value: raw, error: null }
+   }
+   if (typeof raw === 'string') {
+    const lower = raw.trim().toLowerCase()
+    if (lower === 'true' || lower === '1') {
+     return { ok: true, value: true, error: null }
+    }
+    if (lower === 'false' || lower === '0' || lower === '') {
+     return { ok: true, value: false, error: null }
+    }
+    return { ok: false, value: false, error: 'Must be true or false' }
+   }
+   return { ok: true, value: Boolean(raw), error: null }
+  }
+  case 'date': {
+   const trimmed = raw === null || raw === undefined ? '' : String(raw).trim()
+   if (trimmed === '') {
+    return { ok: true, value: '', error: null }
+   }
+   if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return { ok: false, value: trimmed, error: 'Expected YYYY-MM-DD date' }
+   }
+   const [y, m, d] = trimmed.split('-').map(Number)
+   const dt = new Date(Date.UTC(y, m - 1, d))
+   if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) {
+    return { ok: false, value: trimmed, error: 'Invalid calendar date' }
+   }
+   return { ok: true, value: trimmed, error: null }
+  }
+  case 'datetime': {
+   const trimmed = raw === null || raw === undefined ? '' : String(raw).trim()
+   if (trimmed === '') {
+    return { ok: true, value: '', error: null }
+   }
+   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?$/.test(trimmed) || Number.isNaN(Date.parse(trimmed))) {
+    return { ok: false, value: trimmed, error: 'Expected ISO date-time (YYYY-MM-DDTHH:mm)' }
+   }
+   return { ok: true, value: trimmed, error: null }
+  }
+  case 'url': {
+   const trimmed = raw === null || raw === undefined ? '' : String(raw).trim()
+   if (trimmed === '') {
+    return { ok: true, value: '', error: null }
+   }
+   try {
+    new URL(trimmed)
+    return { ok: true, value: trimmed, error: null }
+   }
+   catch {
+    return { ok: false, value: trimmed, error: 'Must be a valid URL (e.g. https://...)' }
+   }
+  }
+  case 'email': {
+   const trimmed = raw === null || raw === undefined ? '' : String(raw).trim()
+   if (trimmed === '') {
+    return { ok: true, value: '', error: null }
+   }
+   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+    return { ok: false, value: trimmed, error: 'Must be a valid email address' }
+   }
+   return { ok: true, value: trimmed, error: null }
+  }
+  case 'json': {
+   if (raw === null || raw === undefined) {
+    return { ok: true, value: null, error: null }
+   }
+   if (typeof raw !== 'string') {
+    return { ok: true, value: raw, error: null }
+   }
+   const trimmed = raw.trim()
+   if (trimmed === '') {
+    return { ok: true, value: null, error: null }
+   }
+   try {
+    return { ok: true, value: JSON.parse(trimmed), error: null }
+   }
+   catch {
+    return { ok: false, value: null, error: 'Must be valid JSON' }
+   }
+  }
+  case 'text':
+  default:
+   return { ok: true, value: raw === null || raw === undefined ? '' : String(raw), error: null }
+ }
+}
+
+export function formatCellInputValue(value, type, decimals) {
+ const parsed = parseColumnType(type, false, decimals)
+ const base = parsed.type
+ if (base === 'boolean') {
+  return Boolean(value)
+ }
+ if (value === null || value === undefined) {
+  return ''
+ }
+ if (base === 'fixed') {
+  return formatFixedInteger(value, parsed.decimals)
+ }
+ if (base === 'json') {
+  try {
+   return JSON.stringify(value)
+  }
+  catch {
+   return String(value)
+  }
+ }
+ return String(value)
+}
+
+function coerceSingleDataValue(value, targetSpec, fromSpec = null) {
+ const parsed = typeof targetSpec === 'object' && targetSpec !== null ? targetSpec : parseColumnType(targetSpec, false)
+ const base = parsed.type
+ if (base === 'fixed') {
+  if (value === null || value === undefined || value === '') {
+   return null
+  }
+  if (fromSpec && fromSpec.type === 'fixed') {
+   return rescaleFixedInteger(value, fromSpec.decimals, parsed.decimals)
+  }
+  if (typeof value === 'boolean') {
+   return value ? Number(10n ** BigInt(parsed.decimals)) : 0
+  }
+  if (typeof value === 'number') {
+   if (!Number.isFinite(value)) {
+    return null
+   }
+   if (!fromSpec && Number.isSafeInteger(value)) {
+    return value === 0 ? 0 : value
+   }
+   const scaled = scaleDecimalStringToFixed(numberToPlainDecimalString(value), parsed.decimals, { allowRounding: true })
+   return scaled.ok ? scaled.value : null
+  }
+  const scaled = scaleDecimalStringToFixed(String(value), parsed.decimals, { allowRounding: true })
+  return scaled.ok ? scaled.value : null
+ }
+ let inputVal = value
+ if (fromSpec && fromSpec.type === 'fixed' && value !== null && value !== undefined && value !== '') {
+  if (base === 'boolean') {
+   const num = Number(value)
+   return Number.isFinite(num) ? num !== 0 : Boolean(value)
+  }
+  const formatted = formatFixedInteger(value, fromSpec.decimals)
+  if (base === 'json') {
+   return formatted === '' ? null : Number(formatted)
+  }
+  inputVal = formatted
+ }
+ switch (base) {
+  case 'integer': {
+   if (inputVal === null || inputVal === undefined || inputVal === '') {
+    return null
+   }
+   if (typeof inputVal === 'boolean') {
+    return inputVal ? 1 : 0
+   }
+   const num = Number(inputVal)
+   return Number.isFinite(num) ? Math.trunc(num) : null
+  }
+  case 'decimal': {
+   if (inputVal === null || inputVal === undefined || inputVal === '') {
+    return null
+   }
+   if (typeof inputVal === 'boolean') {
+    return inputVal ? 1 : 0
+   }
+   const num = Number(inputVal)
+   return Number.isFinite(num) ? num : null
+  }
+  case 'boolean': {
+   if (typeof inputVal === 'boolean') {
+    return inputVal
+   }
+   if (typeof inputVal === 'string') {
+    const lower = inputVal.trim().toLowerCase()
+    return lower === 'true' || lower === '1'
+   }
+   return Boolean(inputVal)
+  }
+  case 'json': {
+   if (inputVal === undefined) {
+    return null
+   }
+   if (typeof inputVal === 'string') {
+    const trimmed = inputVal.trim()
+    if (trimmed === '') {
+     return null
+    }
+    try {
+     return JSON.parse(trimmed)
+    }
+    catch {
+     return inputVal
+    }
+   }
+   return inputVal
+  }
+  case 'date':
+  case 'datetime':
+  case 'url':
+  case 'email':
+  case 'text':
+  default: {
+   if (inputVal === null || inputVal === undefined) {
+    return ''
+   }
+   if (typeof inputVal === 'object') {
+    try {
+     return JSON.stringify(inputVal)
+    }
+    catch {
+     return String(inputVal)
+    }
+   }
+   return String(inputVal)
+  }
+ }
+}
+
+export function coerceDataValue(value, type, multiple, fromType = null) {
+ const parsed = parseColumnType(type, multiple)
+ const fromParsed = fromType ? parseColumnType(fromType) : null
+ if (parsed.multiple) {
+  if (Array.isArray(value)) {
+   return value.map(item => coerceSingleDataValue(item, parsed, fromParsed))
+  }
+  if (value === null || value === undefined || value === '') {
+   return []
+  }
+  return [coerceSingleDataValue(value, parsed, fromParsed)]
+ }
+ if (Array.isArray(value)) {
+  return value.length > 0 ? coerceSingleDataValue(value[0], parsed, fromParsed) : defaultDataValue(parsed, false)
+ }
+ return coerceSingleDataValue(value, parsed, fromParsed)
+}
+
+export function checkColumnChangeImpact(table, colId, nextType, nextMultiple, nextDecimals) {
+ if (!table || !Array.isArray(table.columns) || !Array.isArray(table.rows) || table.rows.length === 0) {
+  return { destructive: false, affectedRows: 0, reason: '' }
+ }
+ const col = table.columns.find(c => c && c.id === colId)
+ if (!col) {
+  return { destructive: false, affectedRows: 0, reason: '' }
+ }
+ const prevParsed = parseColumnType(col)
+ const parsed = parseColumnType(nextType, nextMultiple, nextDecimals)
+ const sameType = prevParsed.type === parsed.type && (parsed.type !== 'fixed' || prevParsed.decimals === parsed.decimals)
+ if (sameType && prevParsed.multiple === parsed.multiple) {
+  return { destructive: false, affectedRows: 0, reason: '' }
+ }
+ if (prevParsed.multiple && !parsed.multiple) {
+  let multiLoss = 0
+  for (const row of table.rows) {
+   const cur = row && row.values ? row.values[colId] : undefined
+   if (Array.isArray(cur) && cur.length > 1) {
+    multiLoss += 1
+   }
+  }
+  if (multiLoss > 0) {
+   const unit = multiLoss === 1 ? 'row has' : 'rows have'
+   return {
+    destructive: true,
+    affectedRows: multiLoss,
+    reason: `${multiLoss} ${unit} multiple values that will be truncated to the first item.`,
+   }
+  }
+ }
+ if (!sameType) {
+  let changed = 0
+  for (const row of table.rows) {
+   const cur = row && row.values ? row.values[colId] : undefined
+   const nextVal = coerceDataValue(cur, parsed, parsed.multiple, prevParsed)
+   if (JSON.stringify(cur) !== JSON.stringify(nextVal)) {
+    changed += 1
+   }
+  }
+  if (changed > 0) {
+   const unit = changed === 1 ? 'row has' : 'rows have'
+   return {
+    destructive: true,
+    affectedRows: changed,
+    reason: `${changed} ${unit} existing values that will be converted and may lose data.`,
+   }
+  }
+ }
+ return { destructive: false, affectedRows: 0, reason: '' }
+}
+
+function cloneDataValue(value) {
+ if (value === null || value === undefined || typeof value !== 'object') {
+  return value
+ }
+ try {
+  return JSON.parse(JSON.stringify(value))
+ }
+ catch {
+  return value
+ }
+}
+
+export function parseStoredTables(stored) {
+ if (stored === null || stored === undefined) {
+  return []
+ }
+ let raw = stored
+ if (typeof stored === 'string') {
+  if (!stored.trim().startsWith('[')) {
+   return []
+  }
+  try {
+   raw = JSON.parse(stored)
+  }
+  catch {
+   return []
+  }
+ }
+ if (!Array.isArray(raw)) {
+  return []
+ }
+ const out = []
+ for (let t = 0; t < raw.length; t++) {
+  const item = raw[t]
+  if (!item || typeof item !== 'object') {
+   continue
+  }
+  const tableId = typeof item.id === 'string' && item.id.length > 0 ? item.id : `tbl-${t + 1}`
+  const tableName = item.name === null || item.name === undefined ? '' : String(item.name)
+  const columns = []
+  const rawCols = Array.isArray(item.columns) ? item.columns : []
+  for (let c = 0; c < rawCols.length; c++) {
+   const col = rawCols[c]
+   if (!col || typeof col !== 'object') {
+    continue
+   }
+   const colId = typeof col.id === 'string' && col.id.length > 0 ? col.id : `col-${t + 1}-${c + 1}`
+   const colName = col.name === null || col.name === undefined ? '' : String(col.name)
+   const parsedType = parseColumnType(col.type, col.multiple, col.decimals)
+   const normalizedCol = {
+    id: colId,
+    name: colName,
+    type: parsedType.type,
+    multiple: parsedType.multiple,
+   }
+   if (parsedType.type === 'fixed') {
+    normalizedCol.decimals = parsedType.decimals
+   }
+   const width = normalizeColumnWidth(col.width)
+   if (width !== null) {
+    normalizedCol.width = width
+   }
+   columns.push(normalizedCol)
+  }
+  const rows = []
+  const rawRows = Array.isArray(item.rows) ? item.rows : []
+  for (let r = 0; r < rawRows.length; r++) {
+   const row = rawRows[r]
+   if (!row || typeof row !== 'object') {
+    continue
+   }
+   const rowId = typeof row.id === 'string' && row.id.length > 0 ? row.id : `row-${t + 1}-${r + 1}`
+   const rawValues = row.values && typeof row.values === 'object' ? row.values : {}
+   const values = {}
+   for (const col of columns) {
+    if (Object.hasOwn(rawValues, col.id)) {
+     values[col.id] = coerceDataValue(rawValues[col.id], col, col.multiple)
+    }
+    else {
+     values[col.id] = defaultDataValue(col, col.multiple)
+    }
+   }
+   rows.push({ id: rowId, values })
+  }
+  out.push({ id: tableId, name: tableName, columns, rows })
+ }
+ return out
+}
+
+export function buildTablesScope(tables) {
+ const out = {}
+ if (!Array.isArray(tables)) {
+  return out
+ }
+ for (const table of tables) {
+  if (!table || typeof table !== 'object') {
+   continue
+  }
+  const tableName = typeof table.name === 'string' ? table.name.trim() : ''
+  if (tableName.length === 0) {
+   continue
+  }
+  const cols = Array.isArray(table.columns) ? table.columns : []
+  const rows = Array.isArray(table.rows) ? table.rows : []
+  out[tableName] = rows.map(row => {
+   const record = {}
+   const values = row && row.values && typeof row.values === 'object' ? row.values : {}
+   for (const col of cols) {
+    const colName = col && typeof col.name === 'string' ? col.name.trim() : ''
+    if (colName.length === 0) {
+     continue
+    }
+    const val = Object.hasOwn(values, col.id) ? values[col.id] : defaultDataValue(col, col.multiple)
+    record[colName] = cloneDataValue(val)
+   }
+   return record
+  })
+ }
+ return out
+}
+
+export function isExpandableValue(value) {
+ return value !== null && (typeof value === 'object' || typeof value === 'function')
+}
+
+function safePrettyJson(value) {
+ try {
+  const json = JSON.stringify(value, null, 2)
+  return json === undefined ? formatValue(value) : json
+ }
+ catch {
+  return formatValue(value)
+ }
+}
+
+function truncateText(text, maxLen = 36) {
+ return text.length > maxLen ? `${text.slice(0, maxLen - 1)}…` : text
+}
+
+export function describeValue(value) {
+ if (value === null) {
+  return { type: 'null', summary: 'null', detail: 'null', expandable: false }
+ }
+ if (value === undefined) {
+  return { type: 'undefined', summary: 'undefined', detail: 'undefined', expandable: false }
+ }
+ const t = typeof value
+ if (t === 'boolean') {
+  const text = String(value)
+  return { type: 'boolean', summary: text, detail: text, expandable: false }
+ }
+ if (t === 'number') {
+  const text = Object.is(value, -0) ? '-0' : Number.isNaN(value) ? 'NaN' : String(value)
+  return { type: 'number', summary: text, detail: text, expandable: false }
+ }
+ if (t === 'bigint') {
+  const text = `${value}n`
+  return { type: 'bigint', summary: text, detail: text, expandable: false }
+ }
+ if (t === 'symbol') {
+  const text = String(value)
+  return { type: 'symbol', summary: truncateText(text), detail: text, expandable: false }
+ }
+ if (t === 'string') {
+  const full = JSON.stringify(value)
+  return { type: 'string', summary: truncateText(full), detail: full, expandable: false }
+ }
+ if (t === 'function') {
+  const summary = value.name ? `fn ${value.name}()` : 'fn()'
+  return { type: 'function', summary, detail: formatValue(value), expandable: true }
+ }
+ if (Array.isArray(value)) {
+  return {
+   type: 'array',
+   summary: `Array(${value.length})`,
+   detail: safePrettyJson(value),
+   expandable: true,
+  }
+ }
+ if (value instanceof Date) {
+  const text = Number.isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString()
+  return { type: 'date', summary: text, detail: text, expandable: true }
+ }
+ if (value instanceof RegExp) {
+  const text = String(value)
+  return { type: 'regexp', summary: text, detail: text, expandable: true }
+ }
+ if (value instanceof Map) {
+  const text = `Map(${value.size})`
+  return { type: 'map', summary: text, detail: text, expandable: true }
+ }
+ if (value instanceof Set) {
+  const text = `Set(${value.size})`
+  return { type: 'set', summary: text, detail: text, expandable: true }
+ }
+ const ctorName = value.constructor && typeof value.constructor.name === 'string' && value.constructor.name.length > 0
+  ? value.constructor.name
+  : 'Object'
+ return {
+  type: 'object',
+  summary: ctorName,
+  detail: safePrettyJson(value),
+  expandable: true,
+ }
+}
+
+function compareKeys(a, b, numericFirst = false) {
+ if (numericFirst) {
+  const aIdx = /^(0|[1-9]\d*)$/.test(a) ? Number(a) : null
+  const bIdx = /^(0|[1-9]\d*)$/.test(b) ? Number(b) : null
+  if (aIdx !== null && bIdx !== null) {
+   return aIdx - bIdx
+  }
+  if (aIdx !== null) {
+   return -1
+  }
+  if (bIdx !== null) {
+   return 1
+  }
+ }
+ const lowerCmp = a.toLowerCase().localeCompare(b.toLowerCase())
+ return lowerCmp !== 0 ? lowerCmp : a.localeCompare(b)
+}
+
+function makeEntry(key, target, { inherited = false, enumerable = true, overrideValue, hasOverride = false } = {}) {
+ try {
+  const value = hasOverride ? overrideValue : target[key]
+  const desc = describeValue(value)
+  return {
+   key,
+   value,
+   error: null,
+   type: desc.type,
+   summary: desc.summary,
+   detail: desc.detail,
+   expandable: desc.expandable,
+   inherited,
+   enumerable,
+  }
+ }
+ catch (err) {
+  const message = err instanceof Error ? err.message : String(err)
+  return {
+   key,
+   value: undefined,
+   error: message,
+   type: 'error',
+   summary: 'Error',
+   detail: message,
+   expandable: false,
+   inherited,
+   enumerable,
+  }
+ }
+}
+
+export function listScopeEntries(target, options = {}) {
+ const { isRoot = false, argv = [] } = options
+ if (!isExpandableValue(target)) {
+  return []
+ }
+
+ if (isRoot) {
+  const seen = new Set(['__proto__', 'argv'])
+  const keys = []
+  let cur = target
+  while (cur && cur !== Object.prototype) {
+   for (const key of Object.getOwnPropertyNames(cur)) {
+    if (!seen.has(key)) {
+     seen.add(key)
+     keys.push(key)
+    }
+   }
+   cur = Object.getPrototypeOf(cur)
+  }
+  keys.push('argv')
+  keys.sort((a, b) => compareKeys(a, b, false))
+  return keys.map(key =>
+   key === 'argv'
+    ? makeEntry(key, target, { inherited: false, enumerable: true, overrideValue: argv, hasOverride: true })
+    : makeEntry(key, target, { inherited: false, enumerable: true })
+  )
+ }
+
+ const isArr = Array.isArray(target)
+ const seen = new Set(['__proto__'])
+ if (typeof target === 'function') {
+  seen.add('caller')
+  seen.add('callee')
+  seen.add('arguments')
+ }
+
+ const ownEnumKeys = []
+ const ownNonEnumKeys = []
+ for (const key of Object.getOwnPropertyNames(target)) {
+  if (seen.has(key)) {
+   continue
+  }
+  seen.add(key)
+  const desc = Object.getOwnPropertyDescriptor(target, key)
+  if (desc && desc.enumerable) {
+   ownEnumKeys.push(key)
+  }
+  else {
+   ownNonEnumKeys.push(key)
+  }
+ }
+ ownEnumKeys.sort((a, b) => compareKeys(a, b, isArr))
+ ownNonEnumKeys.sort((a, b) => compareKeys(a, b, false))
+
+ const inheritedKeys = []
+ let proto = Object.getPrototypeOf(target)
+ while (proto && proto !== Object.prototype && proto !== Function.prototype) {
+  for (const key of Object.getOwnPropertyNames(proto)) {
+   if (seen.has(key)) {
+    continue
+   }
+   seen.add(key)
+   inheritedKeys.push(key)
+  }
+  proto = Object.getPrototypeOf(proto)
+ }
+ inheritedKeys.sort((a, b) => compareKeys(a, b, false))
+
+ return [
+  ...ownEnumKeys.map(key => makeEntry(key, target, { inherited: false, enumerable: true })),
+  ...ownNonEnumKeys.map(key => makeEntry(key, target, { inherited: false, enumerable: false })),
+  ...inheritedKeys.map(key => makeEntry(key, target, { inherited: true, enumerable: false })),
+ ]
+}
+
+export function resolveScopeColumns(state, selectedPath = [], options = {}) {
+ const rootState = state && typeof state === 'object' ? state : {}
+ const pathList = Array.isArray(selectedPath) ? selectedPath : []
+ const rootEntries = listScopeEntries(rootState, { isRoot: true, argv: options.argv ?? [] })
+ const validPath = []
+ const columns = [
+  {
+   kind: 'entries',
+   title: 'scope',
+   path: [],
+   selectedKey: null,
+   valueType: 'scope',
+   valueSummary: `${rootEntries.length}`,
+   valueDetail: '',
+   entries: rootEntries,
+  },
+ ]
+
+ let currentEntries = rootEntries
+ for (let i = 0; i < pathList.length; i++) {
+  const seg = String(pathList[i])
+  const match = currentEntries.find(entry => entry.key === seg)
+  if (!match) {
+   break
+  }
+  columns[columns.length - 1].selectedKey = seg
+  validPath.push(seg)
+  const nextPath = validPath.slice()
+  if (match.expandable && !match.error) {
+   const childEntries = listScopeEntries(match.value, { isRoot: false })
+   columns.push({
+    kind: 'entries',
+    title: seg,
+    path: nextPath,
+    selectedKey: null,
+    valueType: match.type,
+    valueSummary: match.summary,
+    valueDetail: match.detail,
+    entries: childEntries,
+   })
+   currentEntries = childEntries
+  }
+  else {
+   columns.push({
+    kind: 'value',
+    title: seg,
+    path: nextPath,
+    selectedKey: null,
+    value: match.value,
+    valueType: match.type,
+    valueSummary: match.summary,
+    valueDetail: match.detail,
+    error: match.error,
+   })
+   break
+  }
+ }
+
+ return {
+  path: validPath,
+  columns,
+ }
+}
+
+const RESERVED_BARE_WORDS = new Set(['true', 'false', 'null', 'undefined'])
+
+function quoteFieldToken(value) {
+ const str = String(value ?? '')
+ if (
+  str.length > 0 &&
+  /^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(str) &&
+  !str.includes('--') &&
+  !RESERVED_BARE_WORDS.has(str)
+ ) {
+  const num = Number(str)
+  if (!(Number.isFinite(num) && String(num) === str)) {
+   return str
+  }
+ }
+ const escaped = str
+  .replace(/\\/g, '\\\\')
+  .replace(/'/g, "\\'")
+  .replace(/\n/g, '\\n')
+  .replace(/\r/g, '\\r')
+  .replace(/\t/g, '\\t')
+ return `'${escaped}'`
+}
+
+export function formatImportLine(spec = {}) {
+ const alias = String(spec.alias ?? '').trim()
+ const laneId = String(spec.laneId ?? '').trim()
+ const path = Array.isArray(spec.path) ? spec.path.map(seg => String(seg)) : []
+ const args = [quoteFieldToken(laneId), ...path.map(quoteFieldToken)].join(' ')
+ if (alias.length > 0) {
+  return `; to ${quoteFieldToken(alias)} !importLane ${args}`
+ }
+ return `!importLane ${args}`
+}
+
+function isImportInvokeNode(node) {
+ return (
+  Array.isArray(node) &&
+  node.length === 4 &&
+  node[0] === '@' &&
+  node[1] === 'invoke' &&
+  Array.isArray(node[2]) &&
+  node[3] === 'importLane' &&
+  node[2].every(arg => typeof arg === 'string' || typeof arg === 'number')
+ )
+}
+
+export function parseImportLine(source) {
+ const text = String(source ?? '')
+ if (text.trim().length === 0) {
+  return null
+ }
+ try {
+  const ast = parse(`${text}\n`)
+  const stmts = ast.filter(node => !isCommentNode(node))
+  if (stmts.length !== 1) {
+   return null
+  }
+  const stmt = stmts[0]
+  if (
+   Array.isArray(stmt) &&
+   stmt.length === 4 &&
+   stmt[0] === '@' &&
+   stmt[1] === 'to' &&
+   typeof stmt[2] === 'string' &&
+   isImportInvokeNode(stmt[3])
+  ) {
+   const args = stmt[3][2]
+   return {
+    alias: stmt[2],
+    laneId: args.length > 0 ? String(args[0]) : '',
+    path: args.slice(1).map(seg => String(seg)),
+   }
+  }
+  if (isImportInvokeNode(stmt)) {
+   const args = stmt[2]
+   return {
+    alias: '',
+    laneId: args.length > 0 ? String(args[0]) : '',
+    path: args.slice(1).map(seg => String(seg)),
+   }
+  }
+  return null
+ }
+ catch {
+  return null
+ }
+}
+
+export function resolveScopePath(state, path = [], options = {}) {
+ const segments = Array.isArray(path) ? path.map(seg => String(seg)) : []
+ if (segments.length === 0) {
+  return { found: false, value: undefined, error: 'No property selected to import' }
+ }
+ const root = segments[0]
+ let cur
+ try {
+  if (root === 'argv') {
+   cur = options.argv ?? []
+  }
+  else if (state && typeof state === 'object' && root in state) {
+   cur = state[root]
+  }
+  else {
+   return { found: false, value: undefined, error: `Property "$${root}" not found in target lane` }
+  }
+  for (let i = 1; i < segments.length; i++) {
+   const seg = segments[i]
+   if (cur === null || cur === undefined) {
+    return {
+     found: false,
+     value: undefined,
+     error: `Property "$${segments.join('.')}" not found in target lane`,
+    }
+   }
+   const container = typeof cur === 'object' || typeof cur === 'function' ? cur : Object(cur)
+   if (!(seg in container)) {
+    return {
+     found: false,
+     value: undefined,
+     error: `Property "$${segments.join('.')}" not found in target lane`,
+    }
+   }
+   cur = cur[seg]
+  }
+  return { found: true, value: cur, error: null }
+ }
+ catch (err) {
+  const message = err instanceof Error ? err.message : String(err)
+  return { found: false, value: undefined, error: message }
+ }
+}
+
+const LANE_EXPORT_EXCLUDED_KEYS = new Set(['argv', 'console', 'data', 'Date', 'importLane', 'JSON', 'Math'])
+
+export function extractLaneExports(state) {
+ const out = {}
+ if (!state || typeof state !== 'object') {
+  return out
+ }
+ const seen = new Set()
+ let cur = state
+ while (cur && cur !== Object.prototype) {
+  for (const key of Object.keys(cur)) {
+   if (seen.has(key) || LANE_EXPORT_EXCLUDED_KEYS.has(key)) {
+    continue
+   }
+   seen.add(key)
+   out[key] = state[key]
+  }
+  cur = Object.getPrototypeOf(cur)
+ }
+ return out
+}
+
+export function resolveImportValue(stateResult, path = []) {
+ if (!stateResult || !stateResult.ok) {
+  throw new Error(stateResult && stateResult.error ? stateResult.error : 'Target lane is not available')
+ }
+ const segments = Array.isArray(path) ? path.map(seg => String(seg)) : []
+ if (segments.length === 0) {
+  return extractLaneExports(stateResult.state)
+ }
+ const resolved = resolveScopePath(stateResult.state, segments)
+ if (!resolved.found) {
+  throw new Error(resolved.error || 'Imported property not found')
+ }
+ return resolved.value
+}
+
+export function createIdleTracker() {
+ let activeCount = 0
+ let completed = false
+ let waiters = []
+ return {
+  get running() {
+   return activeCount > 0
+  },
+  get hasCompleted() {
+   return completed
+  },
+  isRunning() {
+   return activeCount > 0
+  },
+  hasRun() {
+   return completed
+  },
+  begin() {
+   activeCount += 1
+   let ended = false
+   return (didComplete = true) => {
+    if (ended) {
+     return
+    }
+    ended = true
+    activeCount = Math.max(0, activeCount - 1)
+    if (didComplete) {
+     completed = true
+    }
+    if (activeCount === 0 && waiters.length > 0) {
+     const pending = waiters
+     waiters = []
+     for (const resolve of pending) {
+      resolve()
+     }
+    }
+   }
+  },
+  whenIdle() {
+   if (activeCount === 0) {
+    return Promise.resolve()
+   }
+   return new Promise(resolve => {
+    waiters.push(resolve)
+   })
+  },
+ }
+}
+
+export function hasImportCycle(activeTargets, fromId, targetId) {
+ if (!fromId || !targetId) {
+  return false
+ }
+ if (fromId === targetId) {
+  return true
+ }
+ const visited = new Set([fromId])
+ const stack = [targetId]
+ while (stack.length > 0) {
+  const cur = stack.pop()
+  if (cur === fromId) {
+   return true
+  }
+  if (visited.has(cur)) {
+   continue
+  }
+  visited.add(cur)
+  const next = activeTargets && activeTargets[cur]
+  if (Array.isArray(next)) {
+   for (const id of next) {
+    stack.push(id)
+   }
+  }
+  else if (typeof next === 'string' && next.length > 0) {
+   stack.push(next)
+  }
+ }
+ return false
+}
+
 export function formatValue(value) {
  if (value === undefined) {
   return 'undefined'
@@ -863,6 +2675,12 @@ export function formatValue(value) {
  if (typeof value === 'function') {
   return '[function]'
  }
+ if (isTransportPacket(value)) {
+  const num = (value.index ?? 0) + 1
+  const count = value.ast.filter(node => !isCommentNode(node)).length
+  const unit = count === 1 ? 'stmt' : 'stmts'
+  return `[sent #${num} · ${count} ${unit}]`
+ }
  try {
   const json = JSON.stringify(value)
   return json === undefined ? String(value) : json
@@ -872,14 +2690,99 @@ export function formatValue(value) {
  }
 }
 
+export async function runTransportedScripts(packets, options = {}) {
+ const {
+  document: doc,
+  window: win = doc && doc.defaultView ? doc.defaultView : undefined,
+  console: cons = globalThis.console,
+  output = null,
+  extraEnv = {},
+  isCancelled = null,
+ } = options
+ const browserGlobals = {
+  ...extraEnv,
+  console: cons,
+  document: doc,
+  window: win,
+  Math: win && win.Math ? win.Math : Math,
+  JSON: win && win.JSON ? win.JSON : JSON,
+  Date: win && win.Date ? win.Date : Date,
+  output,
+ }
+ const browserState = { ...browserGlobals }
+ const browserGlobalKeys = new Set(Object.keys(browserGlobals))
+ const results = []
+ const list = Array.isArray(packets) ? packets : []
+
+ for (let i = 0; i < list.length; i++) {
+  if (typeof isCancelled === 'function' && isCancelled()) {
+   break
+  }
+  const raw = list[i]
+  try {
+   const decoded = typeof raw === 'string'
+    ? deserializeTransportPacket(raw)
+    : raw && typeof raw.wire === 'string'
+     ? deserializeTransportPacket(raw.wire)
+     : deserializeTransportPacket(serializeTransportPacket(raw))
+   const bindingKeys = new Set(Object.keys(decoded.bindings || {}))
+   const scriptState = Object.create(browserState)
+   for (const [k, v] of Object.entries(decoded.bindings || {})) {
+    if (!browserGlobalKeys.has(k)) {
+     scriptState[k] = v
+    }
+   }
+   const runner = field(scriptState, { preservePrototype: true, argv: decoded.args || [] })
+   const value = await runner.evalBlock(decoded.ast || [])
+   if (typeof isCancelled === 'function' && isCancelled()) {
+    break
+   }
+   for (const k of Object.keys(runner.state)) {
+    if (!browserGlobalKeys.has(k) && !bindingKeys.has(k)) {
+     browserState[k] = runner.state[k]
+    }
+   }
+   let appended = false
+   if (output && typeof output.appendChild === 'function' && isDomElement(value)) {
+    output.appendChild(value)
+    appended = true
+   }
+   results.push({
+    index: decoded.index ?? i,
+    lineNumber: decoded.lineNumber ?? null,
+    value,
+    preview: formatValue(value),
+    appended,
+    error: null,
+   })
+  }
+  catch (err) {
+   const message = err instanceof Error ? err.message : String(err)
+   results.push({
+    index: raw && typeof raw === 'object' && raw.index != null ? raw.index : i,
+    lineNumber: raw && typeof raw === 'object' && raw.lineNumber != null ? raw.lineNumber : null,
+    value: undefined,
+    preview: message,
+    appended: false,
+    error: message,
+   })
+  }
+ }
+
+ return { results, state: browserState }
+}
+
 export async function runLines(lines, options = {}) {
- const { initialState = {}, filename = 'lane' } = options
- const runner = field(initialState)
+ const { initialState = {}, filename = 'lane', transport = createTransport() } = options
+ const runner = field(initialState, { transport })
  const results = []
 
  for (let i = 0; i < lines.length; i++) {
   const source = String(lines[i] ?? '')
   const lineNumber = i + 1
+  if (typeof transport.setLineNumber === 'function') {
+   transport.setLineNumber(lineNumber)
+  }
   if (source.trim().length === 0) {
    results.push({
     index: i,
@@ -957,5 +2860,9 @@ export async function runLines(lines, options = {}) {
    })
   }
  }
- return { results, state: runner.state }
+ if (typeof transport.setLineNumber === 'function') {
+  transport.setLineNumber(null)
+ }
+ const sent = typeof transport.packets === 'function' ? transport.packets() : []
+ return { results, state: runner.state, sent }
 }

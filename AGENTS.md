@@ -4,14 +4,20 @@ This repository uses **FieldScript** (`*.fs`), a small custom S-expression-like 
 
 ## Repository Map
 
-- [field.mjs](field.mjs) — FieldScript parser (`parse`), lexically-scoped async runtime (`field`), and line-by-line notebook runner (`runLines`, `formatValue`).
+- [field.mjs](field.mjs) — FieldScript parser (`parse`), lexically-scoped async runtime (`field`), code transport (`send`, `createTransport`, `serializeTransportPacket`, `deserializeTransportPacket`, `isTransportPacket`, `isDomElement`, `runTransportedScripts`), line-by-line notebook runner (`runLines`, `formatValue`), lane tab URL routing helpers (`LANE_TABS`, `DEFAULT_LANE_TAB`, `normalizeLaneTab`, `parseLaneRouteSegment`, `parseLaneRoutes`, `formatLaneRouteSegment`, `formatLaneRoutes`), primitive input type helpers (`PRIMITIVE_TYPES`, `defaultValueForType`, `normalizePrimitiveType`), structured Data table helpers (`DATA_COLUMN_TYPES`, `DEFAULT_FIXED_DECIMALS`, `MIN_COLUMN_WIDTH`, `MAX_COLUMN_WIDTH`, `normalizeColumnWidth`, `normalizeFixedDecimals`, `normalizeDataColumnType`, `parseColumnType`, `formatColumnType`, `defaultDataValue`, `parseCellValue`, `formatCellInputValue`, `coerceDataValue`, `checkColumnChangeImpact`, `parseStoredTables`, `buildTablesScope`), scope browser introspection (`describeValue`, `listScopeEntries`, `resolveScopeColumns`, `resolveScopePath`), and cross-lane import / idle helpers (`parseImportLine`, `formatImportLine`, `extractLaneExports`, `resolveImportValue`, `createIdleTracker`, `hasImportCycle`).
 - [field.test.mjs](field.test.mjs) — Unit and integration tests (`node --test field.test.mjs`).
-- [index.html](index.html) — Entry page; initializes `field({ console, data, document, runLines })` and loads `/src/main.fs`.
+- [index.html](index.html) — Entry page; initializes `field({ ... })` with runtime/data/scope/transport helpers from [field.mjs](field.mjs) and loads `/src/main.fs`.
 - [data.mjs](data.mjs) — Namespaced HTTP KV client (`httpKV`) backed by `/api/data?mode=disk`.
 - [start](start) — Node HTTP server on `:8080` (proxies `/api/data` to `localhost:3333`, SPA fallback to `index.html`).
 - [src/main.fs](src/main.fs) — App bootstrap, DOM skeleton, and event wiring.
-- [src/lane-control.fs](src/lane-control.fs) — Lane management module (`mount`, `add`, `open`, `close`, `rename`, `configure`, `clear`, `sync`, `init`, `update-url`, plus persistent known-lanes catalog `load-catalog`, `register`, `list-known`).
-- [src/lane-notebook.fs](src/lane-notebook.fs) — Per-lane persistent script notebook UI (numbered lines, `+`/`×`/`Enter` editing, live top-to-bottom JSON previews, KV persistence under `script`).
+- [src/lane-control.fs](src/lane-control.fs) — Lane management module (`mount`, `add`, `open`, `reload`, `close`, `rename`, `configure`, `clear`, `sync`, `init`, `update-url`, persistent catalog `load-catalog`, `register`, `list-known`, shared `confirm-modal`, plus cross-lane idle state coordination `get-lane-final-state`, `notify-lane-idle`, `pick-import`).
+- [src/lane-notebook.fs](src/lane-notebook.fs) — Per-lane tabbed notebook UI (`Source`, `Input`, `Scope`, `Data`, `View`), numbered code lines and cross-lane import picker lines (`+` / `+ Import` / `×` / `Enter`), live top-to-bottom JSON previews, idle tracking (`when-idle`, `is-running`, `has-run`), KV persistence under `script`, URL tab routing (`/<id>` for home `Source`, `/<id>;<tab>` for `Input`/`Scope`/`Data`/`View`), run gating (runs Source on `Source`, `Scope`, and `View`, skips on `Input` and `Data`), and mounting `lane-output.fs` below the lane (`View` hides notebook panels and shows only the output browser).
+- [src/lane-output.fs](src/lane-output.fs) — Per-lane mini "browser" window (`Lane Output`) mounted below the lane; appears when a lane emits `send` packets or when the `View` tab is active (with an empty-state placeholder if no scripts are sent yet), deserializes and runs all transported scripts in FieldScript in browser context (`document`, `window`, `output`), appends returned DOM elements to its viewport, displays browser errors, and provides a `↻` reload button.
+- [src/lane-inputs.fs](src/lane-inputs.fs) — Per-lane `Input` tab table of assumed primitive scope variables (`string`, `number`, `boolean`, `null`, `undefined`) persisted under `inputs` and seeded into lane execution scope.
+- [src/lane-scope.fs](src/lane-scope.fs) — Per-lane `Scope` tab multi-column Miller-column browser of everything reachable via `get` in the final total scope (also embedded inside the cross-lane import picker).
+- [src/lane-data.fs](src/lane-data.fs) — Per-lane `Data` tab for defining multiple structured tables with typed columns (`integer`, `decimal`, `fixed` with configurable decimal places defaulting to 2 that edits as `xxx.xx` and stores scaled integers `xxxxx`, `text`, `boolean`, `date`, `datetime`, `url`, `email`, `json`, each optionally multiple `[]`), editing typed rows inline, persisting under `tables`, seeding named tables into lane scope, and confirming all destructive actions via `confirm-modal.fs`.
+- [src/confirm-modal.fs](src/confirm-modal.fs) — Reusable confirmation modal dialog for destructive actions (column/table/row/item deletion, clear rows, and lossy schema type/multiplicity changes).
+- [src/lane-import-modal.fs](src/lane-import-modal.fs) — Modal picker for cross-lane import lines; selects another lane, waits until idle, supports importing the entire lane (`Whole lane`, empty path) or browsing its final state via embedded `lane-scope.fs` to pick a specific value, and assigns the default or custom variable name.
 - [src/lane-modal.fs](src/lane-modal.fs) — Full-screen modal for browsing, filtering, opening, and closing all known lanes from the persistent KV database.
 - [src/lane-config-modal.fs](src/lane-config-modal.fs) — Modal dialog opened by each lane's SVG gear button for configuring lane settings (currently editing lane Title with Cancel / Save changes).
 
@@ -166,6 +172,8 @@ All commands are methods on a lexically-scoped `field` scope (`me`) in [field.mj
   - Iterates any JS iterable sequentially, awaiting `fn(item, index)` (with `$argv` = `{ item index }`) and returning the last iteration's value.
 - `while <cond> <deferredBlock>`
   - Re-evaluates `<cond>` (predicate list `{ ... }`, expression `[ ... ]`, `$var`, or deferred `( ... )`) before each iteration, executes `<deferredBlock>` (sharing the enclosing scope when inline), and returns the last iteration's value.
+- `try <deferredBlock> <onErrorBlock>`
+  - Runs `<deferredBlock>` (sharing the enclosing scope when inline) and catches both synchronous throws and async Promise rejections, invoking `<onErrorBlock>` with `$argv` = `{ err }` (or returning `<onErrorBlock>` if not a function).
 - `and <predList1> <predList2> ...` — Bitwise-ANDs predicate list evaluations.
 - `ternary <cond> <whenTrue> <whenFalse>` — Eager ternary (`cond ? whenTrue : whenFalse`).
 - `comment ...` — No-op AST node (also created by `-- ...`).
@@ -179,11 +187,13 @@ Comparison value comes **first**, then state path (space- or dot-separated):
 
 - `add <a> <b>`, `subtract <a> <b>`, `multiply <a> <b>`, `divide <a> <b>`, `modulus <a> <b>`
 
-### Modules & Execution
+### Modules, Code Transport & Execution
 
+- `send <deferredBlock|packet> [args...]` — Serializes a deferred `( ... )` block's `.ast` (plus optional JSON-serializable `args` as `$argv` and a snapshot of serializable server-scope `bindings`, excluding server globals like `data`/`console`) into a JSON code-transport packet queued on the runtime's `transport` without executing the block on the server lane.
 - `load <scriptPath> [vars]` — Fetches, parses, templates (`template#key`), and runs a `.fs` file in a child module scope, returning its last non-comment value.
 - `run`, `compile`, `evalBlock`, `template` — Programmatic entry points on the `field()` object.
-- `runLines(lines, { filename, initialState })` & `formatValue(value)` — Exported notebook evaluator from [field.mjs](field.mjs); parses each line with standard FieldScript syntax (`parse(\`${source}\n\`, filename, i)`) so commands require `;`, `!`, or `[ ... ]` (bare multi-token lines like `set foo bar` evaluate as data lists `["set","foo","bar"]` without invoking `set`), returning per-line `{ index, lineNumber, source, value, preview, error, isEmpty, isComment }` plus final `state`.
+- `runLines(lines, { filename, initialState, transport })` & `formatValue(value)` — Exported notebook evaluator from [field.mjs](field.mjs); parses each line with standard FieldScript syntax (`parse(\`${source}\n\`, filename, i)`) so commands require `;`, `!`, or `[ ... ]` (bare multi-token lines like `set foo bar` evaluate as data lists `["set","foo","bar"]` without invoking `set`), returning per-line `{ index, lineNumber, source, value, preview, error, isEmpty, isComment }`, final `state`, and `sent` transport packets.
+- `runTransportedScripts(packets, { document, window, console, output, isCancelled })` — Deserializes transported JSON packets and executes each script sequentially in a browser-context `field()` runtime; if the last non-comment expression returned by a script is a DOM element (`isDomElement`), it is appended to `output`.
 
 ---
 

@@ -8,12 +8,11 @@ A lightweight, zero-dependency project management, live scripting, and communica
 
 - **Multi-lane workspace** — Open, create, rename, and close side-by-side lanes inside a floating, auto-expanding workspace wrapper.
 - **URL-synced state** — Open lane IDs are reflected directly in the URL pathname (`/<lane-id-1>/<lane-id-2>`), supporting page reloads and browser Back/Forward navigation via `popstate`.
-- **Per-lane live FieldScript notebooks** — Every lane contains a numbered, line-by-line FieldScript notebook with:
-  - Live top-to-bottom evaluation on every keystroke
-  - Inline JSON result previews per line
-  - Per-line syntax and runtime error reporting (with filename, line, column, and source snippet)
-  - Keyboard-friendly editing (`Enter` inserts a new line below, `+` appends a line, `×` removes a line)
-  - Automatic persistence to the lane's KV namespace
+- **Per-lane live FieldScript notebooks** — Every lane includes `Source` | `Input` | `Scope` tabs directly above its contents:
+  - **Source** *(default)* — Numbered, line-by-line FieldScript notebook with live top-to-bottom evaluation on every keystroke, inline JSON previews, per-line syntax/runtime error reporting (with filename, line, column, and source snippet), keyboard-friendly editing (`Enter` inserts a line below, `+` appends, `+ Import` adds a cross-lane import line with a Scope browser picker instead of raw input, `×` removes, multi-line paste splits across rows), and automatic persistence under `<lane-id>.script`.
+  - **Cross-lane imports** — Dedicated import lines (`; to <name> !importLane <lane-id> <path...>`) render an inline alias + picker control instead of a raw line input, await completion of the source lane until idle, let you pick any value from that lane's final Scope browser under the same or a custom name, detect cycles, and automatically re-evaluate when the upstream lane finishes running.
+  - **Input** — Table of assumed primitive scope variables (`string`, `number`, `boolean`, `null`, `undefined`) persisted under `<lane-id>.inputs` and seeded into lane scope as typed function arguments without executing `Source` while editing inputs.
+  - **Scope** — Multi-column Miller-column browser of the final total scope (everything reachable via `get`), running `Source` automatically when active so clicking an object reveals its properties in a new column and clicking a property reveals its formatted value.
 - **Open Lane modal** — Browse, filter (by title or UUID), re-open, and close any known lane stored in the persistent KV database (`Escape` or backdrop click to dismiss).
 - **Configure Lane modal** — Each lane header has a gear icon aligned with the top controls to edit lane settings (currently editing lane Title with **Cancel** / **Save changes**, persisted to both the lane namespace and the known-lanes catalog).
 - **Zero npm dependencies** — Native ES modules in the browser, a tiny Node.js HTTP server (`start`), and a built-in `node:test` test suite.
@@ -49,13 +48,16 @@ node --test field.test.mjs
 
 | Path | Role |
 | --- | --- |
-| [index.html](index.html) | App entry point, dark workspace & modal CSS, initializes `field({ console, data, document, runLines })` and loads `/src/main.fs`. |
+| [index.html](index.html) | App entry point, dark workspace, tab, scope browser & modal CSS, initializes `field({ console, data, document, runLines, resolveScopeColumns, primitiveTypes, defaultValueForType, normalizePrimitiveType })` and loads `/src/main.fs`. |
 | [start](start) | Zero-dependency Node.js HTTP server on `:8080`; serves static files, proxies `/api/data` to `http://localhost:3333/`, and falls back to `index.html` for SPA lane routes. |
-| [field.mjs](field.mjs) | FieldScript parser (`parse`), lexically-scoped async runtime (`field`), and line-by-line notebook runner (`runLines`, `formatValue`). |
+| [field.mjs](field.mjs) | FieldScript parser (`parse`), lexically-scoped async runtime (`field`), line-by-line notebook runner (`runLines`, `formatValue`), primitive input type helpers (`PRIMITIVE_TYPES`, `defaultValueForType`, `normalizePrimitiveType`), and scope browser introspection (`describeValue`, `listScopeEntries`, `resolveScopeColumns`). |
 | [data.mjs](data.mjs) | Namespaced HTTP key-value client (`httpKV`) backed by `/api/data?mode=disk`. |
 | [src/main.fs](src/main.fs) | Application bootstrap, base DOM table skeleton, `+ Lane` / `Open` controls, and module wiring. |
 | [src/lane-control.fs](src/lane-control.fs) | Lane lifecycle manager (`mount`, `add`, `open`, `close`, `rename`, `configure`, `clear`, `sync`, `init`, `update-url`) and persistent known-lanes catalog (`load-catalog`, `register`, `list-known`). |
-| [src/lane-notebook.fs](src/lane-notebook.fs) | Per-lane persistent FieldScript notebook UI, live evaluator, renumbering, and KV save/restore. |
+| [src/lane-notebook.fs](src/lane-notebook.fs) | Per-lane tabbed notebook UI (`Source` \| `Input` \| `Scope`), code lines & cross-lane import picker lines, live evaluator with idle tracking and run gating, renumbering, multi-line paste, and KV save/restore. |
+| [src/lane-inputs.fs](src/lane-inputs.fs) | Per-lane `Input` tab table of assumed primitive scope variables persisted under `inputs` and seeded into lane execution scope. |
+| [src/lane-scope.fs](src/lane-scope.fs) | Per-lane `Scope` tab multi-column Miller-column browser of everything reachable via `get` in the final total scope. |
+| [src/lane-import-modal.fs](src/lane-import-modal.fs) | **Import from Lane** modal picker embedding the Scope browser of another lane's final idle state to assign a value under the same or a custom name. |
 | [src/lane-modal.fs](src/lane-modal.fs) | Full-screen **Open Lane** modal for searching, opening, and closing saved lanes. |
 | [src/lane-config-modal.fs](src/lane-config-modal.fs) | **Configure Lane** modal dialog opened by each lane's SVG gear button. |
 | [field.test.mjs](field.test.mjs) | Unit and end-to-end integration tests covering the parser, runtime, notebook evaluator, and all `.fs` modules. |
@@ -89,6 +91,7 @@ node --test field.test.mjs
 | `lanes` | JSON object (`{ [id]: { id, title } }`) | Persistent catalog of all known lanes shown in the **Open Lane** modal. |
 | `<lane-id>.title` | string | Display title for a specific lane. |
 | `<lane-id>.script` | JSON array of strings | Saved lines of the lane's FieldScript notebook. |
+| `<lane-id>.inputs` | JSON array of `{ name, type }` | Saved assumed primitive input variables for the lane. |
 
 ### URL Routing
 
@@ -170,4 +173,4 @@ Each notebook runs top-to-bottom in a fresh runtime seeded with `console`, `data
 
 ## License
 
-[MIT](LICENSE) © 2025 TagMeIn
+[MIT](LICENSE) © 2025-2026 TagMeIn

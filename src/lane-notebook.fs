@@ -1,4 +1,8 @@
 -- file lane-notebook.fs
+; to lane-inputs ; load /src/lane-inputs.fs
+; to lane-scope ; load /src/lane-scope.fs
+; to lane-data ; load /src/lane-data.fs
+; to lane-output ; load /src/lane-output.fs
 ; to scope ; object
 ; to scope.parse-stored (
  -- Parses persisted lane script storage into an array of line strings
@@ -18,26 +22,204 @@
 )
 ; to scope.mount (
  -- Mounts a persistent, live-evaluated FieldScript notebook inside a lane container
- ; to { lane container } $argv
+ ; to { lane container lane-control initial-tab } $argv
+ ; to starting-tab !normalizeLaneTab $initial-tab
+ ; set $starting-tab lane.tab
+ ; to idle-tracker !createIdleTracker
  ; to nb [ object
   { lane $lane }
   { container $container }
+  { lane-control $lane-control }
+  { active-tab $starting-tab }
   { lines {} }
   { rows {} }
   { results {} }
+  { sent {} }
   { state ; object }
   { run-id 0 }
+  { idle-tracker $idle-tracker }
  ]
  ; to root-el !document.createElement div
  ; set lane-notebook root-el.className
+
+ ; to tabs-el !document.createElement div
+ ; set lane-tabs tabs-el.className
+ !tabs-el.setAttribute role tablist
+
+ ; to source-tab !document.createElement button
+ ; assign $source-tab { type button } { className 'lane-tab lane-tab--active' } { textContent Source }
+ !source-tab.setAttribute role tab
+ !source-tab.setAttribute data-tab source
+ !source-tab.setAttribute aria-selected 'true'
+
+ ; to input-tab !document.createElement button
+ ; assign $input-tab { type button } { className lane-tab } { textContent Input }
+ !input-tab.setAttribute role tab
+ !input-tab.setAttribute data-tab input
+ !input-tab.setAttribute aria-selected 'false'
+
+ ; to scope-tab !document.createElement button
+ ; assign $scope-tab { type button } { className lane-tab } { textContent Scope }
+ !scope-tab.setAttribute role tab
+ !scope-tab.setAttribute data-tab scope
+ !scope-tab.setAttribute aria-selected 'false'
+
+ ; to data-tab !document.createElement button
+ ; assign $data-tab { type button } { className lane-tab } { textContent Data }
+ !data-tab.setAttribute role tab
+ !data-tab.setAttribute data-tab data
+ !data-tab.setAttribute aria-selected 'false'
+
+ ; to view-tab !document.createElement button
+ ; assign $view-tab { type button } { className lane-tab } { textContent View }
+ !view-tab.setAttribute role tab
+ !view-tab.setAttribute data-tab view
+ !view-tab.setAttribute aria-selected 'false'
+
+ !tabs-el.appendChild $source-tab
+ !tabs-el.appendChild $input-tab
+ !tabs-el.appendChild $scope-tab
+ !tabs-el.appendChild $data-tab
+ !tabs-el.appendChild $view-tab
+
+ ; to source-panel !document.createElement div
+ ; set lane-tab-panel source-panel.className
+ !source-panel.setAttribute role tabpanel
+ !source-panel.setAttribute data-panel source
+ ; set false source-panel.hidden
+
+ ; to input-panel !document.createElement div
+ ; set lane-tab-panel input-panel.className
+ !input-panel.setAttribute role tabpanel
+ !input-panel.setAttribute data-panel input
+ ; set true input-panel.hidden
+
+ ; to scope-panel !document.createElement div
+ ; set lane-tab-panel scope-panel.className
+ !scope-panel.setAttribute role tabpanel
+ !scope-panel.setAttribute data-panel scope
+ ; set true scope-panel.hidden
+
+ ; to data-panel !document.createElement div
+ ; set lane-tab-panel data-panel.className
+ !data-panel.setAttribute role tabpanel
+ !data-panel.setAttribute data-panel data
+ ; set true data-panel.hidden
+
  ; to lines-el !document.createElement div
  ; set lane-lines lines-el.className
+ ; to actions-el !document.createElement div
+ ; set lane-line-actions actions-el.className
  ; to add-btn !document.createElement button
  ; assign $add-btn { type button } { className lane-add-line } { textContent '+' } { title 'Add line' }
- !root-el.appendChild $lines-el
- !root-el.appendChild $add-btn
+ ; to add-import-btn !document.createElement button
+ ; assign $add-import-btn { type button } { className lane-add-import } { textContent '+ Import' } { title 'Import value from another lane' }
+ !actions-el.appendChild $add-btn
+ !actions-el.appendChild $add-import-btn
+ !source-panel.appendChild $lines-el
+ !source-panel.appendChild $actions-el
+
+ !root-el.appendChild $tabs-el
+ !root-el.appendChild $source-panel
+ !root-el.appendChild $input-panel
+ !root-el.appendChild $scope-panel
+ !root-el.appendChild $data-panel
  !container.appendChild $root-el
- ; assign $nb { element $root-el } { lines-el $lines-el } { add-btn $add-btn }
+
+ ; to tabs ; object { source $source-tab } { input $input-tab } { scope $scope-tab } { data $data-tab } { view $view-tab }
+ ; to inputs-view !lane-inputs.mount $lane $input-panel
+ ; to scope-view !lane-scope.mount $lane $scope-panel
+ ; to data-view !lane-data.mount $lane $data-panel $lane-control
+ ; to output-view !lane-output.mount $lane $container
+ ; assign $nb { element $root-el } { tabs-el $tabs-el } { tabs $tabs } { source-panel $source-panel } { input-panel $input-panel } { scope-panel $scope-panel } { data-panel $data-panel } { lines-el $lines-el } { actions-el $actions-el } { add-btn $add-btn } { add-import-btn $add-import-btn } { inputs-view $inputs-view } { inputs $inputs-view.inputs } { scope-view $scope-view } { data-view $data-view } { tables $data-view.tables } { output-view $output-view }
+
+ ; to nb.when-idle (
+  -- Resolves once all in-flight runs of this lane have completed
+  !idle-tracker.whenIdle
+ )
+
+ ; to nb.is-running (
+  -- Returns true while this lane is actively evaluating Source
+  !idle-tracker.isRunning
+ )
+
+ ; to nb.has-run (
+  -- Returns true if this lane has completed at least one run
+  !idle-tracker.hasRun
+ )
+
+ ; to nb.imports-from (
+  -- Returns true if any import line in this lane targets the given source lane ID
+  ; to { source-id } $argv
+  ; to found ; object { hit false }
+  ; each $nb.rows (
+   ; to { row } $argv
+   ; condition { propertyIs import row.kind } (
+    ; condition { propertyIs $source-id row.spec.laneId } : ; set true found.hit
+   )
+  )
+  $found.hit
+ )
+
+ ; to nb.refresh-import-labels (
+  -- Updates display labels on all import rows (e.g. after another lane is renamed)
+  ; each $nb.rows (
+   ; to { row } $argv
+   ; condition { propertyIs import row.kind } : !row.update-label
+  )
+ )
+
+ ; to nb.apply-tab-ui (
+  -- Updates tab button active styles, panel visibility, and View output mode for the current active tab
+  ; to active $nb.active-tab
+  ; to is-source [ propertyIs source active ]
+  ; to is-input [ propertyIs input active ]
+  ; to is-scope [ propertyIs scope active ]
+  ; to is-data [ propertyIs data active ]
+  ; to is-view [ propertyIs view active ]
+
+  ; set [ ternary $is-source 'lane-tab lane-tab--active' lane-tab ] source-tab.className
+  ; set [ ternary $is-input 'lane-tab lane-tab--active' lane-tab ] input-tab.className
+  ; set [ ternary $is-scope 'lane-tab lane-tab--active' lane-tab ] scope-tab.className
+  ; set [ ternary $is-data 'lane-tab lane-tab--active' lane-tab ] data-tab.className
+  ; set [ ternary $is-view 'lane-tab lane-tab--active' lane-tab ] view-tab.className
+  !source-tab.setAttribute aria-selected [ ternary $is-source 'true' 'false' ]
+  !input-tab.setAttribute aria-selected [ ternary $is-input 'true' 'false' ]
+  !scope-tab.setAttribute aria-selected [ ternary $is-scope 'true' 'false' ]
+  !data-tab.setAttribute aria-selected [ ternary $is-data 'true' 'false' ]
+  !view-tab.setAttribute aria-selected [ ternary $is-view 'true' 'false' ]
+
+  ; set [ ternary $is-source false true ] source-panel.hidden
+  ; set [ ternary $is-input false true ] input-panel.hidden
+  ; set [ ternary $is-scope false true ] scope-panel.hidden
+  ; set [ ternary $is-data false true ] data-panel.hidden
+  !output-view.set-always-visible $is-view
+ )
+
+ ; to nb.set-tab (
+  -- Switches the active lane tab, updates lane route URL unless skipped, and runs Source on Source, Scope, and View (never on Input or Data)
+  ; to { tab skip-url } $argv
+  ; to next-tab !normalizeLaneTab $tab
+  ; set $next-tab nb.active-tab
+  ; set $next-tab nb.lane.tab
+  !nb.apply-tab-ui
+  [ match
+   { $skip-url : null }
+   { $lane-control.update-url : !lane-control.update-url }
+  ]
+  [ match
+   { [ propertyIs input next-tab ] : null }
+   { [ propertyIs data next-tab ] : null }
+   { true : !nb.run }
+  ]
+  $next-tab
+ )
+
+ !source-tab.addEventListener click : !nb.set-tab source
+ !input-tab.addEventListener click : !nb.set-tab input
+ !scope-tab.addEventListener click : !nb.set-tab scope
+ !data-tab.addEventListener click : !nb.set-tab data
+ !view-tab.addEventListener click : !nb.set-tab view
 
  ; to nb.save (
   -- Persists the lane script lines to the lane's KV namespace
@@ -56,88 +238,281 @@
  )
 
  ; to nb.run (
-  -- Evaluates all notebook lines top-to-bottom and updates per-line JSON previews
-  ; to next-run-id ; add $nb.run-id 1
-  ; set $next-run-id nb.run-id
-  ; to env [ object
-   { console $console }
-   { data $nb.lane.data }
-   { Math $window.Math }
-   { JSON $window.JSON }
-   { Date $window.Date }
-  ]
-  ; to run-opts [ object
-   { filename $nb.lane.id }
-   { initialState $env }
-  ]
-  ; to outcome !runLines $nb.lines $run-opts
-  ; condition { propertyIs $next-run-id nb.run-id } (
-   ; set $outcome.results nb.results
-   ; set $outcome.state nb.state
-   ; each $outcome.results (
-    ; to { res idx } $argv
-    ; to row [ get nb.rows $idx ]
-    [ match
-     { $row (
-      ; set $res.preview row.preview-el.textContent
-      ; set $res.preview row.preview-el.title
-      ; to cls [ match
-       { $res.error : 'lane-line-preview lane-line-preview--error' }
-       { $res.isComment : 'lane-line-preview lane-line-preview--comment' }
-       { true : 'lane-line-preview' }
-      ]
-      ; set $cls row.preview-el.className
-     ) }
+  -- Evaluates all notebook lines top-to-bottom when on Source or Scope (skipped on Input and Data)
+  ; to { visited } $argv
+  [ match
+   { [ propertyIs input nb.active-tab ] : null }
+   { [ propertyIs data nb.active-tab ] : null }
+   { true (
+    ; to next-run-id ; add $nb.run-id 1
+    ; set $next-run-id nb.run-id
+    ; to finish !idle-tracker.begin
+    ; to import-lane-fn (
+     ; to { target-id ...path } $argv
+     [ match
+      { [ propertyIs '' target-id ] : undefined }
+      { [ propertyIs undefined target-id ] : undefined }
+      { $lane-control (
+       ; to res !lane-control.get-lane-final-state $target-id $nb.lane.id
+       !resolveImportValue $res $path
+      ) }
+      { true (
+       ; to no-ctrl ; object { ok false } { state null } { error 'Lane control is not available' }
+       !resolveImportValue $no-ctrl $path
+      ) }
+     ]
+    )
+    ; to env [ object
+     { console $console }
+     { data $nb.lane.data }
+     { Math $window.Math }
+     { JSON $window.JSON }
+     { Date $window.Date }
+     { importLane $import-lane-fn }
     ]
-   )
-  )
-  $outcome
+    !inputs-view.seed-env $env
+    !data-view.seed-env $env
+    ; to run-opts [ object
+     { filename $nb.lane.id }
+     { initialState $env }
+    ]
+    ; to outcome !runLines $nb.lines $run-opts
+    [ match
+     { [ propertyIs $next-run-id nb.run-id ] (
+      ; set $outcome.results nb.results
+      ; set $outcome.sent nb.sent
+      ; set $outcome.state nb.state
+      ; each $outcome.results (
+       ; to { res idx } $argv
+       ; to row [ get nb.rows $idx ]
+       [ match
+        { $row (
+         ; set $res.preview row.preview-el.textContent
+         ; set $res.preview row.preview-el.title
+         ; to cls [ match
+          { $res.error : 'lane-line-preview lane-line-preview--error' }
+          { $res.isComment : 'lane-line-preview lane-line-preview--comment' }
+          { true : 'lane-line-preview' }
+         ]
+         ; set $cls row.preview-el.className
+        ) }
+       ]
+      )
+      !scope-view.render $outcome.state
+      !output-view.render $outcome.sent
+      !$finish true
+      [ match
+       { $lane-control.notify-lane-idle : !lane-control.notify-lane-idle $nb.lane.id $visited }
+      ]
+     ) }
+     { true : !$finish false }
+    ]
+    $outcome
+   ) }
+  ]
  )
 
- ; to nb.create-row (
-  -- Creates DOM elements and event bindings for a single script line
-  ; to { text } $argv
+ ; to nb.create-import-row (
+  -- Creates DOM elements and picker bindings for a cross-lane import line
+  ; to { spec } $argv
   ; to el !document.createElement div
-  ; set lane-line el.className
+  ; set 'lane-line lane-line--import' el.className
   ; to num-el !document.createElement span
   ; set lane-line-num num-el.className
-  ; to input-el !document.createElement input
-  ; assign $input-el { type text } { className lane-line-input } { value $text } { placeholder 'FieldScript...' } { spellcheck false } { autocomplete off }
+
+  ; to control-el !document.createElement div
+  ; set lane-import-control control-el.className
+  ; to alias-el !document.createElement input
+  ; assign $alias-el { type text } { className lane-import-alias } { value $spec.alias } { placeholder name } { spellcheck false } { autocomplete off }
+  ; to arrow-el !document.createElement span
+  ; assign $arrow-el { className lane-import-arrow } { textContent '←' }
+  ; to pick-btn !document.createElement button
+  ; assign $pick-btn { type button } { className lane-import-pick-btn } { title 'Pick value from another lane' }
+  !control-el.appendChild $alias-el
+  !control-el.appendChild $arrow-el
+  !control-el.appendChild $pick-btn
+
   ; to preview-el !document.createElement code
   ; set lane-line-preview preview-el.className
   ; to remove-btn !document.createElement button
   ; assign $remove-btn { type button } { className lane-line-remove } { textContent '×' } { title 'Remove line' }
+
   !el.appendChild $num-el
-  !el.appendChild $input-el
+  !el.appendChild $control-el
   !el.appendChild $preview-el
   !el.appendChild $remove-btn
+
   ; to row [ object
+   { kind import }
+   { spec $spec }
    { el $el }
    { num-el $num-el }
-   { input-el $input-el }
+   { control-el $control-el }
+   { alias-el $alias-el }
+   { pick-btn $pick-btn }
    { preview-el $preview-el }
    { remove-btn $remove-btn }
    { index 0 }
   ]
-  !input-el.addEventListener input (
-   ; to nb.lines $row.index $input-el.value
+
+  ; to row.update-label (
+   -- Updates the picker button label to show the source lane title and optional $path (or whole lane)
+   ; to cur $row.spec
+   ; to has-target [ match
+    { [ propertyIs '' cur.laneId ] : false }
+    { true : true }
+   ]
+   [ match
+    { $has-target (
+     ; to lane-title [ match
+      { $lane-control.get-lane-title : !lane-control.get-lane-title $cur.laneId }
+      { true : $cur.laneId }
+     ]
+     ; to label [ match
+      { [ propertyIsGreaterThan 0 cur.path.length ] (
+       ; to joined !cur.path.join '.'
+       ; add $lane-title ; add ' · $' $joined
+      ) }
+      { true : ; add $lane-title ' · (lane)' }
+     ]
+     ; set $label pick-btn.textContent
+     ; set $label pick-btn.title
+     ; set 'lane-import-pick-btn lane-import-pick-btn--set' pick-btn.className
+    ) }
+    { true (
+     ; set 'Pick from lane…' pick-btn.textContent
+     ; set 'Pick lane or value from another lane' pick-btn.title
+     ; set lane-import-pick-btn pick-btn.className
+    ) }
+   ]
+  )
+
+  ; to row.apply-spec (
+   -- Applies a newly chosen { alias laneId path } import spec, re-runs, and saves
+   ; to { next-spec } $argv
+   ; set $next-spec row.spec
+   ; set $next-spec.alias alias-el.value
+   !row.update-label
+   ; to formatted !formatImportLine $next-spec
+   ; to nb.lines $row.index $formatted
    !nb.run
    !nb.save
   )
-  !input-el.addEventListener keydown (
+
+  ; to row.open-picker (
+   -- Opens the Scope browser picker modal to choose a source lane, property, and name
+   [ match
+    { $lane-control.pick-import (
+     ; to pick-opts [ object
+      { current-lane-id $nb.lane.id }
+      { lane-id $row.spec.laneId }
+      { path $row.spec.path }
+      { alias $row.spec.alias }
+      { on-confirm (
+       ; to { chosen } $argv
+       !row.apply-spec $chosen
+      ) }
+     ]
+     !lane-control.pick-import $pick-opts
+    ) }
+   ]
+  )
+
+  !alias-el.addEventListener input (
+   ; set $alias-el.value row.spec.alias
+   ; to formatted !formatImportLine $row.spec
+   ; to nb.lines $row.index $formatted
+   !nb.run
+   !nb.save
+  )
+  !alias-el.addEventListener keydown (
    ; to { ev } $argv
    ; condition { propertyIs Enter ev.key } (
-    !ev.preventDefault
+    [ match
+     { $ev.preventDefault : !ev.preventDefault }
+    ]
     ; to next-idx ; add $row.index 1
     !nb.insert-line $next-idx ''
    )
   )
+  !pick-btn.addEventListener click $row.open-picker
   !remove-btn.addEventListener click : !nb.remove-line $row.index
+  !row.update-label
   $row
  )
 
- ; to nb.insert-line (
-  -- Inserts a line at the given index, focuses it, re-runs, and persists
+ ; to nb.create-row (
+  -- Creates DOM elements and event bindings for a single script line or import line
+  ; to { text } $argv
+  ; to import-spec !parseImportLine $text
+  [ match
+   { $import-spec : !nb.create-import-row $import-spec }
+   { true (
+    ; to el !document.createElement div
+    ; set lane-line el.className
+    ; to num-el !document.createElement span
+    ; set lane-line-num num-el.className
+    ; to input-el !document.createElement input
+    ; assign $input-el { type text } { className lane-line-input } { value $text } { placeholder 'FieldScript...' } { spellcheck false } { autocomplete off }
+    ; to preview-el !document.createElement code
+    ; set lane-line-preview preview-el.className
+    ; to remove-btn !document.createElement button
+    ; assign $remove-btn { type button } { className lane-line-remove } { textContent '×' } { title 'Remove line' }
+    !el.appendChild $num-el
+    !el.appendChild $input-el
+    !el.appendChild $preview-el
+    !el.appendChild $remove-btn
+    ; to row [ object
+     { kind code }
+     { el $el }
+     { num-el $num-el }
+     { input-el $input-el }
+     { preview-el $preview-el }
+     { remove-btn $remove-btn }
+     { index 0 }
+    ]
+    !input-el.addEventListener input (
+     ; to nb.lines $row.index $input-el.value
+     !nb.run
+     !nb.save
+    )
+    !input-el.addEventListener keydown (
+     ; to { ev } $argv
+     ; condition { propertyIs Enter ev.key } (
+      !ev.preventDefault
+      ; to next-idx ; add $row.index 1
+      !nb.insert-line $next-idx ''
+     )
+    )
+    !input-el.addEventListener paste (
+     ; to { ev } $argv
+     ; to clip [ match
+      { $ev.clipboardData : !ev.clipboardData.getData text/plain }
+      { true : '' }
+     ]
+     ; to no-crlf !clip.replaceAll '\r\n' '\n'
+     ; to normalized !no-crlf.replaceAll '\r' '\n'
+     ; to parts !normalized.split '\n'
+     ; condition { propertyIsGreaterThan 1 parts.length } (
+      ; to last-idx ; subtract $parts.length 1
+      ; to last-item [ get parts $last-idx ]
+      ; condition { propertyIs '' last-item } : !parts.pop
+     )
+     ; condition { propertyIsGreaterThan 1 parts.length } (
+      [ match
+       { $ev.preventDefault : !ev.preventDefault }
+      ]
+      !nb.paste-lines $row $parts
+     )
+    )
+    !remove-btn.addEventListener click : !nb.remove-line $row.index
+    $row
+   ) }
+  ]
+ )
+
+ ; to nb.insert-row (
+  -- Inserts a line into state and DOM at the given index without running or saving
   ; to { index text } $argv
   ; to initial [ match
    { [ propertyIs undefined text ] : '' }
@@ -152,6 +527,59 @@
    { $next-row : !lines-el.insertBefore $row.el $next-row.el }
    { true : !lines-el.appendChild $row.el }
   ]
+  $row
+ )
+
+ ; to nb.paste-lines (
+  -- Splits multi-line pasted text across the current row and inserts additional rows after it
+  ; to { row parts } $argv
+  ; to input-el $row.input-el
+  ; to existing $input-el.value
+  ; to raw-start $input-el.selectionStart
+  ; to start [ match
+   { [ propertyIs null raw-start ] : $existing.length }
+   { [ propertyIs undefined raw-start ] : $existing.length }
+   { true : $raw-start }
+  ]
+  ; to raw-end $input-el.selectionEnd
+  ; to end [ match
+   { [ propertyIs null raw-end ] : $start }
+   { [ propertyIs undefined raw-end ] : $start }
+   { true : $raw-end }
+  ]
+  ; to before !existing.slice 0 $start
+  ; to after !existing.slice $end
+  ; to { first ...rest } $parts
+  ; to first-line ; add $before $first
+  ; set $first-line input-el.value
+  ; to nb.lines $row.index $first-line
+  ; to last-rest-idx ; subtract $rest.length 1
+  ; to last-pasted [ get rest $last-rest-idx ]
+  ; to caret-pos $last-pasted.length
+  ; to last-line ; add $last-pasted $after
+  ; to rest $last-rest-idx $last-line
+  ; to base-idx ; add $row.index 1
+  ; to last-row ; each $rest (
+   ; to { line-text offset } $argv
+   ; to target-idx ; add $base-idx $offset
+   !nb.insert-row $target-idx $line-text
+  )
+  !nb.renumber
+  [ match
+   { $last-row.input-el.focus : !last-row.input-el.focus }
+  ]
+  [ match
+   { $last-row.input-el.setSelectionRange : !last-row.input-el.setSelectionRange $caret-pos $caret-pos }
+  ]
+  !nb.run
+  !nb.save
+  $last-row
+ )
+
+ ; to nb.insert-line (
+  -- Inserts a line at the given index, focuses it, re-runs, and persists
+  ; to { index text } $argv
+  ; to row !nb.insert-row $index $text
   !nb.renumber
   [ match
    { $row.input-el.focus : !row.input-el.focus }
@@ -165,6 +593,25 @@
   -- Appends a line at the bottom of the lane notebook
   ; to { text } $argv
   !nb.insert-line $nb.lines.length $text
+ )
+
+ ; to nb.insert-import (
+  -- Inserts an import line at the given index, renumbers, runs, and persists
+  ; to { index spec } $argv
+  ; to line-text !formatImportLine $spec
+  ; to row !nb.insert-row $index $line-text
+  !nb.renumber
+  !nb.run
+  !nb.save
+  $row
+ )
+
+ ; to nb.add-import (
+  -- Appends a new import line and opens the lane value picker
+  ; to empty-spec ; object { alias '' } { laneId '' } { path {} }
+  ; to row !nb.insert-import $nb.lines.length $empty-spec
+  !row.open-picker
+  $row
  )
 
  ; to nb.remove-line (
@@ -184,6 +631,7 @@
  )
 
  !add-btn.addEventListener click : !nb.insert-line $nb.lines.length ''
+ !add-import-btn.addEventListener click $nb.add-import
 
  ; to stored !lane.data.get script
  ; to initial-lines !scope.parse-stored $stored
@@ -195,8 +643,9 @@
   !lines-el.appendChild $row.el
  )
  !nb.renumber
- !nb.run
  ; set $nb lane.notebook
+ !nb.apply-tab-ui
+ !nb.run
  $nb
 )
 $scope
