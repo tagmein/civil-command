@@ -853,8 +853,6 @@ export function parse(text, filename, startRow = 0) {
  return output
 }
 
-const INTERNAL_COMMANDS = new Set([ 'compile', 'evalBlock', 'template', 'run' ])
-
 export function formatValue(value) {
  if (value === undefined) {
   return 'undefined'
@@ -878,11 +876,6 @@ export async function runLines(lines, options = {}) {
  const { initialState = {}, filename = 'lane' } = options
  const runner = field(initialState)
  const results = []
- const isCommand = name =>
-  typeof name === 'string' &&
-  !INTERNAL_COMMANDS.has(name) &&
-  Object.hasOwn(runner, name) &&
-  typeof runner[name] === 'function'
 
  for (let i = 0; i < lines.length; i++) {
   const source = String(lines[i] ?? '')
@@ -901,7 +894,7 @@ export async function runLines(lines, options = {}) {
    continue
   }
   try {
-   const ast = parse(source, filename, i)
+   const ast = parse(`${source}\n`, filename, i)
    if (ast.length === 0) {
     results.push({
      index: i,
@@ -915,7 +908,8 @@ export async function runLines(lines, options = {}) {
     })
     continue
    }
-   if (ast.length === 1 && isCommentNode(ast[0])) {
+   const stmts = ast.filter(node => !isCommentNode(node))
+   if (stmts.length === 0) {
     results.push({
      index: i,
      lineNumber,
@@ -928,20 +922,16 @@ export async function runLines(lines, options = {}) {
     })
     continue
    }
-   let expr
-   if (ast.length === 1) {
-    expr = isCommand(ast[0]) ? [ '@', ast[0] ] : ast[0]
-   }
-   else if (isCommand(ast[0])) {
-    expr = [ '@', ...ast ]
+   let value
+   if (stmts.length === 1) {
+    value = await runner.compile(stmts[0])
    }
    else {
-    expr = ast
+    value = []
+    for (const stmt of stmts) {
+     value.push(await runner.compile(stmt))
+    }
    }
-   if (Array.isArray(expr) && expr[0] === '@' && !AST_LOC.has(expr)) {
-    AST_LOC.set(expr, { filename, line: lineNumber, col: 1, sourceLine: source })
-   }
-   const value = await runner.compile(expr)
    results.push({
     index: i,
     lineNumber,

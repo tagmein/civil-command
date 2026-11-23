@@ -1,6 +1,9 @@
 -- file lane-control.fs
 ; to lane-notebook ; load /src/lane-notebook.fs
+; to lane-config-modal ; load /src/lane-config-modal.fs
 ; to scope ; object { lanes {} } { lane-ids {} } { by-id ; object } { catalog ; object }
+; to config-modal !lane-config-modal.create $scope
+; set $config-modal scope.config-modal
 ; to scope.load-catalog (
  -- Loads known lanes index from persistent KV and merges into scope.catalog
  ; to stored !data.get lanes
@@ -26,8 +29,30 @@
  !scope.load-catalog
  !window.Object.values $scope.catalog
 )
+; to scope.rename (
+ -- Updates a lane's title in live state, DOM header, lane KV, and persistent catalog
+ ; to { id title } $argv
+ ; to lane [ get scope.by-id $id ]
+ [ match
+  { $lane (
+   ; set $title lane.title
+   ; set $title lane.title-el.textContent
+   !lane.data.set title $title
+   !scope.register $id $title
+  ) }
+ ]
+ $lane
+)
+; to scope.configure (
+ -- Opens the configuration modal for a mounted lane
+ ; to { id } $argv
+ ; to lane [ get scope.by-id $id ]
+ [ match
+  { $lane : !config-modal.open $lane }
+ ]
+)
 ; to scope.mount (
- -- Mounts a lane DOM header, close button, notebook body, and registers it on scope
+ -- Mounts a lane DOM header, gear config button, close button, notebook body, and registers it on scope
  ; to { id title lane-data } $argv
  ; to created !scope.create-lane
  ; to element [ match
@@ -42,6 +67,10 @@
  ; assign element.style { textAlign left } { verticalAlign top } { padding '0.25em 0.75em' }
  ; to header-top !document.createElement div
  ; set lane-header-top header-top.className
+ ; to config-btn !document.createElement button
+ ; assign $config-btn { type button } { className 'lane-control-btn lane-config-btn' } { title 'Configure lane' } { innerHTML '<svg class="lane-config-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M6.56 3L6.63 1.24L9.37 1.24L9.44 3A5.2 5.2 0 0 1 11.61 4.26L13.17 3.43L14.54 5.81L13.05 6.75A5.2 5.2 0 0 1 13.05 9.25L14.54 10.19L13.17 12.57L11.61 11.74A5.2 5.2 0 0 1 9.44 13L9.37 14.76L6.63 14.76L6.56 13A5.2 5.2 0 0 1 4.39 11.74L2.83 12.57L1.46 10.19L2.95 9.25A5.2 5.2 0 0 1 2.95 6.75L1.46 5.81L2.83 3.43L4.39 4.26A5.2 5.2 0 0 1 6.56 3ZM8 5.5A2.5 2.5 0 1 0 8 10.5A2.5 2.5 0 1 0 8 5.5Z"></path></svg>' }
+ !config-btn.setAttribute aria-label 'Configure lane'
+ !config-btn.addEventListener click : !scope.configure $id
  ; to meta-el !document.createElement div
  ; set lane-header-meta meta-el.className
  ; to title-el !document.createElement div
@@ -54,15 +83,18 @@
  ; to close-btn !document.createElement button
  ; assign $close-btn { type button } { className lane-close-btn } { textContent '×' } { title 'Close lane' }
  !close-btn.addEventListener click : !scope.close $id
+ !header-top.appendChild $config-btn
  !header-top.appendChild $meta-el
  !header-top.appendChild $close-btn
  !element.appendChild $header-top
  ; to lane [ object
   { id $id }
   { title $title }
+  { title-el $title-el }
   { data $lane-data }
   { element $element }
   { body $body-el }
+  { config-btn $config-btn }
   { close-btn $close-btn }
  ]
  !scope.lanes.push $lane

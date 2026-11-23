@@ -38,6 +38,14 @@
     border-collapse: collapse;
    }
 
+   .lanes-table thead th {
+    vertical-align: top;
+   }
+
+   .lanes-table thead th:first-child {
+    padding: 0;
+   }
+
    .lane-controls {
     display: flex;
     gap: 0.35em;
@@ -46,13 +54,18 @@
    }
 
    .lane-control-btn {
+    align-items: center;
     background: #ffffff0e;
     border: 1px solid #ffffff24;
     border-radius: 4px;
+    box-sizing: border-box;
     color: white;
     cursor: pointer;
+    display: inline-flex;
     font-family: "IBM Plex Mono", monospace;
     font-size: 12px;
+    justify-content: center;
+    line-height: 1.25;
     padding: 0.3em 0.65em;
     white-space: nowrap;
    }
@@ -61,6 +74,18 @@
    .lane-control-btn:focus {
     background: #ffffff1e;
     border-color: #ffffff48;
+   }
+
+   .lane-config-btn {
+    flex-shrink: 0;
+    min-height: calc(1.25em + 0.6em + 2px);
+    padding: 0.3em 0.5em;
+   }
+
+   .lane-config-icon {
+    display: block;
+    height: 1.05em;
+    width: 1.05em;
    }
 
    .lane-header {
@@ -72,12 +97,13 @@
    .lane-header-top {
     align-items: flex-start;
     display: flex;
-    gap: 0.75em;
+    gap: 0.6em;
     justify-content: space-between;
     white-space: normal;
    }
 
    .lane-header-meta {
+    flex: 1;
     min-width: 0;
    }
 
@@ -411,6 +437,101 @@
     background: #ff555524;
     border-color: #ff555550;
     color: #ff9c9c;
+   }
+
+   .lane-config-backdrop {
+    align-items: center;
+   }
+
+   .lane-config-modal {
+    height: auto;
+    max-width: 32em;
+   }
+
+   .lane-config-title-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2em;
+    min-width: 0;
+    white-space: normal;
+   }
+
+   .lane-config-id {
+    color: #ffffff66;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    overflow-wrap: anywhere;
+   }
+
+   .lane-config-form {
+    display: flex;
+    flex-direction: column;
+    gap: 1em;
+    margin: 0;
+    white-space: normal;
+   }
+
+   .lane-config-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4em;
+    white-space: normal;
+   }
+
+   .lane-config-label {
+    color: #ffffffb0;
+    font-size: 12px;
+   }
+
+   .lane-config-input {
+    background: #ffffff0a;
+    border: 1px solid #ffffff1f;
+    border-radius: 6px;
+    box-sizing: border-box;
+    color: white;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 13px;
+    outline: none;
+    padding: 0.55em 0.75em;
+    white-space: pre;
+    width: 100%;
+   }
+
+   .lane-config-input:focus {
+    background: #ffffff12;
+    border-color: #ffffff48;
+   }
+
+   .lane-config-footer {
+    display: flex;
+    gap: 0.5em;
+    justify-content: flex-end;
+    white-space: normal;
+   }
+
+   .lane-config-btn--cancel {
+    background: transparent;
+    color: #ffffff99;
+   }
+
+   .lane-config-btn--cancel:hover,
+   .lane-config-btn--cancel:focus {
+    background: #ffffff10;
+    border-color: #ffffff38;
+    color: white;
+   }
+
+   .lane-config-btn--save {
+    background: #9ce5ff1f;
+    border-color: #9ce5ff55;
+    color: #d6f5ff;
+   }
+
+   .lane-config-btn--save:hover,
+   .lane-config-btn--save:focus {
+    background: #9ce5ff33;
+    border-color: #9ce5ff88;
+    color: white;
    }
   </style>
   <script type="module" src="/field.mjs"></script>

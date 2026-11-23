@@ -10,9 +10,10 @@ This repository uses **FieldScript** (`*.fs`), a small custom S-expression-like 
 - [data.mjs](data.mjs) — Namespaced HTTP KV client (`httpKV`) backed by `/api/data?mode=disk`.
 - [start](start) — Node HTTP server on `:8080` (proxies `/api/data` to `localhost:3333`, SPA fallback to `index.html`).
 - [src/main.fs](src/main.fs) — App bootstrap, DOM skeleton, and event wiring.
-- [src/lane-control.fs](src/lane-control.fs) — Lane management module (`mount`, `add`, `open`, `close`, `clear`, `sync`, `init`, `update-url`, plus persistent known-lanes catalog `load-catalog`, `register`, `list-known`).
+- [src/lane-control.fs](src/lane-control.fs) — Lane management module (`mount`, `add`, `open`, `close`, `rename`, `configure`, `clear`, `sync`, `init`, `update-url`, plus persistent known-lanes catalog `load-catalog`, `register`, `list-known`).
 - [src/lane-notebook.fs](src/lane-notebook.fs) — Per-lane persistent script notebook UI (numbered lines, `+`/`×`/`Enter` editing, live top-to-bottom JSON previews, KV persistence under `script`).
 - [src/lane-modal.fs](src/lane-modal.fs) — Full-screen modal for browsing, filtering, opening, and closing all known lanes from the persistent KV database.
+- [src/lane-config-modal.fs](src/lane-config-modal.fs) — Modal dialog opened by each lane's SVG gear button for configuring lane settings (currently editing lane Title with Cancel / Save changes).
 
 ## Code Style & Testing
 
@@ -182,7 +183,7 @@ Comparison value comes **first**, then state path (space- or dot-separated):
 
 - `load <scriptPath> [vars]` — Fetches, parses, templates (`template#key`), and runs a `.fs` file in a child module scope, returning its last non-comment value.
 - `run`, `compile`, `evalBlock`, `template` — Programmatic entry points on the `field()` object.
-- `runLines(lines, { filename, initialState })` & `formatValue(value)` — Exported notebook evaluator from [field.mjs](field.mjs); runs an array of script lines top-to-bottom in a fresh `field` runtime (supporting bare commands like `to output ; add 3 $input`, bare data lines like `hello world` → `["hello","world"]`, `$output`, `;`, `!`, and `--` comments) and returns per-line `{ index, lineNumber, source, value, preview, error, isEmpty, isComment }` plus final `state`.
+- `runLines(lines, { filename, initialState })` & `formatValue(value)` — Exported notebook evaluator from [field.mjs](field.mjs); parses each line with standard FieldScript syntax (`parse(\`${source}\n\`, filename, i)`) so commands require `;`, `!`, or `[ ... ]` (bare multi-token lines like `set foo bar` evaluate as data lists `["set","foo","bar"]` without invoking `set`), returning per-line `{ index, lineNumber, source, value, preview, error, isEmpty, isComment }` plus final `state`.
 
 ---
 

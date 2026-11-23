@@ -757,19 +757,20 @@ test('runtime errors include line, column, source snippet, and filename when kno
  }
 })
 
-test('runLines evaluates notebook scripts top-to-bottom and previews JSON results', async () => {
+test('runLines evaluates notebook scripts using exact FieldScript syntax', async () => {
  const { results, state } = await runLines(
   [
    'hello world',
-   'to input 5',
-   'to output ; add 3 $input',
+   '; to input 5',
+   '; to output ; add 3 $input',
    '$output',
-   '; to explicit ; add $output 2',
+   '; to explicit ; add $output 2 -- inline comment',
    '!Math.max 2 $explicit',
    '-- a comment line',
    '',
-   'toString world',
-   'object { a 1 } { b $output }',
+   'set foo bar',
+   '; object { a 1 } { b $output }',
+   '; to a 1, ; to b 2, ; add $a $b',
   ],
   { filename: 'lane-test', initialState: { Math } }
  )
@@ -790,20 +791,24 @@ test('runLines evaluates notebook scripts top-to-bottom and previews JSON result
  assert.equal(results[6].preview, '')
  assert.equal(results[7].isEmpty, true)
  assert.equal(results[7].preview, '')
- assert.deepEqual(results[8].value, ['toString', 'world'])
- assert.equal(results[8].preview, '["toString","world"]')
+ // Without a leading `;`, bare words evaluate as a data list and never invoke commands
+ assert.deepEqual(results[8].value, ['set', 'foo', 'bar'])
+ assert.equal(results[8].preview, '["set","foo","bar"]')
+ assert.equal('bar' in state, false)
  assert.deepEqual(results[9].value, { a: 1, b: 8 })
  assert.equal(results[9].preview, '{"a":1,"b":8}')
+ assert.deepEqual(results[10].value, [1, 2, 3])
+ assert.equal(results[10].preview, '[1,2,3]')
  assert.equal(state.output, 8)
 })
 
 test('runLines captures parse and runtime errors per line with line numbers', async () => {
  const { results } = await runLines(
   [
-   'to x 1',
+   '; to x 1',
    '!missing.boom 1',
-   'add 2 3 ]',
-   'add $x 4',
+   '; add 2 3 ]',
+   '; add $x 4',
   ],
   { filename: 'lane-err' }
  )
@@ -820,6 +825,7 @@ test('runLines captures parse and runtime errors per line with line numbers', as
 test('lane-control.fs mounts, opens concurrently, adds, and syncs lanes', async () => {
  const source = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
  const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
 
  function createMockElement(tag) {
   return {
@@ -914,6 +920,9 @@ test('lane-control.fs mounts, opens concurrently, adds, and syncs lanes', async 
   if (url === '/src/lane-notebook.fs') {
    return { text: async () => notebookSource }
   }
+  if (url === '/src/lane-config-modal.fs') {
+   return { text: async () => configModalSource }
+  }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -942,10 +951,13 @@ test('lane-control.fs mounts, opens concurrently, adds, and syncs lanes', async 
   assert.equal(mountedLane.number, 1)
   assert.equal(mountedLane.element.attributes['data-lane-id'], 'direct-id')
   const headerTop = mountedLane.element.children[0]
-  const metaEl = headerTop.children[0]
+  assert.equal(headerTop.children[0], mountedLane['config-btn'])
+  assert.equal(mountedLane['config-btn'].className, 'lane-control-btn lane-config-btn')
+  assert.match(mountedLane['config-btn'].innerHTML, /<svg\b[^>]*class="lane-config-icon"/)
+  const metaEl = headerTop.children[1]
   assert.equal(metaEl.children[0].textContent, 'Direct Title')
   assert.equal(metaEl.children[1].textContent, 'direct-id')
-  assert.equal(headerTop.children[1], mountedLane['close-btn'])
+  assert.equal(headerTop.children[2], mountedLane['close-btn'])
   assert.equal(laneControl['by-id']['direct-id'], mountedLane)
 
   // Test concurrent open calls with stored titles (verifies per-call isolation)
@@ -986,6 +998,7 @@ test('main.fs bootstraps app with persistent lane notebooks that edit, add, remo
  const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
  const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
 
  function createMockElement(tag) {
   return {
@@ -1036,6 +1049,11 @@ test('main.fs bootstraps app with persistent lane notebooks that edit, add, remo
 
  let uuid = 0
  const windowListeners = {}
+ const dispatchWindowEvent = async (event, ev) => {
+  for (const handler of windowListeners[event] || []) {
+   await handler(ev)
+  }
+ }
  const mockWindow = {
   Array,
   Boolean,
@@ -1049,7 +1067,8 @@ test('main.fs bootstraps app with persistent lane notebooks that edit, add, remo
   history: { pushState(_s, _t, url) { mockWindow.location.pathname = url } },
   location: { pathname: '/' },
   addEventListener(event, handler) {
-   windowListeners[event] = handler
+   windowListeners[event] ||= []
+   windowListeners[event].push(handler)
   },
  }
  const body = createMockElement('body')
@@ -1069,6 +1088,9 @@ test('main.fs bootstraps app with persistent lane notebooks that edit, add, remo
   }
   if (url === '/src/lane-modal.fs') {
    return { text: async () => modalSource }
+  }
+  if (url === '/src/lane-config-modal.fs') {
+   return { text: async () => configModalSource }
   }
   throw new Error(`Unexpected fetch: ${url}`)
  }
@@ -1098,21 +1120,21 @@ test('main.fs bootstraps app with persistent lane notebooks that edit, add, remo
   assert.equal(nb.rows.length, 1)
   assert.equal(nb.rows[0]['num-el'].textContent, 1)
 
-  // Type "hello world" into line 1 -> previews ["hello","world"]
-  nb.rows[0]['input-el'].value = 'hello world'
+  // Type "{ hello world }" into line 1 -> previews ["hello","world"]
+  nb.rows[0]['input-el'].value = '{ hello world }'
   await nb.rows[0]['input-el'].listeners.input()
   assert.equal(nb.rows[0]['preview-el'].textContent, '["hello","world"]')
 
-  // Click "+" button to add line 2 -> type "to input 5"
+  // Click "+" button to add line 2 -> type "; to input 5"
   await nb['add-btn'].listeners.click()
   assert.equal(nb.rows.length, 2)
   assert.equal(nb.rows[1]['num-el'].textContent, 2)
   assert.equal(nb.rows[1]['input-el'].focused, true)
-  nb.rows[1]['input-el'].value = 'to input 5'
+  nb.rows[1]['input-el'].value = '; to input 5'
   await nb.rows[1]['input-el'].listeners.input()
   assert.equal(nb.rows[1]['preview-el'].textContent, '5')
 
-  // Press Enter on line 2 to insert line 3 -> type "to output ; add 3 $input"
+  // Press Enter on line 2 to insert line 3 -> type "; to output ; add 3 $input"
   let prevented = false
   await nb.rows[1]['input-el'].listeners.keydown({
    key: 'Enter',
@@ -1121,7 +1143,7 @@ test('main.fs bootstraps app with persistent lane notebooks that edit, add, remo
   assert.equal(prevented, true)
   assert.equal(nb.rows.length, 3)
   assert.equal(nb.rows[2]['num-el'].textContent, 3)
-  nb.rows[2]['input-el'].value = 'to output ; add 3 $input'
+  nb.rows[2]['input-el'].value = '; to output ; add 3 $input'
   await nb.rows[2]['input-el'].listeners.input()
   assert.equal(nb.rows[2]['preview-el'].textContent, '8')
 
@@ -1131,14 +1153,14 @@ test('main.fs bootstraps app with persistent lane notebooks that edit, add, remo
   await nb.rows[3]['input-el'].listeners.input()
   assert.equal(nb.rows[3]['preview-el'].textContent, '8')
 
-  // Remove line 1 ("hello world") -> remaining 3 lines renumber to 1, 2, 3 and stay evaluated
+  // Remove line 1 ("{ hello world }") -> remaining 3 lines renumber to 1, 2, 3 and stay evaluated
   await nb.rows[0]['remove-btn'].listeners.click()
   assert.equal(nb.rows.length, 3)
   assert.deepEqual(nb.rows.map(r => r['num-el'].textContent), [1, 2, 3])
   assert.deepEqual(nb.rows.map(r => r['preview-el'].textContent), ['5', '8', '8'])
   assert.equal(
    kv.get('m-uuid-1.script'),
-   JSON.stringify(['to input 5', 'to output ; add 3 $input', '$output'])
+   JSON.stringify(['; to input 5', '; to output ; add 3 $input', '$output'])
   )
 
   // Add a second lane, then close Lane 1 via its top-right × button
@@ -1180,7 +1202,7 @@ test('main.fs bootstraps app with persistent lane notebooks that edit, add, remo
   assert.equal(f.state.lanes.length, 2)
   assert.equal(mockWindow.location.pathname, '/m-uuid-2/m-uuid-1')
   const reopened = f.state['lane-control']['by-id']['m-uuid-1']
-  assert.deepEqual(reopened.notebook.lines, ['to input 5', 'to output ; add 3 $input', '$output'])
+  assert.deepEqual(reopened.notebook.lines, ['; to input 5', '; to output ; add 3 $input', '$output'])
   assert.deepEqual(reopened.notebook.rows.map(r => r['preview-el'].textContent), ['5', '8', '8'])
 
   // Re-open modal and close Lane 2 from inside the modal, then dismiss modal with Escape
@@ -1192,10 +1214,47 @@ test('main.fs bootstraps app with persistent lane notebooks that edit, add, remo
   assert.equal(mockWindow.location.pathname, '/m-uuid-1')
   assert.equal(modal.items.find(item => item.entry.id === 'm-uuid-2')['is-open'], false)
 
-  await windowListeners.keydown({ key: 'Escape' })
+  await dispatchWindowEvent('keydown', { key: 'Escape' })
   assert.equal(modal['is-open'], false)
 
-  // Simulate full reload from URL -> persisted script re-runs automatically on lane load
+  // Click gear icon on Lane 1 -> opens Configure Lane modal, Cancel leaves title unchanged
+  const configModal = f.state['lane-control']['config-modal']
+  await reopened['config-btn'].listeners.click()
+  assert.equal(configModal['is-open'], true)
+  assert.equal(configModal['title-input'].value, 'Lane 1')
+  assert.equal(configModal['title-input'].focused, true)
+  assert.equal(configModal['id-el'].textContent, 'm-uuid-1')
+  configModal['title-input'].value = 'Discarded Title'
+  await configModal['cancel-btn'].listeners.click()
+  assert.equal(configModal['is-open'], false)
+  assert.equal(reopened.title, 'Lane 1')
+  assert.equal(reopened['title-el'].textContent, 'Lane 1')
+
+  // Re-open Configure Lane modal and Save changes -> updates header, KV, and Open Lane catalog
+  await reopened['config-btn'].listeners.click()
+  configModal['title-input'].value = '  Mission Control  '
+  let submitPrevented = false
+  await configModal.form.listeners.submit({
+   preventDefault() { submitPrevented = true },
+  })
+  assert.equal(submitPrevented, true)
+  assert.equal(configModal['is-open'], false)
+  assert.equal(reopened.title, 'Mission Control')
+  assert.equal(reopened['title-el'].textContent, 'Mission Control')
+  assert.equal(kv.get('m-uuid-1.title'), 'Mission Control')
+
+  // Open Lane modal reflects renamed title, and Escape dismisses Configure Lane modal
+  await f.state.tableHeadRowOpenButton.listeners.click()
+  assert.equal(modal.items.find(item => item.entry.id === 'm-uuid-1').entry.title, 'Mission Control')
+  await dispatchWindowEvent('keydown', { key: 'Escape' })
+  assert.equal(modal['is-open'], false)
+
+  await reopened['config-btn'].listeners.click()
+  assert.equal(configModal['is-open'], true)
+  await dispatchWindowEvent('keydown', { key: 'Escape' })
+  assert.equal(configModal['is-open'], false)
+
+  // Simulate full reload from URL -> persisted renamed title & script restore automatically on lane load
   const fReload = field({
    console: { log() {} },
    data: createMockKV(),
@@ -1208,8 +1267,9 @@ test('main.fs bootstraps app with persistent lane notebooks that edit, add, remo
   })
   await fReload.run(parse(mainSource, '/src/main.fs'))
   assert.equal(fReload.state.lanes.length, 1)
+  assert.equal(fReload.state.lanes[0].title, 'Mission Control')
   const reloadedNb = fReload.state.lanes[0].notebook
-  assert.deepEqual(reloadedNb.lines, ['to input 5', 'to output ; add 3 $input', '$output'])
+  assert.deepEqual(reloadedNb.lines, ['; to input 5', '; to output ; add 3 $input', '$output'])
   assert.deepEqual(reloadedNb.rows.map(r => r['num-el'].textContent), [1, 2, 3])
   assert.deepEqual(reloadedNb.rows.map(r => r['preview-el'].textContent), ['5', '8', '8'])
  }
