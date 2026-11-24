@@ -4,6 +4,7 @@
 ; to lane-config-modal ; load /src/lane-config-modal.fs
 ; to lane-import-modal ; load /src/lane-import-modal.fs
 ; to confirm-modal-mod ; load /src/confirm-modal.fs
+; to row-picker-modal-mod ; load /src/lane-row-picker-modal.fs
 ; to scope ; object { lanes {} } { lane-ids {} } { by-id ; object } { catalog ; object } { active-imports ; object }
 ; to config-modal !lane-config-modal.create $scope
 ; set $config-modal scope.config-modal
@@ -11,6 +12,8 @@
 ; set $import-modal scope.import-modal
 ; to confirm-modal !confirm-modal-mod.create
 ; set $confirm-modal scope.confirm-modal
+; to row-picker-modal !row-picker-modal-mod.create
+; set $row-picker-modal scope.row-picker-modal
 ; to scope.load-catalog (
  -- Loads known lanes index from persistent KV and merges into scope.catalog
  ; to stored !data.get lanes
@@ -209,8 +212,12 @@
 )
 ; to scope.mount (
  -- Mounts a lane DOM header, gear config button, reload button, close button, notebook body, and registers it on scope
- ; to { id title lane-data initial-tab } $argv
+ ; to { id title lane-data initial-tab initial-subroute } $argv
  ; to tab !normalizeLaneTab $initial-tab
+ ; to subroute [ match
+  { $initial-subroute : $initial-subroute }
+  { true : '' }
+ ]
  ; to created !scope.create-lane
  ; to element [ match
   { $created.header : $created.header }
@@ -252,6 +259,7 @@
  ; to lane [ object
   { id $id }
   { tab $tab }
+  { subroute $subroute }
   { title $title }
   { title-el $title-el }
   { data $lane-data }
@@ -274,10 +282,19 @@
  $lane
 )
 ; to scope.update-url (
- -- Updates browser URL pathname to reflect current lane IDs and active tabs
- ; to url !formatLaneRoutes $scope.lanes
+ -- Updates browser URL pathname to reflect current lane IDs and active tabs while preserving search and hash
+ ; to pathname !formatLaneRoutes $scope.lanes
+ ; to search [ match
+  { $location.search : $location.search }
+  { true : '' }
+ ]
+ ; to hash [ match
+  { $location.hash : $location.hash }
+  { true : '' }
+ ]
+ ; to url ; add [ ; add $pathname $search ] $hash
  [ match
-  { [ propertyIs $location.pathname url ] : null }
+  { [ propertyIs $location.pathname pathname ] : null }
   { true : !history.pushState null '' $url }
  ]
 )
@@ -361,8 +378,8 @@
  $lane
 )
 ; to scope.open (
- -- Loads or initializes a lane by ID on an optional tab, registers it, and mounts it if not already open
- ; to { id tab } $argv
+ -- Loads or initializes a lane by ID on an optional tab and subroute, registers it, and mounts it if not already open
+ ; to { id tab subroute } $argv
  ; to existing [ get scope.by-id $id ]
  [ match
   { $existing (
@@ -371,6 +388,14 @@
     { true (
      ; to normalized-tab !normalizeLaneTab $tab
      ; set $normalized-tab existing.tab
+     ; to next-subroute [ match
+      { $subroute : $subroute }
+      { true : '' }
+     ]
+     ; set $next-subroute existing.subroute
+     [ match
+      { [ and { [ propertyIs data normalized-tab ] } { $existing.notebook.data-view.select-table-by-name } ] : !existing.notebook.data-view.select-table-by-name $next-subroute true }
+     ]
      [ match
       { $existing.notebook.set-tab : !existing.notebook.set-tab $normalized-tab true }
      ]
@@ -392,7 +417,7 @@
     ) }
    ]
    !scope.register $id $title
-   ; to lane !scope.mount $id $title $lane-data $normalized-tab
+   ; to lane !scope.mount $id $title $lane-data $normalized-tab $subroute
    $lane
   ) }
  ]
@@ -415,7 +440,7 @@
  ; to routes !parseLaneRoutes $location.pathname
  ; each $routes (
   ; to { route } $argv
-  !scope.open $route.id $route.tab
+  !scope.open $route.id $route.tab $route.subroute
  )
 )
 ; to scope.init (

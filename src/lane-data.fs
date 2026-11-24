@@ -1,5 +1,6 @@
 -- file lane-data.fs
 ; to confirm-modal-mod ; load /src/confirm-modal.fs
+; to row-picker-mod ; load /src/lane-row-picker-modal.fs
 ; to scope ; object
 
 ; to scope.mount (
@@ -13,12 +14,22 @@
   { $lane-control.confirm-modal : $lane-control.confirm-modal }
   { true : !confirm-modal-mod.create $root-el }
  ]
+ ; to row-picker [ match
+  { $lane-control.row-picker-modal : $lane-control.row-picker-modal }
+  { true : !row-picker-mod.create $root-el }
+ ]
+ ; to page-size [ match
+  { $defaultRowPickerPageSize : $defaultRowPickerPageSize }
+  { true : 25 }
+ ]
 
  ; to view [ object
   { lane $lane }
   { container $container }
   { lane-control $lane-control }
   { confirm-modal $modal }
+  { row-picker $row-picker }
+  { row-page-size $page-size }
   { tables {} }
   { active-table-id '' }
   { schema-open true }
@@ -270,10 +281,140 @@
   )
  )
 
+ ; to view.fetch-row-page (
+  -- Loads a single paginated slice of linked row options asynchronously on edit
+  ; to { col offset limit } $argv
+  ; to page-opts [ object { offset $offset } { limit $limit } ]
+  !fetchRowOptionsPage $view.tables $col $page-opts
+ )
+
  ; to view.create-typed-control (
-  -- Builds an editable typed input or checkbox for a single value of col.type
+  -- Builds an editable typed input, checkbox, or async row picker trigger for a single value of col.type
   ; to { col initial-val on-valid on-enter } $argv
   [ match
+   { [ propertyIs row col.type ] (
+    ; to trigger-btn !document.createElement button
+    ; assign $trigger-btn { type button } { className lane-data-row-trigger }
+    ; to display-el !document.createElement span
+    ; set lane-data-row-cell-display display-el.className
+    ; to id-el !document.createElement span
+    ; set lane-data-row-cell-id id-el.className
+    ; to caret-el !document.createElement span
+    ; assign $caret-el { className lane-data-row-cell-caret } { textContent '▾' }
+    !trigger-btn.appendChild $display-el
+    !trigger-btn.appendChild $id-el
+    !trigger-btn.appendChild $caret-el
+
+    ; to ctrl-state ; object { value $initial-val }
+    ; to update-trigger (
+     ; to { next-val } $argv
+     ; set $next-val ctrl-state.value
+     ; to info !lookupRowDisplay $view.tables $col $next-val
+     [ match
+      { [ propertyIs false info.configured ] (
+       ; set 'Configure link…' display-el.textContent
+       ; set '' id-el.textContent
+       ; set true id-el.hidden
+       ; set 'lane-data-row-trigger lane-data-row-trigger--unconfigured' trigger-btn.className
+       ; set true trigger-btn.disabled
+       ; set 'Select linked table and column in Schema' trigger-btn.title
+      ) }
+      { [ propertyIs false info.valid ] (
+       [ match
+        { $info.isEmpty (
+         ; set 'Invalid link' display-el.textContent
+         ; set '' id-el.textContent
+         ; set true id-el.hidden
+        ) }
+        { true (
+         ; set $info.valueText display-el.textContent
+         ; set '(missing)' id-el.textContent
+         ; set false id-el.hidden
+        ) }
+       ]
+       ; set 'lane-data-row-trigger lane-data-row-trigger--invalid' trigger-btn.className
+       ; set true trigger-btn.disabled
+       ; set 'Linked table or column not found' trigger-btn.title
+      ) }
+      { $info.isEmpty (
+       ; set 'Select row…' display-el.textContent
+       ; set '' id-el.textContent
+       ; set true id-el.hidden
+       ; set 'lane-data-row-trigger lane-data-row-trigger--empty' trigger-btn.className
+       ; set false trigger-btn.disabled
+       ; set 'Pick a linked row' trigger-btn.title
+      ) }
+      { $info.hasSeparateDisplay [ match
+       { $info.found [ match
+        { [ propertyIs '' info.displayText ] (
+         ; set $info.valueText display-el.textContent
+         ; set '' id-el.textContent
+         ; set true id-el.hidden
+         ; set 'lane-data-row-trigger lane-data-row-trigger--filled' trigger-btn.className
+         ; set false trigger-btn.disabled
+         ; set $info.valueText trigger-btn.title
+        ) }
+        { true (
+         ; set $info.displayText display-el.textContent
+         ; set $info.valueText id-el.textContent
+         ; set false id-el.hidden
+         ; set 'lane-data-row-trigger lane-data-row-trigger--filled' trigger-btn.className
+         ; set false trigger-btn.disabled
+         ; set $info.label trigger-btn.title
+        ) }
+       ] }
+       { true (
+        ; set $info.valueText display-el.textContent
+        ; set '(not found)' id-el.textContent
+        ; set false id-el.hidden
+        ; set 'lane-data-row-trigger lane-data-row-trigger--missing' trigger-btn.className
+        ; set false trigger-btn.disabled
+        ; set $info.valueText trigger-btn.title
+       ) }
+      ] }
+      { true (
+       ; set $info.valueText display-el.textContent
+       ; set '' id-el.textContent
+       ; set true id-el.hidden
+       ; set 'lane-data-row-trigger lane-data-row-trigger--filled' trigger-btn.className
+       ; set false trigger-btn.disabled
+       ; set $info.valueText trigger-btn.title
+      ) }
+     ]
+    )
+    !update-trigger $initial-val
+
+    !trigger-btn.addEventListener click (
+     ; to target !resolveRowTarget $view.tables $col
+     ; condition { propertyIs true target.valid } (
+      ; to col-label !view.display-col-name $col
+      ; to trimmed-tbl !target.table.name.trim
+      ; to tbl-name [ match
+       { [ propertyIs '' trimmed-tbl ] : $target.table.id }
+       { true : $trimmed-tbl }
+      ]
+      ; to title ; add 'Select ' ; add $col-label ; add ' (' ; add $tbl-name ')'
+      ; to ph ; add 'Search ' ; add $tbl-name ' rows...'
+      ; to pick-opts [ object
+       { title $title }
+       { placeholder $ph }
+       { current-value $ctrl-state.value }
+       { page-size $view.row-page-size }
+       { fetch-page (
+        ; to { offset limit } $argv
+        !view.fetch-row-page $col $offset $limit
+       ) }
+       { on-select (
+        ; to { chosen-val } $argv
+        !update-trigger $chosen-val
+        !$on-valid $chosen-val
+       ) }
+      ]
+      !view.row-picker.open $pick-opts
+     )
+    )
+    ; object { el $trigger-btn } { input-el $trigger-btn } { trigger-el $trigger-btn } { display-el $display-el } { id-el $id-el } { update-trigger $update-trigger }
+   ) }
    { [ propertyIs boolean col.type ] (
     ; to wrap !document.createElement label
     ; set lane-data-bool-wrap wrap.className
@@ -387,7 +528,7 @@
   ; to arr [ match
    { [ !window.Array.isArray $raw-val ] : $raw-val }
    { true (
-    ; to coerced !coerceDataValue $raw-val $col true
+    ; to coerced !coerceDataValue $raw-val $col true null $view.tables
     ; to row.values $col.id $coerced
     $coerced
    ) }
@@ -415,7 +556,16 @@
    !item-el.appendChild $ctrl.el
    !item-el.appendChild $rm-btn
    !items-el.appendChild $item-el
-   ; to item-rec ; object { el $item-el } { input-el $ctrl.input-el } { remove-btn $rm-btn } { index $item-idx }
+   ; to item-rec [ object
+    { el $item-el }
+    { input-el $ctrl.input-el }
+    { trigger-el $ctrl.trigger-el }
+    { display-el $ctrl.display-el }
+    { id-el $ctrl.id-el }
+    { update-trigger $ctrl.update-trigger }
+    { remove-btn $rm-btn }
+    { index $item-idx }
+   ]
    !cell-rec.items.push $item-rec
   )
   [ match
@@ -436,7 +586,17 @@
   ; to col-label !view.display-col-name $col
   ; to row-num ; add $row-idx 1
   ; to item-num ; add $item-idx 1
-  ; to val-str !formatCellInputValue $item-val $col
+  ; to val-str [ match
+   { [ propertyIs row col.type ] (
+    ; to info !lookupRowDisplay $view.tables $col $item-val
+    [ match
+     { $info.isEmpty : empty }
+     { [ propertyIs '' info.label ] : empty }
+     { true : $info.label }
+    ]
+   ) }
+   { true : !formatCellInputValue $item-val $col undefined $view.tables }
+  ]
   ; to msg ; add 'Remove item #' ; add $item-num ; add ' ("' ; add $val-str ; add '") from "' ; add $col-label ; add '" in row #' ; add $row-num '?'
   ; to opts [ object
    { title 'Remove Item' }
@@ -532,8 +692,28 @@
        ; set lane-data-th-inner th-inner.className
        ; to name-span !document.createElement span
        ; assign $name-span { className lane-data-th-name } { textContent !view.display-col-name $col }
+       ; to type-text !formatColumnType $col undefined undefined $view.tables
        ; to type-span !document.createElement span
-       ; assign $type-span { className lane-data-th-type } { textContent !formatColumnType $col }
+       ; assign $type-span { className lane-data-th-type } { textContent $type-text }
+       [ match
+        { [ propertyIs row col.type ] (
+         ; to row-target !resolveRowTarget $view.tables $col
+         [ match
+          { $row-target.valid (
+           ; to lit-fmt !formatColumnType $row-target.valueSpec
+           ; to hint-title ; add $type-text ; add ' · literal ' $lit-fmt
+           [ match
+            { $row-target.displayCol (
+             ; to d-name !view.display-col-name $row-target.displayCol
+             ; set [ add $hint-title ; add ' · display ' $d-name ] hint-title
+            ) }
+           ]
+           ; set $hint-title type-span.title
+          ) }
+          { true : ; set 'Linked row column not configured' type-span.title }
+         ]
+        ) }
+       ]
        ; to resizer-el !document.createElement div
        ; assign $resizer-el { className lane-data-col-resizer } { title 'Drag to resize column (double-click to reset)' }
        !resizer-el.setAttribute role separator
@@ -682,7 +862,16 @@
           )
           ; to ctrl !view.create-typed-control $col $cur-val $on-valid null
           !td.appendChild $ctrl.el
-          ; to cell-rec ; object { col $col } { td $td } { multi false } { input-el $ctrl.input-el }
+          ; to cell-rec [ object
+           { col $col }
+           { td $td }
+           { multi false }
+           { input-el $ctrl.input-el }
+           { trigger-el $ctrl.trigger-el }
+           { display-el $ctrl.display-el }
+           { id-el $ctrl.id-el }
+           { update-trigger $ctrl.update-trigger }
+          ]
           !cells.push $cell-rec
          ) }
         ]
@@ -722,7 +911,7 @@
  )
 
  ; to view.apply-column-change (
-  -- Applies a confirmed column type/multiplicity/decimals change and coerces existing row values
+  -- Applies a confirmed column type/multiplicity/decimals/row-link change and coerces existing row values
   ; to { tbl col next-type next-multiple next-decimals } $argv
   ; to from-spec !parseColumnType $col
   ; to next-spec !parseColumnType $next-type $next-multiple $next-decimals
@@ -737,10 +926,31 @@
     ]
    ) }
   ]
+  [ match
+   { [ propertyIs row next-spec.type ] (
+    ; set $next-spec.refTableId col.refTableId
+    ; set $next-spec.refColumnId col.refColumnId
+    ; set $next-spec.refDisplayColumnId col.refDisplayColumnId
+   ) }
+   { true (
+    [ match
+     { $window.Reflect.deleteProperty (
+      !window.Reflect.deleteProperty $col refTableId
+      !window.Reflect.deleteProperty $col refColumnId
+      !window.Reflect.deleteProperty $col refDisplayColumnId
+     ) }
+     { true (
+      ; set undefined col.refTableId
+      ; set undefined col.refColumnId
+      ; set undefined col.refDisplayColumnId
+     ) }
+    ]
+   ) }
+  ]
   ; each $tbl.rows (
    ; to { row } $argv
    ; to cur [ get row.values $col.id ]
-   ; to coerced !coerceDataValue $cur $next-spec $next-spec.multiple $from-spec
+   ; to coerced !coerceDataValue $cur $next-spec $next-spec.multiple $from-spec $view.tables
    ; to row.values $col.id $coerced
   )
   !view.render-schema
@@ -749,14 +959,14 @@
  )
 
  ; to view.request-column-change (
-  -- Validates column type/multiple/decimals change and confirms when existing row data would be altered or truncated
+  -- Validates column type/multiple/decimals/row-link change and confirms when existing row data would be altered or truncated
   ; to { tbl col next-type next-multiple next-decimals on-revert } $argv
-  ; to impact !checkColumnChangeImpact $tbl $col.id $next-type $next-multiple $next-decimals
+  ; to impact !checkColumnChangeImpact $tbl $col.id $next-type $next-multiple $next-decimals $view.tables
   [ match
    { $impact.destructive (
     ; to col-label !view.display-col-name $col
-    ; to prev-fmt !formatColumnType $col
-    ; to next-fmt !formatColumnType $next-type $next-multiple $next-decimals
+    ; to prev-fmt !formatColumnType $col undefined undefined $view.tables
+    ; to next-fmt !formatColumnType $next-type $next-multiple $next-decimals $view.tables
     ; to msg ; add 'Change column "' ; add $col-label ; add '" from ' ; add $prev-fmt ; add ' to ' ; add $next-fmt ; add '? ' $impact.reason
     ; to opts [ object
      { title 'Change Column Type' }
@@ -782,7 +992,7 @@
   [ match
    { $col (
     ; to col-label !view.display-col-name $col
-    ; to fmt-type !formatColumnType $col
+    ; to fmt-type !formatColumnType $col undefined undefined $view.tables
     ; to row-count $tbl.rows.length
     ; to row-note [ match
      { [ propertyIsGreaterThan 0 row-count ] (
@@ -897,9 +1107,13 @@
        { true : null }
       ]
       ; set [ match { $next-tbl : $next-tbl.id } { true : '' } ] view.active-table-id
+      ; set [ match { $next-tbl : $next-tbl.name } { true : '' } ] lane.subroute
       ; set [ !view.default-schema-open $next-tbl ] view.schema-open
       !view.render
       !view.save
+      [ match
+       { $lane-control.update-url : !lane-control.update-url }
+      ]
      ) }
     ]
     !view.confirm $opts
@@ -964,12 +1178,138 @@
      !type-wrap.appendChild $decimals-wrap
      !type-td.appendChild $type-wrap
 
+     ; to is-row [ propertyIs row col.type ]
+     ; to row-config-wrap !document.createElement div
+     ; assign $row-config-wrap { className lane-data-row-config } { hidden [ ternary $is-row false true ] }
+
+     ; to ref-table-field !document.createElement label
+     ; set lane-data-row-field ref-table-field.className
+     ; to ref-table-label !document.createElement span
+     ; assign $ref-table-label { className lane-data-row-label } { textContent Table }
+     ; to ref-table-el !document.createElement select
+     ; set 'lane-input-type lane-data-row-select' ref-table-el.className
+     ; to ref-table-empty !document.createElement option
+     ; assign $ref-table-empty { value '' } { textContent 'Select table…' }
+     !ref-table-el.appendChild $ref-table-empty
+     !ref-table-field.appendChild $ref-table-label
+     !ref-table-field.appendChild $ref-table-el
+
+     ; to ref-col-field !document.createElement label
+     ; set lane-data-row-field ref-col-field.className
+     ; to ref-col-label !document.createElement span
+     ; assign $ref-col-label { className lane-data-row-label } { textContent Column }
+     ; to ref-col-el !document.createElement select
+     ; set 'lane-input-type lane-data-row-select' ref-col-el.className
+     ; to ref-col-empty !document.createElement option
+     ; assign $ref-col-empty { value '' } { textContent 'Select column…' }
+     !ref-col-el.appendChild $ref-col-empty
+     !ref-col-field.appendChild $ref-col-label
+     !ref-col-field.appendChild $ref-col-el
+
+     ; to ref-disp-field !document.createElement label
+     ; set lane-data-row-field ref-disp-field.className
+     ; to ref-disp-label !document.createElement span
+     ; assign $ref-disp-label { className lane-data-row-label } { textContent Display }
+     ; to ref-display-el !document.createElement select
+     ; set 'lane-input-type lane-data-row-select' ref-display-el.className
+     ; to ref-disp-empty !document.createElement option
+     ; assign $ref-disp-empty { value '' } { textContent 'None (optional)' }
+     !ref-display-el.appendChild $ref-disp-empty
+     !ref-disp-field.appendChild $ref-disp-label
+     !ref-disp-field.appendChild $ref-display-el
+
+     ; to row-hint-el !document.createElement div
+     ; assign $row-hint-el { className lane-data-row-hint } { textContent '' }
+
+     [ match
+      { $is-row (
+       ; to cur-ref-table-id [ match { $col.refTableId : $col.refTableId } { true : '' } ]
+       ; to cur-ref-col-id [ match { $col.refColumnId : $col.refColumnId } { true : '' } ]
+       ; to cur-ref-disp-id [ match { $col.refDisplayColumnId : $col.refDisplayColumnId } { true : '' } ]
+
+       ; to sel-table-box ; object { table null }
+       ; each $view.tables (
+        ; to { t t-idx } $argv
+        ; to opt-t !document.createElement option
+        ; assign $opt-t { value $t.id } { textContent !view.display-table-name $t $t-idx }
+        !ref-table-el.appendChild $opt-t
+        ; condition { propertyIs $cur-ref-table-id t.id } : ; set $t sel-table-box.table
+       )
+       ; to sel-table $sel-table-box.table
+       ; set [ match { $sel-table : $sel-table.id } { true : '' } ] ref-table-el.value
+       ; set [ ternary $sel-table 'lane-input-type lane-data-row-select' 'lane-input-type lane-data-row-select lane-data-row-select--required' ] ref-table-el.className
+
+       ; to sel-col-box ; object { col null } { disp null }
+       [ match
+        { $sel-table (
+         ; set false ref-col-el.disabled
+         ; set false ref-display-el.disabled
+         ; each $sel-table.columns (
+          ; to { tc } $argv
+          ; to tc-name !view.display-col-name $tc
+          ; to tc-type !formatColumnType $tc undefined undefined $view.tables
+          ; to tc-label ; add $tc-name ; add ' (' ; add $tc-type ')'
+          ; to opt-c !document.createElement option
+          ; assign $opt-c { value $tc.id } { textContent $tc-label }
+          !ref-col-el.appendChild $opt-c
+          ; to opt-d !document.createElement option
+          ; assign $opt-d { value $tc.id } { textContent $tc-label }
+          !ref-display-el.appendChild $opt-d
+          ; condition { propertyIs $cur-ref-col-id tc.id } : ; set $tc sel-col-box.col
+          ; condition { propertyIs $cur-ref-disp-id tc.id } : ; set $tc sel-col-box.disp
+         )
+        ) }
+        { true (
+         ; set true ref-col-el.disabled
+         ; set true ref-display-el.disabled
+        ) }
+       ]
+       ; to sel-col $sel-col-box.col
+       ; to sel-disp $sel-col-box.disp
+       ; set [ match { $sel-col : $sel-col.id } { true : '' } ] ref-col-el.value
+       ; set [ match { $sel-disp : $sel-disp.id } { true : '' } ] ref-display-el.value
+       ; set [ ternary $sel-col 'lane-input-type lane-data-row-select' 'lane-input-type lane-data-row-select lane-data-row-select--required' ] ref-col-el.className
+
+       ; to hint-text [ match
+        { [ propertyIs null sel-table ] : 'Select table and link column (required)' }
+        { [ propertyIs null sel-col ] : 'Select link column (sets literal data type)' }
+        { true (
+         ; to val-spec !resolveRowValueSpec $view.tables $col
+         [ match
+          { $val-spec (
+           ; to lit-fmt !formatColumnType $val-spec
+           ; to base-hint ; add 'Stores ' $lit-fmt
+           [ match
+            { $sel-disp [ match
+             { [ propertyIs $sel-col.id sel-disp.id ] : ; add $base-hint ' · same as link column' }
+             { true (
+              ; to disp-name !view.display-col-name $sel-disp
+              ; add $base-hint ; add ' · displays ' $disp-name
+             ) }
+            ] }
+            { true : $base-hint }
+           ]
+          ) }
+          { true : 'Linked column forms a cycle or is invalid' }
+         ]
+        ) }
+       ]
+       ; set $hint-text row-hint-el.textContent
+      ) }
+     ]
+
+     !row-config-wrap.appendChild $ref-table-field
+     !row-config-wrap.appendChild $ref-col-field
+     !row-config-wrap.appendChild $ref-disp-field
+     !row-config-wrap.appendChild $row-hint-el
+     !type-td.appendChild $row-config-wrap
+
      ; to multi-td !document.createElement td
      ; set 'lane-input-cell lane-data-cell--multi' multi-td.className
      ; to multi-btn !document.createElement button
      ; to is-multi [ ternary $col.multiple true false ]
      ; to multi-cls [ ternary $is-multi 'lane-data-multi-toggle lane-data-multi-toggle--active' lane-data-multi-toggle ]
-     ; to fmt-title ; add 'Multiple values: ' !formatColumnType $col $is-multi
+     ; to fmt-title ; add 'Multiple values: ' !formatColumnType $col $is-multi undefined $view.tables
      ; assign $multi-btn { type button } { className $multi-cls } { textContent '[]' } { title $fmt-title }
      !multi-btn.setAttribute aria-pressed [ ternary $is-multi 'true' 'false' ]
      !multi-td.appendChild $multi-btn
@@ -992,6 +1332,11 @@
       { type-el $type-el }
       { decimals-wrap $decimals-wrap }
       { decimals-el $decimals-el }
+      { row-config-wrap $row-config-wrap }
+      { ref-table-el $ref-table-el }
+      { ref-col-el $ref-col-el }
+      { ref-display-el $ref-display-el }
+      { row-hint-el $row-hint-el }
       { multi-btn $multi-btn }
       { remove-btn $rm-btn }
       { index $col-idx }
@@ -1017,14 +1362,76 @@
      )
      !type-el.addEventListener change (
       ; to next-type !normalizeDataColumnType $type-el.value
-      ; to next-decimals [ match
-       { [ propertyIs fixed next-type ] : !normalizeFixedDecimals $col.decimals }
-       { true : undefined }
+      ; to next-spec [ match
+       { [ propertyIs fixed next-type ] [ object
+        { type fixed }
+        { multiple $col.multiple }
+        { decimals !normalizeFixedDecimals $col.decimals }
+       ] }
+       { [ propertyIs row next-type ] [ object
+        { type row }
+        { multiple $col.multiple }
+        { refTableId [ match { $col.refTableId : $col.refTableId } { true : '' } ] }
+        { refColumnId [ match { $col.refColumnId : $col.refColumnId } { true : '' } ] }
+        { refDisplayColumnId [ match { $col.refDisplayColumnId : $col.refDisplayColumnId } { true : '' } ] }
+       ] }
+       { true [ object
+        { type $next-type }
+        { multiple $col.multiple }
+       ] }
       ]
       ; to on-revert (
        ; set $col.type type-el.value
       )
-      !view.request-column-change $tbl $col $next-type $col.multiple $next-decimals $on-revert
+      !view.request-column-change $tbl $col $next-spec $col.multiple $next-spec.decimals $on-revert
+     )
+     !ref-table-el.addEventListener change (
+      ; to prev-table-id [ match { $col.refTableId : $col.refTableId } { true : '' } ]
+      ; to next-table-id $ref-table-el.value
+      [ match
+       { [ propertyIs $prev-table-id next-table-id ] : null }
+       { true (
+        ; to next-spec [ object
+         { type row }
+         { multiple $col.multiple }
+         { refTableId $next-table-id }
+         { refColumnId '' }
+         { refDisplayColumnId '' }
+        ]
+        ; to on-revert (
+         ; set $prev-table-id ref-table-el.value
+        )
+        !view.request-column-change $tbl $col $next-spec $col.multiple undefined $on-revert
+       ) }
+      ]
+     )
+     !ref-col-el.addEventListener change (
+      ; to prev-col-id [ match { $col.refColumnId : $col.refColumnId } { true : '' } ]
+      ; to next-col-id $ref-col-el.value
+      [ match
+       { [ propertyIs $prev-col-id next-col-id ] : null }
+       { true (
+        ; to cur-tbl-id [ match { $col.refTableId : $col.refTableId } { true : '' } ]
+        ; to cur-disp-id [ match { $col.refDisplayColumnId : $col.refDisplayColumnId } { true : '' } ]
+        ; to next-spec [ object
+         { type row }
+         { multiple $col.multiple }
+         { refTableId $cur-tbl-id }
+         { refColumnId $next-col-id }
+         { refDisplayColumnId $cur-disp-id }
+        ]
+        ; to on-revert (
+         ; set $prev-col-id ref-col-el.value
+        )
+        !view.request-column-change $tbl $col $next-spec $col.multiple undefined $on-revert
+       ) }
+      ]
+     )
+     !ref-display-el.addEventListener change (
+      ; set $ref-display-el.value col.refDisplayColumnId
+      !view.render-schema
+      !view.render-grid
+      !view.save
      )
      !decimals-el.addEventListener change (
       ; to next-decimals !normalizeFixedDecimals $decimals-el.value
@@ -1041,7 +1448,7 @@
      )
      !multi-btn.addEventListener click (
       ; to next-multi [ ternary $col.multiple false true ]
-      !view.request-column-change $tbl $col $col.type $next-multi $col.decimals null
+      !view.request-column-change $tbl $col $col $next-multi $col.decimals null
      )
      !rm-btn.addEventListener click : !view.request-delete-column $tbl $srow.index
 
@@ -1073,13 +1480,55 @@
   ]
  )
 
+ ; to view.find-table-by-name (
+  -- Finds a table by exact name, or returns null when not found
+  ; to { name } $argv
+  ; to found ; object { table null }
+  [ match
+   { $name (
+    ; each $view.tables (
+     ; to { tbl } $argv
+     [ match
+      { $found.table : null }
+      { [ propertyIs $name tbl.name ] : ; set $tbl found.table }
+     ]
+    )
+   ) }
+  ]
+  $found.table
+ )
+
  ; to view.select-table (
-  -- Selects a table by ID, applies default schema visibility (collapsed when rows exist), and renders
-  ; to { id } $argv
+  -- Selects a table by ID, applies default schema visibility (collapsed when rows exist), renders, and updates lane URL
+  ; to { id skip-url } $argv
   ; set $id view.active-table-id
   ; to tbl !view.get-active-table
+  ; set [ match { $tbl : $tbl.name } { true : '' } ] lane.subroute
   ; set [ !view.default-schema-open $tbl ] view.schema-open
   !view.render
+  [ match
+   { $skip-url : null }
+   { $lane-control.update-url : !lane-control.update-url }
+  ]
+ )
+
+ ; to view.select-table-by-name (
+  -- Selects a table by name if known, otherwise falls back to the first table
+  ; to { name skip-url } $argv
+  ; to matched !view.find-table-by-name $name
+  ; to target [ match
+   { $matched : $matched }
+   { [ propertyIsGreaterThan 0 view.tables.length ] : [ get view.tables 0 ] }
+   { true : null }
+  ]
+  [ match
+   { $target : !view.select-table $target.id $skip-url }
+   { true (
+    ; set '' view.active-table-id
+    ; set '' lane.subroute
+    !view.render
+   ) }
+  ]
  )
 
  ; to view.add-table (
@@ -1099,6 +1548,7 @@
   ]
   !view.tables.push $tbl
   ; set $tbl.id view.active-table-id
+  ; set $tbl.name lane.subroute
   ; set true view.schema-open
   !view.render
   [ match
@@ -1108,6 +1558,9 @@
    { $table-name-input.select : !table-name-input.select }
   ]
   !view.save
+  [ match
+   { $lane-control.update-url : !lane-control.update-url }
+  ]
   $tbl
  )
 
@@ -1130,6 +1583,15 @@
       { type $parsed.type }
       { multiple $parsed.multiple }
       { decimals $parsed.decimals }
+     ] }
+     { [ propertyIs row parsed.type ] [ object
+      { id !view.next-id col }
+      { name $clean-name }
+      { type $parsed.type }
+      { multiple $parsed.multiple }
+      { refTableId $parsed.refTableId }
+      { refColumnId $parsed.refColumnId }
+      { refDisplayColumnId $parsed.refDisplayColumnId }
      ] }
      { true [ object
       { id !view.next-id col }
@@ -1197,8 +1659,12 @@
   [ match
    { $tbl (
     ; set $table-name-input.value tbl.name
+    ; set $tbl.name lane.subroute
     !view.update-table-tabs-text
     !view.save
+    [ match
+     { $lane-control.update-url : !lane-control.update-url }
+    ]
    ) }
   ]
  )
@@ -1227,9 +1693,14 @@
   !view.tables.push $tbl
  )
  ; condition { propertyIsGreaterThan 0 view.tables.length } (
-  ; to first-tbl [ get view.tables 0 ]
-  ; set $first-tbl.id view.active-table-id
-  ; set [ !view.default-schema-open $first-tbl ] view.schema-open
+  ; to matched-tbl !view.find-table-by-name $lane.subroute
+  ; to initial-tbl [ match
+   { $matched-tbl : $matched-tbl }
+   { true : [ get view.tables 0 ] }
+  ]
+  ; set $initial-tbl.id view.active-table-id
+  ; set $initial-tbl.name lane.subroute
+  ; set [ !view.default-schema-open $initial-tbl ] view.schema-open
  )
  !view.render
  $view

@@ -5,6 +5,7 @@ import {
  DATA_COLUMN_TYPES,
  DEFAULT_FIXED_DECIMALS,
  DEFAULT_LANE_TAB,
+ DEFAULT_ROW_PICKER_PAGE_SIZE,
  LANE_TABS,
  PRIMITIVE_TYPES,
  TRANSPORT_PACKET_TYPE,
@@ -13,12 +14,16 @@ import {
  coerceDataValue,
  createIdleTracker,
  createTransport,
+ dataValuesEqual,
  defaultDataValue,
  defaultValueForType,
  deserializeTransportPacket,
+ fetchRowOptionsPage,
  field,
+ filterRowOptions,
  formatCellInputValue,
  formatColumnType,
+ formatHashOptions,
  formatImportLine,
  formatLaneRouteSegment,
  formatLaneRoutes,
@@ -27,6 +32,7 @@ import {
  isDomElement,
  isTransportPacket,
  listScopeEntries,
+ lookupRowDisplay,
  normalizeColumnWidth,
  normalizeDataColumnType,
  normalizeFixedDecimals,
@@ -35,11 +41,14 @@ import {
  parse,
  parseCellValue,
  parseColumnType,
+ parseHashOptions,
  parseImportLine,
  parseLaneRouteSegment,
  parseLaneRoutes,
  parseStoredTables,
  resolveImportValue,
+ resolveRowTarget,
+ resolveRowValueSpec,
  resolveScopeColumns,
  resolveScopePath,
  runLines,
@@ -52,18 +61,27 @@ const DATA_RUNTIME_ENV = {
  checkColumnChangeImpact,
  coerceDataValue,
  dataColumnTypes: DATA_COLUMN_TYPES,
+ dataValuesEqual,
  defaultDataValue,
+ defaultRowPickerPageSize: DEFAULT_ROW_PICKER_PAGE_SIZE,
+ fetchRowOptionsPage,
+ filterRowOptions,
  formatCellInputValue,
  formatColumnType,
+ formatHashOptions,
  formatLaneRoutes,
+ lookupRowDisplay,
  normalizeColumnWidth,
  normalizeDataColumnType,
  normalizeFixedDecimals,
  normalizeLaneTab,
  parseCellValue,
  parseColumnType,
+ parseHashOptions,
  parseLaneRoutes,
  parseStoredTables,
+ resolveRowTarget,
+ resolveRowValueSpec,
 }
 
 async function runScript(script, initialState = {}) {
@@ -908,6 +926,7 @@ test('lane-control.fs mounts, opens concurrently, adds, and syncs lanes', async 
  const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
  const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
  const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
  const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
  const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
@@ -1017,6 +1036,9 @@ test('lane-control.fs mounts, opens concurrently, adds, and syncs lanes', async 
   if (url === '/src/confirm-modal.fs') {
    return { text: async () => confirmModalSource }
   }
+  if (url === '/src/lane-row-picker-modal.fs') {
+   return { text: async () => rowPickerModalSource }
+  }
   if (url === '/src/lane-output.fs') {
    return { text: async () => outputSource }
   }
@@ -1117,6 +1139,7 @@ test('main.fs bootstraps app with persistent lane notebooks that edit, add, remo
  const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
  const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
  const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
  const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
@@ -1219,6 +1242,9 @@ test('main.fs bootstraps app with persistent lane notebooks that edit, add, remo
   }
   if (url === '/src/confirm-modal.fs') {
    return { text: async () => confirmModalSource }
+  }
+  if (url === '/src/lane-row-picker-modal.fs') {
+   return { text: async () => rowPickerModalSource }
   }
   if (url === '/src/lane-output.fs') {
    return { text: async () => outputSource }
@@ -1446,6 +1472,7 @@ test('lane-notebook.fs handles multi-line paste synchronously and inserts needed
  const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
  const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
  const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
  const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
 
  function createMockElement(tag) {
@@ -1512,6 +1539,9 @@ test('lane-notebook.fs handles multi-line paste synchronously and inserts needed
   }
   if (url === '/src/confirm-modal.fs') {
    return { text: async () => confirmModalSource }
+  }
+  if (url === '/src/lane-row-picker-modal.fs') {
+   return { text: async () => rowPickerModalSource }
   }
   if (url === '/src/lane-output.fs') {
    return { text: async () => outputSource }
@@ -1718,6 +1748,7 @@ test('lane-notebook.fs tabs: Source (default), Input (primitive args, no Source 
  const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
  const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
  const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
  const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
 
  function createMockElement(tag) {
@@ -1787,6 +1818,9 @@ test('lane-notebook.fs tabs: Source (default), Input (primitive args, no Source 
   }
   if (url === '/src/confirm-modal.fs') {
    return { text: async () => confirmModalSource }
+  }
+  if (url === '/src/lane-row-picker-modal.fs') {
+   return { text: async () => rowPickerModalSource }
   }
   if (url === '/src/lane-output.fs') {
    return { text: async () => outputSource }
@@ -2010,6 +2044,7 @@ test('cross-lane import line shows picker instead of raw input, awaits idle lane
  const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
  const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
  const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
  const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
@@ -2106,6 +2141,7 @@ test('cross-lane import line shows picker instead of raw input, awaits idle lane
   if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
   if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
   if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
   if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
@@ -2463,6 +2499,7 @@ test('Lane Output mini-browser below each lane collects sent scripts, enforces n
  const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
  const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
  const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
  const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
@@ -2549,6 +2586,7 @@ test('Lane Output mini-browser below each lane collects sent scripts, enforces n
   if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
   if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
   if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
   if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
@@ -2704,6 +2742,7 @@ test('whole-lane import without picking a scope value powers a reactive Profile 
  const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
  const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
  const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
  const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
@@ -2817,6 +2856,7 @@ test('whole-lane import without picking a scope value powers a reactive Profile 
   if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
   if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
   if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
   if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
@@ -2957,6 +2997,7 @@ test('DATA_COLUMN_TYPES, cell parsing/coercion, change impact detection, stored 
   'url',
   'email',
   'json',
+  'row',
  ])
  assert.equal(DEFAULT_FIXED_DECIMALS, 2)
  assert.equal(normalizeFixedDecimals(undefined), 2)
@@ -3158,6 +3199,7 @@ test('Data tab supports tables, typed & multiple columns, editable rows, destruc
  const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
  const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
  const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
  const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
@@ -3262,6 +3304,7 @@ test('Data tab supports tables, typed & multiple columns, editable rows, destruc
   if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
   if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
   if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
   if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
@@ -3578,6 +3621,7 @@ test('Data tab Fixed column edits as xxx.xx, stores scaled integer xxxxx, config
  const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
  const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
  const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
  const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
@@ -3671,6 +3715,7 @@ test('Data tab Fixed column edits as xxx.xx, stores scaled integer xxxxx, config
   if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
   if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
   if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
   if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
@@ -3917,6 +3962,7 @@ test('Lane tab routing syncs URL on tab click, supports direct URL and popstate,
  const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
  const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
  const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
  const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
@@ -4025,6 +4071,7 @@ test('Lane tab routing syncs URL on tab click, supports direct URL and popstate,
   if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
   if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
   if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
   if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
@@ -4165,6 +4212,7 @@ test('Data tables right-align only integer and fixed cells, resize columns horiz
  const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
  const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
  const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
  const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
@@ -4253,6 +4301,7 @@ test('Data tables right-align only integer and fixed cells, resize columns horiz
   if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
   if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
   if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
   if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
@@ -4386,6 +4435,7 @@ test('Lane header reload button reloads entire lane from server KV while keeping
  const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
  const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
  const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
  const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
@@ -4462,6 +4512,7 @@ test('Lane header reload button reloads entire lane from server KV while keeping
   if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
   if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
   if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
   if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
@@ -4551,6 +4602,1067 @@ test('Lane header reload button reloads entire lane from server KV while keeping
   assert.equal(lane1.notebook['active-tab'], 'source')
   assert.equal(lane1.notebook['source-panel'].hidden, false)
   assert.equal(lane1.notebook.rows[0]['preview-el'].textContent, '42')
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('row Data type helpers: target/literal resolution, coercion, 2-pass stored parsing, display join, and async paginated search', async () => {
+ assert.deepEqual(parseColumnType('row'), {
+  type: 'row',
+  multiple: false,
+  refTableId: '',
+  refColumnId: '',
+  refDisplayColumnId: '',
+ })
+ assert.deepEqual(parseColumnType('row[]'), {
+  type: 'row',
+  multiple: true,
+  refTableId: '',
+  refColumnId: '',
+  refDisplayColumnId: '',
+ })
+ assert.deepEqual(
+  parseColumnType({ type: 'row', multiple: true, refTableId: 't-users', refColumnId: 'c-id', refDisplayColumnId: 'c-name' }),
+  { type: 'row', multiple: true, refTableId: 't-users', refColumnId: 'c-id', refDisplayColumnId: 'c-name' }
+ )
+ assert.strictEqual(defaultDataValue('row', false), null)
+ assert.deepEqual(defaultDataValue('row', true), [])
+ assert.equal(formatColumnType('row', false), 'row')
+ assert.equal(formatColumnType('row', true), 'row[]')
+
+ const tables = [
+  {
+   id: 't-orders',
+   name: 'orders',
+   columns: [
+    { id: 'o-cust', name: 'customer', type: 'row', multiple: false, refTableId: 't-cust', refColumnId: 'c-id', refDisplayColumnId: 'c-name' },
+    { id: 'o-price-link', name: 'tier_price', type: 'row', multiple: false, refTableId: 't-cust', refColumnId: 'c-credit', refDisplayColumnId: 'c-name' },
+    { id: 'o-chain', name: 'chain_ref', type: 'row', multiple: false, refTableId: 't-orders', refColumnId: 'o-price-link', refDisplayColumnId: '' },
+    { id: 'o-self-cycle', name: 'cycle_a', type: 'row', multiple: false, refTableId: 't-orders', refColumnId: 'o-mut-cycle', refDisplayColumnId: '' },
+    { id: 'o-mut-cycle', name: 'cycle_b', type: 'row', multiple: false, refTableId: 't-orders', refColumnId: 'o-self-cycle', refDisplayColumnId: '' },
+   ],
+   rows: [
+    { id: 'r1', values: { 'o-cust': 2, 'o-price-link': 1550, 'o-chain': 1550, 'o-self-cycle': null, 'o-mut-cycle': null } },
+   ],
+  },
+  {
+   id: 't-cust',
+   name: 'customers',
+   columns: [
+    { id: 'c-id', name: 'id', type: 'integer', multiple: false },
+    { id: 'c-name', name: 'name', type: 'text', multiple: false },
+    { id: 'c-credit', name: 'credit', type: 'fixed', multiple: false, decimals: 2 },
+    { id: 'c-active', name: 'active', type: 'boolean', multiple: false },
+   ],
+   rows: [
+    { id: 'cu1', values: { 'c-id': 1, 'c-name': 'Alice', 'c-credit': 500, 'c-active': true } },
+    { id: 'cu2', values: { 'c-id': 2, 'c-name': 'Bob', 'c-credit': 1550, 'c-active': false } },
+    { id: 'cu3', values: { 'c-id': 3, 'c-name': 'Carla', 'c-credit': 2500, 'c-active': true } },
+    { id: 'cu4', values: { 'c-id': null, 'c-name': 'Ignored', 'c-credit': 0, 'c-active': false } },
+   ],
+  },
+ ]
+
+ assert.equal(formatColumnType(tables[0].columns[0], undefined, undefined, tables), 'row(customers.id)')
+ assert.equal(formatColumnType({ ...tables[0].columns[0], multiple: true }, undefined, undefined, tables), 'row(customers.id)[]')
+
+ const target = resolveRowTarget(tables, tables[0].columns[0])
+ assert.equal(target.configured, true)
+ assert.equal(target.valid, true)
+ assert.deepEqual(target.valueSpec, { type: 'integer', multiple: false })
+ assert.deepEqual(target.displaySpec, { type: 'text', multiple: false })
+ assert.equal(target.displayCol.id, 'c-name')
+
+ // Same display column as link column collapses displayCol to null
+ const sameDisplayTarget = resolveRowTarget(tables, { type: 'row', refTableId: 't-cust', refColumnId: 'c-id', refDisplayColumnId: 'c-id' })
+ assert.equal(sameDisplayTarget.displayCol, null)
+
+ // Chained row -> row -> fixed(2) resolves literal type, while cycles return null safely
+ assert.deepEqual(resolveRowValueSpec(tables, tables[0].columns[2]), { type: 'fixed', multiple: false, decimals: 2 })
+ assert.equal(resolveRowValueSpec(tables, tables[0].columns[3]), null)
+ assert.equal(resolveRowTarget(tables, tables[0].columns[3]).valid, false)
+
+ // Cell parsing & formatting delegates to linked literal column type
+ assert.equal(formatCellInputValue(1550, tables[0].columns[1], undefined, tables), '15.50')
+ assert.deepEqual(parseCellValue('19.99', tables[0].columns[1], undefined, tables), { ok: true, value: 1999, error: null })
+ assert.equal(parseCellValue('bad', tables[0].columns[0], undefined, tables).ok, false)
+
+ // Coercion from row(fixed(2)) -> decimal unscales accurately, and display-only change is non-destructive
+ assert.equal(coerceDataValue(1550, 'decimal', false, tables[0].columns[1], tables), 15.5)
+ assert.equal(
+  checkColumnChangeImpact(
+   tables[0],
+   'o-cust',
+   { type: 'row', multiple: false, refTableId: 't-cust', refColumnId: 'c-id', refDisplayColumnId: 'c-id' },
+   false,
+   undefined,
+   tables
+  ).destructive,
+  false
+ )
+ assert.equal(
+  checkColumnChangeImpact(
+   tables[0],
+   'o-cust',
+   { type: 'row', multiple: false, refTableId: 't-cust', refColumnId: 'c-name', refDisplayColumnId: '' },
+   false,
+   undefined,
+   tables
+  ).destructive,
+  true
+ )
+ // Changing text column -> unconfigured row preserves values until link column is chosen
+ const unconfiguredTargetImpact = checkColumnChangeImpact(
+  { id: 'tx', name: 'tx', columns: [{ id: 'k', name: 'k', type: 'text', multiple: false }], rows: [{ id: 'r', values: { k: 'hello' } }] },
+  'k',
+  { type: 'row', multiple: false, refTableId: '', refColumnId: '', refDisplayColumnId: '' },
+  false,
+  undefined,
+  tables
+ )
+ assert.equal(unconfiguredTargetImpact.destructive, false)
+
+ // 2-pass parseStoredTables resolves forward table references without double-scaling fixed(2)
+ const storedReparsed = parseStoredTables(JSON.stringify(tables))
+ assert.strictEqual(storedReparsed[0].rows[0].values['o-cust'], 2)
+ assert.strictEqual(storedReparsed[0].rows[0].values['o-price-link'], 1550)
+ assert.deepEqual(buildTablesScope(storedReparsed).orders, [
+  { customer: 2, tier_price: 1550, chain_ref: 1550, cycle_a: null, cycle_b: null },
+ ])
+
+ // lookupRowDisplay joins display column + id when separate, hides duplicate id when same, handles booleans
+ const dispJoined = lookupRowDisplay(tables, tables[0].columns[0], 2)
+ assert.equal(dispJoined.found, true)
+ assert.equal(dispJoined.hasSeparateDisplay, true)
+ assert.equal(dispJoined.displayText, 'Bob')
+ assert.equal(dispJoined.valueText, '2')
+ assert.equal(dispJoined.label, 'Bob (2)')
+
+ const dispBool = lookupRowDisplay(tables, { type: 'row', refTableId: 't-cust', refColumnId: 'c-active', refDisplayColumnId: 'c-name' }, false)
+ assert.equal(dispBool.valueText, 'false')
+ assert.equal(dispBool.displayText, 'Bob')
+
+ const dispMissing = lookupRowDisplay(tables, tables[0].columns[0], 999)
+ assert.equal(dispMissing.found, false)
+ assert.equal(dispMissing.valueText, '999')
+
+ // fetchRowOptionsPage loads asynchronously page-by-page & skips null link rows
+ const page1 = await fetchRowOptionsPage(tables, tables[0].columns[0], { offset: 0, limit: 2 })
+ assert.equal(page1.ok, true)
+ assert.equal(page1.total, 4)
+ assert.equal(page1.nextOffset, 2)
+ assert.equal(page1.hasMore, true)
+ assert.deepEqual(page1.items.map(i => ({ v: i.value, d: i.displayText, l: i.label })), [
+  { v: 1, d: 'Alice', l: 'Alice (1)' },
+  { v: 2, d: 'Bob', l: 'Bob (2)' },
+ ])
+ const page2 = await fetchRowOptionsPage(tables, tables[0].columns[0], { offset: 2, limit: 2 })
+ assert.equal(page2.hasMore, false)
+ assert.deepEqual(page2.items.map(i => i.value), [3]) // cu4 has null c-id so skipped
+
+ assert.deepEqual(filterRowOptions([...page1.items, ...page2.items], 'car').map(i => i.value), [3])
+ assert.deepEqual(filterRowOptions([...page1.items, ...page2.items], '2').map(i => i.value), [2])
+ assert.equal((await fetchRowOptionsPage(tables, { type: 'row', refTableId: 'nope', refColumnId: 'c-id' })).ok, false)
+ assert.equal(dataValuesEqual({ a: [1] }, { a: [1] }), true)
+ assert.equal(dataValuesEqual(1, '1'), false)
+})
+
+test('Data tab row type: stacked schema config, joined table display, and on-demand async paginated & searchable picker', async () => {
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  return {
+   tag,
+   nodeType: 1,
+   style: {},
+   attributes: {},
+   children: [],
+   listeners: {},
+   textContent: '',
+   value: '',
+   checked: false,
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   focused: false,
+   removed: false,
+   scrollWidth: 0,
+   scrollLeft: 0,
+   scrollTop: 0,
+   scrollHeight: 0,
+   clientHeight: 0,
+   setAttribute(name, value) { this.attributes[name] = value },
+   appendChild(child) { this.children.push(child); return child },
+   insertBefore(child, ref) {
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) { this.children.push(child) }
+    else { this.children.splice(idx, 0, child) }
+    return child
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() { this.removed = true },
+  }
+ }
+
+ const kv = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { kv.set(qualify(key), value) },
+  }
+ }
+
+ let uuid = 0
+ const windowListeners = {}
+ const dispatchWindowEvent = async (event, ev) => {
+  for (const handler of windowListeners[event] || []) {
+   await handler(ev)
+  }
+ }
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  JSON,
+  Math,
+  Object,
+  Reflect,
+  decodeURIComponent,
+  crypto: { randomUUID: () => `row-uuid-${++uuid}` },
+  history: { pushState(_s, _t, url) { mockWindow.location.pathname = url } },
+  location: { pathname: '/' },
+  addEventListener(event, handler) {
+   windowListeners[event] ||= []
+   windowListeners[event].push(handler)
+  },
+ }
+
+ const fetchCalls = []
+ const trackedFetchRowOptionsPage = async (tables, col, opts = {}) => {
+  fetchCalls.push({ offset: opts.offset ?? 0, limit: opts.limit ?? 3 })
+  return fetchRowOptionsPage(tables, col, opts)
+ }
+
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const makeRuntime = () => field({
+   ...DATA_RUNTIME_ENV,
+   defaultRowPickerPageSize: 3,
+   fetchRowOptionsPage: trackedFetchRowOptionsPage,
+   console: { log() {} },
+   createIdleTracker,
+   data: createMockKV(),
+   defaultValueForType,
+   document: {
+    body: createMockElement('body'),
+    defaultView: mockWindow,
+    createElement: createMockElement,
+   },
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+
+  const f = makeRuntime()
+  await f.run(parse(mainSource, '/src/main.fs'))
+  await f.state.tableHeadRowAddButton.listeners.click()
+  const lane = f.state.lanes[0]
+  const nb = lane.notebook
+  const dataView = nb['data-view']
+  const rowPicker = dataView['row-picker']
+  const confirmModal = dataView['confirm-modal']
+  assert.equal(rowPicker, f.state['lane-control']['row-picker-modal'])
+
+  await nb.tabs.data.listeners.click()
+
+  // Table 1: `customers` with 7 rows across 3 pages (pageSize = 3)
+  await dataView['add-table-btn'].listeners.click()
+  dataView['table-name-input'].value = 'customers'
+  await dataView['table-name-input'].listeners.input()
+  const custTableId = dataView.tables[0].id
+
+  await dataView['add-col-btn'].listeners.click()
+  dataView['schema-rows'][0]['name-el'].value = 'id'
+  await dataView['schema-rows'][0]['name-el'].listeners.input()
+  dataView['schema-rows'][0]['type-el'].value = 'integer'
+  await dataView['schema-rows'][0]['type-el'].listeners.change()
+  const custIdColId = dataView.tables[0].columns[0].id
+
+  await dataView['add-col-btn'].listeners.click()
+  dataView['schema-rows'][1]['name-el'].value = 'name'
+  await dataView['schema-rows'][1]['name-el'].listeners.input()
+  const custNameColId = dataView.tables[0].columns[1].id
+
+  const seedCustomers = [
+   [101, 'Acme Alpha'],
+   [102, 'Acme Beta'],
+   [103, 'Acme Gamma'],
+   [104, 'Beacon Delta'],
+   [105, 'Cobalt Epsilon'],
+   [106, 'Delta Zeta'],
+   [107, 'Echo Grace'],
+  ]
+  for (let i = 0; i < seedCustomers.length; i++) {
+   await dataView['add-row-btn'].listeners.click()
+   const gr = dataView['grid-rows'][i]
+   gr.cells[0]['input-el'].value = String(seedCustomers[i][0])
+   await gr.cells[0]['input-el'].listeners.input()
+   gr.cells[1]['input-el'].value = seedCustomers[i][1]
+   await gr.cells[1]['input-el'].listeners.input()
+  }
+
+  // Table 2: `orders` with `customer` (row) and `watchers` (row[])
+  await dataView['add-table-btn'].listeners.click()
+  dataView['table-name-input'].value = 'orders'
+  await dataView['table-name-input'].listeners.input()
+
+  await dataView['add-col-btn'].listeners.click()
+  dataView['schema-rows'][0]['name-el'].value = 'customer'
+  await dataView['schema-rows'][0]['name-el'].listeners.input()
+  assert.equal(dataView['schema-rows'][0]['row-config-wrap'].hidden, true)
+
+  // Select "row" type -> vertically stacked config appears with table, column, and display dropdowns
+  dataView['schema-rows'][0]['type-el'].value = 'row'
+  await dataView['schema-rows'][0]['type-el'].listeners.change()
+  let srow0 = dataView['schema-rows'][0]
+  assert.equal(srow0['row-config-wrap'].hidden, false)
+  assert.equal(srow0['ref-col-el'].disabled, true)
+  assert.equal(srow0['ref-display-el'].disabled, true)
+  assert.match(srow0['ref-table-el'].className, /lane-data-row-select--required/)
+
+  // Pick table `customers` -> column & display dropdowns populate and enable
+  srow0['ref-table-el'].value = custTableId
+  await srow0['ref-table-el'].listeners.change()
+  srow0 = dataView['schema-rows'][0]
+  assert.equal(srow0['ref-col-el'].disabled, false)
+  assert.equal(srow0['ref-display-el'].disabled, false)
+  assert.match(srow0['ref-col-el'].className, /lane-data-row-select--required/)
+
+  // Pick link column `id` (sets real literal type integer) and optional display column `name`
+  srow0['ref-col-el'].value = custIdColId
+  await srow0['ref-col-el'].listeners.change()
+  srow0 = dataView['schema-rows'][0]
+  assert.equal(srow0['row-hint-el'].textContent, 'Stores integer')
+  assert.equal(dataView['grid-head-cells'][1]['type-el'].textContent, 'row(customers.id)')
+
+  srow0['ref-display-el'].value = custNameColId
+  await srow0['ref-display-el'].listeners.change()
+  srow0 = dataView['schema-rows'][0]
+  assert.equal(srow0['row-hint-el'].textContent, 'Stores integer · displays name')
+
+  // Also add `watchers` (row[]) column referencing customers.id displaying name
+  await dataView['add-col-btn'].listeners.click()
+  dataView['schema-rows'][1]['name-el'].value = 'watchers'
+  await dataView['schema-rows'][1]['name-el'].listeners.input()
+  dataView['schema-rows'][1]['type-el'].value = 'row'
+  await dataView['schema-rows'][1]['type-el'].listeners.change()
+  dataView['schema-rows'][1]['ref-table-el'].value = custTableId
+  await dataView['schema-rows'][1]['ref-table-el'].listeners.change()
+  dataView['schema-rows'][1]['ref-col-el'].value = custIdColId
+  await dataView['schema-rows'][1]['ref-col-el'].listeners.change()
+  dataView['schema-rows'][1]['ref-display-el'].value = custNameColId
+  await dataView['schema-rows'][1]['ref-display-el'].listeners.change()
+  await dataView['schema-rows'][1]['multi-btn'].listeners.click()
+  assert.equal(dataView['grid-head-cells'][2]['type-el'].textContent, 'row(customers.id)[]')
+
+  // Add Row 1 in `orders` -> ZERO option pages preloaded!
+  await dataView['add-row-btn'].listeners.click()
+  assert.equal(fetchCalls.length, 0)
+  const orderRow0 = dataView['grid-rows'][0]
+  const custCell0 = orderRow0.cells[0]
+  const customerColId = dataView.tables[1].columns[0].id
+  const watchersColId = dataView.tables[1].columns[1].id
+  assert.strictEqual(dataView.tables[1].rows[0].values[customerColId], null)
+  assert.equal(custCell0['display-el'].textContent, 'Select row…')
+  assert.equal(custCell0['id-el'].hidden, true)
+
+  // Click cell to edit -> opens Row Picker and asynchronously loads ONLY page 1 (3 items)
+  await custCell0['trigger-el'].listeners.click()
+  assert.equal(rowPicker['is-open'], true)
+  assert.deepEqual(fetchCalls, [{ offset: 0, limit: 3 }])
+  assert.equal(rowPicker['option-items'].length, 3)
+  assert.equal(rowPicker['more-btn'].hidden, false)
+  assert.equal(rowPicker['option-items'][0].item.displayText, 'Acme Alpha')
+  assert.equal(rowPicker['option-items'][0].item.valueText, '101')
+
+  // Search matching >= pageSize (3) cached items ('Acme') -> NO extra pages fetched!
+  rowPicker['search-input'].value = 'Acme'
+  await rowPicker['search-input'].listeners.input()
+  assert.equal(fetchCalls.length, 1)
+  assert.equal(rowPicker['option-items'].length, 3)
+
+  // Search for a record on page 3 ('Grace') -> scans pages 2 and 3 on demand
+  rowPicker['search-input'].value = 'Grace'
+  await rowPicker['search-input'].listeners.input()
+  assert.deepEqual(fetchCalls, [
+   { offset: 0, limit: 3 },
+   { offset: 3, limit: 3 },
+   { offset: 6, limit: 3 },
+  ])
+  assert.equal(rowPicker['option-items'].length, 1)
+  assert.equal(rowPicker['option-items'][0].item.value, 107)
+  assert.equal(rowPicker['option-items'][0].item.displayText, 'Echo Grace')
+
+  // Pick 'Echo Grace' (107) -> stores literal integer 107 and renders joined display + id in cell
+  await rowPicker['option-items'][0].el.listeners.click()
+  assert.equal(rowPicker['is-open'], false)
+  assert.strictEqual(dataView.tables[1].rows[0].values[customerColId], 107)
+  assert.equal(custCell0['display-el'].textContent, 'Echo Grace')
+  assert.equal(custCell0['id-el'].textContent, '107')
+  assert.equal(custCell0['id-el'].hidden, false)
+
+  // Open picker again -> loads page 1 only, Load more loads page 2, Clear resets value to null
+  fetchCalls.length = 0
+  await custCell0['trigger-el'].listeners.click()
+  assert.deepEqual(fetchCalls, [{ offset: 0, limit: 3 }])
+  assert.equal(rowPicker['clear-btn'].hidden, false)
+  await rowPicker['more-btn'].listeners.click()
+  assert.deepEqual(fetchCalls, [{ offset: 0, limit: 3 }, { offset: 3, limit: 3 }])
+  assert.equal(rowPicker['option-items'].length, 6)
+  await rowPicker['clear-btn'].listeners.click()
+  assert.equal(rowPicker['is-open'], false)
+  assert.strictEqual(dataView.tables[1].rows[0].values[customerColId], null)
+  assert.equal(custCell0['display-el'].textContent, 'Select row…')
+
+  // Pick 'Acme Beta' (102) via initial page 1 (zero extra page loads)
+  fetchCalls.length = 0
+  await custCell0['trigger-el'].listeners.click()
+  assert.deepEqual(fetchCalls, [{ offset: 0, limit: 3 }])
+  await rowPicker['option-items'][1].el.listeners.click()
+  assert.strictEqual(dataView.tables[1].rows[0].values[customerColId], 102)
+  assert.equal(custCell0['display-el'].textContent, 'Acme Beta')
+  assert.equal(custCell0['id-el'].textContent, '102')
+
+  // Edit watchers (row[]): add two linked items (101 and 106)
+  const watchersCell0 = orderRow0.cells[1]
+  await watchersCell0['add-btn'].listeners.click()
+  await watchersCell0.items[0]['trigger-el'].listeners.click()
+  await rowPicker['option-items'][0].el.listeners.click() // 101 Acme Alpha
+  await watchersCell0['add-btn'].listeners.click()
+  await watchersCell0.items[1]['trigger-el'].listeners.click()
+  rowPicker['search-input'].value = 'Zeta'
+  await rowPicker['search-input'].listeners.input()
+  await rowPicker['option-items'][0].el.listeners.click() // 106 Delta Zeta
+  assert.deepEqual(dataView.tables[1].rows[0].values[watchersColId], [101, 106])
+  assert.equal(watchersCell0.items[1]['display-el'].textContent, 'Delta Zeta')
+  assert.equal(watchersCell0.items[1]['id-el'].textContent, '106')
+
+  // Display column equal to link column hides separate ID badge; restoring `name` brings it back
+  dataView['schema-rows'][0]['ref-display-el'].value = custIdColId
+  await dataView['schema-rows'][0]['ref-display-el'].listeners.change()
+  assert.equal(dataView['grid-rows'][0].cells[0]['display-el'].textContent, '102')
+  assert.equal(dataView['grid-rows'][0].cells[0]['id-el'].hidden, true)
+  dataView['schema-rows'][0]['ref-display-el'].value = custNameColId
+  await dataView['schema-rows'][0]['ref-display-el'].listeners.change()
+  assert.equal(dataView['grid-rows'][0].cells[0]['display-el'].textContent, 'Acme Beta')
+  assert.equal(dataView['grid-rows'][0].cells[0]['id-el'].textContent, '102')
+  assert.equal(dataView['grid-rows'][0].cells[0]['id-el'].hidden, false)
+
+  // Destructive conversion confirmation: row(customers.id) -> boolean prompts; Cancel reverts
+  dataView['schema-rows'][0]['type-el'].value = 'boolean'
+  await dataView['schema-rows'][0]['type-el'].listeners.change()
+  assert.equal(confirmModal['is-open'], true)
+  await confirmModal['cancel-btn'].listeners.click()
+  assert.equal(dataView.tables[1].columns[0].type, 'row')
+  assert.strictEqual(dataView.tables[1].rows[0].values[customerColId], 102)
+
+  // Source & Scope see literal stored values from row and row[] columns
+  await nb.tabs.source.listeners.click()
+  nb.rows[0]['input-el'].value = '; add $orders.0.customer 8'
+  await nb.rows[0]['input-el'].listeners.input()
+  assert.equal(nb.rows[0]['preview-el'].textContent, '110')
+  assert.deepEqual(nb.state.orders, [{ customer: 102, watchers: [101, 106] }])
+
+  // Reload app -> zero preloaded pages, literal values & joined table rendering restore intact
+  fetchCalls.length = 0
+  const fReload = makeRuntime()
+  await fReload.run(parse(mainSource, '/src/main.fs'))
+  const reloadedData = fReload.state.lanes[0].notebook['data-view']
+  await reloadedData['select-table'](reloadedData.tables[1].id)
+  assert.equal(fetchCalls.length, 0)
+  assert.equal(reloadedData['grid-rows'][0].cells[0]['display-el'].textContent, 'Acme Beta')
+  assert.equal(reloadedData['grid-rows'][0].cells[0]['id-el'].textContent, '102')
+  assert.equal(reloadedData['grid-rows'][0].cells[0]['id-el'].hidden, false)
+  assert.equal(reloadedData['grid-rows'][0].cells[1].items[0]['display-el'].textContent, 'Acme Alpha')
+  assert.equal(reloadedData['grid-rows'][0].cells[1].items[1]['display-el'].textContent, 'Delta Zeta')
+  assert.deepEqual(fReload.state.lanes[0].notebook.state.orders, [{ customer: 102, watchers: [101, 106] }])
+
+  // Escape closes row picker cleanly
+  await reloadedData['grid-rows'][0].cells[0]['trigger-el'].listeners.click()
+  assert.equal(reloadedData['row-picker']['is-open'], true)
+  await dispatchWindowEvent('keydown', { key: 'Escape' })
+  assert.equal(reloadedData['row-picker']['is-open'], false)
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('parseHashOptions and formatHashOptions parse and serialize compound hash options', () => {
+ assert.deepEqual(parseHashOptions('#scroll.left=123'), { scroll: { left: 123 } })
+ assert.deepEqual(parseHashOptions('scroll.left=123&scroll.top=45&view.zoom=1.5&flag=true&empty=false&none=null&label=hello%20world'), {
+  scroll: { left: 123, top: 45 },
+  view: { zoom: 1.5 },
+  flag: true,
+  empty: false,
+  none: null,
+  label: 'hello world',
+ })
+ assert.deepEqual(parseHashOptions('#bareFlag'), { bareFlag: true })
+ assert.deepEqual(parseHashOptions(''), {})
+ assert.deepEqual(parseHashOptions('#'), {})
+ assert.deepEqual(parseHashOptions(null), {})
+ // Prototype-pollution keys are ignored
+ assert.deepEqual(parseHashOptions('#__proto__.polluted=1&constructor.x=2&scroll.left=50'), { scroll: { left: 50 } })
+ assert.equal({}.polluted, undefined)
+
+ assert.equal(formatHashOptions({ scroll: { left: 123 } }), '#scroll.left=123')
+ assert.equal(formatHashOptions({ scroll: { left: 123, top: 45 }, view: { zoom: 1.5 } }), '#scroll.left=123&scroll.top=45&view.zoom=1.5')
+ assert.equal(formatHashOptions({ scroll: { left: undefined }, view: {} }), '')
+ assert.equal(formatHashOptions({}), '')
+})
+
+test('main.fs persists horizontal scroll in location.hash via replaceState and restores on refresh', async () => {
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  const listeners = {}
+  const attributes = {}
+  const element = {
+   tagName: tag.toUpperCase(),
+   style: {},
+   className: '',
+   textContent: '',
+   value: '',
+   checked: false,
+   hidden: false,
+   children: [],
+   parentNode: null,
+   listeners,
+   attributes,
+   classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+   setAttribute(name, val) { attributes[name] = String(val) },
+   removeAttribute(name) { delete attributes[name] },
+   appendChild(child) {
+    if (child.parentNode) {
+     const idx = child.parentNode.children.indexOf(child)
+     if (idx !== -1) child.parentNode.children.splice(idx, 1)
+    }
+    child.parentNode = element
+    element.children.push(child)
+    return child
+   },
+   replaceChildren(...nodes) {
+    element.children = []
+    for (const node of nodes) {
+     node.parentNode = element
+     element.children.push(node)
+    }
+   },
+   remove() {
+    if (!element.parentNode) return
+    const idx = element.parentNode.children.indexOf(element)
+    if (idx !== -1) element.parentNode.children.splice(idx, 1)
+    element.parentNode = null
+   },
+   addEventListener(event, handler) {
+    listeners[event] ||= []
+    listeners[event].push(handler)
+   },
+   focus() {},
+   select() {},
+  }
+  return element
+ }
+
+ const kv = new Map()
+ const mockKV = {
+  async get(key) {
+   const raw = kv.get(`root:${key}`)
+   return raw === undefined ? null : JSON.parse(raw)
+  },
+  async set(key, value) {
+   kv.set(`root:${key}`, JSON.stringify(value))
+  },
+  namespace(prefix) {
+   return {
+    async get(key) {
+     const raw = kv.get(`${prefix}:${key}`)
+     return raw === undefined ? null : JSON.parse(raw)
+    },
+    async set(key, value) {
+     kv.set(`${prefix}:${key}`, JSON.stringify(value))
+    },
+   }
+  },
+ }
+
+ let uuidCounter = 0
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ function makeMockBrowser(initialPathname = '/', initialHash = '') {
+  const windowListeners = {}
+  const pushedUrls = []
+  const replacedUrls = []
+  const scrollToCalls = []
+  const timers = []
+  let nextTimerId = 1
+  const location = { pathname: initialPathname, search: '', hash: initialHash }
+  function applyUrl(url) {
+   const hashIdx = url.indexOf('#')
+   if (hashIdx === -1) {
+    location.pathname = url
+    location.hash = ''
+   }
+   else {
+    location.pathname = url.slice(0, hashIdx) || '/'
+    location.hash = url.slice(hashIdx)
+   }
+  }
+  const documentElement = { scrollLeft: 0 }
+  const mockWindow = {
+   Array,
+   Boolean,
+   Date,
+   JSON,
+   Math,
+   Object,
+   Reflect,
+   decodeURIComponent,
+   innerWidth: 1000,
+   scrollX: 0,
+   scrollY: 0,
+   crypto: { randomUUID: () => `scroll-uuid-${++uuidCounter}` },
+   history: {
+    pushState(_s, _t, url) {
+     pushedUrls.push(url)
+     applyUrl(url)
+    },
+    replaceState(_s, _t, url) {
+     replacedUrls.push(url)
+     applyUrl(url)
+    },
+   },
+   location,
+   scrollTo(x, y) {
+    scrollToCalls.push([x, y])
+    mockWindow.scrollX = x
+    mockWindow.scrollY = y
+   },
+   setTimeout(fn, delay) {
+    const id = nextTimerId++
+    timers.push({ id, fn, delay, cleared: false })
+    return id
+   },
+   clearTimeout(id) {
+    const t = timers.find(item => item.id === id)
+    if (t) t.cleared = true
+   },
+   addEventListener(event, handler) {
+    windowListeners[event] ||= []
+    windowListeners[event].push(handler)
+   },
+  }
+  return {
+   mockWindow,
+   documentElement,
+   windowListeners,
+   pushedUrls,
+   replacedUrls,
+   scrollToCalls,
+   timers,
+   async dispatch(event) {
+    for (const h of windowListeners[event] || []) {
+     await h()
+    }
+   },
+   async flushTimers(delay) {
+    for (const t of [...timers]) {
+     if (!t.cleared && (delay === undefined || t.delay === delay)) {
+      t.cleared = true
+      await t.fn()
+     }
+    }
+   },
+  }
+ }
+
+ try {
+  const b1 = makeMockBrowser('/', '#view.zoom=2')
+  const f1 = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: mockKV,
+   defaultValueForType,
+   document: {
+    body: createMockElement('body'),
+    documentElement: b1.documentElement,
+    defaultView: b1.mockWindow,
+    createElement: createMockElement,
+   },
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  await f1.run(parse(mainSource, '/src/main.fs'))
+  await f1.state.tableHeadRowAddButton.listeners.click[0]()
+  assert.equal(b1.mockWindow.location.pathname, '/scroll-uuid-1')
+  assert.equal(b1.mockWindow.location.hash, '#view.zoom=2')
+
+  // Scrolling horizontally updates hash via replaceState (not pushState) and preserves existing options
+  b1.mockWindow.scrollX = 123
+  await b1.dispatch('scroll')
+  await b1.flushTimers(100)
+  assert.equal(b1.mockWindow.location.hash, '#view.zoom=2&scroll.left=123')
+  assert.deepEqual(b1.replacedUrls, ['/scroll-uuid-1#view.zoom=2&scroll.left=123'])
+  assert.deepEqual(b1.pushedUrls, ['/scroll-uuid-1#view.zoom=2'])
+
+  // Switching tabs via update-url preserves the scroll hash
+  await f1.state.lanes[0].notebook['set-tab']('data')
+  assert.equal(b1.mockWindow.location.pathname, '/scroll-uuid-1;data')
+  assert.equal(b1.mockWindow.location.hash, '#view.zoom=2&scroll.left=123')
+
+  // Scrolling back to 0 removes scroll.left from hash while keeping other options
+  b1.mockWindow.scrollX = 0
+  await b1.dispatch('scroll')
+  await b1.flushTimers(100)
+  assert.equal(b1.mockWindow.location.hash, '#view.zoom=2')
+
+  // Refreshing with #scroll.left=123 extends body.style.minWidth and scrolls immediately, then releases after 10s
+  const b2 = makeMockBrowser('/scroll-uuid-1;data', '#scroll.left=123')
+  const b2Body = createMockElement('body')
+  const f2 = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: mockKV,
+   defaultValueForType,
+   document: {
+    body: b2Body,
+    documentElement: b2.documentElement,
+    defaultView: b2.mockWindow,
+    createElement: createMockElement,
+   },
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  await f2.run(parse(mainSource, '/src/main.fs'))
+  assert.equal(f2.state.lanes.length, 1)
+  assert.equal(b2Body.style.minWidth, '1123px')
+  assert.deepEqual(b2.scrollToCalls, [[123, 0]])
+  assert.equal(b2.mockWindow.scrollX, 123)
+  assert.equal(b2.documentElement.scrollLeft, 123)
+
+  // After 10s, minWidth is released and if content is narrower (scrollX clamped to 40), hash updates to #scroll.left=40
+  b2.mockWindow.scrollX = 40
+  await b2.flushTimers(10000)
+  assert.equal(b2Body.style.minWidth, '')
+  assert.equal(b2.mockWindow.location.hash, '#scroll.left=40')
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('data|tablename sub-routing parses, formats, selects known tables, falls back to first table, and restores on reload', async () => {
+ assert.deepEqual(parseLaneRouteSegment('lane-1;data|orders'), { id: 'lane-1', tab: 'data', subroute: 'orders' })
+ assert.deepEqual(parseLaneRouteSegment('lane-1;data|my%20table'), { id: 'lane-1', tab: 'data', subroute: 'my table' })
+ assert.deepEqual(parseLaneRouteSegment('lane-1;data%7Corders'), { id: 'lane-1', tab: 'data', subroute: 'orders' })
+ assert.deepEqual(parseLaneRouteSegment('lane-1;data|'), { id: 'lane-1', tab: 'data' })
+ assert.deepEqual(parseLaneRouteSegment('lane-1;source|orders'), { id: 'lane-1', tab: 'source' })
+ assert.equal(formatLaneRouteSegment('lane-1', 'data', 'orders'), 'lane-1;data|orders')
+ assert.equal(formatLaneRouteSegment('lane-1', 'data', 'my table'), 'lane-1;data|my%20table')
+ assert.equal(formatLaneRouteSegment('lane-1', 'source', 'orders'), 'lane-1')
+ assert.deepEqual(
+  parseLaneRoutes('/lane-1;data|orders/lane-2;view'),
+  [
+   { id: 'lane-1', tab: 'data', subroute: 'orders' },
+   { id: 'lane-2', tab: 'view' },
+  ]
+ )
+ assert.equal(
+  formatLaneRoutes([
+   { id: 'lane-1', tab: 'data', subroute: 'orders' },
+   { id: 'lane-2', tab: 'view' },
+  ]),
+  '/lane-1;data|orders/lane-2;view'
+ )
+
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  const listeners = {}
+  const attributes = {}
+  const element = {
+   tagName: tag.toUpperCase(),
+   style: {},
+   className: '',
+   textContent: '',
+   value: '',
+   checked: false,
+   hidden: false,
+   children: [],
+   parentNode: null,
+   listeners,
+   attributes,
+   classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+   setAttribute(name, val) { attributes[name] = String(val) },
+   removeAttribute(name) { delete attributes[name] },
+   appendChild(child) {
+    if (child.parentNode) {
+     const idx = child.parentNode.children.indexOf(child)
+     if (idx !== -1) child.parentNode.children.splice(idx, 1)
+    }
+    child.parentNode = element
+    element.children.push(child)
+    return child
+   },
+   replaceChildren(...nodes) {
+    element.children = []
+    for (const node of nodes) {
+     node.parentNode = element
+     element.children.push(node)
+    }
+   },
+   remove() {
+    if (!element.parentNode) return
+    const idx = element.parentNode.children.indexOf(element)
+    if (idx !== -1) element.parentNode.children.splice(idx, 1)
+    element.parentNode = null
+   },
+   addEventListener(event, handler) {
+    listeners[event] ||= []
+    listeners[event].push(handler)
+   },
+   focus() {},
+   select() {},
+  }
+  return element
+ }
+
+ const kv = new Map()
+ const mockKV = {
+  async get(key) {
+   const raw = kv.get(`root:${key}`)
+   return raw === undefined ? null : JSON.parse(raw)
+  },
+  async set(key, value) {
+   kv.set(`root:${key}`, JSON.stringify(value))
+  },
+  namespace(prefix) {
+   return {
+    async get(key) {
+     const raw = kv.get(`${prefix}:${key}`)
+     return raw === undefined ? null : JSON.parse(raw)
+    },
+    async set(key, value) {
+     kv.set(`${prefix}:${key}`, JSON.stringify(value))
+    },
+   }
+  },
+ }
+
+ let uuidCounter = 0
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ function makeRuntime(initialPathname = '/') {
+  const windowListeners = {}
+  const location = { pathname: initialPathname, search: '', hash: '' }
+  const mockWindow = {
+   Array,
+   Boolean,
+   Date,
+   JSON,
+   Math,
+   Object,
+   Reflect,
+   decodeURIComponent,
+   crypto: { randomUUID: () => `data-route-uuid-${++uuidCounter}` },
+   history: {
+    pushState(_s, _t, url) { location.pathname = url },
+    replaceState(_s, _t, url) { location.pathname = url },
+   },
+   location,
+   addEventListener(event, handler) {
+    windowListeners[event] ||= []
+    windowListeners[event].push(handler)
+   },
+  }
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: mockKV,
+   defaultValueForType,
+   document: {
+    body: createMockElement('body'),
+    defaultView: mockWindow,
+    createElement: createMockElement,
+   },
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  return {
+   f,
+   location,
+   async dispatch(event) {
+    for (const h of windowListeners[event] || []) {
+     await h()
+    }
+   },
+  }
+ }
+
+ try {
+  const r1 = makeRuntime('/')
+  await r1.f.run(parse(mainSource, '/src/main.fs'))
+  await r1.f.state.tableHeadRowAddButton.listeners.click[0]()
+  const lane = r1.f.state.lanes[0]
+  const dv = lane.notebook['data-view']
+
+  // Switch to Data tab and create two tables: users and orders
+  await lane.notebook['set-tab']('data')
+  assert.equal(r1.location.pathname, `/${lane.id};data`)
+  await dv['add-table']('users')
+  assert.equal(r1.location.pathname, `/${lane.id};data|users`)
+  await dv['add-table']('orders')
+  assert.equal(r1.location.pathname, `/${lane.id};data|orders`)
+
+  // Selecting users updates the URL subroute
+  await dv['select-table'](dv.tables[0].id)
+  assert.equal(r1.location.pathname, `/${lane.id};data|users`)
+
+  // Selecting orders updates the URL subroute
+  await dv['select-table'](dv.tables[1].id)
+  assert.equal(r1.location.pathname, `/${lane.id};data|orders`)
+
+  // Reloading on /<id>;data|orders restores the second table (orders)
+  const r2 = makeRuntime(`/${lane.id};data|orders`)
+  await r2.f.run(parse(mainSource, '/src/main.fs'))
+  const dv2 = r2.f.state.lanes[0].notebook['data-view']
+  assert.equal(dv2['get-active-table']().name, 'orders')
+  assert.equal(dv2['table-name-input'].value, 'orders')
+
+  // Popstate to /<id>;data|users switches to users
+  r2.location.pathname = `/${lane.id};data|users`
+  await r2.dispatch('popstate')
+  assert.equal(r2.f.state.lanes[0].notebook['data-view']['get-active-table']().name, 'users')
+
+  // Reloading with an unknown table name falls back to the first table (users)
+  const r3 = makeRuntime(`/${lane.id};data|nonexistent`)
+  await r3.f.run(parse(mainSource, '/src/main.fs'))
+  const dv3 = r3.f.state.lanes[0].notebook['data-view']
+  assert.equal(dv3['get-active-table']().name, 'users')
  }
  finally {
   globalThis.fetch = origFetch

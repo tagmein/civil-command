@@ -12,6 +12,8 @@
     overflow: auto;
     padding: 1em;
     width: fit-content;
+    align-content: start;
+    justify-content: start;
    }
    body {
     box-sizing: border-box;
@@ -1641,6 +1643,62 @@
     border-color: #9ce5ff66;
    }
 
+   .lane-data-schema-row .lane-input-cell {
+    vertical-align: top;
+   }
+
+   .lane-data-row-config {
+    border-left: 2px solid #9ce5ff38;
+    display: flex;
+    flex-direction: column;
+    gap: 0.28em;
+    margin-top: 0.35em;
+    padding-left: 0.45em;
+    white-space: normal;
+   }
+
+   .lane-data-row-config[hidden] {
+    display: none;
+   }
+
+   .lane-data-row-field {
+    align-items: center;
+    display: grid;
+    gap: 0.35em;
+    grid-template-columns: 4.1em minmax(0, 1fr);
+    white-space: normal;
+   }
+
+   .lane-data-row-label {
+    color: #ffffff88;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+    white-space: nowrap;
+   }
+
+   .lane-data-row-select {
+    font-size: 11px;
+    min-width: 0;
+    padding: 0.2em 0.38em;
+   }
+
+   .lane-data-row-select:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+   }
+
+   .lane-data-row-select--required {
+    border-color: #ffb86c70;
+   }
+
+   .lane-data-row-hint {
+    color: #ffffff6e;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+    line-height: 1.3;
+    white-space: normal;
+   }
+
    .lane-data-th--multi {
     text-align: center;
     width: 4.5em;
@@ -2009,6 +2067,198 @@
     border-color: #ff555599;
     color: white;
    }
+
+   .lane-data-row-trigger {
+    align-items: center;
+    background: #ffffff08;
+    border: 1px solid #ffffff1c;
+    border-radius: 4px;
+    box-sizing: border-box;
+    color: white;
+    cursor: pointer;
+    display: inline-flex;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    gap: 0.38em;
+    justify-content: space-between;
+    max-width: 100%;
+    min-width: 8em;
+    padding: 0.22em 0.45em;
+    text-align: left;
+    white-space: nowrap;
+    width: 100%;
+   }
+
+   .lane-data-td--sized .lane-data-row-trigger {
+    min-width: 0;
+   }
+
+   .lane-data-multi-item .lane-data-row-trigger {
+    border-color: transparent;
+    min-width: 6.5em;
+    width: auto;
+   }
+
+   .lane-data-row-trigger:hover:not(:disabled),
+   .lane-data-row-trigger:focus:not(:disabled) {
+    background: #252525;
+    border-color: #9ce5ff66;
+   }
+
+   .lane-data-row-trigger:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+   }
+
+   .lane-data-row-trigger--empty {
+    color: #ffffff70;
+   }
+
+   .lane-data-row-trigger--unconfigured,
+   .lane-data-row-trigger--invalid,
+   .lane-data-row-trigger--missing {
+    border-color: #ff9c5566;
+    color: #ffd1a3;
+   }
+
+   .lane-data-row-cell-display {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+   }
+
+   .lane-data-row-cell-id {
+    background: #9ce5ff1a;
+    border-radius: 3px;
+    color: #9ce5ff;
+    flex-shrink: 0;
+    font-size: 10px;
+    padding: 0.02em 0.32em;
+    white-space: nowrap;
+   }
+
+   .lane-data-row-cell-id[hidden] {
+    display: none;
+   }
+
+   .lane-data-row-cell-caret {
+    color: #ffffff66;
+    flex-shrink: 0;
+    font-size: 10px;
+   }
+
+   .lane-row-picker-backdrop {
+    align-items: center;
+   }
+
+   .lane-row-picker-modal {
+    height: auto;
+    max-height: 82dvh;
+    max-width: 36em;
+   }
+
+   .lane-row-picker-toolbar {
+    align-items: center;
+    display: flex;
+    gap: 0.5em;
+    white-space: normal;
+   }
+
+   .lane-row-picker-search {
+    flex: 1 1 auto;
+    min-width: 0;
+   }
+
+   .lane-row-picker-clear {
+    flex-shrink: 0;
+   }
+
+   .lane-row-picker-clear[hidden],
+   .lane-row-picker-more[hidden] {
+    display: none;
+   }
+
+   .lane-row-picker-list {
+    max-height: 48dvh;
+    min-height: 8em;
+   }
+
+   .lane-row-picker-option {
+    align-items: center;
+    background: #ffffff08;
+    border: 1px solid #ffffff14;
+    border-radius: 6px;
+    color: white;
+    cursor: pointer;
+    display: flex;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    gap: 0.75em;
+    justify-content: space-between;
+    padding: 0.5em 0.75em;
+    text-align: left;
+    white-space: normal;
+    width: 100%;
+   }
+
+   .lane-row-picker-option:hover,
+   .lane-row-picker-option:focus {
+    background: #ffffff14;
+    border-color: #ffffff38;
+   }
+
+   .lane-row-picker-option--active {
+    background: #9ce5ff1a;
+    border-color: #9ce5ff66;
+   }
+
+   .lane-row-picker-option-main {
+    align-items: baseline;
+    display: flex;
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    gap: 0.5em;
+    min-width: 0;
+   }
+
+   .lane-row-picker-option-display {
+    color: white;
+    font-weight: bold;
+    overflow-wrap: anywhere;
+   }
+
+   .lane-row-picker-option-id {
+    background: #9ce5ff18;
+    border-radius: 4px;
+    color: #9ce5ff;
+    font-size: 11px;
+    padding: 0.08em 0.42em;
+   }
+
+   .lane-row-picker-option-badge {
+    background: #38d39f22;
+    border: 1px solid #38d39f55;
+    border-radius: 999px;
+    color: #7df3c8;
+    flex-shrink: 0;
+    font-size: 10px;
+    padding: 0.1em 0.5em;
+   }
+
+   .lane-row-picker-footer {
+    align-items: center;
+    display: flex;
+    gap: 0.5em;
+    justify-content: space-between;
+    white-space: normal;
+   }
+
+   .lane-row-picker-more:disabled {
+    cursor: wait;
+    opacity: 0.55;
+   }
   </style>
   <script type="module" src="/field.mjs"></script>
  </head>
@@ -2016,19 +2266,25 @@
   <script type="module">
    import {
     DATA_COLUMN_TYPES,
+    DEFAULT_ROW_PICKER_PAGE_SIZE,
     PRIMITIVE_TYPES,
     buildTablesScope,
     checkColumnChangeImpact,
     coerceDataValue,
     createIdleTracker,
+    dataValuesEqual,
     defaultDataValue,
     defaultValueForType,
+    fetchRowOptionsPage,
     field,
+    filterRowOptions,
     formatCellInputValue,
     formatColumnType,
+    formatHashOptions,
     formatImportLine,
     formatLaneRoutes,
     hasImportCycle,
+    lookupRowDisplay,
     normalizeColumnWidth,
     normalizeDataColumnType,
     normalizeFixedDecimals,
@@ -2036,10 +2292,13 @@
     normalizePrimitiveType,
     parseCellValue,
     parseColumnType,
+    parseHashOptions,
     parseImportLine,
     parseLaneRoutes,
     parseStoredTables,
     resolveImportValue,
+    resolveRowTarget,
+    resolveRowValueSpec,
     resolveScopeColumns,
     runLines,
     runTransportedScripts
@@ -2053,14 +2312,20 @@
     createIdleTracker,
     data,
     dataColumnTypes: DATA_COLUMN_TYPES,
+    dataValuesEqual,
     defaultDataValue,
+    defaultRowPickerPageSize: DEFAULT_ROW_PICKER_PAGE_SIZE,
     defaultValueForType,
     document,
+    fetchRowOptionsPage,
+    filterRowOptions,
     formatCellInputValue,
     formatColumnType,
+    formatHashOptions,
     formatImportLine,
     formatLaneRoutes,
     hasImportCycle,
+    lookupRowDisplay,
     normalizeColumnWidth,
     normalizeDataColumnType,
     normalizeFixedDecimals,
@@ -2068,11 +2333,14 @@
     normalizePrimitiveType,
     parseCellValue,
     parseColumnType,
+    parseHashOptions,
     parseImportLine,
     parseLaneRoutes,
     parseStoredTables,
     primitiveTypes: PRIMITIVE_TYPES,
     resolveImportValue,
+    resolveRowTarget,
+    resolveRowValueSpec,
     resolveScopeColumns,
     runLines,
     runTransportedScripts

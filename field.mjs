@@ -1292,6 +1292,23 @@ function safeDecodeURIComponent(value) {
  }
 }
 
+function parseTabAndSubroute(rawTab) {
+ const raw = String(rawTab ?? '')
+ const pipeIdx = raw.indexOf('|')
+ if (pipeIdx !== -1) {
+  const tab = normalizeLaneTab(safeDecodeURIComponent(raw.slice(0, pipeIdx)))
+  const subroute = safeDecodeURIComponent(raw.slice(pipeIdx + 1))
+  return { tab, subroute: tab === 'data' && subroute.length > 0 ? subroute : '' }
+ }
+ const encodedPipe = /^(.*)%7[cC](.*)$/.exec(raw)
+ if (encodedPipe) {
+  const tab = normalizeLaneTab(safeDecodeURIComponent(encodedPipe[1]))
+  const subroute = safeDecodeURIComponent(encodedPipe[2])
+  return { tab, subroute: tab === 'data' && subroute.length > 0 ? subroute : '' }
+ }
+ return { tab: normalizeLaneTab(safeDecodeURIComponent(raw)), subroute: '' }
+}
+
 export function parseLaneRouteSegment(segment) {
  if (typeof segment !== 'string' || segment.length === 0) {
   return null
@@ -1304,21 +1321,17 @@ export function parseLaneRouteSegment(segment) {
   if (id.length === 0) {
    return null
   }
-  return {
-   id,
-   tab: normalizeLaneTab(safeDecodeURIComponent(rawTab)),
-  }
+  const { tab, subroute } = parseTabAndSubroute(rawTab)
+  return subroute ? { id, tab, subroute } : { id, tab }
  }
  const encodedMatch = /^(.*)%3[bB]([^%]*)$/.exec(segment)
  if (encodedMatch) {
-  const candidateTab = encodedMatch[2].trim().toLowerCase()
+  const { tab, subroute } = parseTabAndSubroute(encodedMatch[2])
+  const candidateTab = encodedMatch[2].split('|')[0].trim().toLowerCase()
   if (LANE_TABS.includes(candidateTab)) {
    const id = safeDecodeURIComponent(encodedMatch[1])
    if (id.length > 0) {
-    return {
-     id,
-     tab: candidateTab,
-    }
+    return subroute ? { id, tab, subroute } : { id, tab }
    }
   }
  }
@@ -1348,10 +1361,27 @@ export function parseLaneRoutes(pathname) {
  return routes
 }
 
-export function formatLaneRouteSegment(id, tab = DEFAULT_LANE_TAB) {
+export function formatLaneRouteSegment(id, tab = DEFAULT_LANE_TAB, subroute = '') {
  const encodedId = encodeURIComponent(String(id ?? ''))
  const normalizedTab = normalizeLaneTab(tab)
- return normalizedTab === DEFAULT_LANE_TAB ? encodedId : `${encodedId};${normalizedTab}`
+ if (normalizedTab === DEFAULT_LANE_TAB) {
+  return encodedId
+ }
+ if (normalizedTab === 'data' && typeof subroute === 'string' && subroute.length > 0) {
+  return `${encodedId};data|${encodeURIComponent(subroute)}`
+ }
+ return `${encodedId};${normalizedTab}`
+}
+
+function getLaneDataSubroute(item) {
+ const dv = item.notebook && item.notebook['data-view']
+ if (dv && Array.isArray(dv.tables) && dv['active-table-id']) {
+  const active = dv.tables.find(tbl => tbl && tbl.id === dv['active-table-id'])
+  if (active && typeof active.name === 'string' && active.name.length > 0) {
+   return active.name
+  }
+ }
+ return typeof item.subroute === 'string' ? item.subroute : ''
 }
 
 export function formatLaneRoutes(lanes) {
@@ -1372,9 +1402,106 @@ export function formatLaneRoutes(lanes) {
   const tab = item.notebook && typeof item.notebook['active-tab'] === 'string'
    ? item.notebook['active-tab']
    : item.tab
-  segments.push(formatLaneRouteSegment(item.id, tab))
+  const subroute = normalizeLaneTab(tab) === 'data' ? getLaneDataSubroute(item) : ''
+  segments.push(formatLaneRouteSegment(item.id, tab, subroute))
  }
  return `/${segments.join('/')}`
+}
+
+const UNSAFE_HASH_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+function isPlainObject(value) {
+ if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+  return false
+ }
+ const proto = Object.getPrototypeOf(value)
+ return proto === Object.prototype || proto === null
+}
+
+function parseHashOptionValue(rawValue) {
+ const decoded = safeDecodeURIComponent(rawValue)
+ if (/^-?\d+(?:\.\d+)?$/.test(decoded)) {
+  const num = Number(decoded)
+  if (Number.isFinite(num)) {
+   return num
+  }
+ }
+ if (decoded === 'true') {
+  return true
+ }
+ if (decoded === 'false') {
+  return false
+ }
+ if (decoded === 'null') {
+  return null
+ }
+ return decoded
+}
+
+export function parseHashOptions(hash) {
+ const result = {}
+ if (typeof hash !== 'string') {
+  return result
+ }
+ const trimmed = hash.trim()
+ const raw = trimmed.startsWith('#') ? trimmed.slice(1) : trimmed
+ if (raw.length === 0) {
+  return result
+ }
+ for (const part of raw.split('&')) {
+  if (part.length === 0) {
+   continue
+  }
+  const eqIdx = part.indexOf('=')
+  const rawKey = eqIdx === -1 ? part : part.slice(0, eqIdx)
+  const key = safeDecodeURIComponent(rawKey)
+  if (key.length === 0) {
+   continue
+  }
+  const segments = key.split('.').filter(Boolean)
+  if (segments.length === 0 || segments.some(seg => UNSAFE_HASH_KEYS.has(seg))) {
+   continue
+  }
+  const value = eqIdx === -1 ? true : parseHashOptionValue(part.slice(eqIdx + 1))
+  let cursor = result
+  for (let i = 0; i < segments.length - 1; i++) {
+   const seg = segments[i]
+   if (!isPlainObject(cursor[seg])) {
+    cursor[seg] = {}
+   }
+   cursor = cursor[seg]
+  }
+  cursor[segments[segments.length - 1]] = value
+ }
+ return result
+}
+
+function collectHashOptionPairs(obj, prefix, pairs) {
+ for (const key of Object.keys(obj)) {
+  if (UNSAFE_HASH_KEYS.has(key)) {
+   continue
+  }
+  const value = obj[key]
+  if (value === undefined) {
+   continue
+  }
+  const path = prefix.length > 0 ? `${prefix}.${encodeURIComponent(key)}` : encodeURIComponent(key)
+  if (isPlainObject(value)) {
+   collectHashOptionPairs(value, path, pairs)
+  }
+  else {
+   pairs.push(`${path}=${encodeURIComponent(String(value))}`)
+  }
+ }
+}
+
+export function formatHashOptions(options) {
+ if (!isPlainObject(options)) {
+  return ''
+ }
+ const pairs = []
+ collectHashOptionPairs(options, '', pairs)
+ return pairs.length > 0 ? `#${pairs.join('&')}` : ''
 }
 
 export function normalizePrimitiveType(type) {
@@ -1408,9 +1535,11 @@ export const DATA_COLUMN_TYPES = [
  'url',
  'email',
  'json',
+ 'row',
 ]
 
 export const DEFAULT_FIXED_DECIMALS = 2
+export const DEFAULT_ROW_PICKER_PAGE_SIZE = 25
 export const MIN_COLUMN_WIDTH = 48
 export const MAX_COLUMN_WIDTH = 1200
 const MAX_FIXED_DECIMALS = 12
@@ -1618,6 +1747,15 @@ export function parseColumnType(spec, multiple, decimals) {
     decimals: resolvedDecimals,
    }
   }
+  if (parsed.type === 'row') {
+   return {
+    type: 'row',
+    multiple: resolvedMultiple,
+    refTableId: typeof spec.refTableId === 'string' ? spec.refTableId : '',
+    refColumnId: typeof spec.refColumnId === 'string' ? spec.refColumnId : '',
+    refDisplayColumnId: typeof spec.refDisplayColumnId === 'string' ? spec.refDisplayColumnId : '',
+   }
+  }
   return {
    type: parsed.type,
    multiple: resolvedMultiple,
@@ -1637,15 +1775,128 @@ export function parseColumnType(spec, multiple, decimals) {
    decimals: resolvedDecimals,
   }
  }
+ if (parsed.type === 'row') {
+  return {
+   type: 'row',
+   multiple: resolvedMultiple,
+   refTableId: '',
+   refColumnId: '',
+   refDisplayColumnId: '',
+  }
+ }
  return {
   type: parsed.type,
   multiple: resolvedMultiple,
  }
 }
 
-export function formatColumnType(type, multiple, decimals) {
+export function dataValuesEqual(a, b) {
+ if (a === b) {
+  return true
+ }
+ if (typeof a === 'number' && typeof b === 'number' && Number.isNaN(a) && Number.isNaN(b)) {
+  return true
+ }
+ if (a === null || b === null || a === undefined || b === undefined) {
+  return false
+ }
+ if (typeof a === 'object' && typeof b === 'object') {
+  try {
+   return JSON.stringify(a) === JSON.stringify(b)
+  }
+  catch {
+   return false
+  }
+ }
+ return false
+}
+
+export function resolveRowValueSpec(tables, col, visited = new Set()) {
+ if (!Array.isArray(tables) || !col || typeof col !== 'object') {
+  return null
+ }
+ const refTableId = typeof col.refTableId === 'string' ? col.refTableId : ''
+ const refColumnId = typeof col.refColumnId === 'string' ? col.refColumnId : ''
+ if (!refTableId || !refColumnId) {
+  return null
+ }
+ const visitKey = `${refTableId}:${refColumnId}`
+ if (visited.has(visitKey)) {
+  return null
+ }
+ const table = tables.find(t => t && t.id === refTableId)
+ if (!table || !Array.isArray(table.columns)) {
+  return null
+ }
+ const linkCol = table.columns.find(c => c && c.id === refColumnId)
+ if (!linkCol) {
+  return null
+ }
+ const parsed = parseColumnType(linkCol, false)
+ if (parsed.type === 'row') {
+  const nextVisited = new Set(visited)
+  nextVisited.add(visitKey)
+  return resolveRowValueSpec(tables, linkCol, nextVisited)
+ }
+ return parsed
+}
+
+export function resolveRowTarget(tables, col) {
+ const refTableId = col && typeof col.refTableId === 'string' ? col.refTableId : ''
+ const refColumnId = col && typeof col.refColumnId === 'string' ? col.refColumnId : ''
+ const refDisplayColumnId = col && typeof col.refDisplayColumnId === 'string' ? col.refDisplayColumnId : ''
+ const configured = Boolean(refTableId && refColumnId)
+ const table = Array.isArray(tables) && refTableId
+  ? tables.find(t => t && t.id === refTableId) || null
+  : null
+ const cols = table && Array.isArray(table.columns) ? table.columns : []
+ const linkCol = refColumnId ? cols.find(c => c && c.id === refColumnId) || null : null
+ const rawDisplayCol = refDisplayColumnId ? cols.find(c => c && c.id === refDisplayColumnId) || null : null
+ const displayCol = rawDisplayCol && linkCol && rawDisplayCol.id !== linkCol.id ? rawDisplayCol : null
+ const valueSpec = linkCol ? resolveRowValueSpec(tables, { refTableId, refColumnId }) : null
+ const displaySpec = displayCol
+  ? (displayCol.type === 'row'
+   ? (resolveRowValueSpec(tables, displayCol) || parseColumnType(displayCol, false))
+   : parseColumnType(displayCol, false))
+  : null
+ return {
+  configured,
+  valid: Boolean(table && linkCol && valueSpec),
+  refTableId,
+  refColumnId,
+  refDisplayColumnId,
+  table,
+  linkCol,
+  displayCol,
+  valueSpec,
+  displaySpec,
+ }
+}
+
+export function formatColumnType(type, multiple, decimals, tables = null) {
  const parsed = parseColumnType(type, multiple, decimals)
- const base = parsed.type === 'fixed' ? `fixed(${parsed.decimals})` : parsed.type
+ let base
+ if (parsed.type === 'fixed') {
+  base = `fixed(${parsed.decimals})`
+ }
+ else if (parsed.type === 'row') {
+  const target = Array.isArray(tables) ? resolveRowTarget(tables, parsed) : null
+  if (target && target.table && target.linkCol) {
+   const tLabel = typeof target.table.name === 'string' && target.table.name.trim().length > 0
+    ? target.table.name.trim()
+    : target.table.id
+   const cLabel = typeof target.linkCol.name === 'string' && target.linkCol.name.trim().length > 0
+    ? target.linkCol.name.trim()
+    : target.linkCol.id
+   base = `row(${tLabel}.${cLabel})`
+  }
+  else {
+   base = 'row'
+  }
+ }
+ else {
+  base = parsed.type
+ }
  return parsed.multiple ? `${base}[]` : base
 }
 
@@ -1662,6 +1913,7 @@ export function defaultDataValue(type, multiple, decimals) {
   case 'boolean':
    return false
   case 'json':
+  case 'row':
    return null
   case 'date':
   case 'datetime':
@@ -1673,7 +1925,7 @@ export function defaultDataValue(type, multiple, decimals) {
  }
 }
 
-export function parseCellValue(raw, type, decimals) {
+export function parseCellValue(raw, type, decimals, tables = null) {
  const parsed = parseColumnType(type, false, decimals)
  const base = parsed.type
  switch (base) {
@@ -1812,13 +2064,23 @@ export function parseCellValue(raw, type, decimals) {
     return { ok: false, value: null, error: 'Must be valid JSON' }
    }
   }
+  case 'row': {
+   if (raw === null || raw === undefined) {
+    return { ok: true, value: null, error: null }
+   }
+   const valueSpec = tables ? resolveRowValueSpec(tables, parsed) : null
+   if (valueSpec) {
+    return parseCellValue(raw, valueSpec)
+   }
+   return { ok: true, value: raw, error: null }
+  }
   case 'text':
   default:
    return { ok: true, value: raw === null || raw === undefined ? '' : String(raw), error: null }
  }
 }
 
-export function formatCellInputValue(value, type, decimals) {
+export function formatCellInputValue(value, type, decimals, tables = null) {
  const parsed = parseColumnType(type, false, decimals)
  const base = parsed.type
  if (base === 'boolean') {
@@ -1829,6 +2091,13 @@ export function formatCellInputValue(value, type, decimals) {
  }
  if (base === 'fixed') {
   return formatFixedInteger(value, parsed.decimals)
+ }
+ if (base === 'row') {
+  const valueSpec = tables ? resolveRowValueSpec(tables, parsed) : null
+  if (valueSpec) {
+   return formatCellInputValue(value, valueSpec)
+  }
+  return String(value)
  }
  if (base === 'json') {
   try {
@@ -1841,15 +2110,42 @@ export function formatCellInputValue(value, type, decimals) {
  return String(value)
 }
 
-function coerceSingleDataValue(value, targetSpec, fromSpec = null) {
+function formatRowCellText(value, spec) {
+ if (value === null || value === undefined) {
+  return ''
+ }
+ const parsed = parseColumnType(spec, false)
+ if (parsed.type === 'boolean') {
+  return value ? 'true' : 'false'
+ }
+ return String(formatCellInputValue(value, parsed))
+}
+
+function coerceSingleDataValue(value, targetSpec, fromSpec = null, tables = null) {
  const parsed = typeof targetSpec === 'object' && targetSpec !== null ? targetSpec : parseColumnType(targetSpec, false)
+ const effectiveFromSpec = fromSpec && fromSpec.type === 'row' && tables
+  ? resolveRowValueSpec(tables, fromSpec)
+  : fromSpec
  const base = parsed.type
+ if (base === 'row') {
+  if (value === null || value === undefined) {
+   return null
+  }
+  const resolvedTarget = tables ? resolveRowValueSpec(tables, parsed) : null
+  if (resolvedTarget) {
+   if (value === '' && resolvedTarget.type !== 'text') {
+    return null
+   }
+   return coerceSingleDataValue(value, resolvedTarget, effectiveFromSpec, tables)
+  }
+  return cloneDataValue(value)
+ }
  if (base === 'fixed') {
   if (value === null || value === undefined || value === '') {
    return null
   }
-  if (fromSpec && fromSpec.type === 'fixed') {
-   return rescaleFixedInteger(value, fromSpec.decimals, parsed.decimals)
+  if (effectiveFromSpec && effectiveFromSpec.type === 'fixed') {
+   return rescaleFixedInteger(value, effectiveFromSpec.decimals, parsed.decimals)
   }
   if (typeof value === 'boolean') {
    return value ? Number(10n ** BigInt(parsed.decimals)) : 0
@@ -1858,7 +2154,7 @@ function coerceSingleDataValue(value, targetSpec, fromSpec = null) {
    if (!Number.isFinite(value)) {
     return null
    }
-   if (!fromSpec && Number.isSafeInteger(value)) {
+   if (!effectiveFromSpec && Number.isSafeInteger(value)) {
     return value === 0 ? 0 : value
    }
    const scaled = scaleDecimalStringToFixed(numberToPlainDecimalString(value), parsed.decimals, { allowRounding: true })
@@ -1868,12 +2164,12 @@ function coerceSingleDataValue(value, targetSpec, fromSpec = null) {
   return scaled.ok ? scaled.value : null
  }
  let inputVal = value
- if (fromSpec && fromSpec.type === 'fixed' && value !== null && value !== undefined && value !== '') {
+ if (effectiveFromSpec && effectiveFromSpec.type === 'fixed' && value !== null && value !== undefined && value !== '') {
   if (base === 'boolean') {
    const num = Number(value)
    return Number.isFinite(num) ? num !== 0 : Boolean(value)
   }
-  const formatted = formatFixedInteger(value, fromSpec.decimals)
+  const formatted = formatFixedInteger(value, effectiveFromSpec.decimals)
   if (base === 'json') {
    return formatted === '' ? null : Number(formatted)
   }
@@ -1950,25 +2246,25 @@ function coerceSingleDataValue(value, targetSpec, fromSpec = null) {
  }
 }
 
-export function coerceDataValue(value, type, multiple, fromType = null) {
+export function coerceDataValue(value, type, multiple, fromType = null, tables = null) {
  const parsed = parseColumnType(type, multiple)
  const fromParsed = fromType ? parseColumnType(fromType) : null
  if (parsed.multiple) {
   if (Array.isArray(value)) {
-   return value.map(item => coerceSingleDataValue(item, parsed, fromParsed))
+   return value.map(item => coerceSingleDataValue(item, parsed, fromParsed, tables))
   }
   if (value === null || value === undefined || value === '') {
    return []
   }
-  return [coerceSingleDataValue(value, parsed, fromParsed)]
+  return [coerceSingleDataValue(value, parsed, fromParsed, tables)]
  }
  if (Array.isArray(value)) {
-  return value.length > 0 ? coerceSingleDataValue(value[0], parsed, fromParsed) : defaultDataValue(parsed, false)
+  return value.length > 0 ? coerceSingleDataValue(value[0], parsed, fromParsed, tables) : defaultDataValue(parsed, false)
  }
- return coerceSingleDataValue(value, parsed, fromParsed)
+ return coerceSingleDataValue(value, parsed, fromParsed, tables)
 }
 
-export function checkColumnChangeImpact(table, colId, nextType, nextMultiple, nextDecimals) {
+export function checkColumnChangeImpact(table, colId, nextType, nextMultiple, nextDecimals, tables = null) {
  if (!table || !Array.isArray(table.columns) || !Array.isArray(table.rows) || table.rows.length === 0) {
   return { destructive: false, affectedRows: 0, reason: '' }
  }
@@ -1978,7 +2274,13 @@ export function checkColumnChangeImpact(table, colId, nextType, nextMultiple, ne
  }
  const prevParsed = parseColumnType(col)
  const parsed = parseColumnType(nextType, nextMultiple, nextDecimals)
- const sameType = prevParsed.type === parsed.type && (parsed.type !== 'fixed' || prevParsed.decimals === parsed.decimals)
+ const sameRowTarget = prevParsed.type !== 'row' || (
+  prevParsed.refTableId === parsed.refTableId &&
+  prevParsed.refColumnId === parsed.refColumnId
+ )
+ const sameType = prevParsed.type === parsed.type &&
+  (parsed.type !== 'fixed' || prevParsed.decimals === parsed.decimals) &&
+  sameRowTarget
  if (sameType && prevParsed.multiple === parsed.multiple) {
   return { destructive: false, affectedRows: 0, reason: '' }
  }
@@ -1999,11 +2301,12 @@ export function checkColumnChangeImpact(table, colId, nextType, nextMultiple, ne
    }
   }
  }
- if (!sameType) {
+ const unresolvedRowTarget = parsed.type === 'row' && !resolveRowValueSpec(tables, parsed)
+ if (!sameType && !unresolvedRowTarget) {
   let changed = 0
   for (const row of table.rows) {
    const cur = row && row.values ? row.values[colId] : undefined
-   const nextVal = coerceDataValue(cur, parsed, parsed.multiple, prevParsed)
+   const nextVal = coerceDataValue(cur, parsed, parsed.multiple, prevParsed, tables)
    if (JSON.stringify(cur) !== JSON.stringify(nextVal)) {
     changed += 1
    }
@@ -2052,6 +2355,7 @@ export function parseStoredTables(stored) {
   return []
  }
  const out = []
+ const rawRowsPerTable = []
  for (let t = 0; t < raw.length; t++) {
   const item = raw[t]
   if (!item || typeof item !== 'object') {
@@ -2068,7 +2372,7 @@ export function parseStoredTables(stored) {
    }
    const colId = typeof col.id === 'string' && col.id.length > 0 ? col.id : `col-${t + 1}-${c + 1}`
    const colName = col.name === null || col.name === undefined ? '' : String(col.name)
-   const parsedType = parseColumnType(col.type, col.multiple, col.decimals)
+   const parsedType = parseColumnType(col)
    const normalizedCol = {
     id: colId,
     name: colName,
@@ -2078,14 +2382,23 @@ export function parseStoredTables(stored) {
    if (parsedType.type === 'fixed') {
     normalizedCol.decimals = parsedType.decimals
    }
+   else if (parsedType.type === 'row') {
+    normalizedCol.refTableId = parsedType.refTableId
+    normalizedCol.refColumnId = parsedType.refColumnId
+    normalizedCol.refDisplayColumnId = parsedType.refDisplayColumnId
+   }
    const width = normalizeColumnWidth(col.width)
    if (width !== null) {
     normalizedCol.width = width
    }
    columns.push(normalizedCol)
   }
-  const rows = []
-  const rawRows = Array.isArray(item.rows) ? item.rows : []
+  out.push({ id: tableId, name: tableName, columns, rows: [] })
+  rawRowsPerTable.push(Array.isArray(item.rows) ? item.rows : [])
+ }
+ for (let t = 0; t < out.length; t++) {
+  const table = out[t]
+  const rawRows = rawRowsPerTable[t]
   for (let r = 0; r < rawRows.length; r++) {
    const row = rawRows[r]
    if (!row || typeof row !== 'object') {
@@ -2094,19 +2407,164 @@ export function parseStoredTables(stored) {
    const rowId = typeof row.id === 'string' && row.id.length > 0 ? row.id : `row-${t + 1}-${r + 1}`
    const rawValues = row.values && typeof row.values === 'object' ? row.values : {}
    const values = {}
-   for (const col of columns) {
+   for (const col of table.columns) {
     if (Object.hasOwn(rawValues, col.id)) {
-     values[col.id] = coerceDataValue(rawValues[col.id], col, col.multiple)
+     values[col.id] = coerceDataValue(rawValues[col.id], col, col.multiple, null, out)
     }
     else {
      values[col.id] = defaultDataValue(col, col.multiple)
     }
    }
-   rows.push({ id: rowId, values })
+   table.rows.push({ id: rowId, values })
   }
-  out.push({ id: tableId, name: tableName, columns, rows })
  }
  return out
+}
+
+export function lookupRowDisplay(tables, col, value) {
+ const target = resolveRowTarget(tables, col)
+ const tableName = target.table ? (String(target.table.name || '').trim() || target.table.id) : ''
+ const linkColName = target.linkCol ? (String(target.linkCol.name || '').trim() || target.linkCol.id) : ''
+ const displayColName = target.displayCol ? (String(target.displayCol.name || '').trim() || target.displayCol.id) : ''
+ const isEmpty = value === null || value === undefined
+ if (isEmpty) {
+  return {
+   configured: target.configured,
+   valid: target.valid,
+   isEmpty: true,
+   found: false,
+   hasSeparateDisplay: Boolean(target.displayCol),
+   value: null,
+   valueText: '',
+   displayText: '',
+   label: '',
+   tableName,
+   linkColName,
+   displayColName,
+  }
+ }
+ const valueText = target.valueSpec ? formatRowCellText(value, target.valueSpec) : String(value)
+ if (!target.valid) {
+  return {
+   configured: target.configured,
+   valid: false,
+   isEmpty: false,
+   found: false,
+   hasSeparateDisplay: false,
+   value,
+   valueText,
+   displayText: '',
+   label: valueText,
+   tableName,
+   linkColName,
+   displayColName,
+  }
+ }
+ let matchedRow = null
+ const rows = Array.isArray(target.table.rows) ? target.table.rows : []
+ for (let i = 0; i < rows.length; i++) {
+  const row = rows[i]
+  if (!row || !row.values) {
+   continue
+  }
+  if (dataValuesEqual(row.values[target.linkCol.id], value)) {
+   matchedRow = row
+   break
+  }
+ }
+ const found = Boolean(matchedRow)
+ const hasSeparateDisplay = Boolean(target.displayCol)
+ let displayText = ''
+ if (found && target.displayCol && target.displaySpec && Object.hasOwn(matchedRow.values, target.displayCol.id)) {
+  displayText = formatRowCellText(matchedRow.values[target.displayCol.id], target.displaySpec)
+ }
+ const label = hasSeparateDisplay && displayText.length > 0 ? `${displayText} (${valueText})` : valueText
+ return {
+  configured: target.configured,
+  valid: true,
+  isEmpty: false,
+  found,
+  hasSeparateDisplay,
+  value,
+  valueText,
+  displayText,
+  label,
+  tableName,
+  linkColName,
+  displayColName,
+ }
+}
+
+export async function fetchRowOptionsPage(tables, col, options = {}) {
+ await Promise.resolve()
+ const rawOffset = Number(options && options.offset)
+ const rawLimit = Number(options && options.limit)
+ const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.trunc(rawOffset) : 0
+ const limit = Number.isFinite(rawLimit) && rawLimit >= 1 ? Math.trunc(rawLimit) : DEFAULT_ROW_PICKER_PAGE_SIZE
+ const target = resolveRowTarget(tables, col)
+ if (!target || !target.valid) {
+  return {
+   ok: false,
+   error: 'Linked table or column not found',
+   items: [],
+   offset: 0,
+   limit,
+   nextOffset: 0,
+   hasMore: false,
+   total: 0,
+  }
+ }
+ const rows = Array.isArray(target.table.rows) ? target.table.rows : []
+ const total = rows.length
+ const start = Math.min(offset, total)
+ const end = Math.min(total, start + limit)
+ const items = []
+ for (let i = start; i < end; i++) {
+  const row = rows[i]
+  if (!row || !row.values || !Object.hasOwn(row.values, target.linkCol.id)) {
+   continue
+  }
+  const rawVal = row.values[target.linkCol.id]
+  if (rawVal === null || rawVal === undefined) {
+   continue
+  }
+  const valueText = formatRowCellText(rawVal, target.valueSpec)
+  let displayText = ''
+  if (target.displayCol && target.displaySpec && Object.hasOwn(row.values, target.displayCol.id)) {
+   displayText = formatRowCellText(row.values[target.displayCol.id], target.displaySpec)
+  }
+  const hasSeparateDisplay = Boolean(target.displayCol && displayText.length > 0)
+  const label = hasSeparateDisplay ? `${displayText} (${valueText})` : valueText
+  items.push({
+   rowId: row.id,
+   rowIndex: i,
+   value: cloneDataValue(rawVal),
+   valueText,
+   displayText,
+   hasSeparateDisplay,
+   label,
+   searchText: `${displayText} ${valueText}`.trim().toLowerCase(),
+  })
+ }
+ return {
+  ok: true,
+  error: null,
+  items,
+  offset: start,
+  limit,
+  nextOffset: end,
+  hasMore: end < total,
+  total,
+ }
+}
+
+export function filterRowOptions(items, query = '') {
+ const list = Array.isArray(items) ? items : []
+ const q = String(query ?? '').trim().toLowerCase()
+ if (q.length === 0) {
+  return list.slice()
+ }
+ return list.filter(item => item && typeof item.searchText === 'string' && item.searchText.includes(q))
 }
 
 export function buildTablesScope(tables) {
