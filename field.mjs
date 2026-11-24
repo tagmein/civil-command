@@ -1538,8 +1538,69 @@ export const DATA_COLUMN_TYPES = [
  'row',
 ]
 
+export const DATA_CONSTRAINT_TYPES = [
+ 'workflow',
+]
+
 export const DEFAULT_FIXED_DECIMALS = 2
 export const DEFAULT_ROW_PICKER_PAGE_SIZE = 25
+export const MIN_LANE_WIDTH = 100
+
+export function normalizeLaneWidth(width) {
+ if (width === null || width === undefined) {
+  return null
+ }
+ if (typeof width === 'number') {
+  if (!Number.isFinite(width) || width < 0) {
+   return null
+  }
+  return Math.round(width)
+ }
+ const trimmed = String(width).trim()
+ if (trimmed.length === 0) {
+  return null
+ }
+ const stripped = trimmed.replace(/px$/i, '').trim()
+ if (stripped.length === 0) {
+  return null
+ }
+ const num = Number(stripped)
+ if (!Number.isFinite(num) || num < 0) {
+  return null
+ }
+ return Math.round(num)
+}
+
+export function resolveLaneRenderedWidth(width) {
+ const normalized = normalizeLaneWidth(width)
+ if (normalized === null) {
+  return null
+ }
+ return Math.max(MIN_LANE_WIDTH, normalized)
+}
+
+export const LANE_MINIMIZE_SIDES = ['left', 'right']
+
+export function normalizeLaneMinimizeSide(side) {
+ if (typeof side === 'string') {
+  const lower = side.trim().toLowerCase()
+  if (lower === 'left' || lower === 'right') {
+   return lower
+  }
+ }
+ return null
+}
+
+export function getLaneInitial(title, fallback = '') {
+ const raw = typeof title === 'string' ? title.trim() : ''
+ const source = raw.length > 0 ? raw : (typeof fallback === 'string' ? fallback.trim() : '')
+ if (source.length === 0) {
+  return '?'
+ }
+ const chars = Array.from(source)
+ return chars[0].toUpperCase()
+}
+
 export const MIN_COLUMN_WIDTH = 48
 export const MAX_COLUMN_WIDTH = 1200
 const MAX_FIXED_DECIMALS = 12
@@ -1729,6 +1790,53 @@ export function normalizeDataColumnType(type) {
  return 'text'
 }
 
+export function normalizeColumnConstraint(constraint) {
+ if (!constraint || typeof constraint !== 'object') {
+  return null
+ }
+ const type = typeof constraint.type === 'string' ? constraint.type.trim().toLowerCase() : ''
+ if (!DATA_CONSTRAINT_TYPES.includes(type)) {
+  return null
+ }
+ return {
+  type,
+  tableId: typeof constraint.tableId === 'string' ? constraint.tableId : '',
+  fromColumnId: typeof constraint.fromColumnId === 'string' ? constraint.fromColumnId : '',
+  toColumnId: typeof constraint.toColumnId === 'string' ? constraint.toColumnId : '',
+ }
+}
+
+export function findWorkflowDefaultColumns(table) {
+ const cols = table && Array.isArray(table.columns) ? table.columns : []
+ let exactFrom = ''
+ let ciFrom = ''
+ let exactTo = ''
+ let ciTo = ''
+ for (const col of cols) {
+  if (!col || typeof col !== 'object' || typeof col.id !== 'string' || col.id.length === 0) {
+   continue
+  }
+  const trimmed = typeof col.name === 'string' ? col.name.trim() : ''
+  const lower = trimmed.toLowerCase()
+  if (!exactFrom && trimmed === 'from') {
+   exactFrom = col.id
+  }
+  else if (!ciFrom && lower === 'from') {
+   ciFrom = col.id
+  }
+  if (!exactTo && trimmed === 'to') {
+   exactTo = col.id
+  }
+  else if (!ciTo && lower === 'to') {
+   ciTo = col.id
+  }
+ }
+ return {
+  fromColumnId: exactFrom || ciFrom,
+  toColumnId: exactTo || ciTo,
+ }
+}
+
 export function parseColumnType(spec, multiple, decimals) {
  if (spec && typeof spec === 'object') {
   const parsed = parseTypeString(typeof spec.type === 'string' ? spec.type : 'text')
@@ -1754,6 +1862,16 @@ export function parseColumnType(spec, multiple, decimals) {
     refTableId: typeof spec.refTableId === 'string' ? spec.refTableId : '',
     refColumnId: typeof spec.refColumnId === 'string' ? spec.refColumnId : '',
     refDisplayColumnId: typeof spec.refDisplayColumnId === 'string' ? spec.refDisplayColumnId : '',
+   }
+  }
+  if (parsed.type === 'text') {
+   const constraint = normalizeColumnConstraint(spec.constraint)
+   if (constraint) {
+    return {
+     type: 'text',
+     multiple: resolvedMultiple,
+     constraint,
+    }
    }
   }
   return {
@@ -1893,6 +2011,9 @@ export function formatColumnType(type, multiple, decimals, tables = null) {
   else {
    base = 'row'
   }
+ }
+ else if (parsed.type === 'text' && parsed.constraint && parsed.constraint.type === 'workflow') {
+  base = 'text(workflow)'
  }
  else {
   base = parsed.type
@@ -2387,6 +2508,9 @@ export function parseStoredTables(stored) {
     normalizedCol.refColumnId = parsedType.refColumnId
     normalizedCol.refDisplayColumnId = parsedType.refDisplayColumnId
    }
+   else if (parsedType.type === 'text' && parsedType.constraint) {
+    normalizedCol.constraint = parsedType.constraint
+   }
    const width = normalizeColumnWidth(col.width)
    if (width !== null) {
     normalizedCol.width = width
@@ -2565,6 +2689,227 @@ export function filterRowOptions(items, query = '') {
   return list.slice()
  }
  return list.filter(item => item && typeof item.searchText === 'string' && item.searchText.includes(q))
+}
+
+function formatWorkflowCellText(value, col, tables) {
+ if (value === null || value === undefined) {
+  return ''
+ }
+ const parsed = parseColumnType(col, false)
+ if (parsed.type === 'boolean') {
+  return value ? 'true' : 'false'
+ }
+ return String(formatCellInputValue(value, parsed, undefined, tables))
+}
+
+export function resolveWorkflowTarget(tables, col) {
+ const isText = Boolean(col && typeof col === 'object' && normalizeDataColumnType(col) === 'text')
+ const constraint = isText ? normalizeColumnConstraint(col.constraint) : null
+ if (!constraint || constraint.type !== 'workflow') {
+  return {
+   active: false,
+   configured: false,
+   valid: false,
+   type: '',
+   tableId: '',
+   fromColumnId: '',
+   toColumnId: '',
+   table: null,
+   fromCol: null,
+   toCol: null,
+   tableName: '',
+   fromColName: '',
+   toColName: '',
+   fromValues: [],
+   toValues: [],
+   transitionCount: 0,
+   transitions: {},
+  }
+ }
+ const { tableId, fromColumnId, toColumnId } = constraint
+ const configured = Boolean(tableId && fromColumnId && toColumnId)
+ const table = Array.isArray(tables) && tableId
+  ? tables.find(t => t && t.id === tableId) || null
+  : null
+ const cols = table && Array.isArray(table.columns) ? table.columns : []
+ const fromCol = fromColumnId ? cols.find(c => c && c.id === fromColumnId) || null : null
+ const toCol = toColumnId ? cols.find(c => c && c.id === toColumnId) || null : null
+ const valid = Boolean(table && fromCol && toCol)
+ const tableName = table ? (String(table.name || '').trim() || table.id) : ''
+ const fromColName = fromCol ? (String(fromCol.name || '').trim() || fromCol.id) : ''
+ const toColName = toCol ? (String(toCol.name || '').trim() || toCol.id) : ''
+ const fromValues = []
+ const fromSet = new Set()
+ const toValues = []
+ const toSet = new Set()
+ const transitions = {}
+ let transitionCount = 0
+ if (valid) {
+  const rows = Array.isArray(table.rows) ? table.rows : []
+  for (let i = 0; i < rows.length; i++) {
+   const row = rows[i]
+   if (!row || !row.values || typeof row.values !== 'object') {
+    continue
+   }
+   const rawFrom = Object.hasOwn(row.values, fromCol.id) ? row.values[fromCol.id] : ''
+   const rawTo = Object.hasOwn(row.values, toCol.id) ? row.values[toCol.id] : ''
+   const fromText = formatWorkflowCellText(rawFrom, fromCol, tables)
+   const toText = formatWorkflowCellText(rawTo, toCol, tables)
+   if (fromText === '' && toText === '') {
+    continue
+   }
+   if (fromText !== '' && !fromSet.has(fromText)) {
+    fromSet.add(fromText)
+    fromValues.push(fromText)
+   }
+   if (!Object.hasOwn(transitions, fromText)) {
+    transitions[fromText] = []
+   }
+   if (toText !== '') {
+    if (!transitions[fromText].includes(toText)) {
+     transitions[fromText].push(toText)
+     transitionCount += 1
+    }
+    if (!toSet.has(toText)) {
+     toSet.add(toText)
+     toValues.push(toText)
+    }
+   }
+  }
+ }
+ return {
+  active: true,
+  configured,
+  valid,
+  type: constraint.type,
+  tableId,
+  fromColumnId,
+  toColumnId,
+  table,
+  fromCol,
+  toCol,
+  tableName,
+  fromColName,
+  toColName,
+  fromValues,
+  toValues,
+  transitionCount,
+  transitions,
+ }
+}
+
+export function getWorkflowCellState(tables, col, value) {
+ const target = resolveWorkflowTarget(tables, col)
+ const currentValue = value === null || value === undefined ? '' : String(value)
+ if (!target.active) {
+  return {
+   active: false,
+   configured: false,
+   valid: false,
+   isValueValid: true,
+   currentValue,
+   error: null,
+   hint: '',
+   options: [],
+  }
+ }
+ if (!target.valid) {
+  const error = target.configured
+   ? 'Workflow table or columns not found'
+   : 'Configure workflow table, From, and To columns in Schema'
+  return {
+   active: true,
+   configured: target.configured,
+   valid: false,
+   isValueValid: true,
+   currentValue,
+   error,
+   hint: error,
+   options: [
+    {
+     value: currentValue,
+     label: currentValue === '' ? 'Configure workflow…' : currentValue,
+     isCurrent: true,
+     isInvalid: false,
+    },
+   ],
+  }
+ }
+ const hasOutgoingEntry = Object.hasOwn(target.transitions, currentValue)
+ const isTerminalState = !hasOutgoingEntry && currentValue !== '' && target.toValues.includes(currentValue)
+ const isValueValid = hasOutgoingEntry || isTerminalState
+ if (isValueValid) {
+  const nextList = hasOutgoingEntry ? target.transitions[currentValue] : []
+  const options = [
+   {
+    value: currentValue,
+    label: currentValue === '' ? '(empty)' : currentValue,
+    isCurrent: true,
+    isInvalid: false,
+   },
+  ]
+  for (let i = 0; i < nextList.length; i++) {
+   const nextVal = nextList[i]
+   if (nextVal !== currentValue) {
+    options.push({
+     value: nextVal,
+     label: nextVal,
+     isCurrent: false,
+     isInvalid: false,
+    })
+   }
+  }
+  const nextOptions = options.slice(1).map(o => o.value)
+  const hint = nextOptions.length > 0
+   ? `Next: ${nextOptions.join(', ')}`
+   : 'Terminal workflow state (no outgoing transitions)'
+  return {
+   active: true,
+   configured: true,
+   valid: true,
+   isValueValid: true,
+   currentValue,
+   error: null,
+   hint,
+   options,
+  }
+ }
+ const error = target.fromValues.length === 0
+  ? (currentValue === ''
+   ? 'Invalid workflow value (empty) — add workflow rows in the mapped table'
+   : `Invalid workflow value "${currentValue}" — add workflow rows in the mapped table`)
+  : (currentValue === ''
+   ? 'Invalid workflow value (empty) — select a valid starting state'
+   : `Invalid workflow value "${currentValue}" — select a valid starting state`)
+ const options = [
+  {
+   value: currentValue,
+   label: currentValue === '' ? '(empty — invalid)' : `${currentValue} (invalid)`,
+   isCurrent: true,
+   isInvalid: true,
+  },
+ ]
+ for (let i = 0; i < target.fromValues.length; i++) {
+  const startVal = target.fromValues[i]
+  if (startVal !== currentValue) {
+   options.push({
+    value: startVal,
+    label: startVal,
+    isCurrent: false,
+    isInvalid: false,
+   })
+  }
+ }
+ return {
+  active: true,
+  configured: true,
+  valid: true,
+  isValueValid: false,
+  currentValue,
+  error,
+  hint: error,
+  options,
+ }
 }
 
 export function buildTablesScope(tables) {

@@ -1,6 +1,20 @@
 <!doctype html>
-<html>
+<html lang="en">
  <head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Civil Command</title>
+  <meta name="description" content="Multi-lane FieldScript workspace and live notebook environment.">
+  <meta name="theme-color" content="#000000">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Civil Command">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="/icons/icon-192.png" type="image/png" sizes="192x192">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" sizes="180x180">
   <style>
    :root {
     background-color: black;
@@ -17,7 +31,10 @@
    }
    body {
     box-sizing: border-box;
-    margin: auto;
+    margin-top: auto;
+    margin-right: 64px;
+    margin-bottom: auto;
+    margin-left: 64px;
     padding: 0.75em 1em;
     min-height: 1em;
     min-width: 1em;
@@ -93,7 +110,23 @@
    .lane-header {
     border-bottom: 1px solid #ffffff18;
     border-left: 1px solid #ffffff12;
+    border-right: 1px solid #ffffff12;
     min-width: 24em;
+    position: relative;
+   }
+
+   .lane-header--sized {
+    box-sizing: border-box;
+    max-width: max(100px, var(--lane-width));
+    min-width: 100px;
+    width: max(100px, var(--lane-width));
+   }
+
+   .lane-header--sized > .lane-header-top {
+    box-sizing: border-box;
+    min-width: 0;
+    overflow-x: auto;
+    width: calc(max(100px, var(--lane-width)) - 1.5em - 1px);
    }
 
    .lane-header-top {
@@ -109,22 +142,34 @@
     min-width: 0;
    }
 
+   .lane-min-btn,
    .lane-reload-btn,
    .lane-close-btn {
+    align-items: center;
     background: transparent;
     border: 1px solid transparent;
     border-radius: 4px;
     color: #ffffff88;
     cursor: pointer;
+    display: inline-flex;
     flex-shrink: 0;
     font-family: "IBM Plex Mono", monospace;
     font-size: 14px;
+    justify-content: center;
     line-height: 1;
     opacity: 0.55;
     padding: 0.15em 0.35em;
     white-space: nowrap;
    }
 
+   .lane-min-icon {
+    display: block;
+    height: 1em;
+    width: 1em;
+   }
+
+   .lane-min-btn:hover,
+   .lane-min-btn:focus,
    .lane-reload-btn:hover,
    .lane-reload-btn:focus {
     background: #9ce5ff1e;
@@ -143,8 +188,71 @@
 
    .lane-body {
     border-left: 1px solid #ffffff12;
+    border-right: 1px solid #ffffff12;
     padding: 0.4em 0.5em 0.75em;
+    position: relative;
     vertical-align: top;
+   }
+
+   .lane-body--sized {
+    box-sizing: border-box;
+    max-width: max(100px, var(--lane-width));
+    min-width: 100px;
+    width: max(100px, var(--lane-width));
+   }
+
+   .lane-body--sized > .lane-notebook,
+   .lane-body--sized > .lane-output {
+    box-sizing: border-box;
+    min-width: 0;
+    overflow-x: auto;
+    width: calc(max(100px, var(--lane-width)) - 1em - 1px);
+   }
+
+   .lane-body--sized .lane-tab-panel,
+   .lane-body--sized .lane-data,
+   .lane-body--sized .lane-data-active,
+   .lane-body--sized .lane-data-rows-section,
+   .lane-body--sized .lane-scope {
+    min-width: 0;
+    width: 100%;
+   }
+
+   .lane-body--sized .lane-scope-columns,
+   .lane-body--sized .lane-data-grid-wrap {
+    box-sizing: border-box;
+    max-width: 100%;
+    min-width: 0;
+    width: 100%;
+   }
+
+   .lane-resizer {
+    bottom: 0;
+    cursor: ew-resize;
+    position: absolute;
+    right: -4px;
+    top: 0;
+    touch-action: none;
+    user-select: none;
+    width: 8px;
+    z-index: 3;
+   }
+
+   .lane-resizer::after {
+    background: transparent;
+    bottom: 0;
+    content: "";
+    left: 3px;
+    position: absolute;
+    top: 0;
+    transition: background-color 120ms ease;
+    width: 2px;
+   }
+
+   .lane-resizer:hover::after,
+   .lane-resizer--hover::after,
+   .lane-resizer--active::after {
+    background: #9ce5ffaa;
    }
 
    .lane-notebook {
@@ -604,28 +712,111 @@
     white-space: normal;
    }
 
+   .lane-line--multiline {
+    align-items: stretch;
+   }
+
+   .lane-line--multiline .lane-line-num,
+   .lane-line--multiline .lane-line-remove {
+    align-self: start;
+   }
+
    .lane-line-num {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    box-sizing: border-box;
     color: #ffffff60;
+    font-family: "IBM Plex Mono", monospace;
     font-size: 11px;
+    line-height: 1.25;
+    padding: 0.2em 0.25em;
     text-align: right;
     user-select: none;
+    width: 100%;
+   }
+
+   .lane-line-num--editable {
+    cursor: pointer;
+   }
+
+   .lane-line-num--editable:hover,
+   .lane-line-num--editable:focus-visible {
+    background: #ffffff18;
+    border-color: #ffffff28;
+    color: white;
+    outline: none;
+   }
+
+   .lane-line-num--active,
+   .lane-line-num--active:hover,
+   .lane-line-num--active:focus-visible {
+    background: #9ce5ff22;
+    border-color: #9ce5ff55;
+    color: #d6f5ff;
    }
 
    .lane-line-input {
     background: #ffffff08;
     border: 1px solid #ffffff16;
     border-radius: 4px;
+    box-sizing: border-box;
     color: white;
     font-family: "IBM Plex Mono", monospace;
     font-size: 12px;
+    line-height: 1.35;
     outline: none;
     padding: 0.25em 0.45em;
     white-space: pre;
+    width: 100%;
    }
 
    .lane-line-input:focus {
     background: #ffffff10;
     border-color: #ffffff44;
+   }
+
+   .lane-line-input:disabled {
+    background: #ffffff05;
+    border-color: #ffffff10;
+    color: #ffffff66;
+    cursor: not-allowed;
+    opacity: 0.65;
+   }
+
+   .lane-line-input--multiline {
+    display: block;
+    min-height: calc(1.35em + 0.5em + 2px);
+    overflow-x: auto;
+    overflow-y: auto;
+    resize: vertical;
+   }
+
+   .lane-line-editor {
+    background: #ffffff0c;
+    border: 1px solid #9ce5ff44;
+    border-radius: 4px;
+    box-sizing: border-box;
+    color: white;
+    display: block;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    grid-column: 2 / 4;
+    line-height: 1.35;
+    min-height: 3.5em;
+    min-width: 0;
+    outline: none;
+    overflow-x: auto;
+    overflow-y: auto;
+    padding: 0.35em 0.5em;
+    resize: vertical;
+    white-space: pre;
+    width: 100%;
+   }
+
+   .lane-line-editor:focus {
+    background: #ffffff12;
+    border-color: #9ce5ff80;
    }
 
    .lane-line-preview {
@@ -639,6 +830,17 @@
     padding: 0.25em 0.45em;
     text-overflow: ellipsis;
     white-space: nowrap;
+   }
+
+   .lane-line--multiline .lane-line-preview {
+    align-self: stretch;
+    box-sizing: border-box;
+    height: 0;
+    min-height: 100%;
+    overflow: auto;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+    white-space: pre-wrap;
    }
 
    .lane-line-preview:empty {
@@ -792,7 +994,7 @@
     display: flex;
     inset: 0;
     justify-content: center;
-    padding: 1.5em;
+    padding: 1.5em calc(32px + 1.5em);
     position: fixed;
     white-space: normal;
     z-index: 1000;
@@ -1699,6 +1901,66 @@
     white-space: normal;
    }
 
+   .lane-data-type-wrap .lane-data-constraint-add {
+    flex: 0 0 auto;
+    font-size: 11px;
+    min-width: 8.5em;
+    width: auto;
+   }
+
+   .lane-data-type-wrap .lane-data-constraint-add[hidden] {
+    display: none;
+   }
+
+   .lane-data-constraint-config {
+    border-left: 2px solid #9ce5ff38;
+    display: flex;
+    flex-direction: column;
+    gap: 0.28em;
+    margin-top: 0.35em;
+    padding-left: 0.45em;
+    white-space: normal;
+   }
+
+   .lane-data-constraint-config[hidden] {
+    display: none;
+   }
+
+   .lane-data-constraint-header {
+    align-items: center;
+    display: flex;
+    gap: 0.35em;
+    justify-content: space-between;
+   }
+
+   .lane-data-constraint-title {
+    color: #9ce5ffcc;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+    font-weight: bold;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+   }
+
+   .lane-data-constraint-remove {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    color: #ffffff80;
+    cursor: pointer;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    line-height: 1;
+    padding: 0.08em 0.32em;
+   }
+
+   .lane-data-constraint-remove:hover,
+   .lane-data-constraint-remove:focus {
+    background: #ff555524;
+    border-color: #ff555555;
+    color: #ff9c9c;
+   }
+
    .lane-data-th--multi {
     text-align: center;
     width: 4.5em;
@@ -1947,6 +2209,69 @@
     background: #ff55551a;
     border-color: #ff5555aa;
     color: #ffb8b8;
+   }
+
+   .lane-data-cell-select {
+    background-color: #1c1c1c;
+    border: 1px solid #ffffff1c;
+    border-radius: 4px;
+    box-sizing: border-box;
+    color: white;
+    cursor: pointer;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    min-width: 7em;
+    outline: none;
+    padding: 0.22em 0.4em;
+    white-space: nowrap;
+    width: 100%;
+   }
+
+   .lane-data-cell-select option {
+    background-color: #1c1c1c;
+    color: white;
+   }
+
+   .lane-data-cell-select:focus {
+    background-color: #252525;
+    border-color: #9ce5ff66;
+   }
+
+   .lane-data-cell-select:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+   }
+
+   .lane-data-cell-select--unconfigured {
+    border-color: #ff9c5566;
+    color: #ffd1a3;
+   }
+
+   .lane-data-cell-select--invalid,
+   .lane-data-cell-select--invalid:focus {
+    background-color: #3a1216;
+    border-color: #ff5555cc;
+    box-shadow: inset 0 0 0 1px #ff555540;
+    color: #ffb0b0;
+   }
+
+   .lane-data-cell-select--invalid option[data-invalid="true"] {
+    background-color: #3a1216;
+    color: #ff9c9c;
+   }
+
+   .lane-data-td--sized .lane-data-cell-select {
+    min-width: 0;
+   }
+
+   .lane-data-multi-item .lane-data-cell-select {
+    border-color: transparent;
+    min-width: 5.5em;
+    width: auto;
+   }
+
+   .lane-data-multi-item .lane-data-cell-select--invalid {
+    border-color: #ff5555cc;
    }
 
    .lane-data-bool-wrap {
@@ -2259,6 +2584,203 @@
     cursor: wait;
     opacity: 0.55;
    }
+
+   .side-rail {
+    align-items: center;
+    background-color: #383838;
+    bottom: 0;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 4px 0;
+    position: fixed;
+    top: 0;
+    width: 32px;
+    z-index: 2000;
+   }
+
+   .side-rail--left {
+    border-right: 1px solid #ffffff24;
+    left: 0;
+   }
+
+   .side-rail--right {
+    border-left: 1px solid #ffffff24;
+    right: 0;
+   }
+
+   .side-rail-icon {
+    align-items: center;
+    background: #ffffff0e;
+    border: 1px solid #ffffff24;
+    border-radius: 4px;
+    box-sizing: border-box;
+    color: white;
+    cursor: pointer;
+    display: inline-flex;
+    flex-shrink: 0;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    height: 26px;
+    justify-content: center;
+    line-height: 1;
+    padding: 0;
+    user-select: none;
+    white-space: nowrap;
+    width: 26px;
+   }
+
+   .side-rail-icon:hover,
+   .side-rail-icon:focus {
+    background: #ffffff1e;
+    border-color: #ffffff48;
+    outline: none;
+   }
+
+   .side-rail-preview {
+    background: #202020;
+    border: 1px solid #ffffff28;
+    border-radius: 8px;
+    box-shadow: 0 16px 48px #000000c8;
+    box-sizing: border-box;
+    max-height: calc(100dvh - 24px);
+    max-width: min(70vw, 680px);
+    overflow: hidden;
+    pointer-events: none;
+    position: fixed;
+    top: 8px;
+    user-select: none;
+    z-index: 2100;
+   }
+
+   .side-rail-preview * {
+    pointer-events: none;
+   }
+
+   .side-rail-preview[hidden] {
+    display: none;
+   }
+
+   .side-rail-preview--left {
+    left: 38px;
+    right: auto;
+   }
+
+   .side-rail-preview--right {
+    left: auto;
+    right: 38px;
+   }
+
+   .side-rail-preview-frame {
+    display: flex;
+    flex-direction: column;
+    white-space: normal;
+   }
+
+   .side-rail-preview-header {
+    border-left: none;
+    border-right: none;
+    padding: 0.25em 0.75em;
+   }
+
+   .side-rail-preview-body {
+    border-left: none;
+    border-right: none;
+   }
+
+   .lane-header--minimized {
+    background: #ffffff05;
+    box-sizing: border-box;
+    max-width: 34px;
+    min-width: 34px;
+    padding: 4px 3px;
+    text-align: center;
+    vertical-align: middle;
+    width: 34px;
+   }
+
+   .lane-header--minimized > .lane-header-top,
+   .lane-header--minimized > .lane-resizer {
+    display: none;
+   }
+
+   .lane-minimized-header-btn {
+    align-items: center;
+    background: #ffffff0e;
+    border: 1px solid #ffffff24;
+    border-radius: 4px;
+    box-sizing: border-box;
+    color: #ffffffb0;
+    cursor: pointer;
+    display: inline-flex;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    height: 26px;
+    justify-content: center;
+    line-height: 1;
+    padding: 0;
+    width: 26px;
+   }
+
+   .lane-minimized-header-btn:hover,
+   .lane-minimized-header-btn:focus {
+    background: #ffffff1e;
+    border-color: #ffffff48;
+    color: white;
+    outline: none;
+   }
+
+   .lane-body--minimized {
+    box-sizing: border-box;
+    max-width: 34px;
+    min-width: 34px;
+    padding: 4px 3px;
+    vertical-align: top;
+    width: 34px;
+   }
+
+   .lane-body--minimized > .lane-notebook,
+   .lane-body--minimized > .lane-output,
+   .lane-body--minimized > .lane-resizer {
+    display: none;
+   }
+
+   .lane-minimized-placeholder {
+    align-items: center;
+    background: #ffffff08;
+    border: 1px solid #ffffff1c;
+    border-radius: 4px;
+    box-sizing: border-box;
+    color: #ffffffb8;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    justify-content: flex-start;
+    min-height: 120px;
+    padding: 10px 4px;
+    white-space: nowrap;
+    width: 100%;
+   }
+
+   .lane-minimized-placeholder:hover,
+   .lane-minimized-placeholder:focus {
+    background: #ffffff18;
+    border-color: #ffffff48;
+    color: white;
+    outline: none;
+   }
+
+   .lane-minimized-title {
+    display: inline-block;
+    line-height: 1.2;
+    white-space: nowrap;
+    writing-mode: vertical-rl;
+   }
   </style>
   <script type="module" src="/field.mjs"></script>
  </head>
@@ -2266,6 +2788,7 @@
   <script type="module">
    import {
     DATA_COLUMN_TYPES,
+    DATA_CONSTRAINT_TYPES,
     DEFAULT_ROW_PICKER_PAGE_SIZE,
     PRIMITIVE_TYPES,
     buildTablesScope,
@@ -2278,17 +2801,23 @@
     fetchRowOptionsPage,
     field,
     filterRowOptions,
+    findWorkflowDefaultColumns,
     formatCellInputValue,
     formatColumnType,
     formatHashOptions,
     formatImportLine,
     formatLaneRoutes,
+    getLaneInitial,
+    getWorkflowCellState,
     hasImportCycle,
     lookupRowDisplay,
+    normalizeColumnConstraint,
     normalizeColumnWidth,
     normalizeDataColumnType,
     normalizeFixedDecimals,
+    normalizeLaneMinimizeSide,
     normalizeLaneTab,
+    normalizeLaneWidth,
     normalizePrimitiveType,
     parseCellValue,
     parseColumnType,
@@ -2297,9 +2826,11 @@
     parseLaneRoutes,
     parseStoredTables,
     resolveImportValue,
+    resolveLaneRenderedWidth,
     resolveRowTarget,
     resolveRowValueSpec,
     resolveScopeColumns,
+    resolveWorkflowTarget,
     runLines,
     runTransportedScripts
    } from '/field.mjs'
@@ -2312,6 +2843,7 @@
     createIdleTracker,
     data,
     dataColumnTypes: DATA_COLUMN_TYPES,
+    dataConstraintTypes: DATA_CONSTRAINT_TYPES,
     dataValuesEqual,
     defaultDataValue,
     defaultRowPickerPageSize: DEFAULT_ROW_PICKER_PAGE_SIZE,
@@ -2319,17 +2851,23 @@
     document,
     fetchRowOptionsPage,
     filterRowOptions,
+    findWorkflowDefaultColumns,
     formatCellInputValue,
     formatColumnType,
     formatHashOptions,
     formatImportLine,
     formatLaneRoutes,
+    getLaneInitial,
+    getWorkflowCellState,
     hasImportCycle,
     lookupRowDisplay,
+    normalizeColumnConstraint,
     normalizeColumnWidth,
     normalizeDataColumnType,
     normalizeFixedDecimals,
+    normalizeLaneMinimizeSide,
     normalizeLaneTab,
+    normalizeLaneWidth,
     normalizePrimitiveType,
     parseCellValue,
     parseColumnType,
@@ -2339,12 +2877,26 @@
     parseStoredTables,
     primitiveTypes: PRIMITIVE_TYPES,
     resolveImportValue,
+    resolveLaneRenderedWidth,
     resolveRowTarget,
     resolveRowValueSpec,
     resolveScopeColumns,
+    resolveWorkflowTarget,
     runLines,
     runTransportedScripts
    })
+   if ('serviceWorker' in navigator) {
+    const registerServiceWorker = () => {
+     navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(err => {
+      console.warn('Service worker registration failed:', err)
+     })
+    }
+    if (document.readyState === 'complete') {
+     registerServiceWorker()
+    } else {
+     window.addEventListener('load', registerServiceWorker, { once: true })
+    }
+   }
    await main.load('/src/main.fs')
   </script>
  </body>

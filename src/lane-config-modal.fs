@@ -27,6 +27,14 @@
  ; to title-input !document.createElement input
  ; assign $title-input { type text } { className lane-config-input } { placeholder 'Lane title...' } { spellcheck false } { autocomplete off }
 
+ ; to width-field-wrap !document.createElement div
+ ; set lane-config-field width-field-wrap.className
+ ; to width-label !document.createElement label
+ ; assign $width-label { className lane-config-label } { textContent Width }
+ ; to width-input !document.createElement input
+ ; assign $width-input { type text } { className lane-config-input } { placeholder 'Auto (px)' } { spellcheck false } { autocomplete off }
+ !width-input.setAttribute inputmode numeric
+
  ; to footer !document.createElement div
  ; set lane-config-footer footer.className
  ; to cancel-btn !document.createElement button
@@ -40,9 +48,12 @@
  !header.appendChild $close-btn
  !field-wrap.appendChild $title-label
  !field-wrap.appendChild $title-input
+ !width-field-wrap.appendChild $width-label
+ !width-field-wrap.appendChild $width-input
  !footer.appendChild $cancel-btn
  !footer.appendChild $save-btn
  !form.appendChild $field-wrap
+ !form.appendChild $width-field-wrap
  !form.appendChild $footer
  !panel.appendChild $header
  !panel.appendChild $form
@@ -54,6 +65,7 @@
   { form $form }
   { id-el $id-el }
   { title-input $title-input }
+  { width-input $width-input }
   { close-btn $close-btn }
   { cancel-btn $cancel-btn }
   { save-btn $save-btn }
@@ -71,7 +83,7 @@
  )
 
  ; to modal.save (
-  -- Saves configured lane changes and closes the modal
+  -- Saves configured lane changes (Title and Width) and closes the modal
   ; to lane $modal.lane
   [ match
    { $lane (
@@ -81,6 +93,21 @@
      { true : $trimmed }
     ]
     !lane-control.rename $lane.id $next-title
+    ; to raw-width !width-input.value.trim
+    ; to next-width [ match
+     { [ propertyIs '' raw-width ] : null }
+     { true (
+      ; to parsed !normalizeLaneWidth $raw-width
+      [ match
+       { [ propertyIs null parsed ] : $lane.width }
+       { true : $parsed }
+      ]
+     ) }
+    ]
+    [ match
+     { [ propertyIs $lane.width next-width ] : null }
+     { true : !lane-control.set-width $lane.id $next-width }
+    ]
     !modal.close
    ) }
   ]
@@ -94,6 +121,12 @@
     ; set $lane modal.lane
     ; set $lane.id id-el.textContent
     ; set $lane.title title-input.value
+    ; to width-text [ match
+     { [ propertyIs null lane.width ] : '' }
+     { [ propertyIs undefined lane.width ] : '' }
+     { true : ; add '' $lane.width }
+    ]
+    ; set $width-text width-input.value
     ; condition { propertyIs false modal.is-open } (
      ; set true modal.is-open
      !document.body.appendChild $backdrop

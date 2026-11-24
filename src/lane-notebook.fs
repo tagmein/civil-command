@@ -20,6 +20,70 @@
   { true : !stored.split '\n' }
  ]
 )
+; to scope.has-newline (
+ -- Returns true when a line string contains a newline character
+ ; to { text } $argv
+ [ match
+  { [ propertyIs null text ] : false }
+  { [ propertyIs undefined text ] : false }
+  { [ !text.includes '\n' ] : true }
+  { [ !text.includes '\r' ] : true }
+  { true : false }
+ ]
+)
+; to scope.auto-size-textarea (
+ -- Expands a textarea element vertically to fit its current content without ever shrinking it
+ ; to { el } $argv
+ [ match
+  { $el (
+   ; to text [ match
+    { [ propertyIs null el.value ] : '' }
+    { [ propertyIs undefined el.value ] : '' }
+    { true : $el.value }
+   ]
+   ; to parts !text.split '\n'
+   ; to line-count !window.Math.max 1 $parts.length
+   ; to prev-rows [ match
+    { [ propertyIsGreaterThan 0 el.rows ] : $el.rows }
+    { true : 1 }
+   ]
+   ; to next-rows !window.Math.max $prev-rows $line-count
+   ; set $next-rows el.rows
+   [ match
+    { $el.style (
+     ; to prev-style-h !normalizeLaneWidth $el.style.height
+     ; to prev-h [ match
+      { [ propertyIsGreaterThan 0 prev-style-h ] : $prev-style-h }
+      { true : 0 }
+     ]
+     ; to sh $el.scrollHeight
+     [ match
+      { [ propertyIsGreaterThan 0 sh ] (
+       ; to oh [ match
+        { [ propertyIsGreaterThan 0 el.offsetHeight ] : $el.offsetHeight }
+        { true : 0 }
+       ]
+       ; to ch [ match
+        { [ propertyIsGreaterThan 0 el.clientHeight ] : $el.clientHeight }
+        { true : 0 }
+       ]
+       ; to raw-border ; subtract $oh $ch
+       ; to border [ match
+        { [ propertyIsGreaterThan 0 raw-border ] : $raw-border }
+        { true : 0 }
+       ]
+       ; to needed ; add $sh $border
+       ; to target !window.Math.max $prev-h $needed
+       [ match
+        { [ propertyIsGreaterThan $prev-h target ] : ; set [ ; add $target px ] el.style.height }
+       ]
+      ) }
+     ]
+    ) }
+   ]
+  ) }
+ ]
+)
 ; to scope.mount (
  -- Mounts a persistent, live-evaluated FieldScript notebook inside a lane container
  ; to { lane container lane-control initial-tab } $argv
@@ -37,6 +101,7 @@
   { sent {} }
   { state ; object }
   { run-id 0 }
+  { editing-row null }
   { idle-tracker $idle-tracker }
  ]
  ; to root-el !document.createElement div
@@ -169,6 +234,16 @@
   )
  )
 
+ ; to nb.auto-size-rows (
+  -- Auto-sizes all multiline row textareas and any active individual line editor
+  ; each $nb.rows (
+   ; to { row } $argv
+   [ match
+    { $row.auto-size : !row.auto-size }
+   ]
+  )
+ )
+
  ; to nb.apply-tab-ui (
   -- Updates tab button active styles, panel visibility, and View output mode for the current active tab
   ; to active $nb.active-tab
@@ -194,6 +269,16 @@
   ; set [ ternary $is-scope false true ] scope-panel.hidden
   ; set [ ternary $is-data false true ] data-panel.hidden
   !output-view.set-always-visible $is-view
+  [ match
+   { $is-source (
+    !nb.auto-size-rows
+    [ match
+     { $window.requestAnimationFrame (
+      !window.requestAnimationFrame : !nb.auto-size-rows
+     ) }
+    ]
+   ) }
+  ]
  )
 
  ; to nb.set-tab (
@@ -441,6 +526,86 @@
   $row
  )
 
+ ; to nb.close-line-editor (
+  -- Exits Edit individual line mode for the currently active row, re-enabling its line input
+  ; to { restore-focus } $argv
+  ; to active $nb.editing-row
+  [ match
+   { $active (
+    ; set null nb.editing-row
+    ; set false active.is-editing
+    ; set false active.input-el.disabled
+    [ match
+     { $active.editor-el (
+      !active.editor-el.remove
+      ; set null active.editor-el
+     ) }
+    ]
+    !active.update-classes
+    !active.auto-size
+    [ match
+     { $restore-focus (
+      [ match
+       { $active.input-el.focus : !active.input-el.focus }
+      ]
+     ) }
+    ]
+   ) }
+  ]
+ )
+
+ ; to nb.open-line-editor (
+  -- Toggles Edit individual line mode for the given code row
+  ; to { row } $argv
+  [ match
+   { [ propertyIs $row nb.editing-row ] : !nb.close-line-editor true }
+   { true (
+    !nb.close-line-editor false
+    ; set $row nb.editing-row
+    ; set true row.is-editing
+    ; set true row.input-el.disabled
+    ; to current-text [ get nb.lines $row.index ]
+    ; to text [ match
+     { [ propertyIs null current-text ] : '' }
+     { [ propertyIs undefined current-text ] : '' }
+     { true : $current-text }
+    ]
+    ; to editor-el !document.createElement textarea
+    ; assign $editor-el { className lane-line-editor } { value $text } { placeholder 'FieldScript...' } { spellcheck false } { autocomplete off }
+    ; set $editor-el row.editor-el
+    !row.el.appendChild $editor-el
+    !row.update-classes
+    !scope.auto-size-textarea $editor-el
+    !editor-el.addEventListener input (
+     ; to next-val $editor-el.value
+     ; to nb.lines $row.index $next-val
+     !row.sync-input-control $next-val false
+     !scope.auto-size-textarea $editor-el
+     !nb.run
+     !nb.save
+    )
+    !editor-el.addEventListener keydown (
+     ; to { ev } $argv
+     ; condition { propertyIs Escape ev.key } (
+      [ match
+       { $ev.preventDefault : !ev.preventDefault }
+      ]
+      !nb.close-line-editor true
+     )
+    )
+    [ match
+     { $editor-el.focus : !editor-el.focus }
+    ]
+    [ match
+     { $window.requestAnimationFrame (
+      !window.requestAnimationFrame : !scope.auto-size-textarea $editor-el
+     ) }
+    ]
+    $editor-el
+   ) }
+  ]
+ )
+
  ; to nb.create-row (
   -- Creates DOM elements and event bindings for a single script line or import line
   ; to { text } $argv
@@ -448,63 +613,174 @@
   [ match
    { $import-spec : !nb.create-import-row $import-spec }
    { true (
+    ; to initial-multiline !scope.has-newline $text
     ; to el !document.createElement div
-    ; set lane-line el.className
-    ; to num-el !document.createElement span
-    ; set lane-line-num num-el.className
-    ; to input-el !document.createElement input
-    ; assign $input-el { type text } { className lane-line-input } { value $text } { placeholder 'FieldScript...' } { spellcheck false } { autocomplete off }
+    ; to num-el !document.createElement button
+    ; assign $num-el { type button }
     ; to preview-el !document.createElement code
     ; set lane-line-preview preview-el.className
     ; to remove-btn !document.createElement button
     ; assign $remove-btn { type button } { className lane-line-remove } { textContent '×' } { title 'Remove line' }
-    !el.appendChild $num-el
-    !el.appendChild $input-el
-    !el.appendChild $preview-el
-    !el.appendChild $remove-btn
     ; to row [ object
      { kind code }
      { el $el }
      { num-el $num-el }
-     { input-el $input-el }
+     { input-el null }
+     { editor-el null }
      { preview-el $preview-el }
      { remove-btn $remove-btn }
+     { is-multiline $initial-multiline }
+     { is-editing false }
      { index 0 }
     ]
-    !input-el.addEventListener input (
-     ; to nb.lines $row.index $input-el.value
-     !nb.run
-     !nb.save
-    )
-    !input-el.addEventListener keydown (
-     ; to { ev } $argv
-     ; condition { propertyIs Enter ev.key } (
-      !ev.preventDefault
-      ; to next-idx ; add $row.index 1
-      !nb.insert-line $next-idx ''
-     )
-    )
-    !input-el.addEventListener paste (
-     ; to { ev } $argv
-     ; to clip [ match
-      { $ev.clipboardData : !ev.clipboardData.getData text/plain }
-      { true : '' }
+
+    ; to row.update-classes (
+     -- Syncs row and line-number CSS classes for multiline and edit-individual-line states
+     ; to line-cls [ match
+      { [ and { propertyIs true row.is-multiline } { propertyIs true row.is-editing } ] : 'lane-line lane-line--multiline lane-line--editing' }
+      { [ propertyIs true row.is-multiline ] : 'lane-line lane-line--multiline' }
+      { [ propertyIs true row.is-editing ] : 'lane-line lane-line--editing' }
+      { true : lane-line }
      ]
-     ; to no-crlf !clip.replaceAll '\r\n' '\n'
-     ; to normalized !no-crlf.replaceAll '\r' '\n'
-     ; to parts !normalized.split '\n'
-     ; condition { propertyIsGreaterThan 1 parts.length } (
-      ; to last-idx ; subtract $parts.length 1
-      ; to last-item [ get parts $last-idx ]
-      ; condition { propertyIs '' last-item } : !parts.pop
-     )
-     ; condition { propertyIsGreaterThan 1 parts.length } (
-      [ match
-       { $ev.preventDefault : !ev.preventDefault }
-      ]
-      !nb.paste-lines $row $parts
-     )
+     ; set $line-cls row.el.className
+     ; to num-cls [ match
+      { [ propertyIs true row.is-editing ] : 'lane-line-num lane-line-num--editable lane-line-num--active' }
+      { true : 'lane-line-num lane-line-num--editable' }
+     ]
+     ; set $num-cls row.num-el.className
+     ; to num-title [ match
+      { [ propertyIs true row.is-editing ] : 'Exit individual line editor' }
+      { true : 'Edit individual line' }
+     ]
+     ; set $num-title row.num-el.title
     )
+
+    ; to row.auto-size (
+     -- Auto-sizes multiline row input and any open individual line editor textarea
+     ; condition { propertyIs true row.is-multiline } : !scope.auto-size-textarea $row.input-el
+     [ match
+      { $row.editor-el : !scope.auto-size-textarea $row.editor-el }
+     ]
+    )
+
+    ; to row.build-input-el (
+     -- Creates either a single-line <input> or multiline <textarea> for this code row
+     ; to { value multiline } $argv
+     ; to ctrl [ match
+      { $multiline (
+       ; to ta !document.createElement textarea
+       ; assign $ta { className 'lane-line-input lane-line-input--multiline' } { value $value } { placeholder 'FieldScript...' } { spellcheck false } { autocomplete off }
+       !scope.auto-size-textarea $ta
+       $ta
+      ) }
+      { true (
+       ; to inp !document.createElement input
+       ; assign $inp { type text } { className lane-line-input } { value $value } { placeholder 'FieldScript...' } { spellcheck false } { autocomplete off }
+       $inp
+      ) }
+     ]
+     ; set $row.is-editing ctrl.disabled
+     !ctrl.addEventListener input (
+      ; to next-val $ctrl.value
+      ; to nb.lines $row.index $next-val
+      ; to still-multi !scope.has-newline $next-val
+      [ match
+       { [ propertyIs $row.is-multiline still-multi ] (
+        ; condition { propertyIs true row.is-multiline } : !scope.auto-size-textarea $ctrl
+       ) }
+       { true : !row.sync-input-control $next-val true }
+      ]
+      !nb.run
+      !nb.save
+     )
+     [ match
+      { $multiline : null }
+      { true (
+       !ctrl.addEventListener keydown (
+        ; to { ev } $argv
+        ; condition { propertyIs Enter ev.key } (
+         !ev.preventDefault
+         ; to next-idx ; add $row.index 1
+         !nb.insert-line $next-idx ''
+        )
+       )
+       !ctrl.addEventListener paste (
+        ; to { ev } $argv
+        ; to clip [ match
+         { $ev.clipboardData : !ev.clipboardData.getData text/plain }
+         { true : '' }
+        ]
+        ; to no-crlf !clip.replaceAll '\r\n' '\n'
+        ; to normalized !no-crlf.replaceAll '\r' '\n'
+        ; to parts !normalized.split '\n'
+        ; condition { propertyIsGreaterThan 1 parts.length } (
+         ; to last-idx ; subtract $parts.length 1
+         ; to last-item [ get parts $last-idx ]
+         ; condition { propertyIs '' last-item } : !parts.pop
+        )
+        ; condition { propertyIsGreaterThan 1 parts.length } (
+         [ match
+          { $ev.preventDefault : !ev.preventDefault }
+         ]
+         !nb.paste-lines $row $parts
+        )
+       )
+      ) }
+     ]
+     $ctrl
+    )
+
+    ; to row.sync-input-control (
+     -- Syncs row input value and swaps between <input> and <textarea> when newline presence changes
+     ; to { next-val restore-focus } $argv
+     ; to needs-multiline !scope.has-newline $next-val
+     [ match
+      { [ propertyIs $row.is-multiline needs-multiline ] (
+       ; set $next-val row.input-el.value
+       ; condition { propertyIs true row.is-multiline } : !scope.auto-size-textarea $row.input-el
+      ) }
+      { true (
+       ; to old-input $row.input-el
+       ; to sel-start $old-input.selectionStart
+       ; to sel-end $old-input.selectionEnd
+       ; set $needs-multiline row.is-multiline
+       ; to next-input !row.build-input-el $next-val $needs-multiline
+       ; set $next-input row.input-el
+       !row.el.insertBefore $next-input $row.preview-el
+       !old-input.remove
+       !row.update-classes
+       ; condition { propertyIs true needs-multiline } : !scope.auto-size-textarea $next-input
+       [ match
+        { $restore-focus (
+         [ match
+          { $next-input.focus : !next-input.focus }
+         ]
+         [ match
+          { [ propertyIs null sel-start ] : null }
+          { [ propertyIs undefined sel-start ] : null }
+          { $next-input.setSelectionRange (
+           ; to end-pos [ match
+            { [ propertyIs null sel-end ] : $sel-start }
+            { [ propertyIs undefined sel-end ] : $sel-start }
+            { true : $sel-end }
+           ]
+           !next-input.setSelectionRange $sel-start $end-pos
+          ) }
+         ]
+        ) }
+       ]
+      ) }
+     ]
+    )
+
+    ; to input-el !row.build-input-el $text $initial-multiline
+    ; set $input-el row.input-el
+    !el.appendChild $num-el
+    !el.appendChild $input-el
+    !el.appendChild $preview-el
+    !el.appendChild $remove-btn
+    !row.update-classes
+    !num-el.addEventListener click : !nb.open-line-editor $row
     !remove-btn.addEventListener click : !nb.remove-line $row.index
     $row
    ) }
@@ -526,6 +802,9 @@
   [ match
    { $next-row : !lines-el.insertBefore $row.el $next-row.el }
    { true : !lines-el.appendChild $row.el }
+  ]
+  [ match
+   { $row.auto-size : !row.auto-size }
   ]
   $row
  )
@@ -620,6 +899,7 @@
   ; to row [ get nb.rows $index ]
   [ match
    { $row (
+    ; condition { propertyIs $row nb.editing-row } : !nb.close-line-editor false
     !row.el.remove
     !nb.lines.splice $index 1
     !nb.rows.splice $index 1

@@ -433,6 +433,56 @@
     )
     ; object { el $wrap } { input-el $cb } { label-el $txt }
    ) }
+   { [ match { [ propertyIs text col.type ] : !normalizeColumnConstraint $col.constraint } { true : null } ] (
+    ; to select-el !document.createElement select
+    ; to ctrl-state ; object { value $initial-val } { option-els {} }
+    ; to render-options (
+     ; to { cur-val } $argv
+     ; set $cur-val ctrl-state.value
+     ; while { propertyIsGreaterThan 0 ctrl-state.option-els.length } (
+      ; to old-opt !ctrl-state.option-els.pop
+      !old-opt.remove
+     )
+     ; to wf-state !getWorkflowCellState $view.tables $col $cur-val
+     ; each $wf-state.options (
+      ; to { opt-spec } $argv
+      ; to opt !document.createElement option
+      ; assign $opt { value $opt-spec.value } { textContent $opt-spec.label }
+      ; condition { propertyIs true opt-spec.isCurrent } : ; set true opt.selected
+      ; condition { propertyIs true opt-spec.isInvalid } : !opt.setAttribute data-invalid 'true'
+      !select-el.appendChild $opt
+      !ctrl-state.option-els.push $opt
+     )
+     ; set $wf-state.currentValue select-el.value
+     [ match
+      { [ propertyIs false wf-state.valid ] (
+       ; set 'lane-data-cell-select lane-data-cell-select--unconfigured' select-el.className
+       ; set true select-el.disabled
+       !select-el.setAttribute aria-invalid 'false'
+       ; set $wf-state.hint select-el.title
+      ) }
+      { [ propertyIs false wf-state.isValueValid ] (
+       ; set 'lane-data-cell-select lane-data-cell-select--invalid' select-el.className
+       ; set false select-el.disabled
+       !select-el.setAttribute aria-invalid 'true'
+       ; set $wf-state.error select-el.title
+      ) }
+      { true (
+       ; set lane-data-cell-select select-el.className
+       ; set false select-el.disabled
+       !select-el.setAttribute aria-invalid 'false'
+       ; set $wf-state.hint select-el.title
+      ) }
+     ]
+    )
+    !render-options $initial-val
+    !select-el.addEventListener change (
+     ; to next-val $select-el.value
+     !render-options $next-val
+     !$on-valid $next-val
+    )
+    ; object { el $select-el } { input-el $select-el } { select-el $select-el } { option-els $ctrl-state.option-els } { render-options $render-options }
+   ) }
    { true (
     ; to input-el !document.createElement input
     ; to input-type [ match
@@ -559,6 +609,8 @@
    ; to item-rec [ object
     { el $item-el }
     { input-el $ctrl.input-el }
+    { select-el $ctrl.select-el }
+    { option-els $ctrl.option-els }
     { trigger-el $ctrl.trigger-el }
     { display-el $ctrl.display-el }
     { id-el $ctrl.id-el }
@@ -711,6 +763,17 @@
            ; set $hint-title type-span.title
           ) }
           { true : ; set 'Linked row column not configured' type-span.title }
+         ]
+        ) }
+        { [ propertyIs text col.type ] (
+         ; to wf-target !resolveWorkflowTarget $view.tables $col
+         [ match
+          { [ propertyIs false wf-target.active ] : null }
+          { $wf-target.valid (
+           ; to wf-title ; add 'Workflow: ' ; add $wf-target.tableName ; add ' (' ; add $wf-target.fromColName ; add ' → ' ; add $wf-target.toColName ')'
+           ; set $wf-title type-span.title
+          ) }
+          { true : ; set 'Workflow constraint not configured' type-span.title }
          ]
         ) }
        ]
@@ -867,6 +930,8 @@
            { td $td }
            { multi false }
            { input-el $ctrl.input-el }
+           { select-el $ctrl.select-el }
+           { option-els $ctrl.option-els }
            { trigger-el $ctrl.trigger-el }
            { display-el $ctrl.display-el }
            { id-el $ctrl.id-el }
@@ -944,6 +1009,23 @@
       ; set undefined col.refColumnId
       ; set undefined col.refDisplayColumnId
      ) }
+    ]
+   ) }
+  ]
+  [ match
+   { [ propertyIs text next-spec.type ] [ match
+    { $next-spec.constraint : ; set $next-spec.constraint col.constraint }
+    { true (
+     [ match
+      { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col constraint }
+      { true : ; set undefined col.constraint }
+     ]
+    ) }
+   ] }
+   { true (
+    [ match
+     { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col constraint }
+     { true : ; set undefined col.constraint }
     ]
    ) }
   ]
@@ -1174,8 +1256,30 @@
      !decimals-el.setAttribute step '1'
      !decimals-wrap.appendChild $decimals-label
      !decimals-wrap.appendChild $decimals-el
+
+     ; to is-text [ propertyIs text col.type ]
+     ; to cur-constraint [ match
+      { $is-text : !normalizeColumnConstraint $col.constraint }
+      { true : null }
+     ]
+     ; to has-constraint [ match { $cur-constraint : true } { true : false } ]
+     ; to show-add-constraint [ match
+      { $is-text : [ ternary $has-constraint false true ] }
+      { true : false }
+     ]
+     ; to constraint-add-el !document.createElement select
+     ; assign $constraint-add-el { className 'lane-input-type lane-data-constraint-add' } { hidden [ ternary $show-add-constraint false true ] } { title 'Add column constraint' }
+     ; to constraint-add-placeholder !document.createElement option
+     ; assign $constraint-add-placeholder { value '' } { textContent '+ constraint' }
+     !constraint-add-el.appendChild $constraint-add-placeholder
+     ; to constraint-add-wf !document.createElement option
+     ; assign $constraint-add-wf { value workflow } { textContent Workflow }
+     !constraint-add-el.appendChild $constraint-add-wf
+     ; set '' constraint-add-el.value
+
      !type-wrap.appendChild $type-el
      !type-wrap.appendChild $decimals-wrap
+     !type-wrap.appendChild $constraint-add-el
      !type-td.appendChild $type-wrap
 
      ; to is-row [ propertyIs row col.type ]
@@ -1304,6 +1408,145 @@
      !row-config-wrap.appendChild $row-hint-el
      !type-td.appendChild $row-config-wrap
 
+     ; to constraint-config-wrap !document.createElement div
+     ; assign $constraint-config-wrap { className lane-data-constraint-config } { hidden [ ternary $has-constraint false true ] }
+
+     ; to constraint-header !document.createElement div
+     ; set lane-data-constraint-header constraint-header.className
+     ; to constraint-title !document.createElement span
+     ; assign $constraint-title { className lane-data-constraint-title } { textContent Constraint }
+     ; to constraint-remove-btn !document.createElement button
+     ; assign $constraint-remove-btn { type button } { className lane-data-constraint-remove } { textContent '×' } { title 'Remove constraint' }
+     !constraint-header.appendChild $constraint-title
+     !constraint-header.appendChild $constraint-remove-btn
+
+     ; to constraint-type-field !document.createElement label
+     ; set lane-data-row-field constraint-type-field.className
+     ; to constraint-type-label !document.createElement span
+     ; assign $constraint-type-label { className lane-data-row-label } { textContent Type }
+     ; to constraint-type-el !document.createElement select
+     ; set 'lane-input-type lane-data-row-select lane-data-constraint-type' constraint-type-el.className
+     ; to constraint-type-wf !document.createElement option
+     ; assign $constraint-type-wf { value workflow } { textContent Workflow }
+     !constraint-type-el.appendChild $constraint-type-wf
+     !constraint-type-field.appendChild $constraint-type-label
+     !constraint-type-field.appendChild $constraint-type-el
+
+     ; to constraint-table-field !document.createElement label
+     ; set lane-data-row-field constraint-table-field.className
+     ; to constraint-table-label !document.createElement span
+     ; assign $constraint-table-label { className lane-data-row-label } { textContent Table }
+     ; to constraint-table-el !document.createElement select
+     ; set 'lane-input-type lane-data-row-select lane-data-constraint-table' constraint-table-el.className
+     ; to constraint-table-empty !document.createElement option
+     ; assign $constraint-table-empty { value '' } { textContent 'Select table…' }
+     !constraint-table-el.appendChild $constraint-table-empty
+     !constraint-table-field.appendChild $constraint-table-label
+     !constraint-table-field.appendChild $constraint-table-el
+
+     ; to constraint-from-field !document.createElement label
+     ; set lane-data-row-field constraint-from-field.className
+     ; to constraint-from-label !document.createElement span
+     ; assign $constraint-from-label { className lane-data-row-label } { textContent From }
+     ; to constraint-from-el !document.createElement select
+     ; set 'lane-input-type lane-data-row-select lane-data-constraint-from' constraint-from-el.className
+     ; to constraint-from-empty !document.createElement option
+     ; assign $constraint-from-empty { value '' } { textContent 'Select column…' }
+     !constraint-from-el.appendChild $constraint-from-empty
+     !constraint-from-field.appendChild $constraint-from-label
+     !constraint-from-field.appendChild $constraint-from-el
+
+     ; to constraint-to-field !document.createElement label
+     ; set lane-data-row-field constraint-to-field.className
+     ; to constraint-to-label !document.createElement span
+     ; assign $constraint-to-label { className lane-data-row-label } { textContent To }
+     ; to constraint-to-el !document.createElement select
+     ; set 'lane-input-type lane-data-row-select lane-data-constraint-to' constraint-to-el.className
+     ; to constraint-to-empty !document.createElement option
+     ; assign $constraint-to-empty { value '' } { textContent 'Select column…' }
+     !constraint-to-el.appendChild $constraint-to-empty
+     !constraint-to-field.appendChild $constraint-to-label
+     !constraint-to-field.appendChild $constraint-to-el
+
+     ; to constraint-hint-el !document.createElement div
+     ; assign $constraint-hint-el { className lane-data-row-hint } { textContent '' }
+
+     [ match
+      { $has-constraint (
+       ; set $cur-constraint.type constraint-type-el.value
+       ; to cur-wf-table-id $cur-constraint.tableId
+       ; to cur-wf-from-id $cur-constraint.fromColumnId
+       ; to cur-wf-to-id $cur-constraint.toColumnId
+
+       ; to sel-wf-table-box ; object { table null }
+       ; each $view.tables (
+        ; to { t t-idx } $argv
+        ; to opt-wt !document.createElement option
+        ; assign $opt-wt { value $t.id } { textContent !view.display-table-name $t $t-idx }
+        !constraint-table-el.appendChild $opt-wt
+        ; condition { propertyIs $cur-wf-table-id t.id } : ; set $t sel-wf-table-box.table
+       )
+       ; to sel-wf-table $sel-wf-table-box.table
+       ; set [ match { $sel-wf-table : $sel-wf-table.id } { true : '' } ] constraint-table-el.value
+       ; set [ ternary $sel-wf-table 'lane-input-type lane-data-row-select lane-data-constraint-table' 'lane-input-type lane-data-row-select lane-data-constraint-table lane-data-row-select--required' ] constraint-table-el.className
+
+       ; to sel-wf-col-box ; object { from-col null } { to-col null }
+       [ match
+        { $sel-wf-table (
+         ; set false constraint-from-el.disabled
+         ; set false constraint-to-el.disabled
+         ; each $sel-wf-table.columns (
+          ; to { tc } $argv
+          ; to tc-name !view.display-col-name $tc
+          ; to tc-type !formatColumnType $tc undefined undefined $view.tables
+          ; to tc-label ; add $tc-name ; add ' (' ; add $tc-type ')'
+          ; to opt-f !document.createElement option
+          ; assign $opt-f { value $tc.id } { textContent $tc-label }
+          !constraint-from-el.appendChild $opt-f
+          ; to opt-t2 !document.createElement option
+          ; assign $opt-t2 { value $tc.id } { textContent $tc-label }
+          !constraint-to-el.appendChild $opt-t2
+          ; condition { propertyIs $cur-wf-from-id tc.id } : ; set $tc sel-wf-col-box.from-col
+          ; condition { propertyIs $cur-wf-to-id tc.id } : ; set $tc sel-wf-col-box.to-col
+         )
+        ) }
+        { true (
+         ; set true constraint-from-el.disabled
+         ; set true constraint-to-el.disabled
+        ) }
+       ]
+       ; to sel-wf-from $sel-wf-col-box.from-col
+       ; to sel-wf-to $sel-wf-col-box.to-col
+       ; set [ match { $sel-wf-from : $sel-wf-from.id } { true : '' } ] constraint-from-el.value
+       ; set [ match { $sel-wf-to : $sel-wf-to.id } { true : '' } ] constraint-to-el.value
+       ; set [ ternary $sel-wf-from 'lane-input-type lane-data-row-select lane-data-constraint-from' 'lane-input-type lane-data-row-select lane-data-constraint-from lane-data-row-select--required' ] constraint-from-el.className
+       ; set [ ternary $sel-wf-to 'lane-input-type lane-data-row-select lane-data-constraint-to' 'lane-input-type lane-data-row-select lane-data-constraint-to lane-data-row-select--required' ] constraint-to-el.className
+
+       ; to wf-hint-text [ match
+        { [ propertyIs null sel-wf-table ] : 'Select workflow table (required)' }
+        { [ propertyIs null sel-wf-from ] [ match
+         { [ propertyIs null sel-wf-to ] : 'Select From and To columns (required)' }
+         { true : 'Select From column (required)' }
+        ] }
+        { [ propertyIs null sel-wf-to ] : 'Select To column (required)' }
+        { true (
+         ; to wf-info !resolveWorkflowTarget $view.tables $col
+         ; to unit [ ternary [ propertyIs 1 wf-info.transitionCount ] transition transitions ]
+         ; add $wf-info.tableName ; add ' (' ; add $wf-info.fromColName ; add ' → ' ; add $wf-info.toColName ; add ') · ' ; add $wf-info.transitionCount ; add ' ' $unit
+        ) }
+       ]
+       ; set $wf-hint-text constraint-hint-el.textContent
+      ) }
+     ]
+
+     !constraint-config-wrap.appendChild $constraint-header
+     !constraint-config-wrap.appendChild $constraint-type-field
+     !constraint-config-wrap.appendChild $constraint-table-field
+     !constraint-config-wrap.appendChild $constraint-from-field
+     !constraint-config-wrap.appendChild $constraint-to-field
+     !constraint-config-wrap.appendChild $constraint-hint-el
+     !type-td.appendChild $constraint-config-wrap
+
      ; to multi-td !document.createElement td
      ; set 'lane-input-cell lane-data-cell--multi' multi-td.className
      ; to multi-btn !document.createElement button
@@ -1332,6 +1575,14 @@
       { type-el $type-el }
       { decimals-wrap $decimals-wrap }
       { decimals-el $decimals-el }
+      { constraint-add-el $constraint-add-el }
+      { constraint-config-wrap $constraint-config-wrap }
+      { constraint-remove-btn $constraint-remove-btn }
+      { constraint-type-el $constraint-type-el }
+      { constraint-table-el $constraint-table-el }
+      { constraint-from-el $constraint-from-el }
+      { constraint-to-el $constraint-to-el }
+      { constraint-hint-el $constraint-hint-el }
       { row-config-wrap $row-config-wrap }
       { ref-table-el $ref-table-el }
       { ref-col-el $ref-col-el }
@@ -1443,6 +1694,104 @@
          ; set [ add '' $cur-decimals ] decimals-el.value
         )
         !view.request-column-change $tbl $col $col.type $col.multiple $next-decimals $on-revert
+       ) }
+      ]
+     )
+     !constraint-add-el.addEventListener change (
+      ; to picked $constraint-add-el.value
+      ; set '' constraint-add-el.value
+      [ match
+       { [ propertyIs workflow picked ] (
+        ; to next-constraint [ object
+         { type workflow }
+         { tableId '' }
+         { fromColumnId '' }
+         { toColumnId '' }
+        ]
+        ; set $next-constraint col.constraint
+        !view.render-schema
+        !view.render-grid
+        !view.save
+       ) }
+      ]
+     )
+     !constraint-remove-btn.addEventListener click (
+      [ match
+       { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col constraint }
+       { true : ; set undefined col.constraint }
+      ]
+      !view.render-schema
+      !view.render-grid
+      !view.save
+     )
+     !constraint-type-el.addEventListener change (
+      ; to next-ctype $constraint-type-el.value
+      [ match
+       { [ propertyIs workflow next-ctype ] (
+        ; to existing !normalizeColumnConstraint $col.constraint
+        ; to next-constraint [ object
+         { type workflow }
+         { tableId [ match { $existing : $existing.tableId } { true : '' } ] }
+         { fromColumnId [ match { $existing : $existing.fromColumnId } { true : '' } ] }
+         { toColumnId [ match { $existing : $existing.toColumnId } { true : '' } ] }
+        ]
+        ; set $next-constraint col.constraint
+        !view.render-schema
+        !view.render-grid
+        !view.save
+       ) }
+      ]
+     )
+     !constraint-table-el.addEventListener change (
+      ; to next-tbl-id $constraint-table-el.value
+      ; to found-tbl ; object { table null }
+      ; each $view.tables (
+       ; to { cand } $argv
+       ; condition { propertyIs $next-tbl-id cand.id } : ; set $cand found-tbl.table
+      )
+      ; to defaults !findWorkflowDefaultColumns $found-tbl.table
+      ; to next-constraint [ object
+       { type workflow }
+       { tableId $next-tbl-id }
+       { fromColumnId $defaults.fromColumnId }
+       { toColumnId $defaults.toColumnId }
+      ]
+      ; set $next-constraint col.constraint
+      !view.render-schema
+      !view.render-grid
+      !view.save
+     )
+     !constraint-from-el.addEventListener change (
+      ; to existing !normalizeColumnConstraint $col.constraint
+      [ match
+       { $existing (
+        ; to next-constraint [ object
+         { type $existing.type }
+         { tableId $existing.tableId }
+         { fromColumnId $constraint-from-el.value }
+         { toColumnId $existing.toColumnId }
+        ]
+        ; set $next-constraint col.constraint
+        !view.render-schema
+        !view.render-grid
+        !view.save
+       ) }
+      ]
+     )
+     !constraint-to-el.addEventListener change (
+      ; to existing !normalizeColumnConstraint $col.constraint
+      [ match
+       { $existing (
+        ; to next-constraint [ object
+         { type $existing.type }
+         { tableId $existing.tableId }
+         { fromColumnId $existing.fromColumnId }
+         { toColumnId $constraint-to-el.value }
+        ]
+        ; set $next-constraint col.constraint
+        !view.render-schema
+        !view.render-grid
+        !view.save
        ) }
       ]
      )
@@ -1592,6 +1941,13 @@
       { refTableId $parsed.refTableId }
       { refColumnId $parsed.refColumnId }
       { refDisplayColumnId $parsed.refDisplayColumnId }
+     ] }
+     { $parsed.constraint [ object
+      { id !view.next-id col }
+      { name $clean-name }
+      { type $parsed.type }
+      { multiple $parsed.multiple }
+      { constraint $parsed.constraint }
      ] }
      { true [ object
       { id !view.next-id col }

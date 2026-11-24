@@ -3,10 +3,13 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import {
  DATA_COLUMN_TYPES,
+ DATA_CONSTRAINT_TYPES,
  DEFAULT_FIXED_DECIMALS,
  DEFAULT_LANE_TAB,
  DEFAULT_ROW_PICKER_PAGE_SIZE,
+ LANE_MINIMIZE_SIDES,
  LANE_TABS,
+ MIN_LANE_WIDTH,
  PRIMITIVE_TYPES,
  TRANSPORT_PACKET_TYPE,
  buildTablesScope,
@@ -21,6 +24,7 @@ import {
  fetchRowOptionsPage,
  field,
  filterRowOptions,
+ findWorkflowDefaultColumns,
  formatCellInputValue,
  formatColumnType,
  formatHashOptions,
@@ -28,15 +32,20 @@ import {
  formatLaneRouteSegment,
  formatLaneRoutes,
  formatValue,
+ getLaneInitial,
+ getWorkflowCellState,
  hasImportCycle,
  isDomElement,
  isTransportPacket,
  listScopeEntries,
  lookupRowDisplay,
+ normalizeColumnConstraint,
  normalizeColumnWidth,
  normalizeDataColumnType,
  normalizeFixedDecimals,
+ normalizeLaneMinimizeSide,
  normalizeLaneTab,
+ normalizeLaneWidth,
  normalizePrimitiveType,
  parse,
  parseCellValue,
@@ -47,10 +56,12 @@ import {
  parseLaneRoutes,
  parseStoredTables,
  resolveImportValue,
+ resolveLaneRenderedWidth,
  resolveRowTarget,
  resolveRowValueSpec,
  resolveScopeColumns,
  resolveScopePath,
+ resolveWorkflowTarget,
  runLines,
  runTransportedScripts,
  serializeTransportPacket,
@@ -61,27 +72,36 @@ const DATA_RUNTIME_ENV = {
  checkColumnChangeImpact,
  coerceDataValue,
  dataColumnTypes: DATA_COLUMN_TYPES,
+ dataConstraintTypes: DATA_CONSTRAINT_TYPES,
  dataValuesEqual,
  defaultDataValue,
  defaultRowPickerPageSize: DEFAULT_ROW_PICKER_PAGE_SIZE,
  fetchRowOptionsPage,
  filterRowOptions,
+ findWorkflowDefaultColumns,
  formatCellInputValue,
  formatColumnType,
  formatHashOptions,
  formatLaneRoutes,
+ getLaneInitial,
+ getWorkflowCellState,
  lookupRowDisplay,
+ normalizeColumnConstraint,
  normalizeColumnWidth,
  normalizeDataColumnType,
  normalizeFixedDecimals,
+ normalizeLaneMinimizeSide,
  normalizeLaneTab,
+ normalizeLaneWidth,
  parseCellValue,
  parseColumnType,
  parseHashOptions,
  parseLaneRoutes,
  parseStoredTables,
+ resolveLaneRenderedWidth,
  resolveRowTarget,
  resolveRowValueSpec,
+ resolveWorkflowTarget,
 }
 
 async function runScript(script, initialState = {}) {
@@ -930,6 +950,7 @@ test('lane-control.fs mounts, opens concurrently, adds, and syncs lanes', async 
  const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
  const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
 
  function createMockElement(tag) {
   return {
@@ -1048,6 +1069,9 @@ test('lane-control.fs mounts, opens concurrently, adds, and syncs lanes', async 
   if (url === '/src/lane-import-modal.fs') {
    return { text: async () => importModalSource }
   }
+  if (url === '/src/lane-rails.fs') {
+   return { text: async () => railsSource }
+  }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -1093,9 +1117,13 @@ test('lane-control.fs mounts, opens concurrently, adds, and syncs lanes', async 
   const metaEl = headerTop.children[1]
   assert.equal(metaEl.children[0].textContent, 'Direct Title')
   assert.equal(metaEl.children[1].textContent, 'direct-id')
-  assert.equal(headerTop.children[2], mountedLane['reload-btn'])
+  assert.equal(headerTop.children[2], mountedLane['min-left-btn'])
+  assert.equal(mountedLane['min-left-btn'].className, 'lane-min-btn lane-min-btn--left')
+  assert.equal(headerTop.children[3], mountedLane['min-right-btn'])
+  assert.equal(mountedLane['min-right-btn'].className, 'lane-min-btn lane-min-btn--right')
+  assert.equal(headerTop.children[4], mountedLane['reload-btn'])
   assert.equal(mountedLane['reload-btn'].className, 'lane-reload-btn')
-  assert.equal(headerTop.children[3], mountedLane['close-btn'])
+  assert.equal(headerTop.children[5], mountedLane['close-btn'])
   assert.equal(laneControl['by-id']['direct-id'], mountedLane)
 
   // Test concurrent open calls with stored titles (verifies per-call isolation)
@@ -1144,6 +1172,7 @@ test('main.fs bootstraps app with persistent lane notebooks that edit, add, remo
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
  const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
 
  function createMockElement(tag) {
   return {
@@ -1257,6 +1286,9 @@ test('main.fs bootstraps app with persistent lane notebooks that edit, add, remo
   }
   if (url === '/src/lane-import-modal.fs') {
    return { text: async () => importModalSource }
+  }
+  if (url === '/src/lane-rails.fs') {
+   return { text: async () => railsSource }
   }
   throw new Error(`Unexpected fetch: ${url}`)
  }
@@ -2049,6 +2081,7 @@ test('cross-lane import line shows picker instead of raw input, awaits idle lane
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
  const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
 
  function createMockElement(tag) {
   return {
@@ -2146,6 +2179,7 @@ test('cross-lane import line shows picker instead of raw input, awaits idle lane
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -2504,6 +2538,7 @@ test('Lane Output mini-browser below each lane collects sent scripts, enforces n
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
  const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
 
  function createMockElement(tag) {
   return {
@@ -2591,6 +2626,7 @@ test('Lane Output mini-browser below each lane collects sent scripts, enforces n
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -2747,6 +2783,7 @@ test('whole-lane import without picking a scope value powers a reactive Profile 
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
  const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
 
  // Unit check: resolveImportValue with empty path extracts clean lane scope exports without runtime globals
  const wholeExports = resolveImportValue(
@@ -2861,6 +2898,7 @@ test('whole-lane import without picking a scope value powers a reactive Profile 
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -3204,6 +3242,7 @@ test('Data tab supports tables, typed & multiple columns, editable rows, destruc
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
  const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
 
  function createMockElement(tag) {
   return {
@@ -3309,6 +3348,7 @@ test('Data tab supports tables, typed & multiple columns, editable rows, destruc
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -3626,6 +3666,7 @@ test('Data tab Fixed column edits as xxx.xx, stores scaled integer xxxxx, config
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
  const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
 
  function createMockElement(tag) {
   return {
@@ -3720,6 +3761,7 @@ test('Data tab Fixed column edits as xxx.xx, stores scaled integer xxxxx, config
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -3967,6 +4009,7 @@ test('Lane tab routing syncs URL on tab click, supports direct URL and popstate,
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
  const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
 
  function createMockElement(tag) {
   return {
@@ -4076,6 +4119,7 @@ test('Lane tab routing syncs URL on tab click, supports direct URL and popstate,
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -4217,6 +4261,7 @@ test('Data tables right-align only integer and fixed cells, resize columns horiz
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
  const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
 
  function createMockElement(tag) {
   return {
@@ -4306,6 +4351,7 @@ test('Data tables right-align only integer and fixed cells, resize columns horiz
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -4440,6 +4486,7 @@ test('Lane header reload button reloads entire lane from server KV while keeping
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
  const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
 
  function createMockElement(tag) {
   return {
@@ -4517,6 +4564,7 @@ test('Lane header reload button reloads entire lane from server KV while keeping
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -4549,10 +4597,12 @@ test('Lane header reload button reloads entire lane from server KV while keeping
   const lane1 = f.state.lanes[0]
   const lane2 = f.state.lanes[1]
 
-  // Verify reload button is immediately to the left of close button on the far right of header
+  // Verify minimize, reload, and close buttons on the right of header
   const headerTop = lane1.element.children[0]
-  assert.equal(headerTop.children[2], lane1['reload-btn'])
-  assert.equal(headerTop.children[3], lane1['close-btn'])
+  assert.equal(headerTop.children[2], lane1['min-left-btn'])
+  assert.equal(headerTop.children[3], lane1['min-right-btn'])
+  assert.equal(headerTop.children[4], lane1['reload-btn'])
+  assert.equal(headerTop.children[5], lane1['close-btn'])
 
   // Switch lane1 to Data tab, then simulate server-side KV updates to title & tables
   await lane1.notebook.tabs.data.listeners.click()
@@ -4782,6 +4832,7 @@ test('Data tab row type: stacked schema config, joined table display, and on-dem
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
  const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
 
  function createMockElement(tag) {
   return {
@@ -4874,6 +4925,7 @@ test('Data tab row type: stacked schema config, joined table display, and on-dem
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -5174,6 +5226,7 @@ test('main.fs persists horizontal scroll in location.hash via replaceState and r
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
  const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
 
  function createMockElement(tag) {
   const listeners = {}
@@ -5261,6 +5314,7 @@ test('main.fs persists horizontal scroll in location.hash via replaceState and r
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -5478,6 +5532,7 @@ test('data|tablename sub-routing parses, formats, selects known tables, falls ba
  const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
  const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
 
  function createMockElement(tag) {
   const listeners = {}
@@ -5565,6 +5620,7 @@ test('data|tablename sub-routing parses, formats, selects known tables, falls ba
   if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -5663,6 +5719,1621 @@ test('data|tablename sub-routing parses, formats, selects known tables, falls ba
   await r3.f.run(parse(mainSource, '/src/main.fs'))
   const dv3 = r3.f.state.lanes[0].notebook['data-view']
   assert.equal(dv3['get-active-table']().name, 'users')
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('PWA manifest, Civil icon assets, index.html metadata, server MIME types, and service worker', async () => {
+ const rootUrl = new URL('./', import.meta.url)
+
+ // 1. Validate manifest.webmanifest structure and icon files on disk
+ const manifestRaw = await fs.readFile(new URL('./manifest.webmanifest', rootUrl), 'utf8')
+ const manifest = JSON.parse(manifestRaw)
+ assert.equal(manifest.id, '/')
+ assert.equal(manifest.name, 'Civil Command')
+ assert.equal(manifest.short_name, 'Civil Command')
+ assert.equal(manifest.start_url, '/')
+ assert.equal(manifest.scope, '/')
+ assert.equal(manifest.display, 'standalone')
+ assert.equal(manifest.background_color, '#000000')
+ assert.equal(manifest.theme_color, '#000000')
+ assert.ok(Array.isArray(manifest.icons) && manifest.icons.length >= 4)
+
+ const seenIconKeys = new Set()
+ for (const icon of manifest.icons) {
+  assert.ok(icon.src.startsWith('/'), `icon src should be root-relative: ${icon.src}`)
+  const fileBuf = await fs.readFile(new URL(`.${icon.src}`, rootUrl))
+  assert.ok(fileBuf.length > 0)
+  if (icon.type === 'image/png') {
+   // Verify PNG signature and IHDR width/height match declared sizes
+   assert.deepEqual([...fileBuf.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10])
+   const width = fileBuf.readUInt32BE(16)
+   const height = fileBuf.readUInt32BE(20)
+   assert.equal(`${width}x${height}`, icon.sizes, `PNG dimensions mismatch for ${icon.src}`)
+  }
+  else if (icon.type === 'image/svg+xml') {
+   const svgText = fileBuf.toString('utf8')
+   assert.ok(svgText.includes('<svg') && svgText.includes('viewBox="0 0 16 16"'))
+  }
+  seenIconKeys.add(`${icon.sizes}:${icon.purpose}`)
+ }
+ assert.ok(seenIconKeys.has('192x192:any'))
+ assert.ok(seenIconKeys.has('512x512:any'))
+ assert.ok(seenIconKeys.has('192x192:maskable'))
+ assert.ok(seenIconKeys.has('512x512:maskable'))
+
+ // Check favicon.ico and apple-touch-icon.png exist and have valid headers
+ const icoBuf = await fs.readFile(new URL('./favicon.ico', rootUrl))
+ assert.equal(icoBuf.readUInt16LE(0), 0)
+ assert.equal(icoBuf.readUInt16LE(2), 1)
+ const appleBuf = await fs.readFile(new URL('./icons/apple-touch-icon.png', rootUrl))
+ assert.equal(appleBuf.readUInt32BE(16), 180)
+ assert.equal(appleBuf.readUInt32BE(20), 180)
+
+ // 2. Validate index.html PWA tags and SW registration
+ const html = await fs.readFile(new URL('./index.html', rootUrl), 'utf8')
+ assert.ok(html.includes('<title>Civil Command</title>'))
+ assert.ok(html.includes('<meta name="theme-color" content="#000000">'))
+ assert.ok(html.includes('<link rel="manifest" href="/manifest.webmanifest">'))
+ assert.ok(html.includes('<link rel="icon" href="/favicon.ico"'))
+ assert.ok(html.includes('<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"'))
+ assert.ok(html.includes("navigator.serviceWorker.register('/sw.js'"))
+
+ // 3. Validate start server MIME types and sw.js no-cache header
+ const startSource = await fs.readFile(new URL('./start', rootUrl), 'utf8')
+ assert.ok(startSource.includes("'.webmanifest': 'application/manifest+json; charset=utf-8'"))
+ assert.ok(startSource.includes("'.ico': 'image/x-icon'"))
+ assert.ok(startSource.includes("'Cache-Control'] = 'no-cache'"))
+
+ // 4. Validate sw.js precache entries, lifecycle, /api/data bypass, and offline fallback
+ const swSource = await fs.readFile(new URL('./sw.js', rootUrl), 'utf8')
+ const swListeners = {}
+ const cacheStorage = new Map([['civil-command-v0', new Map()]])
+ let skipWaitingCalled = false
+ let clientsClaimCalled = false
+
+ const makeCacheHandle = name => {
+  if (!cacheStorage.has(name)) cacheStorage.set(name, new Map())
+  const store = cacheStorage.get(name)
+  return {
+   async addAll(urls) {
+    for (const u of urls) {
+     if (u !== '/') {
+      const stat = await fs.stat(new URL(`.${u}`, rootUrl))
+      assert.ok(stat.isFile(), `APP_SHELL asset missing: ${u}`)
+     }
+     store.set(u, { ok: true, type: 'basic', url: u, body: `cached:${u}`, clone() { return { ...this } } })
+    }
+   },
+   async put(req, res) {
+    const key = typeof req === 'string' ? req : new URL(req.url).pathname
+    store.set(key, res)
+   },
+   async match(req) {
+    const key = typeof req === 'string' ? req : new URL(req.url).pathname
+    return store.get(key)
+   },
+  }
+ }
+
+ const mockCaches = {
+  async open(name) { return makeCacheHandle(name) },
+  async keys() { return [...cacheStorage.keys()] },
+  async delete(name) { return cacheStorage.delete(name) },
+  async match(req) {
+   const key = typeof req === 'string' ? req : new URL(req.url).pathname
+   for (const store of cacheStorage.values()) {
+    if (store.has(key)) return store.get(key)
+   }
+   return undefined
+  },
+ }
+
+ let swFetchImpl = async () => { throw new Error('offline') }
+ const mockSelf = {
+  location: { origin: 'http://localhost:8080' },
+  addEventListener(type, fn) { swListeners[type] = fn },
+  skipWaiting() { skipWaitingCalled = true; return Promise.resolve() },
+  clients: { claim() { clientsClaimCalled = true; return Promise.resolve() } },
+ }
+
+ const evalSw = new Function('self', 'caches', 'fetch', 'URL', swSource)
+ evalSw(mockSelf, mockCaches, (...args) => swFetchImpl(...args), URL)
+
+ // Install precaches all APP_SHELL files (including every src/*.fs file) and calls skipWaiting
+ const waitPromises = []
+ swListeners.install({ waitUntil: p => waitPromises.push(p) })
+ await Promise.all(waitPromises)
+ assert.equal(skipWaitingCalled, true)
+ const srcFiles = (await fs.readdir(new URL('./src', rootUrl))).filter(f => f.endsWith('.fs'))
+ const activeCache = cacheStorage.get('civil-command-v1')
+ for (const f of srcFiles) {
+  assert.ok(activeCache.has(`/src/${f}`), `sw.js APP_SHELL should precache /src/${f}`)
+ }
+
+ // Activate removes old civil-command-* cache and claims clients
+ const activatePromises = []
+ swListeners.activate({ waitUntil: p => activatePromises.push(p) })
+ await Promise.all(activatePromises)
+ assert.equal(clientsClaimCalled, true)
+ assert.equal(cacheStorage.has('civil-command-v0'), false)
+ assert.equal(cacheStorage.has('civil-command-v1'), true)
+
+ // Fetch bypasses /api/data and non-GET requests
+ let apiIntercepted = false
+ swListeners.fetch({
+  request: { method: 'GET', url: 'http://localhost:8080/api/data?mode=disk&key=lanes', mode: 'cors' },
+  respondWith() { apiIntercepted = true },
+ })
+ assert.equal(apiIntercepted, false)
+
+ let postIntercepted = false
+ swListeners.fetch({
+  request: { method: 'POST', url: 'http://localhost:8080/src/main.fs', mode: 'cors' },
+  respondWith() { postIntercepted = true },
+ })
+ assert.equal(postIntercepted, false)
+
+ // Offline navigation on deep lane URL falls back to cached /index.html
+ let navPromise = null
+ swListeners.fetch({
+  request: { method: 'GET', url: 'http://localhost:8080/lane-1;data', mode: 'navigate' },
+  respondWith(p) { navPromise = p },
+ })
+ const offlineNavRes = await navPromise
+ assert.equal(offlineNavRes.body, 'cached:/index.html')
+
+ // Online static asset fetch updates cache and returns live response
+ swFetchImpl = async req => ({
+  ok: true,
+  type: 'basic',
+  body: `live:${new URL(req.url).pathname}`,
+  clone() { return { ...this } },
+ })
+ let assetPromise = null
+ swListeners.fetch({
+  request: { method: 'GET', url: 'http://localhost:8080/field.mjs', mode: 'cors' },
+  respondWith(p) { assetPromise = p },
+ })
+ const liveAssetRes = await assetPromise
+ assert.equal(liveAssetRes.body, 'live:/field.mjs')
+
+ // Subsequent offline static asset fetch returns updated cached copy
+ swFetchImpl = async () => { throw new Error('offline') }
+ let offlineAssetPromise = null
+ swListeners.fetch({
+  request: { method: 'GET', url: 'http://localhost:8080/field.mjs', mode: 'cors' },
+  respondWith(p) { offlineAssetPromise = p },
+ })
+ const cachedAssetRes = await offlineAssetPromise
+ assert.equal(cachedAssetRes.body, 'live:/field.mjs')
+})
+
+test('Lane Source individual line editor supports multiline single-line storage, textarea conversion, and reload persistence', async () => {
+ const indexHtml = await fs.readFile(new URL('./index.html', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+
+ // Verify key CSS rules in index.html
+ assert.match(indexHtml, /\.lane-line-num--editable\s*\{[^}]*cursor:\s*pointer;/s)
+ assert.match(indexHtml, /\.lane-line-num--editable:hover[^{]*\{[^}]*background:/s)
+ assert.match(indexHtml, /\.lane-line-editor\s*\{[^}]*grid-column:\s*2\s*\/\s*4;[^}]*resize:\s*vertical;/s)
+ assert.match(indexHtml, /\.lane-line--multiline\s+\.lane-line-preview\s*\{[^}]*align-self:\s*stretch;[^}]*min-height:\s*100%;/s)
+
+ function createMockElement(tag) {
+  const el = {
+   tag,
+   style: {},
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   value: '',
+   className: '',
+   title: '',
+   disabled: false,
+   rows: 1,
+   focused: false,
+   removed: false,
+   selectionStart: null,
+   selectionEnd: null,
+   get scrollHeight() {
+    if (this.tag !== 'textarea') { return 0 }
+    const lineCount = Math.max(1, String(this.value ?? '').split('\n').length)
+    return lineCount * 18 + 8
+   },
+   get offsetHeight() {
+    return this.tag === 'textarea' ? this.scrollHeight + 2 : 24
+   },
+   get clientHeight() {
+    return this.tag === 'textarea' ? this.scrollHeight : 22
+   },
+   setAttribute(name, value) {
+    this.attributes[name] = value
+   },
+   appendChild(child) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    this.children.push(child)
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) { this.children.push(child) }
+    else { this.children.splice(idx, 0, child) }
+    return child
+   },
+   addEventListener(event, handler) {
+    this.listeners[event] = handler
+   },
+   focus() {
+    this.focused = true
+   },
+   setSelectionRange(start, end) {
+    this.selectionStart = start
+    this.selectionEnd = end
+   },
+   remove() {
+    this.removed = true
+    if (this.parentNode) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) { this.parentNode.children.splice(idx, 1) }
+     this.parentNode = null
+    }
+   },
+  }
+  return el
+ }
+
+ const kv = new Map()
+ const laneData = {
+  async get(key) { return kv.has(key) ? kv.get(key) : null },
+  async set(key, value) { kv.set(key, value) },
+ }
+ const mockWindow = { Array, Date, JSON, Math }
+ const mockDocument = { createElement: createMockElement }
+
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ async function mountNotebook() {
+  const f = field({
+   console: { log() {} },
+   createIdleTracker,
+   defaultValueForType,
+   document: mockDocument,
+   formatImportLine,
+   normalizePrimitiveType,
+   parseImportLine,
+   ...DATA_RUNTIME_ENV,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+   window: mockWindow,
+  })
+  const notebookMod = await f.run(parse(notebookSource, '/src/lane-notebook.fs'))
+  const container = createMockElement('td')
+  const lane = { id: 'multiline-lane', data: laneData }
+  return notebookMod.mount(lane, container)
+ }
+
+ try {
+  const nb = await mountNotebook()
+  const row0 = nb.rows[0]
+
+  // Initially single-line <input> with clickable line number button
+  assert.equal(row0['num-el'].tag, 'button')
+  assert.equal(row0['num-el'].className, 'lane-line-num lane-line-num--editable')
+  assert.equal(row0['input-el'].tag, 'input')
+  assert.equal(row0['input-el'].disabled, false)
+  assert.equal(row0['is-multiline'], false)
+  assert.equal(row0['is-editing'], false)
+  assert.equal(row0['editor-el'], null)
+
+  // Click line number -> enters Edit individual line mode
+  const oldInput = row0['input-el']
+  await row0['num-el'].listeners.click()
+  assert.equal(nb['editing-row'], row0)
+  assert.equal(row0['is-editing'], true)
+  assert.equal(row0['input-el'].disabled, true)
+  assert.equal(row0['num-el'].className, 'lane-line-num lane-line-num--editable lane-line-num--active')
+  assert.equal(row0.el.className, 'lane-line lane-line--editing')
+  const editor = row0['editor-el']
+  assert.ok(editor)
+  assert.equal(editor.tag, 'textarea')
+  assert.equal(editor.className, 'lane-line-editor')
+  assert.equal(editor.focused, true)
+  assert.equal(row0.el.children.at(-1), editor)
+  assert.equal(editor.style.height, '28px')
+
+  // Paste multiline FieldScript function into individual line editor -> stored in a single Source line
+  const multilineScript = [
+   '; to greet (',
+   ' ; to { name } $argv',
+   " ; add 'Hi ' $name",
+   ')',
+  ].join('\n')
+  editor.value = multilineScript
+  await editor.listeners.input()
+
+  assert.equal(nb.lines.length, 1)
+  assert.equal(nb.lines[0], multilineScript)
+  assert.equal(kv.get('script'), JSON.stringify([multilineScript]))
+  assert.equal(oldInput.removed, true)
+  assert.equal(row0['is-multiline'], true)
+  assert.equal(row0['input-el'].tag, 'textarea')
+  assert.equal(row0['input-el'].className, 'lane-line-input lane-line-input--multiline')
+  assert.equal(row0['input-el'].value, multilineScript)
+  assert.equal(row0['input-el'].disabled, true)
+  assert.equal(row0['input-el'].rows, 4)
+  assert.equal(row0['input-el'].style.height, '82px')
+  assert.equal(editor.rows, 4)
+  assert.equal(editor.style.height, '82px')
+  assert.equal(row0.el.className, 'lane-line lane-line--multiline lane-line--editing')
+  assert.deepEqual(row0.el.children, [
+   row0['num-el'],
+   row0['input-el'],
+   row0['preview-el'],
+   row0['remove-btn'],
+   editor,
+  ])
+  assert.equal(row0['preview-el'].textContent, '[function]')
+  assert.equal(typeof nb.state.greet, 'function')
+
+  // Manually resizing editor taller is preserved when typing/deleting (autofit only expands, never shrinks)
+  editor.style.height = '240px'
+  editor.value = '; to a 1\n; to b 2'
+  await editor.listeners.input()
+  assert.equal(editor.style.height, '240px')
+  assert.equal(editor.rows, 4)
+
+  // Adding enough lines to exceed 240px expands the editor, and deleting lines afterwards does not shrink it
+  editor.value = Array.from({ length: 16 }, (_, i) => `-- line ${i + 1}`).join('\n')
+  await editor.listeners.input()
+  assert.equal(editor.style.height, '298px')
+  editor.value = multilineScript
+  await editor.listeners.input()
+  assert.equal(editor.style.height, '298px')
+
+  // Click line number again -> exits Edit individual line mode; input re-enabled & stays <textarea>
+  await row0['num-el'].listeners.click()
+  assert.equal(nb['editing-row'], null)
+  assert.equal(row0['is-editing'], false)
+  assert.equal(row0['editor-el'], null)
+  assert.equal(editor.removed, true)
+  assert.equal(row0['input-el'].disabled, false)
+  assert.equal(row0['input-el'].focused, true)
+  assert.equal(row0['input-el'].tag, 'textarea')
+  assert.equal(row0.el.className, 'lane-line lane-line--multiline')
+  assert.equal(row0['num-el'].className, 'lane-line-num lane-line-num--editable')
+
+  // Manually resizing inline multiline textarea taller is also preserved on input (expand-only)
+  row0['input-el'].style.height = '320px'
+  row0['input-el'].value = multilineScript
+  await row0['input-el'].listeners.input()
+  assert.equal(row0['input-el'].style.height, '320px')
+
+  // Add second single-line row calling greet -> evaluates against multiline line 1
+  await nb['add-line']('!greet Ada')
+  assert.equal(nb.rows.length, 2)
+  assert.equal(nb.rows[1]['input-el'].tag, 'input')
+  assert.equal(nb.rows[1]['preview-el'].textContent, '"Hi Ada"')
+
+  // Clicking line 2 opens line 2 editor; clicking line 1 switches editor from line 2 to line 1; Escape closes
+  const row1 = nb.rows[1]
+  await row1['num-el'].listeners.click()
+  assert.equal(nb['editing-row'], row1)
+  assert.equal(row1['input-el'].disabled, true)
+  assert.equal(row0['input-el'].disabled, false)
+
+  await row0['num-el'].listeners.click()
+  assert.equal(nb['editing-row'], row0)
+  assert.equal(row1['input-el'].disabled, false)
+  assert.equal(row1['editor-el'], null)
+  assert.equal(row0['input-el'].disabled, true)
+  assert.equal(row0['editor-el'].value, multilineScript)
+
+  let escPrevented = false
+  await row0['editor-el'].listeners.keydown({
+   key: 'Escape',
+   preventDefault() { escPrevented = true },
+  })
+  assert.equal(escPrevented, true)
+  assert.equal(nb['editing-row'], null)
+  assert.equal(row0['input-el'].disabled, false)
+
+  // Reload notebook from persisted KV -> line 1 renders immediately as <textarea>, line 2 as <input>
+  const reloaded = await mountNotebook()
+  assert.deepEqual(reloaded.lines, [multilineScript, '!greet Ada'])
+  assert.equal(reloaded.rows[0]['is-multiline'], true)
+  assert.equal(reloaded.rows[0]['input-el'].tag, 'textarea')
+  assert.equal(reloaded.rows[0]['input-el'].value, multilineScript)
+  assert.equal(reloaded.rows[0]['input-el'].rows, 4)
+  assert.equal(reloaded.rows[0]['input-el'].style.height, '82px')
+  assert.equal(reloaded.rows[0].el.className, 'lane-line lane-line--multiline')
+  assert.equal(reloaded.rows[0]['preview-el'].textContent, '[function]')
+  assert.equal(reloaded.rows[1]['is-multiline'], false)
+  assert.equal(reloaded.rows[1]['input-el'].tag, 'input')
+  assert.equal(reloaded.rows[1]['preview-el'].textContent, '"Hi Ada"')
+
+  // Directly removing newlines from inline multiline <textarea> converts it back to <input>
+  const inlineTa = reloaded.rows[0]['input-el']
+  inlineTa.value = '; to single 42'
+  inlineTa.selectionStart = 14
+  inlineTa.selectionEnd = 14
+  await inlineTa.listeners.input()
+  assert.equal(inlineTa.removed, true)
+  assert.equal(reloaded.rows[0]['is-multiline'], false)
+  assert.equal(reloaded.rows[0]['input-el'].tag, 'input')
+  assert.equal(reloaded.rows[0]['input-el'].value, '; to single 42')
+  assert.equal(reloaded.rows[0]['input-el'].focused, true)
+  assert.equal(reloaded.rows[0]['input-el'].selectionStart, 14)
+  assert.equal(reloaded.rows[0]['input-el'].selectionEnd, 14)
+  assert.equal(reloaded.rows[0].el.className, 'lane-line')
+  assert.equal(reloaded.rows[0]['preview-el'].textContent, '42')
+
+  // Removing a row while it is in Edit individual line mode clears editing-row cleanly
+  await reloaded.rows[1]['num-el'].listeners.click()
+  assert.equal(reloaded['editing-row'], reloaded.rows[1])
+  await reloaded.rows[1]['remove-btn'].listeners.click()
+  assert.equal(reloaded['editing-row'], null)
+  assert.equal(reloaded.rows.length, 1)
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('Lane resizing: Width setting in gear modal, 100px min render clamp, no max width, horizontal scroll CSS, ew-resize boundary drag, and persistence', async () => {
+ // 1. Unit checks for lane width helpers
+ assert.equal(MIN_LANE_WIDTH, 100)
+ assert.equal(normalizeLaneWidth(null), null)
+ assert.equal(normalizeLaneWidth(undefined), null)
+ assert.equal(normalizeLaneWidth(''), null)
+ assert.equal(normalizeLaneWidth('   '), null)
+ assert.equal(normalizeLaneWidth('abc'), null)
+ assert.equal(normalizeLaneWidth(-20), null)
+ assert.equal(normalizeLaneWidth('0'), 0)
+ assert.equal(normalizeLaneWidth('50'), 50)
+ assert.equal(normalizeLaneWidth('50px'), 50)
+ assert.equal(normalizeLaneWidth('420.4px'), 420)
+ assert.equal(normalizeLaneWidth('3500'), 3500)
+ assert.equal(normalizeLaneWidth(10000), 10000)
+
+ assert.equal(resolveLaneRenderedWidth(null), null)
+ assert.equal(resolveLaneRenderedWidth(''), null)
+ assert.equal(resolveLaneRenderedWidth(0), 100)
+ assert.equal(resolveLaneRenderedWidth(50), 100)
+ assert.equal(resolveLaneRenderedWidth('80px'), 100)
+ assert.equal(resolveLaneRenderedWidth(100), 100)
+ assert.equal(resolveLaneRenderedWidth(420), 420)
+ assert.equal(resolveLaneRenderedWidth(3500), 3500)
+ assert.equal(resolveLaneRenderedWidth(10000), 10000)
+
+ // 2. Verify CSS rules in index.html
+ const indexHtml = await fs.readFile(new URL('./index.html', import.meta.url), 'utf8')
+ assert.match(indexHtml, /\.lane-resizer\s*\{[^}]*cursor:\s*ew-resize;/s)
+ assert.match(indexHtml, /\.lane-header--sized\s*\{[^}]*min-width:\s*100px;/s)
+ assert.match(indexHtml, /\.lane-body--sized\s*\{[^}]*min-width:\s*100px;/s)
+ assert.match(indexHtml, /\.lane-body--sized\s*>\s*\.lane-notebook,\s*\.lane-body--sized\s*>\s*\.lane-output\s*\{[^}]*overflow-x:\s*auto;/s)
+ assert.match(indexHtml, /\.lane-body--sized\s+\.lane-scope-columns,\s*\.lane-body--sized\s+\.lane-data-grid-wrap\s*\{[^}]*max-width:\s*100%;[^}]*width:\s*100%;/s)
+
+ // 3. Full integration test with main.fs, lane-control.fs, and lane-config-modal.fs
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  const props = {}
+  const style = {
+   setProperty(name, value) { props[name] = value; style[name] = value },
+   removeProperty(name) { delete props[name]; delete style[name] },
+   getPropertyValue(name) { return props[name] || '' },
+  }
+  return {
+   tag,
+   style,
+   attributes: {},
+   children: [],
+   listeners: {},
+   textContent: '',
+   value: '',
+   className: '',
+   title: '',
+   focused: false,
+   removed: false,
+   setAttribute(name, value) { this.attributes[name] = value },
+   appendChild(child) {
+    this.children.push(child)
+    return child
+   },
+   insertBefore(child, ref) {
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) { this.children.push(child) }
+    else { this.children.splice(idx, 0, child) }
+    return child
+   },
+   replaceChildren(...nodes) { this.children = nodes },
+   addEventListener(event, handler) {
+    this.listeners[event] ||= []
+    this.listeners[event].push(handler)
+   },
+   focus() { this.focused = true },
+   select() {},
+   remove() { this.removed = true },
+  }
+ }
+
+ const kv = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { kv.set(qualify(key), value) },
+  }
+ }
+
+ let uuid = 0
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ function createRuntime(initialPathname = '/') {
+  const windowListeners = {}
+  const location = { pathname: initialPathname, search: '', hash: '' }
+  const mockWindow = {
+   Array,
+   Boolean,
+   Date,
+   JSON,
+   Math,
+   Object,
+   Reflect,
+   decodeURIComponent,
+   crypto: { randomUUID: () => `rw-uuid-${++uuid}` },
+   history: {
+    pushState(_s, _t, url) { location.pathname = url },
+    replaceState(_s, _t, url) { location.pathname = url },
+   },
+   location,
+   addEventListener(event, handler) {
+    windowListeners[event] ||= []
+    windowListeners[event].push(handler)
+   },
+   removeEventListener(event, handler) {
+    const list = windowListeners[event]
+    if (!list) { return }
+    const idx = list.indexOf(handler)
+    if (idx !== -1) { list.splice(idx, 1) }
+   },
+  }
+  const body = createMockElement('body')
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: createMockKV(),
+   defaultValueForType,
+   document: { body, defaultView: mockWindow, createElement: createMockElement },
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  return {
+   f,
+   body,
+   location,
+   windowListeners,
+   async dispatchWindow(event, ev) {
+    for (const h of (windowListeners[event] || []).slice()) {
+     await h(ev)
+    }
+   },
+  }
+ }
+
+ try {
+  const r1 = createRuntime('/')
+  await r1.f.run(parse(mainSource, '/src/main.fs'))
+
+  // Add two lanes side by side
+  await r1.f.state.tableHeadRowAddButton.listeners.click[0]()
+  await r1.f.state.tableHeadRowAddButton.listeners.click[0]()
+  const lane1 = r1.f.state.lanes[0]
+  const lane2 = r1.f.state.lanes[1]
+  const configModal = r1.f.state['lane-control']['config-modal']
+
+  assert.equal(lane1.width, null)
+  assert.equal(lane1['rendered-width'], null)
+  assert.equal(lane1['header-resizer'].className, 'lane-resizer')
+  assert.equal(lane1['body-resizer'].className, 'lane-resizer')
+  assert.equal(lane1.body.children[2], lane1['body-resizer'])
+
+  // Open gear modal for Lane 1 -> set Width = "50" (narrower than 100px) alongside Title
+  await lane1['config-btn'].listeners.click[0]()
+  assert.equal(configModal['is-open'], true)
+  assert.equal(configModal['width-input'].value, '')
+  configModal['title-input'].value = 'Narrow Lane'
+  configModal['width-input'].value = '50'
+  await configModal.form.listeners.submit[0]({ preventDefault() {} })
+
+  // Stored Width setting is 50, rendered width is clamped to 100px
+  assert.equal(lane1.title, 'Narrow Lane')
+  assert.equal(lane1.width, 50)
+  assert.equal(lane1['rendered-width'], 100)
+  assert.equal(kv.get(`${lane1.id}.width`), '50')
+  assert.equal(lane1.element.className, 'lane-header lane-header--sized')
+  assert.equal(lane1.element.style.width, '100px')
+  assert.equal(lane1.element.style.minWidth, '100px')
+  assert.equal(lane1.element.style.getPropertyValue('--lane-width'), '100px')
+  assert.equal(lane1.body.className, 'lane-body lane-body--sized')
+  assert.equal(lane1.body.style.width, '100px')
+  assert.equal(lane1.body.style.getPropertyValue('--lane-width'), '100px')
+
+  // Re-opening gear modal shows the preserved stored setting "50"
+  await lane1['config-btn'].listeners.click[0]()
+  assert.equal(configModal['width-input'].value, '50')
+
+  // Set very large width "2800px" -> no maximum width
+  configModal['width-input'].value = '2800px'
+  await configModal.form.listeners.submit[0]({ preventDefault() {} })
+  assert.equal(lane1.width, 2800)
+  assert.equal(lane1['rendered-width'], 2800)
+  assert.equal(lane1.element.style.width, '2800px')
+  assert.equal(lane1.body.style.width, '2800px')
+  assert.equal(kv.get(`${lane1.id}.width`), '2800')
+
+  // Drag border between Lane 1 and Lane 2 (Lane 1's right boundary) -> resizes Lane 1 (the lane on the left)
+  lane1.element.getBoundingClientRect = () => ({ width: 400 })
+  await lane1['body-resizer'].listeners.mousedown[0]({
+   clientX: 400,
+   preventDefault() {},
+   stopPropagation() {},
+  })
+  assert.equal(lane1['header-resizer'].className, 'lane-resizer lane-resizer--active')
+  assert.equal(lane1['body-resizer'].className, 'lane-resizer lane-resizer--active')
+  assert.equal(r1.body.style.cursor, 'ew-resize')
+
+  // Drag far left -> clamps to 100px minimum
+  await r1.dispatchWindow('mousemove', { clientX: 50 })
+  assert.equal(lane1.width, 100)
+  assert.equal(lane1['rendered-width'], 100)
+  assert.equal(lane1.element.style.width, '100px')
+  assert.equal(lane2.width, null)
+
+  // Drag far right (+2600px from start 400 -> 3000px) -> no maximum width
+  await r1.dispatchWindow('mousemove', { clientX: 3000 })
+  assert.equal(lane1.width, 3000)
+  assert.equal(lane1['rendered-width'], 3000)
+  assert.equal(lane1.element.style.width, '3000px')
+  assert.equal(lane1.body.style.width, '3000px')
+  assert.equal(lane2.width, null)
+
+  await r1.dispatchWindow('mouseup', {})
+  assert.equal(lane1['header-resizer'].className, 'lane-resizer')
+  assert.equal(lane1['body-resizer'].className, 'lane-resizer')
+  assert.equal(r1.body.style.cursor, '')
+  assert.equal(kv.get(`${lane1.id}.width`), '3000')
+  assert.equal((r1.windowListeners.mousemove || []).length, 0)
+  assert.equal((r1.windowListeners.mouseup || []).length, 0)
+
+  // Double-click resizer resets Lane 1 width back to auto
+  await lane1['header-resizer'].listeners.dblclick[0]()
+  assert.equal(lane1.width, null)
+  assert.equal(lane1['rendered-width'], null)
+  assert.equal(lane1.element.className, 'lane-header')
+  assert.equal(lane1.body.className, 'lane-body')
+  assert.equal(lane1.element.style.width, '')
+  assert.equal(kv.get(`${lane1.id}.width`), '')
+
+  // Set Lane 1 to narrower-than-100px (60) and Lane 2 to 620, test lane reload & full reload persistence
+  await r1.f.state['lane-control']['set-width'](lane1.id, 60)
+  await r1.f.state['lane-control']['set-width'](lane2.id, 620)
+  await lane1['reload-btn'].listeners.click[0]()
+  assert.equal(lane1.width, 60)
+  assert.equal(lane1['rendered-width'], 100)
+  assert.equal(lane1.element.style.width, '100px')
+  assert.equal(lane1.body.children.at(-1), lane1['body-resizer'])
+
+  // Simulate full reload from URL -> both stored widths restore (60 clamped to 100px, 620 at 620px)
+  const r2 = createRuntime(r1.location.pathname)
+  await r2.f.run(parse(mainSource, '/src/main.fs'))
+  const rl1 = r2.f.state.lanes[0]
+  const rl2 = r2.f.state.lanes[1]
+  assert.equal(rl1.width, 60)
+  assert.equal(rl1['rendered-width'], 100)
+  assert.equal(rl1.element.style.width, '100px')
+  assert.equal(rl1.body.style.width, '100px')
+  assert.equal(rl2.width, 620)
+  assert.equal(rl2['rendered-width'], 620)
+  assert.equal(rl2.element.style.width, '620px')
+  assert.equal(rl2.body.style.width, '620px')
+
+  // Clearing Width in the gear modal resets back to auto
+  const modal2 = r2.f.state['lane-control']['config-modal']
+  await rl2['config-btn'].listeners.click[0]()
+  assert.equal(modal2['width-input'].value, '620')
+  modal2['width-input'].value = ''
+  await modal2.form.listeners.submit[0]({ preventDefault() {} })
+  assert.equal(rl2.width, null)
+  assert.equal(rl2['rendered-width'], null)
+  assert.equal(rl2.element.className, 'lane-header')
+  assert.equal(rl2.body.className, 'lane-body')
+  assert.equal(kv.get(`${rl2.id}.width`), '')
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('workflow constraint helpers: normalization, default from/to detection, transition graph, cell states, and stored persistence', () => {
+ assert.deepEqual(DATA_CONSTRAINT_TYPES, ['workflow'])
+ assert.equal(normalizeColumnConstraint(null), null)
+ assert.equal(normalizeColumnConstraint({ type: 'unknown' }), null)
+ assert.deepEqual(
+  normalizeColumnConstraint({ type: 'workflow', tableId: 't-wf', fromColumnId: 'c-f', toColumnId: 'c-t' }),
+  { type: 'workflow', tableId: 't-wf', fromColumnId: 'c-f', toColumnId: 'c-t' }
+ )
+
+ // findWorkflowDefaultColumns prefers exact `from`/`to`, falls back to case-insensitive
+ assert.deepEqual(
+  findWorkflowDefaultColumns({
+   columns: [
+    { id: 'c1', name: 'From' },
+    { id: 'c2', name: 'from' },
+    { id: 'c3', name: 'To' },
+   ],
+  }),
+  { fromColumnId: 'c2', toColumnId: 'c3' }
+ )
+ assert.deepEqual(
+  findWorkflowDefaultColumns({ columns: [{ id: 'c1', name: 'title' }] }),
+  { fromColumnId: '', toColumnId: '' }
+ )
+
+ // parseColumnType & formatColumnType keep workflow constraint only on text columns
+ const wfSpec = {
+  type: 'text',
+  multiple: false,
+  constraint: { type: 'workflow', tableId: 't-wf', fromColumnId: 'c-from', toColumnId: 'c-to' },
+ }
+ assert.deepEqual(parseColumnType(wfSpec), wfSpec)
+ assert.deepEqual(parseColumnType({ type: 'integer', multiple: false, constraint: wfSpec.constraint }), {
+  type: 'integer',
+  multiple: false,
+ })
+ assert.equal(formatColumnType(wfSpec), 'text(workflow)')
+ assert.equal(formatColumnType({ ...wfSpec, multiple: true }), 'text(workflow)[]')
+
+ const tables = [
+  {
+   id: 't-tasks',
+   name: 'tasks',
+   columns: [
+    { id: 'c-title', name: 'title', type: 'text', multiple: false },
+    {
+     id: 'c-status',
+     name: 'status',
+     type: 'text',
+     multiple: false,
+     constraint: { type: 'workflow', tableId: 't-wf', fromColumnId: 'c-from', toColumnId: 'c-to' },
+    },
+   ],
+   rows: [
+    { id: 'r1', values: { 'c-title': 'Ship feature', 'c-status': 'Draft' } },
+    { id: 'r2', values: { 'c-title': 'Old item', 'c-status': 'Legacy' } },
+   ],
+  },
+  {
+   id: 't-wf',
+   name: 'workflow',
+   columns: [
+    { id: 'c-from', name: 'from', type: 'text', multiple: false },
+    { id: 'c-to', name: 'to', type: 'text', multiple: false },
+   ],
+   rows: [
+    { id: 'w1', values: { 'c-from': 'Draft', 'c-to': 'Review' } },
+    { id: 'w2', values: { 'c-from': 'Review', 'c-to': 'Approved' } },
+    { id: 'w3', values: { 'c-from': 'Review', 'c-to': 'Draft' } },
+    { id: 'w4', values: { 'c-from': 'Review', 'c-to': 'Approved' } }, // duplicate
+    { id: 'w5', values: { 'c-from': '', 'c-to': '' } }, // blank row ignored
+   ],
+  },
+ ]
+
+ const target = resolveWorkflowTarget(tables, tables[0].columns[1])
+ assert.equal(target.active, true)
+ assert.equal(target.configured, true)
+ assert.equal(target.valid, true)
+ assert.equal(target.tableName, 'workflow')
+ assert.equal(target.fromColName, 'from')
+ assert.equal(target.toColName, 'to')
+ assert.deepEqual(target.fromValues, ['Draft', 'Review'])
+ assert.deepEqual(target.toValues, ['Review', 'Approved', 'Draft'])
+ assert.equal(target.transitionCount, 3)
+ assert.deepEqual(target.transitions, {
+  Draft: ['Review'],
+  Review: ['Approved', 'Draft'],
+ })
+
+ // Valid state in `from`: shows current + outgoing `to` options only
+ const stDraft = getWorkflowCellState(tables, tables[0].columns[1], 'Draft')
+ assert.equal(stDraft.valid, true)
+ assert.equal(stDraft.isValueValid, true)
+ assert.equal(stDraft.error, null)
+ assert.deepEqual(stDraft.options.map(o => o.value), ['Draft', 'Review'])
+
+ const stReview = getWorkflowCellState(tables, tables[0].columns[1], 'Review')
+ assert.equal(stReview.isValueValid, true)
+ assert.deepEqual(stReview.options.map(o => o.value), ['Review', 'Approved', 'Draft'])
+
+ // Valid terminal state (in `to` only): remains valid with no outgoing transitions
+ const stApproved = getWorkflowCellState(tables, tables[0].columns[1], 'Approved')
+ assert.equal(stApproved.isValueValid, true)
+ assert.equal(stApproved.error, null)
+ assert.deepEqual(stApproved.options.map(o => o.value), ['Approved'])
+
+ // Invalid value: preserves current value, marks error, offers all `from` starting points
+ const stLegacy = getWorkflowCellState(tables, tables[0].columns[1], 'Legacy')
+ assert.equal(stLegacy.valid, true)
+ assert.equal(stLegacy.isValueValid, false)
+ assert.equal(stLegacy.currentValue, 'Legacy')
+ assert.ok(stLegacy.error)
+ assert.deepEqual(stLegacy.options.map(o => ({ v: o.value, inv: o.isInvalid })), [
+  { v: 'Legacy', inv: true },
+  { v: 'Draft', inv: false },
+  { v: 'Review', inv: false },
+ ])
+
+ // Empty invalid value: offers all `from` starting points
+ const stEmpty = getWorkflowCellState(tables, tables[0].columns[1], '')
+ assert.equal(stEmpty.isValueValid, false)
+ assert.equal(stEmpty.options[0].value, '')
+ assert.equal(stEmpty.options[0].isInvalid, true)
+ assert.deepEqual(stEmpty.options.slice(1).map(o => o.value), ['Draft', 'Review'])
+
+ // Unconfigured workflow constraint reports valid=false cleanly
+ const stUnconf = getWorkflowCellState(
+  tables,
+  { id: 'c-u', name: 'u', type: 'text', multiple: false, constraint: { type: 'workflow', tableId: '', fromColumnId: '', toColumnId: '' } },
+  'Draft'
+ )
+ assert.equal(stUnconf.active, true)
+ assert.equal(stUnconf.configured, false)
+ assert.equal(stUnconf.valid, false)
+
+ // Stored table parsing preserves workflow constraints on text columns and strips on non-text
+ const reparsed = parseStoredTables(JSON.stringify(tables))
+ assert.deepEqual(reparsed[0].columns[1].constraint, tables[0].columns[1].constraint)
+ assert.equal(Object.hasOwn(reparsed[0].columns[0], 'constraint'), false)
+ assert.deepEqual(buildTablesScope(reparsed).tasks, [
+  { title: 'Ship feature', status: 'Draft' },
+  { title: 'Old item', status: 'Legacy' },
+ ])
+})
+
+test('Data tab workflow constraint: + constraint on text only, auto from/to, transition dropdowns, red error states, alignment, and persistence', async () => {
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  return {
+   tag,
+   nodeType: 1,
+   style: {},
+   attributes: {},
+   children: [],
+   listeners: {},
+   textContent: '',
+   value: '',
+   checked: false,
+   selected: false,
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   focused: false,
+   removed: false,
+   scrollWidth: 0,
+   scrollLeft: 0,
+   setAttribute(name, value) {
+    this.attributes[name] = value
+   },
+   appendChild(child) {
+    this.children.push(child)
+    return child
+   },
+   insertBefore(child, ref) {
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) { this.children.push(child) }
+    else { this.children.splice(idx, 0, child) }
+    return child
+   },
+   addEventListener(event, handler) {
+    this.listeners[event] = handler
+   },
+   focus() {
+    this.focused = true
+   },
+   select() {},
+   remove() {
+    this.removed = true
+   },
+  }
+ }
+
+ const kv = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { kv.set(qualify(key), value) },
+  }
+ }
+
+ let uuid = 0
+ function createRuntime(pathname = '/') {
+  const mockWindow = {
+   Array,
+   Boolean,
+   Date,
+   JSON,
+   Math,
+   Object,
+   Reflect,
+   decodeURIComponent,
+   crypto: { randomUUID: () => `wf-uuid-${++uuid}` },
+   history: {
+    pushState(_s, _t, url) { mockWindow.location.pathname = url },
+    replaceState(_s, _t, url) { mockWindow.location.pathname = url },
+   },
+   location: { pathname, hash: '' },
+   addEventListener() {},
+   removeEventListener() {},
+  }
+  const mockDocument = {
+   body: createMockElement('body'),
+   documentElement: createMockElement('html'),
+   defaultView: mockWindow,
+   createElement: createMockElement,
+  }
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: createMockKV(),
+   defaultValueForType,
+   document: mockDocument,
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  return { f, mockWindow }
+ }
+
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const { f, mockWindow } = createRuntime()
+  await f.run(parse(mainSource, '/src/main.fs'))
+  await f.state.tableHeadRowAddButton.listeners.click()
+  const lane = f.state.lanes[0]
+  await lane.notebook.tabs.data.listeners.click()
+  const dataView = lane.notebook['data-view']
+
+  // 1. Create workflow table with `from` and `to` text columns and 2 transition rows
+  const wfTable = await dataView['add-table']('workflow')
+  const wfFromCol = await dataView['add-column']('from', 'text', false)
+  const wfToCol = await dataView['add-column']('to', 'text', false)
+  await dataView['add-row']()
+  dataView['grid-rows'][0].cells[0]['input-el'].value = 'todo'
+  await dataView['grid-rows'][0].cells[0]['input-el'].listeners.input()
+  dataView['grid-rows'][0].cells[1]['input-el'].value = 'doing'
+  await dataView['grid-rows'][0].cells[1]['input-el'].listeners.input()
+  await dataView['add-row']()
+  dataView['grid-rows'][1].cells[0]['input-el'].value = 'doing'
+  await dataView['grid-rows'][1].cells[0]['input-el'].listeners.input()
+  dataView['grid-rows'][1].cells[1]['input-el'].value = 'done'
+  await dataView['grid-rows'][1].cells[1]['input-el'].listeners.input()
+
+  // 2. Create projects table with text `title`, text `status`, and integer `priority`
+  const projTable = await dataView['add-table']('projects')
+  await dataView['add-column']('title', 'text', false)
+  const statusCol = await dataView['add-column']('status', 'text', false)
+  await dataView['add-column']('priority', 'integer', false)
+
+  // Add 3 rows: valid ('todo'), invalid ('legacy'), and empty ('')
+  await dataView['add-row']()
+  dataView['grid-rows'][0].cells[0]['input-el'].value = 'Alpha'
+  await dataView['grid-rows'][0].cells[0]['input-el'].listeners.input()
+  dataView['grid-rows'][0].cells[1]['input-el'].value = 'todo'
+  await dataView['grid-rows'][0].cells[1]['input-el'].listeners.input()
+
+  await dataView['add-row']()
+  dataView['grid-rows'][1].cells[0]['input-el'].value = 'Beta'
+  await dataView['grid-rows'][1].cells[0]['input-el'].listeners.input()
+  dataView['grid-rows'][1].cells[1]['input-el'].value = 'legacy'
+  await dataView['grid-rows'][1].cells[1]['input-el'].listeners.input()
+
+  await dataView['add-row']()
+  dataView['grid-rows'][2].cells[0]['input-el'].value = 'Gamma'
+  await dataView['grid-rows'][2].cells[0]['input-el'].listeners.input()
+
+  // Verify `+ constraint` dropdown is visible ONLY on text columns, and Constraint section starts hidden
+  const titleSrow = dataView['schema-rows'][0]
+  const statusSrow = dataView['schema-rows'][1]
+  const prioritySrow = dataView['schema-rows'][2]
+  assert.equal(titleSrow['constraint-add-el'].hidden, false)
+  assert.equal(titleSrow['constraint-add-el'].children[0].textContent, '+ constraint')
+  assert.equal(titleSrow['constraint-add-el'].children[1].value, 'workflow')
+  assert.equal(titleSrow['constraint-add-el'].children[1].textContent, 'Workflow')
+  assert.equal(titleSrow['constraint-config-wrap'].hidden, true)
+  assert.equal(statusSrow['constraint-add-el'].hidden, false)
+  assert.equal(statusSrow['constraint-config-wrap'].hidden, true)
+  assert.equal(prioritySrow['constraint-add-el'].hidden, true)
+  assert.equal(prioritySrow['constraint-config-wrap'].hidden, true)
+
+  // 3. Add Workflow constraint to `status` via `+ constraint` dropdown
+  statusSrow['constraint-add-el'].value = 'workflow'
+  await statusSrow['constraint-add-el'].listeners.change()
+
+  const statusSrowOpen = dataView['schema-rows'][1]
+  assert.equal(statusSrowOpen['constraint-add-el'].hidden, true)
+  assert.equal(statusSrowOpen['constraint-config-wrap'].hidden, false)
+  assert.deepEqual(
+   statusSrowOpen['constraint-type-el'].children.map(o => ({ v: o.value, t: o.textContent })),
+   [{ v: 'workflow', t: 'Workflow' }]
+  )
+  assert.deepEqual(
+   statusSrowOpen['constraint-table-el'].children.map(o => o.value),
+   ['', wfTable.id, projTable.id]
+  )
+  assert.equal(statusSrowOpen['constraint-from-el'].disabled, true)
+  assert.equal(statusSrowOpen['constraint-to-el'].disabled, true)
+
+  // Select `workflow` table -> `from` and `to` autoselect automatically
+  statusSrowOpen['constraint-table-el'].value = wfTable.id
+  await statusSrowOpen['constraint-table-el'].listeners.change()
+
+  const statusSrowMapped = dataView['schema-rows'][1]
+  assert.equal(statusSrowMapped['constraint-table-el'].value, wfTable.id)
+  assert.equal(statusSrowMapped['constraint-from-el'].disabled, false)
+  assert.equal(statusSrowMapped['constraint-to-el'].disabled, false)
+  assert.equal(statusSrowMapped['constraint-from-el'].value, wfFromCol.id)
+  assert.equal(statusSrowMapped['constraint-to-el'].value, wfToCol.id)
+  assert.match(statusSrowMapped['constraint-hint-el'].textContent, /workflow \(from → to\) · 2 transitions/)
+
+  // Switching to a table without `from`/`to` resets column selects; switching back autoselects again
+  statusSrowMapped['constraint-table-el'].value = projTable.id
+  await statusSrowMapped['constraint-table-el'].listeners.change()
+  assert.equal(dataView['schema-rows'][1]['constraint-from-el'].value, '')
+  assert.equal(dataView['schema-rows'][1]['constraint-to-el'].value, '')
+  dataView['schema-rows'][1]['constraint-table-el'].value = wfTable.id
+  await dataView['schema-rows'][1]['constraint-table-el'].listeners.change()
+  assert.equal(dataView['schema-rows'][1]['constraint-from-el'].value, wfFromCol.id)
+  assert.equal(dataView['schema-rows'][1]['constraint-to-el'].value, wfToCol.id)
+
+  // 4. Verify grid cells for `status` are dropdowns (<select>) with workflow transitions & red errors
+  assert.equal(dataView['grid-head-cells'][2]['type-el'].textContent, 'text(workflow)')
+
+  const cell0 = dataView['grid-rows'][0].cells[1]
+  assert.equal(cell0['select-el'].tag, 'select')
+  assert.equal(cell0['select-el'].value, 'todo')
+  assert.equal(cell0['select-el'].className, 'lane-data-cell-select')
+  assert.equal(cell0['select-el'].attributes['aria-invalid'], 'false')
+  assert.deepEqual(cell0['option-els'].map(o => o.value), ['todo', 'doing'])
+
+  // Transition Row 1: todo -> doing -> done
+  cell0['select-el'].value = 'doing'
+  await cell0['select-el'].listeners.change()
+  assert.equal(projTable.rows[0].values[statusCol.id], 'doing')
+  assert.equal(cell0['select-el'].className, 'lane-data-cell-select')
+  assert.deepEqual(cell0['option-els'].map(o => o.value), ['doing', 'done'])
+
+  cell0['select-el'].value = 'done'
+  await cell0['select-el'].listeners.change()
+  assert.equal(projTable.rows[0].values[statusCol.id], 'done')
+  assert.equal(cell0['select-el'].className, 'lane-data-cell-select')
+  assert.equal(cell0['select-el'].attributes['aria-invalid'], 'false')
+  assert.deepEqual(cell0['option-els'].map(o => o.value), ['done'])
+
+  // Row 2 ('legacy') is invalid -> highlighted red, value NOT mutated, shows all `from` options as starting points
+  const cell1 = dataView['grid-rows'][1].cells[1]
+  assert.equal(projTable.rows[1].values[statusCol.id], 'legacy')
+  assert.equal(cell1['select-el'].value, 'legacy')
+  assert.match(cell1['select-el'].className, /lane-data-cell-select--invalid/)
+  assert.equal(cell1['select-el'].attributes['aria-invalid'], 'true')
+  assert.equal(cell1['option-els'][0].attributes['data-invalid'], 'true')
+  assert.deepEqual(cell1['option-els'].map(o => o.value), ['legacy', 'todo', 'doing'])
+
+  // Row 3 ('') is invalid -> highlighted red, offers all `from` starting points; choosing 'todo' clears red immediately
+  const cell2 = dataView['grid-rows'][2].cells[1]
+  assert.equal(projTable.rows[2].values[statusCol.id], '')
+  assert.match(cell2['select-el'].className, /lane-data-cell-select--invalid/)
+  assert.equal(cell2['select-el'].attributes['aria-invalid'], 'true')
+  assert.deepEqual(cell2['option-els'].map(o => o.value), ['', 'todo', 'doing'])
+  cell2['select-el'].value = 'todo'
+  await cell2['select-el'].listeners.change()
+  assert.equal(projTable.rows[2].values[statusCol.id], 'todo')
+  assert.equal(cell2['select-el'].className, 'lane-data-cell-select')
+  assert.equal(cell2['select-el'].attributes['aria-invalid'], 'false')
+  assert.deepEqual(cell2['option-els'].map(o => o.value), ['todo', 'doing'])
+
+  // 5. Align workflow by adding `legacy -> done` to workflow table -> Row 2 red clears automatically on return
+  await dataView['select-table'](wfTable.id)
+  await dataView['add-row']()
+  dataView['grid-rows'][2].cells[0]['input-el'].value = 'legacy'
+  await dataView['grid-rows'][2].cells[0]['input-el'].listeners.input()
+  dataView['grid-rows'][2].cells[1]['input-el'].value = 'done'
+  await dataView['grid-rows'][2].cells[1]['input-el'].listeners.input()
+
+  await dataView['select-table'](projTable.id)
+  const alignedCell1 = dataView['grid-rows'][1].cells[1]
+  assert.equal(alignedCell1['select-el'].value, 'legacy')
+  assert.equal(alignedCell1['select-el'].className, 'lane-data-cell-select')
+  assert.equal(alignedCell1['select-el'].attributes['aria-invalid'], 'false')
+  assert.deepEqual(alignedCell1['option-els'].map(o => o.value), ['legacy', 'done'])
+
+  // 6. Reload entire app -> persisted workflow constraint and dropdowns restore cleanly
+  const reloaded = createRuntime(mockWindow.location.pathname)
+  await reloaded.f.run(parse(mainSource, '/src/main.fs'))
+  const rDataView = reloaded.f.state.lanes[0].notebook['data-view']
+  const rProj = rDataView.tables.find(t => t.name === 'projects')
+  assert.deepEqual(rProj.columns[1].constraint, {
+   type: 'workflow',
+   tableId: wfTable.id,
+   fromColumnId: wfFromCol.id,
+   toColumnId: wfToCol.id,
+  })
+  assert.equal(rDataView['grid-rows'][1].cells[1]['select-el'].tag, 'select')
+  assert.deepEqual(rDataView['grid-rows'][1].cells[1]['option-els'].map(o => o.value), ['legacy', 'done'])
+
+  // 7. Removing constraint restores `+ constraint` and free text input without changing row values
+  await rDataView['schema-toggle-btn'].listeners.click()
+  await rDataView['schema-rows'][1]['constraint-remove-btn'].listeners.click()
+  assert.equal(Object.hasOwn(rProj.columns[1], 'constraint'), false)
+  assert.equal(rDataView['schema-rows'][1]['constraint-add-el'].hidden, false)
+  assert.equal(rDataView['schema-rows'][1]['constraint-config-wrap'].hidden, true)
+  assert.equal(rDataView['grid-rows'][1].cells[1]['input-el'].tag, 'input')
+  assert.equal(rDataView['grid-rows'][1].cells[1]['input-el'].value, 'legacy')
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('Fixed left and right side rails: styles, chevron minimize buttons, 26px initial icons, non-interactive hover preview, vertical placeholder, and in-place restore', async () => {
+ // 1. Unit checks for side rail helpers
+ assert.deepEqual(LANE_MINIMIZE_SIDES, ['left', 'right'])
+ assert.equal(normalizeLaneMinimizeSide('left'), 'left')
+ assert.equal(normalizeLaneMinimizeSide(' RIGHT '), 'right')
+ assert.equal(normalizeLaneMinimizeSide('center'), null)
+ assert.equal(normalizeLaneMinimizeSide(''), null)
+ assert.equal(normalizeLaneMinimizeSide(null), null)
+
+ assert.equal(getLaneInitial('Alpha'), 'A')
+ assert.equal(getLaneInitial('  beta lane'), 'B')
+ assert.equal(getLaneInitial('🚀 Rocket'), '🚀')
+ assert.equal(getLaneInitial('', 'lane-9'), 'L')
+ assert.equal(getLaneInitial('   ', ''), '?')
+
+ // 2. Verify CSS rules in index.html and sw.js precache
+ const indexHtml = await fs.readFile(new URL('./index.html', import.meta.url), 'utf8')
+ const swSource = await fs.readFile(new URL('./sw.js', import.meta.url), 'utf8')
+ assert.match(swSource, /'\/src\/lane-rails\.fs'/)
+ assert.match(indexHtml, /body\s*\{[^}]*margin-right:\s*64px;[^}]*margin-left:\s*64px;/s)
+ assert.match(indexHtml, /\.side-rail\s*\{[^}]*background-color:\s*#383838;[^}]*bottom:\s*0;[^}]*box-sizing:\s*border-box;[^}]*position:\s*fixed;[^}]*top:\s*0;[^}]*width:\s*32px;[^}]*z-index:\s*2000;/s)
+ assert.match(indexHtml, /\.side-rail--left\s*\{[^}]*border-right:\s*1px solid [^;]+;[^}]*left:\s*0;/s)
+ assert.match(indexHtml, /\.side-rail--right\s*\{[^}]*border-left:\s*1px solid [^;]+;[^}]*right:\s*0;/s)
+ assert.match(indexHtml, /\.side-rail-icon\s*\{[^}]*background:\s*#ffffff0e;[^}]*border:\s*1px solid #ffffff24;[^}]*box-sizing:\s*border-box;[^}]*height:\s*26px;[^}]*justify-content:\s*center;[^}]*width:\s*26px;/s)
+ assert.match(indexHtml, /\.side-rail-preview\s*\{[^}]*pointer-events:\s*none;[^}]*position:\s*fixed;[^}]*user-select:\s*none;[^}]*z-index:\s*2100;/s)
+ assert.match(indexHtml, /\.lane-minimized-title\s*\{[^}]*writing-mode:\s*vertical-rl;/s)
+
+ // 3. Full integration test
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  const styleProps = {}
+  const el = {
+   tag,
+   nodeType: 1,
+   style: {
+    setProperty(name, value) { styleProps[name] = value; this[name] = value },
+    removeProperty(name) { delete styleProps[name]; delete this[name] },
+    getPropertyValue(name) { return styleProps[name] || '' },
+   },
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   removed: false,
+   rect: { top: 48, height: 300, width: 320 },
+   getBoundingClientRect() { return this.rect },
+   setAttribute(name, value) { this.attributes[name] = value },
+   appendChild(child) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    this.children.push(child)
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) { this.children.push(child) }
+    else { this.children.splice(idx, 0, child) }
+    return child
+   },
+   replaceChildren(...nodes) {
+    for (const c of this.children.slice()) {
+     c.parentNode = null
+     c.removed = true
+    }
+    this.children = []
+    for (const n of nodes) { this.appendChild(n) }
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() {},
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) { this.parentNode.children.splice(idx, 1) }
+     this.parentNode = null
+    }
+   },
+  }
+  return el
+ }
+
+ const kv = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { kv.set(qualify(key), value) },
+  }
+ }
+
+ let uuid = 0
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ function createRuntime(initialPathname = '/') {
+  const mockWindow = {
+   Array,
+   Boolean,
+   Date,
+   JSON,
+   Math,
+   Object,
+   Reflect,
+   innerHeight: 600,
+   decodeURIComponent,
+   crypto: { randomUUID: () => `rail-uuid-${++uuid}` },
+   history: { pushState(_s, _t, url) { mockWindow.location.pathname = url } },
+   location: { pathname: initialPathname, search: '', hash: '' },
+   addEventListener() {},
+   removeEventListener() {},
+  }
+  const mockBody = createMockElement('body')
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: createMockKV(),
+   defaultValueForType,
+   document: {
+    body: mockBody,
+    defaultView: mockWindow,
+    createElement: createMockElement,
+   },
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  return { f, mockWindow, mockBody }
+ }
+
+ try {
+  const { f, mockWindow, mockBody } = createRuntime('/')
+  await f.run(parse(mainSource, '/src/main.fs'))
+  const laneControl = f.state['lane-control']
+  const rails = laneControl.rails
+
+  // Both fixed rails are always mounted and open on startup (even with 0 lanes)
+  assert.equal(rails['left-rail'].tag, 'aside')
+  assert.equal(rails['left-rail'].className, 'side-rail side-rail--left')
+  assert.equal(rails['right-rail'].tag, 'aside')
+  assert.equal(rails['right-rail'].className, 'side-rail side-rail--right')
+  assert.equal(rails['preview-el'].className, 'side-rail-preview')
+  assert.equal(rails['preview-el'].hidden, true)
+  assert.equal(rails['preview-el'].attributes['aria-hidden'], 'true')
+  assert.ok(mockBody.children.includes(rails['left-rail']))
+  assert.ok(mockBody.children.includes(rails['right-rail']))
+  assert.ok(mockBody.children.includes(rails['preview-el']))
+
+  // Create 3 lanes: Alpha, Beta (420px wide), Gamma
+  await f.state.tableHeadRowAddButton.listeners.click()
+  await f.state.tableHeadRowAddButton.listeners.click()
+  await f.state.tableHeadRowAddButton.listeners.click()
+  const [laneA, laneB, laneC] = f.state.lanes
+  await laneControl.rename(laneA.id, 'Alpha')
+  await laneControl.rename(laneB.id, 'Beta')
+  await laneControl.rename(laneC.id, 'Gamma')
+  await laneControl['set-width'](laneB.id, 420)
+  laneB.notebook.rows[0]['input-el'].value = '; add 20 22'
+  await laneB.notebook.rows[0]['input-el'].listeners.input()
+  assert.equal(laneB.notebook.rows[0]['preview-el'].textContent, '42')
+
+  // Verify chevron minimize buttons on lane header
+  assert.equal(laneB['min-left-btn'].className, 'lane-min-btn lane-min-btn--left')
+  assert.match(laneB['min-left-btn'].innerHTML, /<svg\b[^>]*class="lane-min-icon"/)
+  assert.equal(laneB['min-right-btn'].className, 'lane-min-btn lane-min-btn--right')
+  assert.match(laneB['min-right-btn'].innerHTML, /<svg\b[^>]*class="lane-min-icon"/)
+
+  // Minimize middle lane Beta to the LEFT rail
+  await laneB['min-left-btn'].listeners.click()
+  assert.equal(laneB['is-minimized'], true)
+  assert.equal(laneB['minimized-side'], 'left')
+  assert.equal(kv.get(`${laneB.id}.minimized`), 'left')
+  assert.equal(laneB.element.className, 'lane-header lane-header--minimized')
+  assert.equal(laneB.body.className, 'lane-body lane-body--minimized')
+  assert.equal(laneB.element.style.width, '')
+  assert.equal(laneB.body.style.width, '')
+
+  // Position in table & lanes array is preserved with a clickable vertical-text placeholder
+  assert.deepEqual(f.state.lanes.map(l => l.id), [laneA.id, laneB.id, laneC.id])
+  assert.equal(f.state.tableHeadRow.children[2], laneB.element)
+  assert.equal(f.state.tableBodyRow.children[2], laneB.body)
+  assert.ok(laneB['minimized-placeholder'])
+  assert.equal(laneB['minimized-placeholder'].className, 'lane-minimized-placeholder')
+  assert.equal(laneB['minimized-title-el'].className, 'lane-minimized-title')
+  assert.equal(laneB['minimized-title-el'].textContent, 'Beta')
+
+  // Left rail has 26px initial icon 'B'
+  assert.equal(rails['left-items'].length, 1)
+  assert.equal(rails['right-items'].length, 0)
+  const betaIcon = rails['left-items'][0]['icon-el']
+  assert.equal(betaIcon.className, 'side-rail-icon')
+  assert.equal(betaIcon.textContent, 'B')
+  assert.equal(betaIcon.title, 'Beta')
+  assert.equal(betaIcon.attributes['data-rail-side'], 'left')
+  assert.equal(rails['left-rail'].children[0], betaIcon)
+
+  // Hovering left rail icon shows floating non-interactive preview with live lane DOM & clamped top
+  betaIcon.rect = { top: 450, height: 26, width: 26 }
+  rails['preview-el'].rect = { top: 0, height: 300, width: 420 }
+  await betaIcon.listeners.mouseenter()
+  assert.equal(rails['preview-el'].hidden, false)
+  assert.equal(rails['preview-el'].className, 'side-rail-preview side-rail-preview--left')
+  assert.equal(rails['preview-el'].style.top, '292px')
+  assert.equal(rails['preview-lane'], laneB)
+  assert.ok(rails['preview-header'].children.includes(laneB['header-top']))
+  assert.ok(rails['preview-body'].children.includes(laneB.notebook.element))
+  assert.equal(rails['preview-header'].style.width, '420px')
+  assert.equal(rails['preview-body'].style.width, '420px')
+
+  // Mouseleave hides preview and returns live lane DOM back into laneB
+  await betaIcon.listeners.mouseleave()
+  assert.equal(rails['preview-el'].hidden, true)
+  assert.equal(rails['preview-lane'], null)
+  assert.ok(laneB.element.children.includes(laneB['header-top']))
+  assert.ok(laneB.body.children.includes(laneB.notebook.element))
+
+  // Minimize Gamma to the RIGHT rail
+  await laneC['min-right-btn'].listeners.click()
+  assert.equal(laneC['is-minimized'], true)
+  assert.equal(laneC['minimized-side'], 'right')
+  assert.equal(rails['right-items'].length, 1)
+  const gammaIcon = rails['right-items'][0]['icon-el']
+  assert.equal(gammaIcon.textContent, 'G')
+  assert.equal(gammaIcon.attributes['data-rail-side'], 'right')
+  assert.equal(laneC['minimized-title-el'].textContent, 'Gamma')
+
+  // Hovering right rail icon shows right-anchored preview
+  await gammaIcon.listeners.mouseenter()
+  assert.equal(rails['preview-el'].hidden, false)
+  assert.equal(rails['preview-el'].className, 'side-rail-preview side-rail-preview--right')
+  await gammaIcon.listeners.mouseleave()
+  assert.equal(rails['preview-el'].hidden, true)
+
+  // Renaming Beta -> Zeta while minimized updates both rail initial ('Z') and vertical placeholder ('Zeta')
+  await laneControl.rename(laneB.id, 'Zeta')
+  assert.equal(betaIcon.textContent, 'Z')
+  assert.equal(betaIcon.title, 'Zeta')
+  assert.equal(laneB['minimized-title-el'].textContent, 'Zeta')
+
+  // Clicking rail icon while preview is active hides preview and restores lane in-place with original 420px width
+  await betaIcon.listeners.mouseenter()
+  assert.equal(rails['preview-el'].hidden, false)
+  await betaIcon.listeners.click()
+  assert.equal(rails['preview-el'].hidden, true)
+  assert.equal(rails['left-items'].length, 0)
+  assert.equal(laneB['is-minimized'], false)
+  assert.equal(laneB['minimized-side'], null)
+  assert.equal(laneB['minimized-placeholder'], null)
+  assert.equal(kv.get(`${laneB.id}.minimized`), '')
+  assert.equal(laneB.element.className, 'lane-header lane-header--sized')
+  assert.equal(laneB.element.style.width, '420px')
+  assert.equal(laneB.body.className, 'lane-body lane-body--sized')
+  assert.equal(laneB.body.style.width, '420px')
+  assert.equal(f.state.tableHeadRow.children[2], laneB.element)
+  assert.equal(f.state.tableBodyRow.children[2], laneB.body)
+  assert.ok(laneB.element.children.includes(laneB['header-top']))
+  assert.ok(laneB.body.children.includes(laneB.notebook.element))
+
+  // Clicking the vertical placeholder also unminimizes (restores) Gamma in-place
+  await laneC['minimized-placeholder'].listeners.click()
+  assert.equal(laneC['is-minimized'], false)
+  assert.equal(laneC['minimized-placeholder'], null)
+  assert.equal(rails['right-items'].length, 0)
+  assert.equal(f.state.tableHeadRow.children[3], laneC.element)
+  assert.equal(f.state.tableBodyRow.children[3], laneC.body)
+
+  // Persisted minimized state restores cleanly across full app reload
+  await laneA['min-left-btn'].listeners.click()
+  await laneC['min-right-btn'].listeners.click()
+  const reloaded = createRuntime(mockWindow.location.pathname)
+  await reloaded.f.run(parse(mainSource, '/src/main.fs'))
+  const [rA, rB, rC] = reloaded.f.state.lanes
+  const rRails = reloaded.f.state['lane-control'].rails
+  assert.equal(rA['is-minimized'], true)
+  assert.equal(rA['minimized-side'], 'left')
+  assert.equal(rA['minimized-title-el'].textContent, 'Alpha')
+  assert.equal(rRails['left-items'].length, 1)
+  assert.equal(rRails['left-items'][0]['icon-el'].textContent, 'A')
+  assert.equal(rB['is-minimized'], false)
+  assert.equal(rC['is-minimized'], true)
+  assert.equal(rC['minimized-side'], 'right')
+  assert.equal(rC['minimized-title-el'].textContent, 'Gamma')
+  assert.equal(rRails['right-items'].length, 1)
+  assert.equal(rRails['right-items'][0]['icon-el'].textContent, 'G')
+
+  // Closing a minimized lane removes its rail icon and clears persisted minimized state
+  await reloaded.f.state['lane-control'].close(rC.id)
+  assert.equal(rRails['right-items'].length, 0)
+  assert.equal(kv.get(`${rC.id}.minimized`), '')
  }
  finally {
   globalThis.fetch = origFetch
