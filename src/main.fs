@@ -8,6 +8,9 @@
  { fontFamily '"IBM Plex Mono", monospace, Arial, "Noto Sans", Verdana, sans-serif' }
  { fontSize 13px }
 ]
+[ match
+ { $document.documentElement.style : ; set '#383838 transparent' document.documentElement.style.scrollbarColor }
+]
 ; to read-scroll-left (
  -- Reads the current horizontal scroll offset in pixels
  ; to root $document.documentElement
@@ -123,6 +126,7 @@
 =
 ; set lanes-table table.className
 ; set lane-controls tableHeadRowControls.className
+; set lane-controls-body tableBodyRowSpacer.className
 ; assign $tableHeadRowAddButton { type button } { className lane-control-btn } { textContent '+ Lane' }
 ; assign $tableHeadRowOpenButton { type button } { className lane-control-btn } { textContent Open }
 = !@2+.appendChild $@1
@@ -139,17 +143,63 @@
 =
 ; to lane-control ; load /src/lane-control.fs
 ; to lane-control.create-lane (
- -- Creates header and notebook body cells for a lane column
+ -- Creates header and notebook body cells for a lane column, optionally inserting before an existing lane
+ ; to { before-lane } $argv
  ; to header !document.createElement th
  ; set lane-header header.className
- !tableHeadRow.appendChild $header
+ [ match
+  { $before-lane.element (
+   [ match
+    { $tableHeadRow.insertBefore : !tableHeadRow.insertBefore $header $before-lane.element }
+    { true : !tableHeadRow.appendChild $header }
+   ]
+  ) }
+  { true : !tableHeadRow.appendChild $header }
+ ]
  ; to body !document.createElement td
  ; set lane-body body.className
- !tableBodyRow.appendChild $body
+ [ match
+  { $before-lane.body (
+   [ match
+    { $tableBodyRow.insertBefore : !tableBodyRow.insertBefore $body $before-lane.body }
+    { true : !tableBodyRow.appendChild $body }
+   ]
+  ) }
+  { true : !tableBodyRow.appendChild $body }
+ ]
  ; object { header $header } { body $body }
 )
-; to lane-modal-mod ; load /src/lane-modal.fs
-; to lane-modal !lane-modal-mod.create $lane-control
+; to lane-control.move-lane-dom (
+ -- Repositions an existing lane's header and body DOM cells before another lane (or at the end when before-lane is null)
+ ; to { lane before-lane } $argv
+ [ match
+  { $lane.element (
+   [ match
+    { $before-lane.element (
+     [ match
+      { $tableHeadRow.insertBefore : !tableHeadRow.insertBefore $lane.element $before-lane.element }
+      { true : !tableHeadRow.appendChild $lane.element }
+     ]
+    ) }
+    { true : !tableHeadRow.appendChild $lane.element }
+   ]
+  ) }
+ ]
+ [ match
+  { $lane.body (
+   [ match
+    { $before-lane.body (
+     [ match
+      { $tableBodyRow.insertBefore : !tableBodyRow.insertBefore $lane.body $before-lane.body }
+      { true : !tableBodyRow.appendChild $lane.body }
+     ]
+    ) }
+    { true : !tableBodyRow.appendChild $lane.body }
+   ]
+  ) }
+ ]
+)
+; to lane-modal $lane-control.lane-modal
 ; to lanes $lane-control.lanes
 ; to scroll-timer null
 ; to on-scroll (
@@ -165,6 +215,9 @@
  ]
 )
 !console.log Lane Control $lane-control
+[ match
+ { $lane-control.mount-workspace-summary : !lane-control.mount-workspace-summary $tableBodyRowSpacer }
+]
 !lane-control.init
 !window.addEventListener scroll $on-scroll
 !window.addEventListener hashchange $restore-scroll-left

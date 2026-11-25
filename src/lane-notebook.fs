@@ -3,6 +3,7 @@
 ; to lane-scope ; load /src/lane-scope.fs
 ; to lane-data ; load /src/lane-data.fs
 ; to lane-output ; load /src/lane-output.fs
+; to lane-line-info-mod ; load /src/lane-line-info-modal.fs
 ; to scope ; object
 ; to scope.parse-stored (
  -- Parses persisted lane script storage into an array of line strings
@@ -96,12 +97,14 @@
   { lane-control $lane-control }
   { active-tab $starting-tab }
   { lines {} }
+  { line-records {} }
   { rows {} }
   { results {} }
   { sent {} }
   { state ; object }
   { run-id 0 }
   { editing-row null }
+  { script-initialized false }
   { idle-tracker $idle-tracker }
  ]
  ; to root-el !document.createElement div
@@ -196,7 +199,11 @@
  ; to scope-view !lane-scope.mount $lane $scope-panel
  ; to data-view !lane-data.mount $lane $data-panel $lane-control
  ; to output-view !lane-output.mount $lane $container
- ; assign $nb { element $root-el } { tabs-el $tabs-el } { tabs $tabs } { source-panel $source-panel } { input-panel $input-panel } { scope-panel $scope-panel } { data-panel $data-panel } { lines-el $lines-el } { actions-el $actions-el } { add-btn $add-btn } { add-import-btn $add-import-btn } { inputs-view $inputs-view } { inputs $inputs-view.inputs } { scope-view $scope-view } { data-view $data-view } { tables $data-view.tables } { output-view $output-view }
+ ; to info-modal [ match
+  { $lane-control.line-info-modal : $lane-control.line-info-modal }
+  { true : !lane-line-info-mod.create $container }
+ ]
+ ; assign $nb { element $root-el } { tabs-el $tabs-el } { tabs $tabs } { source-panel $source-panel } { input-panel $input-panel } { scope-panel $scope-panel } { data-panel $data-panel } { lines-el $lines-el } { actions-el $actions-el } { add-btn $add-btn } { add-import-btn $add-import-btn } { inputs-view $inputs-view } { inputs $inputs-view.inputs } { scope-view $scope-view } { data-view $data-view } { tables $data-view.tables } { output-view $output-view } { info-modal $info-modal }
 
  ; to nb.when-idle (
   -- Resolves once all in-flight runs of this lane have completed
@@ -290,7 +297,14 @@
   !nb.apply-tab-ui
   [ match
    { $skip-url : null }
-   { $lane-control.update-url : !lane-control.update-url }
+   { true (
+    [ match
+     { $lane-control.remember-path : !lane-control.remember-path $nb.lane }
+    ]
+    [ match
+     { $lane-control.update-url : !lane-control.update-url }
+    ]
+   ) }
   ]
   [ match
    { [ propertyIs input next-tab ] : null }
@@ -306,10 +320,60 @@
  !data-tab.addEventListener click : !nb.set-tab data
  !view-tab.addEventListener click : !nb.set-tab view
 
+ ; to collect-line-ids (
+  -- Extracts ordered line IDs from nb.line-records
+  ; to ids {}
+  ; each $nb.line-records (
+   ; to { rec } $argv
+   !ids.push $rec.id
+  )
+  $ids
+ )
+
+ ; to persist-structural (
+  -- Persists structural index changes alongside newly inserted/edited (or all initial unpersisted) line records
+  ; to { dirty-recs removed-recs } $argv
+  ; to was-init $nb.script-initialized
+  ; set true nb.script-initialized
+  ; to all-ids !collect-line-ids
+  ; to to-write [ match
+   { $was-init : $dirty-recs }
+   { true : $nb.line-records }
+  ]
+  ; to to-remove [ match
+   { $removed-recs : $removed-recs }
+   { true : {} }
+  ]
+  !saveScriptLinesAndIndex $data $nb.lane.data $nb.lane.id $to-write $all-ids $to-remove
+ )
+
+ ; to nb.save-line (
+  -- Persists a single script line record and updates its modification timestamp
+  ; to { row } $argv
+  [ match
+   { $row.record (
+    [ match
+     { $nb.script-initialized (
+      ; to all-ids !collect-line-ids
+      !saveScriptLine $data $nb.lane.data $nb.lane.id $row.record $all-ids false
+     ) }
+     { true : !persist-structural { $row.record } {} }
+    ]
+   ) }
+  ]
+ )
+
  ; to nb.save (
-  -- Persists the lane script lines to the lane's KV namespace
-  ; to serialized !window.JSON.stringify $nb.lines
-  !nb.lane.data.set script $serialized
+  -- Persists all lane script line records to split per-line KV storage
+  ; set true nb.script-initialized
+  ; to saved !saveLaneScript $data $nb.lane.data $nb.lane.id $nb.line-records $window
+  ; each $saved (
+   ; to { rec idx } $argv
+   ; to existing [ get nb.line-records $idx ]
+   [ match
+    { $existing : ; set $rec.updatedAt existing.updatedAt }
+   ]
+  )
  )
 
  ; to nb.renumber (
@@ -397,9 +461,29 @@
   ]
  )
 
+ ; to attach-line-info-btn (
+  -- Creates and attaches the hover info button on a code or import row
+  ; to { row el } $argv
+  ; to info-svg '<svg class="lane-line-info-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.25"></circle><path d="M8 7.25V11.25"></path><circle cx="8" cy="4.85" r="0.6" fill="currentColor" stroke="none"></circle></svg>'
+  ; to info-btn !document.createElement button
+  ; assign $info-btn { type button } { className lane-line-info } { innerHTML $info-svg } { title 'Line info' }
+  !info-btn.setAttribute aria-label 'Line info'
+  !info-btn.addEventListener click (
+   ; to line-num ; add $row.index 1
+   !info-modal.open [ object { line-number $line-num } { line-id $row.record.id } { updated-at $row.record.updatedAt } ]
+  )
+  !el.appendChild $info-btn
+  ; set $info-btn row.info-btn
+  $info-btn
+ )
+
  ; to nb.create-import-row (
   -- Creates DOM elements and picker bindings for a cross-lane import line
-  ; to { spec } $argv
+  ; to { spec record } $argv
+  ; to line-rec [ match
+   { $record : $record }
+   { true : [ object { id !generateLineId $window } { text !formatImportLine $spec } { updatedAt null } ] }
+  ]
   ; to el !document.createElement div
   ; set 'lane-line lane-line--import' el.className
   ; to num-el !document.createElement span
@@ -430,6 +514,7 @@
   ; to row [ object
    { kind import }
    { spec $spec }
+   { record $line-rec }
    { el $el }
    { num-el $num-el }
    { control-el $control-el }
@@ -437,8 +522,10 @@
    { pick-btn $pick-btn }
    { preview-el $preview-el }
    { remove-btn $remove-btn }
+   { info-btn null }
    { index 0 }
   ]
+  !attach-line-info-btn $row $el
 
   ; to row.update-label (
    -- Updates the picker button label to show the source lane title and optional $path (or whole lane)
@@ -480,8 +567,9 @@
    !row.update-label
    ; to formatted !formatImportLine $next-spec
    ; to nb.lines $row.index $formatted
+   ; set $formatted row.record.text
    !nb.run
-   !nb.save
+   !nb.save-line $row
   )
 
   ; to row.open-picker (
@@ -507,8 +595,9 @@
    ; set $alias-el.value row.spec.alias
    ; to formatted !formatImportLine $row.spec
    ; to nb.lines $row.index $formatted
+   ; set $formatted row.record.text
    !nb.run
-   !nb.save
+   !nb.save-line $row
   )
   !alias-el.addEventListener keydown (
    ; to { ev } $argv
@@ -579,10 +668,11 @@
     !editor-el.addEventListener input (
      ; to next-val $editor-el.value
      ; to nb.lines $row.index $next-val
+     ; set $next-val row.record.text
      !row.sync-input-control $next-val false
      !scope.auto-size-textarea $editor-el
      !nb.run
-     !nb.save
+     !nb.save-line $row
     )
     !editor-el.addEventListener keydown (
      ; to { ev } $argv
@@ -608,10 +698,14 @@
 
  ; to nb.create-row (
   -- Creates DOM elements and event bindings for a single script line or import line
-  ; to { text } $argv
+  ; to { text record } $argv
+  ; to line-rec [ match
+   { $record : $record }
+   { true : [ object { id !generateLineId $window } { text $text } { updatedAt null } ] }
+  ]
   ; to import-spec !parseImportLine $text
   [ match
-   { $import-spec : !nb.create-import-row $import-spec }
+   { $import-spec : !nb.create-import-row $import-spec $line-rec }
    { true (
     ; to initial-multiline !scope.has-newline $text
     ; to el !document.createElement div
@@ -623,12 +717,14 @@
     ; assign $remove-btn { type button } { className lane-line-remove } { textContent '×' } { title 'Remove line' }
     ; to row [ object
      { kind code }
+     { record $line-rec }
      { el $el }
      { num-el $num-el }
      { input-el null }
      { editor-el null }
      { preview-el $preview-el }
      { remove-btn $remove-btn }
+     { info-btn null }
      { is-multiline $initial-multiline }
      { is-editing false }
      { index 0 }
@@ -683,6 +779,7 @@
      !ctrl.addEventListener input (
       ; to next-val $ctrl.value
       ; to nb.lines $row.index $next-val
+      ; set $next-val row.record.text
       ; to still-multi !scope.has-newline $next-val
       [ match
        { [ propertyIs $row.is-multiline still-multi ] (
@@ -691,7 +788,7 @@
        { true : !row.sync-input-control $next-val true }
       ]
       !nb.run
-      !nb.save
+      !nb.save-line $row
      )
      [ match
       { $multiline : null }
@@ -779,6 +876,7 @@
     !el.appendChild $input-el
     !el.appendChild $preview-el
     !el.appendChild $remove-btn
+    !attach-line-info-btn $row $el
     !row.update-classes
     !num-el.addEventListener click : !nb.open-line-editor $row
     !remove-btn.addEventListener click : !nb.remove-line $row.index
@@ -789,13 +887,18 @@
 
  ; to nb.insert-row (
   -- Inserts a line into state and DOM at the given index without running or saving
-  ; to { index text } $argv
+  ; to { index text record } $argv
   ; to initial [ match
    { [ propertyIs undefined text ] : '' }
    { true : $text }
   ]
-  ; to row !nb.create-row $initial
+  ; to line-rec [ match
+   { $record : $record }
+   { true : [ object { id !generateLineId $window } { text $initial } { updatedAt null } ] }
+  ]
+  ; to row !nb.create-row $initial $line-rec
   !nb.lines.splice $index 0 $initial
+  !nb.line-records.splice $index 0 $line-rec
   !nb.rows.splice $index 0 $row
   ; to next-idx ; add $index 1
   ; to next-row [ get nb.rows $next-idx ]
@@ -832,6 +935,8 @@
   ; to first-line ; add $before $first
   ; set $first-line input-el.value
   ; to nb.lines $row.index $first-line
+  ; set $first-line row.record.text
+  ; to dirty-recs { $row.record }
   ; to last-rest-idx ; subtract $rest.length 1
   ; to last-pasted [ get rest $last-rest-idx ]
   ; to caret-pos $last-pasted.length
@@ -841,7 +946,9 @@
   ; to last-row ; each $rest (
    ; to { line-text offset } $argv
    ; to target-idx ; add $base-idx $offset
-   !nb.insert-row $target-idx $line-text
+   ; to inserted !nb.insert-row $target-idx $line-text
+   !dirty-recs.push $inserted.record
+   $inserted
   )
   !nb.renumber
   [ match
@@ -851,7 +958,7 @@
    { $last-row.input-el.setSelectionRange : !last-row.input-el.setSelectionRange $caret-pos $caret-pos }
   ]
   !nb.run
-  !nb.save
+  !persist-structural $dirty-recs {}
   $last-row
  )
 
@@ -864,7 +971,7 @@
    { $row.input-el.focus : !row.input-el.focus }
   ]
   !nb.run
-  !nb.save
+  !persist-structural { $row.record } {}
   $row
  )
 
@@ -881,7 +988,7 @@
   ; to row !nb.insert-row $index $line-text
   !nb.renumber
   !nb.run
-  !nb.save
+  !persist-structural { $row.record } {}
   $row
  )
 
@@ -900,25 +1007,59 @@
   [ match
    { $row (
     ; condition { propertyIs $row nb.editing-row } : !nb.close-line-editor false
+    ; to removed-rec $row.record
     !row.el.remove
     !nb.lines.splice $index 1
+    !nb.line-records.splice $index 1
     !nb.rows.splice $index 1
     !nb.renumber
     !nb.run
-    !nb.save
+    ; to removed-ids [ match { $removed-rec.id : { $removed-rec.id } } { true : {} } ]
+    !persist-structural {} $removed-ids
    ) }
   ]
+ )
+
+ ; to nb.sync-records (
+  -- Replaces notebook lines and records in-place, persists them without clobbering existing timestamps, and re-runs Source if active
+  ; to { next-records } $argv
+  !nb.close-line-editor false
+  ; each $nb.rows (
+   ; to { row } $argv
+   !row.el.remove
+  )
+  ; set 0 nb.lines.length
+  ; set 0 nb.line-records.length
+  ; set 0 nb.rows.length
+  ; each $next-records (
+   ; to { rec } $argv
+   ; to row !nb.create-row $rec.text $rec
+   !nb.lines.push $rec.text
+   !nb.line-records.push $rec
+   !nb.rows.push $row
+   !lines-el.appendChild $row.el
+  )
+  !nb.renumber
+  ; set true nb.script-initialized
+  !saveLaneScript $data $nb.lane.data $nb.lane.id $nb.line-records $window null
+  [ match
+   { [ propertyIs input nb.active-tab ] : null }
+   { [ propertyIs data nb.active-tab ] : null }
+   { true : !nb.run }
+  ]
+  $nb.line-records
  )
 
  !add-btn.addEventListener click : !nb.insert-line $nb.lines.length ''
  !add-import-btn.addEventListener click $nb.add-import
 
- ; to stored !lane.data.get script
- ; to initial-lines !scope.parse-stored $stored
- ; each $initial-lines (
-  ; to { line-text } $argv
-  ; to row !nb.create-row $line-text
-  !nb.lines.push $line-text
+ ; to loaded !loadLaneScript $data $lane.data $lane.id $window
+ ; set $loaded.initialized nb.script-initialized
+ ; each $loaded.records (
+  ; to { rec } $argv
+  ; to row !nb.create-row $rec.text $rec
+  !nb.lines.push $rec.text
+  !nb.line-records.push $rec
   !nb.rows.push $row
   !lines-el.appendChild $row.el
  )

@@ -1,10 +1,30 @@
-export function httpKV({ baseUrl, namespace = '' }) {
- const qualify = key => (namespace ? `${namespace}.${key}` : key)
- return {
+function encodeSegment(segment) {
+ return encodeURIComponent(String(segment)).replace(/\./g, '%2E')
+}
+
+export function httpKV({ baseUrl, namespace = '', root = null }) {
+ const isHash = namespace.includes('#')
+ const qualify = key => {
+  if (isHash) {
+   return namespace.endsWith('#') ? `${namespace}${key}` : `${namespace}/${key}`
+  }
+  return namespace ? `${namespace}.${key}` : key
+ }
+ const client = {
   prefix: namespace,
+  root: root || null,
 
   namespace(name) {
-   return httpKV({ baseUrl, namespace: qualify(name) })
+   const nextNamespace = isHash ? qualify(encodeSegment(name)) : qualify(name)
+   return httpKV({ baseUrl, namespace: nextNamespace, root: client.root })
+  },
+
+  hashNamespace(name) {
+   return httpKV({
+    baseUrl,
+    namespace: `${encodeSegment(name)}#`,
+    root: client.root,
+   })
   },
 
   async get(key) {
@@ -53,6 +73,11 @@ export function httpKV({ baseUrl, namespace = '' }) {
    const method = 'DELETE'
    const resp = await fetch(finalUrl, { method })
 
+   // treat not found as idempotent delete
+   if (resp.status === 404) {
+    return
+   }
+
    if (!resp.ok) {
     const responseText = await resp.text()
     throw new Error(
@@ -61,8 +86,15 @@ export function httpKV({ baseUrl, namespace = '' }) {
    }
   },
  }
+ if (!client.root) {
+  client.root = client
+ }
+ return client
 }
 
-const baseUrl = `${location.origin}/api/data?mode=disk`
+const origin = typeof location !== 'undefined' && location && location.origin
+ ? location.origin
+ : 'http://localhost:8080'
+const baseUrl = `${origin}/api/data?mode=disk`
 
 export const data = httpKV({ baseUrl })

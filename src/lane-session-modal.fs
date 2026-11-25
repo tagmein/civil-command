@@ -1,0 +1,564 @@
+-- file lane-session-modal.fs
+; to scope ; object
+; to scope.create (
+ -- Creates a dedicated Sessions modal: streamlined Session Switcher & Manager (with collapsible Advanced Tab vs. Browser controls) and full-screen Session History Page
+ ; to { lane-control } $argv
+
+ ; to backdrop !document.createElement div
+ ; set 'lane-modal-backdrop lane-config-backdrop lane-session-backdrop' backdrop.className
+ !backdrop.setAttribute role dialog
+ !backdrop.setAttribute aria-modal 'true'
+
+ ; to panel !document.createElement div
+ ; set 'lane-modal lane-config-modal lane-session-modal' panel.className
+
+ ; to header !document.createElement div
+ ; set lane-modal-header header.className
+ ; to title-wrap !document.createElement div
+ ; set lane-config-title-wrap title-wrap.className
+ ; to heading-el !document.createElement div
+ ; assign $heading-el { className lane-modal-title } { textContent Sessions }
+ ; to subtitle-el !document.createElement div
+ ; assign $subtitle-el { className lane-config-id } { textContent '' }
+ ; to close-btn !document.createElement button
+ ; assign $close-btn { type button } { className lane-modal-close } { textContent '×' } { title 'Close (Esc)' }
+ !title-wrap.appendChild $heading-el
+ !title-wrap.appendChild $subtitle-el
+ !header.appendChild $title-wrap
+ !header.appendChild $close-btn
+
+ ; to error-el !document.createElement div
+ ; assign $error-el { className lane-session-error } { textContent '' } { hidden true }
+
+ -- Mode 1: Streamlined Session Switcher & Manager (with Advanced Tab vs. Browser tucked away)
+ ; to session-body !document.createElement div
+ ; assign $session-body { className lane-config-form } { hidden true }
+
+ ; to active-field !document.createElement div
+ ; set lane-config-field active-field.className
+ ; to active-label !document.createElement div
+ ; assign $active-label { className lane-config-label } { textContent 'Current Session' }
+ ; to active-id-box !document.createElement div
+ ; set lane-session-id-box active-id-box.className
+ ; to rename-row !document.createElement div
+ ; set lane-config-input-row rename-row.className
+ ; to rename-input !document.createElement input
+ ; assign $rename-input { type text } { className lane-config-input } { placeholder 'Session name...' } { spellcheck false } { autocomplete off }
+ ; to rename-btn !document.createElement button
+ ; assign $rename-btn { type button } { className 'lane-modal-action lane-config-reset-btn' } { textContent Rename }
+ !rename-row.appendChild $rename-input
+ !rename-row.appendChild $rename-btn
+ !active-field.appendChild $active-label
+ !active-field.appendChild $active-id-box
+ !active-field.appendChild $rename-row
+
+ ; to draft-field !document.createElement div
+ ; assign $draft-field { className lane-session-draft-banner } { hidden true }
+ ; to draft-text !document.createElement div
+ ; assign $draft-text { className lane-session-draft-text } { textContent 'This session has unsaved changes.' }
+ ; to draft-btns !document.createElement div
+ ; set lane-config-input-row draft-btns.className
+ ; to draft-save-btn !document.createElement button
+ ; assign $draft-save-btn { type button } { className 'lane-modal-action lane-config-btn--save' } { textContent 'Save version' }
+ ; to draft-fork-btn !document.createElement button
+ ; assign $draft-fork-btn { type button } { className lane-modal-action } { textContent 'Fork as new' }
+ ; to draft-abandon-btn !document.createElement button
+ ; assign $draft-abandon-btn { type button } { className 'lane-modal-action lane-modal-action--close' } { textContent Abandon }
+ !draft-btns.appendChild $draft-save-btn
+ !draft-btns.appendChild $draft-fork-btn
+ !draft-btns.appendChild $draft-abandon-btn
+ !draft-field.appendChild $draft-text
+ !draft-field.appendChild $draft-btns
+
+ ; to switch-field !document.createElement div
+ ; set lane-config-field switch-field.className
+ ; to switch-label !document.createElement label
+ ; assign $switch-label { className lane-config-label } { textContent 'Open or Create Session' }
+ ; to switch-input !document.createElement input
+ ; assign $switch-input { type text } { className lane-config-input } { placeholder 'Enter existing session ID...' } { spellcheck false } { autocomplete off }
+ ; to switch-actions !document.createElement div
+ ; set lane-config-input-row switch-actions.className
+ ; to switch-go-btn !document.createElement button
+ ; assign $switch-go-btn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent 'Switch session' }
+ ; to new-sess-btn !document.createElement button
+ ; assign $new-sess-btn { type button } { className lane-modal-action } { textContent '+ New session' }
+ ; to fork-sess-btn !document.createElement button
+ ; assign $fork-sess-btn { type button } { className lane-modal-action } { textContent 'Fork current' }
+ ; to open-hist-btn !document.createElement button
+ ; assign $open-hist-btn { type button } { className lane-modal-action } { textContent 'History…' }
+ !switch-actions.appendChild $switch-go-btn
+ !switch-actions.appendChild $new-sess-btn
+ !switch-actions.appendChild $fork-sess-btn
+ !switch-actions.appendChild $open-hist-btn
+ !switch-field.appendChild $switch-label
+ !switch-field.appendChild $switch-input
+ !switch-field.appendChild $switch-actions
+
+ ; to recent-field !document.createElement div
+ ; set lane-config-field recent-field.className
+ ; to recent-label !document.createElement div
+ ; assign $recent-label { className lane-config-label } { textContent 'Recent Sessions' }
+ ; to recent-list !document.createElement div
+ ; set lane-session-list recent-list.className
+ !recent-field.appendChild $recent-label
+ !recent-field.appendChild $recent-list
+
+ -- Collapsible Advanced section: Tab vs. Browser session controls
+ ; to adv-wrap !document.createElement div
+ ; set lane-session-advanced adv-wrap.className
+ ; to adv-toggle !document.createElement button
+ ; assign $adv-toggle { type button } { className lane-session-advanced-toggle } { textContent '▸ Advanced (Tab vs. Browser Session)' }
+ ; to adv-body !document.createElement div
+ ; assign $adv-body { className lane-session-advanced-body } { hidden true }
+
+ ; to browser-label !document.createElement div
+ ; assign $browser-label { className lane-config-label } { textContent 'Browser Default Session (localStorage)' }
+ ; to browser-id-box !document.createElement div
+ ; set lane-session-id-box browser-id-box.className
+ ; to override-actions !document.createElement div
+ ; set lane-config-input-row override-actions.className
+ ; to return-btn !document.createElement button
+ ; assign $return-btn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent 'Return to browser session' }
+ ; to promote-btn !document.createElement button
+ ; assign $promote-btn { type button } { className lane-modal-action } { textContent 'Promote tab to browser' }
+ !override-actions.appendChild $return-btn
+ !override-actions.appendChild $promote-btn
+
+ ; to adv-tab-actions !document.createElement div
+ ; set lane-config-input-row adv-tab-actions.className
+ ; to switch-tab-btn !document.createElement button
+ ; assign $switch-tab-btn { type button } { className lane-modal-action } { textContent 'Open ID in tab only' }
+ ; to new-tab-btn !document.createElement button
+ ; assign $new-tab-btn { type button } { className lane-modal-action } { textContent 'New tab-only session' }
+ !adv-tab-actions.appendChild $switch-tab-btn
+ !adv-tab-actions.appendChild $new-tab-btn
+
+ !adv-body.appendChild $browser-label
+ !adv-body.appendChild $browser-id-box
+ !adv-body.appendChild $override-actions
+ !adv-body.appendChild $adv-tab-actions
+ !adv-wrap.appendChild $adv-toggle
+ !adv-wrap.appendChild $adv-body
+
+ ; to session-footer !document.createElement div
+ ; set lane-config-footer session-footer.className
+ ; to session-done-btn !document.createElement button
+ ; assign $session-done-btn { type button } { className 'lane-modal-action lane-config-btn--save' } { textContent Done }
+ !session-footer.appendChild $session-done-btn
+
+ !session-body.appendChild $active-field
+ !session-body.appendChild $draft-field
+ !session-body.appendChild $switch-field
+ !session-body.appendChild $recent-field
+ !session-body.appendChild $adv-wrap
+ !session-body.appendChild $session-footer
+
+ -- Mode 2: Full-screen Session History Page (chronological log of when each session was active)
+ ; to history-page !document.createElement div
+ ; assign $history-page { className lane-page-body } { hidden true }
+
+ ; to hist-toolbar !document.createElement div
+ ; set lane-page-toolbar hist-toolbar.className
+ ; to hist-search !document.createElement input
+ ; assign $hist-search { type text } { className lane-modal-search } { placeholder 'Filter history by session name or ID...' } { spellcheck false } { autocomplete off }
+ ; to hist-new-btn !document.createElement button
+ ; assign $hist-new-btn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent '+ New session' }
+ ; to hist-fork-btn !document.createElement button
+ ; assign $hist-fork-btn { type button } { className lane-modal-action } { textContent 'Fork current' }
+ !hist-toolbar.appendChild $hist-search
+ !hist-toolbar.appendChild $hist-new-btn
+ !hist-toolbar.appendChild $hist-fork-btn
+
+ ; to hist-list !document.createElement div
+ ; set lane-modal-list hist-list.className
+
+ !history-page.appendChild $hist-toolbar
+ !history-page.appendChild $hist-list
+
+ !panel.appendChild $header
+ !panel.appendChild $error-el
+ !panel.appendChild $session-body
+ !panel.appendChild $history-page
+ !backdrop.appendChild $panel
+
+ ; to modal [ object
+  { backdrop $backdrop }
+  { panel $panel }
+  { heading-el $heading-el }
+  { subtitle-el $subtitle-el }
+  { error-el $error-el }
+  { close-btn $close-btn }
+  { session-body $session-body }
+  { active-id-box $active-id-box }
+  { rename-input $rename-input }
+  { rename-btn $rename-btn }
+  { draft-field $draft-field }
+  { draft-save-btn $draft-save-btn }
+  { draft-fork-btn $draft-fork-btn }
+  { draft-abandon-btn $draft-abandon-btn }
+  { switch-input $switch-input }
+  { switch-go-btn $switch-go-btn }
+  { new-sess-btn $new-sess-btn }
+  { fork-sess-btn $fork-sess-btn }
+  { open-hist-btn $open-hist-btn }
+  { recent-list $recent-list }
+  { adv-toggle $adv-toggle }
+  { adv-body $adv-body }
+  { adv-open false }
+  { browser-id-box $browser-id-box }
+  { override-actions $override-actions }
+  { return-btn $return-btn }
+  { promote-btn $promote-btn }
+  { switch-tab-btn $switch-tab-btn }
+  { new-tab-btn $new-tab-btn }
+  { session-done-btn $session-done-btn }
+  { history-page $history-page }
+  { hist-search $hist-search }
+  { hist-new-btn $hist-new-btn }
+  { hist-fork-btn $hist-fork-btn }
+  { hist-list $hist-list }
+  { hist-query '' }
+  { hist-els {} }
+  { hist-items {} }
+  { is-open false }
+  { mode session }
+  { recent-els {} }
+  { recent-items {} }
+ ]
+
+ ; to set-error (
+  ; to { msg } $argv
+  ; to clean [ match
+   { [ propertyIs null msg ] : '' }
+   { [ propertyIs undefined msg ] : '' }
+   { true : ; add '' $msg }
+  ]
+  ; set $clean error-el.textContent
+  ; set [ ternary [ propertyIs '' clean ] true false ] error-el.hidden
+ )
+
+ ; to show-mode (
+  ; to { next-mode title sub } $argv
+  ; set $next-mode modal.mode
+  ; set $title heading-el.textContent
+  ; set $sub subtitle-el.textContent
+  !set-error ''
+  ; to is-wide [ propertyIs history next-mode ]
+  ; set [ ternary $is-wide 'lane-modal-backdrop lane-session-backdrop lane-session-backdrop--wide' 'lane-modal-backdrop lane-config-backdrop lane-session-backdrop' ] backdrop.className
+  ; set [ ternary $is-wide 'lane-modal lane-session-modal lane-session-modal--wide' 'lane-modal lane-config-modal lane-session-modal' ] panel.className
+  ; set [ ternary [ propertyIs session next-mode ] false true ] session-body.hidden
+  ; set [ ternary [ propertyIs history next-mode ] false true ] history-page.hidden
+  ; condition { propertyIs false modal.is-open } (
+   ; set true modal.is-open
+   [ match
+    { $document.body.appendChild : !document.body.appendChild $backdrop }
+   ]
+  )
+ )
+
+ ; to modal.close (
+  -- Closes the session modal
+  ; condition { propertyIs true modal.is-open } (
+   ; set false modal.is-open
+   !set-error ''
+   !backdrop.remove
+  )
+ )
+
+ ; to modal.render-session (
+  -- Renders streamlined Session Switcher & Manager with collapsible Advanced tab/browser controls
+  !lane-control.ensure-session
+  ; to cur-id $lane-control.session-id
+  ; to browser-id $lane-control.browser-session-id
+  ; to overridden [ propertyIs true lane-control.session-overridden ]
+  ; to dirty [ propertyIs true lane-control.session-dirty ]
+  ; to cur-name [ match
+   { $lane-control.session-meta.name : $lane-control.session-meta.name }
+   { true : $cur-id }
+  ]
+  ; to ver [ match
+   { $lane-control.session-meta.version : ; add 'v' $lane-control.session-meta.version }
+   { true : v1 }
+  ]
+  ; to id-txt ; add $cur-id ; add ' · ' $ver
+  ; set [ match { $overridden : ; add $id-txt ' (tab override)' } { true : $id-txt } ] active-id-box.textContent
+  ; set $cur-name rename-input.value
+  ; set [ ternary $dirty false true ] draft-field.hidden
+  ; set $browser-id browser-id-box.textContent
+  ; set [ ternary $overridden false true ] override-actions.hidden
+
+  ; while { propertyIsGreaterThan 0 modal.recent-els.length } (
+   ; to old !modal.recent-els.pop
+   !old.remove
+  )
+  ; set 0 modal.recent-items.length
+
+  ; each $lane-control.recent-sessions (
+   ; to { rec } $argv
+   ; to row !document.createElement div
+   ; set lane-session-item row.className
+   ; to info !document.createElement div
+   ; set lane-modal-item-info info.className
+   ; to nm !document.createElement div
+   ; to rec-name [ match { $rec.name : $rec.name } { true : $rec.id } ]
+   ; assign $nm { className lane-modal-item-title } { textContent $rec-name }
+   ; to id-sub !document.createElement div
+   ; assign $id-sub { className lane-modal-item-id } { textContent $rec.id }
+   !info.appendChild $nm
+   !info.appendChild $id-sub
+
+   ; to acts !document.createElement div
+   ; set lane-modal-item-actions acts.className
+   ; to is-cur [ propertyIs $cur-id rec.id ]
+   [ match
+    { $is-cur (
+     ; to cur-badge !document.createElement span
+     ; assign $cur-badge { className 'lane-modal-badge lane-modal-badge--selected' } { textContent Active }
+     !acts.appendChild $cur-badge
+    ) }
+    { true (
+     ; to sw-btn !document.createElement button
+     ; assign $sw-btn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent Switch }
+     !sw-btn.addEventListener click (
+      !lane-control.switch-session $rec.id
+      !modal.close
+     )
+     !acts.appendChild $sw-btn
+     [ match
+      { $modal.adv-open (
+       ; to tab-btn !document.createElement button
+       ; assign $tab-btn { type button } { className lane-modal-action } { textContent 'Tab only' }
+       !tab-btn.addEventListener click (
+        !lane-control.switch-tab-session $rec.id
+        !modal.render-session
+       )
+       !acts.appendChild $tab-btn
+      ) }
+     ]
+    ) }
+   ]
+   !row.appendChild $info
+   !row.appendChild $acts
+   !recent-list.appendChild $row
+   !modal.recent-els.push $row
+   !modal.recent-items.push ; object { rec $rec } { el $row }
+  )
+ )
+
+ ; to modal.render-history-page (
+  -- Renders the full-screen Session History Page with chronological activation times and 1-click switching
+  !lane-control.ensure-session
+  ; while { propertyIsGreaterThan 0 modal.hist-els.length } (
+   ; to old !modal.hist-els.pop
+   !old.remove
+  )
+  ; set 0 modal.hist-items.length
+
+  ; to entries !readSessionHistory $window
+  ; to q-trimmed !modal.hist-query.trim
+  ; to q !q-trimmed.toLowerCase
+  ; to matches {}
+  ; each $entries (
+   ; to { item } $argv
+   ; to hay-raw ; add $item.sessionName ; add ' ' $item.sessionId
+   ; to hay !hay-raw.toLowerCase
+   ; to hit [ match
+    { [ propertyIs '' q ] : true }
+    { [ !hay.includes $q ] : true }
+    { true : false }
+   ]
+   [ match
+    { $hit : !matches.push $item }
+   ]
+  )
+
+  [ match
+   { [ propertyIs 0 matches.length ] (
+    ; to empty-h !document.createElement div
+    ; assign $empty-h { className lane-modal-empty } { textContent 'No session history recorded yet.' }
+    !hist-list.appendChild $empty-h
+    !modal.hist-els.push $empty-h
+   ) }
+   { true (
+    ; each $matches (
+     ; to { entry } $argv
+     ; to row !document.createElement div
+     ; set lane-modal-item row.className
+     ; to info !document.createElement div
+     ; set lane-modal-item-info info.className
+     ; to nm !document.createElement div
+     ; assign $nm { className lane-modal-item-title } { textContent $entry.sessionName }
+     ; to start-fmt !formatLineTimestamp $entry.startedAt
+     ; to dur-txt !formatSessionDuration $entry.startedAt $entry.endedAt
+     ; to time-txt [ match
+      { $entry.endedAt (
+       ; to end-fmt !formatLineTimestamp $entry.endedAt
+       ; add $start-fmt.display ; add ' – ' ; add $end-fmt.display ; add ' (' ; add $dur-txt ')'
+      ) }
+      { true : ; add $start-fmt.display ' · Active now' }
+     ]
+     ; to time-el !document.createElement div
+     ; assign $time-el { className lane-history-time } { textContent $time-txt }
+     ; to sub-el !document.createElement div
+     ; to sub-txt ; add $entry.sessionId ; add ' · ' ; add $entry.laneCount ' lanes'
+     ; assign $sub-el { className lane-modal-item-id } { textContent $sub-txt }
+     !info.appendChild $nm
+     !info.appendChild $time-el
+     !info.appendChild $sub-el
+
+     ; to acts !document.createElement div
+     ; set lane-modal-item-actions acts.className
+     ; to is-cur [ propertyIs $lane-control.session-id entry.sessionId ]
+     [ match
+      { $is-cur (
+       ; to cur-badge !document.createElement span
+       ; assign $cur-badge { className 'lane-modal-badge lane-modal-badge--selected' } { textContent Active }
+       !acts.appendChild $cur-badge
+      ) }
+      { true (
+       ; to sw-btn !document.createElement button
+       ; assign $sw-btn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent Switch }
+       !sw-btn.addEventListener click (
+        !lane-control.switch-session $entry.sessionId
+        !modal.close
+       )
+       !acts.appendChild $sw-btn
+      ) }
+     ]
+     !row.appendChild $info
+     !row.appendChild $acts
+     !hist-list.appendChild $row
+     !modal.hist-els.push $row
+     !modal.hist-items.push ; object { entry $entry } { el $row }
+    )
+   ) }
+  ]
+ )
+
+ ; to modal.open-switch-session (
+  -- Opens the streamlined Session Switcher & Manager modal
+  ; set '' switch-input.value
+  !show-mode session Sessions 'Switch, rename, fork, or manage your active session'
+  !modal.render-session
+  $modal
+ )
+
+ ; to modal.open-history (
+  -- Opens the full-screen Session History Page modal
+  ; set '' modal.hist-query
+  ; set '' hist-search.value
+  !show-mode history 'Session History' 'Activity log of when each session was active — click Switch to jump back in'
+  !modal.render-history-page
+  [ match
+   { $hist-search.focus : !hist-search.focus }
+  ]
+  $modal
+ )
+
+ !rename-btn.addEventListener click (
+  ; to next-name !rename-input.value.trim
+  ; condition { propertyIsGreaterThan 0 next-name.length } (
+   !lane-control.rename-session $next-name
+   !modal.render-session
+  )
+ )
+ !draft-save-btn.addEventListener click (
+  !lane-control.save-session-draft
+  !modal.render-session
+ )
+ !draft-fork-btn.addEventListener click (
+  !lane-control.fork-session
+  !modal.render-session
+ )
+ !draft-abandon-btn.addEventListener click (
+  !lane-control.abandon-session-draft
+  !modal.render-session
+ )
+ !switch-go-btn.addEventListener click (
+  ; to target-id !switch-input.value.trim
+  [ match
+   { [ propertyIs '' target-id ] : !set-error 'Enter a session ID to switch to' }
+   { true (
+    !set-error ''
+    !lane-control.switch-session $target-id
+    ; set '' switch-input.value
+    !modal.close
+   ) }
+  ]
+ )
+ !new-sess-btn.addEventListener click (
+  !set-error ''
+  !lane-control.new-session
+  !modal.close
+ )
+ !fork-sess-btn.addEventListener click (
+  !set-error ''
+  !lane-control.fork-session
+  !modal.close
+ )
+ !open-hist-btn.addEventListener click : !modal.open-history
+
+ !adv-toggle.addEventListener click (
+  ; to next-open [ ternary $modal.adv-open false true ]
+  ; set $next-open modal.adv-open
+  ; set [ ternary $next-open false true ] adv-body.hidden
+  ; set [ ternary $next-open '▾ Advanced (Tab vs. Browser Session)' '▸ Advanced (Tab vs. Browser Session)' ] adv-toggle.textContent
+  !modal.render-session
+ )
+ !return-btn.addEventListener click (
+  !lane-control.return-to-browser-session
+  !modal.render-session
+ )
+ !promote-btn.addEventListener click (
+  !lane-control.promote-tab-session
+  !modal.render-session
+ )
+ !switch-tab-btn.addEventListener click (
+  ; to target-id !switch-input.value.trim
+  [ match
+   { [ propertyIs '' target-id ] : !set-error 'Enter a session ID to open in this tab' }
+   { true (
+    !set-error ''
+    !lane-control.switch-tab-session $target-id
+    ; set '' switch-input.value
+    !modal.render-session
+   ) }
+  ]
+ )
+ !new-tab-btn.addEventListener click (
+  !set-error ''
+  !lane-control.new-tab-session
+  !modal.render-session
+ )
+
+ !hist-search.addEventListener input (
+  ; set $hist-search.value modal.hist-query
+  !modal.render-history-page
+ )
+ !hist-new-btn.addEventListener click (
+  !lane-control.new-session
+  !modal.close
+ )
+ !hist-fork-btn.addEventListener click (
+  !lane-control.fork-session
+  !modal.close
+ )
+
+ !close-btn.addEventListener click $modal.close
+ !session-done-btn.addEventListener click $modal.close
+ !backdrop.addEventListener click (
+  ; to { ev } $argv
+  ; condition { propertyIs $backdrop ev.target } : !modal.close
+ )
+ [ match
+  { $window.addEventListener (
+   !window.addEventListener keydown (
+    ; to { ev } $argv
+    ; condition { propertyIs true modal.is-open } : ; condition { propertyIs Escape ev.key } : !modal.close
+   )
+  ) }
+ ]
+
+ $modal
+)
+$scope

@@ -1,12 +1,89 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { httpKV } from './data.mjs'
+import {
+ DEFAULT_PACKAGE_ID,
+ DEFAULT_PACKAGE_NAME,
+ MAX_KV_VALUE_BYTES,
+ RECENT_SESSIONS_STORAGE_KEY,
+ SESSION_HISTORY_STORAGE_KEY,
+ SESSION_STORAGE_KEY,
+ addLaneTable,
+ addTableRow,
+ checkLaneAccess,
+ clearTableRows,
+ closePackageInSession,
+ createNewSession,
+ createNewTabSession,
+ createPackage,
+ deleteLaneTable,
+ deletePagedIds,
+ deleteTableRow,
+ encodeKeySegment,
+ ensureDefaultPackage,
+ forkSession,
+ formatLineTimestamp,
+ formatSessionDuration,
+ generateLineId,
+ getLanePackageId,
+ getPackageMeta,
+ hashPassphrase,
+ initSessionState,
+ kvDeleteChunked,
+ kvGetChunked,
+ kvSetChunked,
+ lanePackageKey,
+ laneScriptBase,
+ laneTablesBase,
+ listPackageLanes,
+ listPackageSessions,
+ loadLaneScript,
+ loadLaneTables,
+ loadSessionCatalog,
+ migrateLegacyCatalog,
+ moveLaneToPackage,
+ openPackageInSession,
+ packageLaneKey,
+ packageLanesBase,
+ packageMetaKey,
+ packageSessionsBase,
+ promoteTabToBrowserSession,
+ readPagedIds,
+ readSessionHistory,
+ registerLaneInPackage,
+ renameSession,
+ returnToBrowserSession,
+ saveLaneScript,
+ saveLaneTables,
+ saveScriptLine,
+ saveScriptLinesAndIndex,
+ saveSessionVersion,
+ saveTableRow,
+ saveTableSchema,
+ saveTableSchemaAndRows,
+ scriptLineKey,
+ sessionMetaKey,
+ sessionPackagesBase,
+ setActivePackageInSession,
+ splitUtf8Chunks,
+ switchBrowserSession,
+ switchTabSession,
+ tableRowKey,
+ tableRowsBase,
+ tableSchemaKey,
+ utf8ByteLength,
+ writePagedIds,
+} from './storage.mjs'
 import {
  DATA_COLUMN_TYPES,
  DATA_CONSTRAINT_TYPES,
  DEFAULT_FIXED_DECIMALS,
  DEFAULT_LANE_TAB,
  DEFAULT_ROW_PICKER_PAGE_SIZE,
+ DEFAULT_SCROLLBAR_COLOR,
  LANE_MINIMIZE_SIDES,
  LANE_TABS,
  MIN_LANE_WIDTH,
@@ -15,20 +92,24 @@ import {
  buildTablesScope,
  checkColumnChangeImpact,
  coerceDataValue,
+ computeLaneScrollLeft,
  createIdleTracker,
  createTransport,
  dataValuesEqual,
  defaultDataValue,
  defaultValueForType,
+ describeValue,
  deserializeTransportPacket,
  fetchRowOptionsPage,
  field,
  filterRowOptions,
+ filterScopeEntries,
  findWorkflowDefaultColumns,
  formatCellInputValue,
  formatColumnType,
  formatHashOptions,
  formatImportLine,
+ formatLanePath,
  formatLaneRouteSegment,
  formatLaneRoutes,
  formatValue,
@@ -44,6 +125,7 @@ import {
  normalizeDataColumnType,
  normalizeFixedDecimals,
  normalizeLaneMinimizeSide,
+ normalizeLanePath,
  normalizeLaneTab,
  normalizeLaneWidth,
  normalizePrimitiveType,
@@ -52,6 +134,7 @@ import {
  parseColumnType,
  parseHashOptions,
  parseImportLine,
+ parseLanePath,
  parseLaneRouteSegment,
  parseLaneRoutes,
  parseStoredTables,
@@ -61,47 +144,104 @@ import {
  resolveRowValueSpec,
  resolveScopeColumns,
  resolveScopePath,
+ resolveScrollbarColor,
  resolveWorkflowTarget,
  runLines,
  runTransportedScripts,
+ seedPreferencesScrollbarRecords,
+ seedPreferencesScrollbarSource,
  serializeTransportPacket,
 } from './field.mjs'
 
+const lineInfoModalSource = await fs.readFile(new URL('./src/lane-line-info-modal.fs', import.meta.url), 'utf8')
+const sessionModalSource = await fs.readFile(new URL('./src/lane-session-modal.fs', import.meta.url), 'utf8')
+const packageModalSource = await fs.readFile(new URL('./src/lane-package-modal.fs', import.meta.url), 'utf8')
+
 const DATA_RUNTIME_ENV = {
+ DEFAULT_PACKAGE_ID,
+ DEFAULT_PACKAGE_NAME,
+ addLaneTable,
+ addTableRow,
  buildTablesScope,
  checkColumnChangeImpact,
+ checkLaneAccess,
+ clearTableRows,
+ closePackageInSession,
  coerceDataValue,
+ computeLaneScrollLeft,
+ createNewSession,
+ createNewTabSession,
+ createPackage,
  dataColumnTypes: DATA_COLUMN_TYPES,
  dataConstraintTypes: DATA_CONSTRAINT_TYPES,
  dataValuesEqual,
  defaultDataValue,
  defaultRowPickerPageSize: DEFAULT_ROW_PICKER_PAGE_SIZE,
+ defaultScrollbarColor: DEFAULT_SCROLLBAR_COLOR,
+ deleteLaneTable,
+ deleteTableRow,
  fetchRowOptionsPage,
  filterRowOptions,
  findWorkflowDefaultColumns,
+ forkSession,
  formatCellInputValue,
  formatColumnType,
  formatHashOptions,
+ formatLanePath,
  formatLaneRoutes,
+ formatLineTimestamp,
+ formatSessionDuration,
+ generateLineId,
  getLaneInitial,
+ getLanePackageId,
+ getPackageMeta,
  getWorkflowCellState,
+ initSessionState,
+ listPackageLanes,
+ listPackageSessions,
+ loadLaneScript,
+ loadLaneTables,
+ loadSessionCatalog,
  lookupRowDisplay,
+ moveLaneToPackage,
  normalizeColumnConstraint,
  normalizeColumnWidth,
  normalizeDataColumnType,
  normalizeFixedDecimals,
  normalizeLaneMinimizeSide,
+ normalizeLanePath,
  normalizeLaneTab,
  normalizeLaneWidth,
+ openPackageInSession,
  parseCellValue,
  parseColumnType,
  parseHashOptions,
+ parseLanePath,
  parseLaneRoutes,
  parseStoredTables,
+ promoteTabToBrowserSession,
+ readSessionHistory,
+ registerLaneInPackage,
+ renameSession,
  resolveLaneRenderedWidth,
  resolveRowTarget,
  resolveRowValueSpec,
+ resolveScrollbarColor,
  resolveWorkflowTarget,
+ returnToBrowserSession,
+ saveLaneScript,
+ saveLaneTables,
+ saveScriptLine,
+ saveScriptLinesAndIndex,
+ saveSessionVersion,
+ saveTableRow,
+ saveTableSchema,
+ saveTableSchemaAndRows,
+ seedPreferencesScrollbarRecords,
+ seedPreferencesScrollbarSource,
+ setActivePackageInSession,
+ switchBrowserSession,
+ switchTabSession,
 }
 
 async function runScript(script, initialState = {}) {
@@ -950,6 +1090,7 @@ test('lane-control.fs mounts, opens concurrently, adds, and syncs lanes', async 
  const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
  const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
  const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
  const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
 
  function createMockElement(tag) {
@@ -1069,9 +1210,15 @@ test('lane-control.fs mounts, opens concurrently, adds, and syncs lanes', async 
   if (url === '/src/lane-import-modal.fs') {
    return { text: async () => importModalSource }
   }
+  if (url === '/src/lane-modal.fs') {
+   return { text: async () => modalSource }
+  }
   if (url === '/src/lane-rails.fs') {
    return { text: async () => railsSource }
   }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -1290,6 +1437,9 @@ test('main.fs bootstraps app with persistent lane notebooks that edit, add, remo
   if (url === '/src/lane-rails.fs') {
    return { text: async () => railsSource }
   }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -1367,10 +1517,17 @@ test('main.fs bootstraps app with persistent lane notebooks that edit, add, remo
   assert.equal(nb.rows.length, 3)
   assert.deepEqual(nb.rows.map(r => r['num-el'].textContent), [1, 2, 3])
   assert.deepEqual(nb.rows.map(r => r['preview-el'].textContent), ['5', '8', '8'])
-  assert.equal(
-   kv.get('m-uuid-1.script'),
-   JSON.stringify(['; to input 5', '; to output ; add 3 $input', '$output'])
+  assert.ok(!kv.get('m-uuid-1.script'))
+  assert.ok(kv.has('lanes#m-uuid-1/script-index'))
+  const persistedScript = await loadLaneScript(f.state.data, lane.data, 'm-uuid-1', mockWindow)
+  assert.deepEqual(
+   persistedScript.records.map(r => r.text),
+   ['; to input 5', '; to output ; add 3 $input', '$output']
   )
+  assert.equal(persistedScript.records.length, 3)
+  for (const rec of persistedScript.records) {
+   assert.ok(kv.has(scriptLineKey('m-uuid-1', rec.id)))
+  }
 
   // Add a second lane, then close Lane 1 via its top-right × button
   await f.state.tableHeadRowAddButton.listeners.click()
@@ -1578,6 +1735,9 @@ test('lane-notebook.fs handles multi-line paste synchronously and inserts needed
   if (url === '/src/lane-output.fs') {
    return { text: async () => outputSource }
   }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -1657,7 +1817,15 @@ test('lane-notebook.fs handles multi-line paste synchronously and inserts needed
  assert.equal(nb.rows[3]['input-el'].focused, true)
  assert.equal(nb.rows[3]['input-el'].selectionStart, nb.lines[3].length)
  assert.equal(nb.rows[3]['input-el'].selectionEnd, nb.lines[3].length)
- assert.equal(kv.get('script'), JSON.stringify(nb.lines))
+ assert.ok(!kv.has('script'))
+ assert.ok(!kv.has('paste-lane.script'))
+ assert.ok(kv.has('lanes#paste-lane/script-index'))
+ const persistedPaste = await loadLaneScript(null, laneData, 'paste-lane', mockWindow)
+ assert.deepEqual(persistedPaste.records.map(r => r.text), nb.lines)
+ assert.equal(persistedPaste.records.length, 4)
+ for (const rec of persistedPaste.records) {
+  assert.ok(kv.has(scriptLineKey('paste-lane', rec.id)))
+ }
 
  // 3. Paste CRLF with trailing newline in the middle of an existing line & between rows
  const row1Input = nb.rows[1]['input-el']
@@ -1752,10 +1920,12 @@ test('resolveScopeColumns browses root scope, nested objects, arrays, non-enumer
  assert.ok(arrEntries.some(e => e.key === 'length' && !e.enumerable && !e.inherited))
  assert.ok(arrEntries.some(e => e.key === 'map' && e.inherited))
 
- // FieldScript functions expose .ast as an expandable property
+ // FieldScript will functions expose .ast as an expandable list property
  const fnAst = resolveScopeColumns(state, ['greet', 'ast', '0'])
- assert.equal(fnAst.columns[1].valueType, 'function')
- assert.equal(fnAst.columns[2].valueType, 'array')
+ assert.equal(fnAst.columns[1].valueType, 'will')
+ assert.equal(fnAst.columns[1].valueSummary, 'will')
+ assert.equal(fnAst.columns[2].valueType, 'list')
+ assert.equal(fnAst.columns[2].valueSummary, 'list{2}')
  assert.equal(fnAst.columns[3].kind, 'entries')
 
  // Circular references and throwing getters are handled safely
@@ -1857,6 +2027,9 @@ test('lane-notebook.fs tabs: Source (default), Input (primitive args, no Source 
   if (url === '/src/lane-output.fs') {
    return { text: async () => outputSource }
   }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -2014,6 +2187,147 @@ test('lane-notebook.fs tabs: Source (default), Input (primitive args, no Source 
  finally {
   globalThis.fetch = origFetch
  }
+})
+
+test('Scope FieldScript type previews, filterScopeEntries, filter bar, proto toggle, and Copy $path', async () => {
+ // FieldScript type previews in describeValue
+ assert.equal(describeValue({}).type, 'object')
+ assert.equal(describeValue({}).summary, 'object')
+ assert.equal(describeValue(Object.create(null)).summary, 'object')
+ assert.equal(describeValue([1, 2, 3]).type, 'list')
+ assert.equal(describeValue([1, 2, 3]).summary, 'list{3}')
+ assert.equal(describeValue(new Map([['a', 1], ['b', 2]])).summary, 'map{2}')
+ assert.equal(describeValue(new Set(['x', 'y'])).summary, 'set{2}')
+ assert.equal(describeValue(Promise.resolve(1)).summary, 'promise')
+ assert.equal(describeValue(new Uint8Array(4)).summary, 'bytes{4}')
+ assert.equal(describeValue(new TypeError('bad')).type, 'error')
+ assert.equal(describeValue(new TypeError('bad')).summary, 'error')
+ assert.equal(describeValue(function helper() {}).summary, 'fn helper')
+ assert.equal(describeValue(() => {}).summary, 'fn')
+
+ const { state } = await runLines([
+  '; to docfn ( -- Greets a user\n ; to { who } $argv\n ; add Hi $who\n)',
+  '; to items { a b c }',
+  '; to user ; object { name Ada } { role ops }',
+  '; to count 7',
+ ])
+
+ const docDesc = describeValue(state.docfn)
+ assert.equal(docDesc.type, 'will')
+ assert.equal(docDesc.summary, 'will')
+ assert.equal(docDesc.detail, 'will — Greets a user')
+
+ // filterScopeEntries filters case-insensitively and respects includeInherited
+ const itemEntries = listScopeEntries(state.items)
+ const filteredItems = filterScopeEntries(itemEntries, 'LEN')
+ assert.deepEqual(filteredItems.map(e => e.key), ['length'])
+ const ownOnlyItems = filterScopeEntries(itemEntries, '', { includeInherited: false })
+ assert.ok(!ownOnlyItems.some(e => e.inherited))
+ assert.ok(ownOnlyItems.some(e => e.key === '0'))
+
+ // resolveScopeColumns supports filter, filterColumnIndex, and includeInherited
+ const filteredRoot = resolveScopeColumns(state, [], { filter: 'us' })
+ assert.equal(filteredRoot.filterColumnIndex, 0)
+ assert.equal(filteredRoot.columns[0].filtered, true)
+ assert.deepEqual(filteredRoot.columns[0].entries.map(e => e.key), ['user'])
+
+ const noProtoCol = resolveScopeColumns(state, ['items'], { includeInherited: false })
+ assert.ok(!noProtoCol.columns[1].entries.some(e => e.inherited))
+
+ // UI test with lane-scope.fs
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ function createMockElement(tag) {
+  return {
+   tag,
+   style: {},
+   attributes: {},
+   children: [],
+   listeners: {},
+   textContent: '',
+   value: '',
+   placeholder: '',
+   title: '',
+   className: '',
+   hidden: false,
+   focused: false,
+   removed: false,
+   scrollWidth: 0,
+   scrollLeft: 0,
+   setAttribute(name, value) { this.attributes[name] = value },
+   appendChild(child) { this.children.push(child); return child },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   remove() { this.removed = true },
+  }
+ }
+
+ const copied = []
+ const mockWindow = {
+  Array,
+  Date,
+  JSON,
+  Math,
+  navigator: {
+   clipboard: {
+    async writeText(text) { copied.push(text) },
+   },
+  },
+ }
+ const f = field({
+  document: { createElement: createMockElement },
+  resolveScopeColumns,
+  window: mockWindow,
+ })
+ const scopeMod = await f.run(parse(scopeSource, '/src/lane-scope.fs'))
+ const container = createMockElement('div')
+ const view = await scopeMod.mount({ id: 'scope-test' }, container)
+ await view.render(state)
+
+ // Verify FieldScript summaries in rendered root items
+ const userItem = view.columns[0].items.find(i => i.key === 'user')
+ const itemsItem = view.columns[0].items.find(i => i.key === 'items')
+ const docfnItem = view.columns[0].items.find(i => i.key === 'docfn')
+ assert.equal(userItem.entry.summary, 'object')
+ assert.equal(itemsItem.entry.summary, 'list{3}')
+ assert.equal(docfnItem.entry.summary, 'will')
+ assert.equal(view['copy-btn'].hidden, true)
+
+ // Filter root scope by "it" -> narrows to `items`, shows match count and clear button
+ view['filter-input'].value = 'it'
+ await view['filter-input'].listeners.input()
+ assert.deepEqual(view.columns[0].items.map(i => i.key), ['items'])
+ assert.equal(view['filter-clear-btn'].hidden, false)
+ assert.equal(view['filter-count-el'].hidden, false)
+ assert.match(view['filter-count-el'].textContent, /^1 \/ \d+$/)
+
+ // Pressing Enter in filter input selects first match (`items`) while keeping col 0 filtered and col 1 unfiltered
+ let prevented = false
+ await view['filter-input'].listeners.keydown({ key: 'Enter', preventDefault() { prevented = true } })
+ assert.equal(prevented, true)
+ assert.deepEqual(view['selected-path'], ['items'])
+ assert.equal(view.columns.length, 2)
+ assert.equal(view.columns[1].items.some(i => i.key === '0'), true)
+ assert.equal(view.columns[1].items.some(i => i.key === 'map'), true)
+ assert.equal(view['copy-btn'].hidden, false)
+
+ // Copy button copies `$items` to clipboard
+ await view['copy-btn'].listeners.click()
+ assert.deepEqual(copied, ['$items'])
+ assert.equal(view['copy-btn'].textContent, 'Copied')
+
+ // Toggling proto hides inherited prototype entries in `items`
+ await view['proto-btn'].listeners.click()
+ assert.equal(view['show-proto'], false)
+ assert.equal(view.columns[1].items.some(i => i.key === 'map'), false)
+ assert.equal(view.columns[1].items.some(i => i.key === '0'), true)
+
+ // Pressing Escape in filter input clears filter and stops propagation
+ let stopped = false
+ await view['filter-input'].listeners.keydown({ key: 'Escape', stopPropagation() { stopped = true } })
+ assert.equal(stopped, true)
+ assert.equal(view['filter-query'], '')
+ assert.equal(view['filter-clear-btn'].hidden, true)
+ assert.ok(view.columns[0].items.length > 1)
 })
 
 test('parseImportLine, formatImportLine, resolveScopePath, createIdleTracker, and hasImportCycle', async () => {
@@ -2180,6 +2494,9 @@ test('cross-lane import line shows picker instead of raw input, awaits idle lane
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -2627,6 +2944,9 @@ test('Lane Output mini-browser below each lane collects sent scripts, enforces n
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -2899,6 +3219,9 @@ test('whole-lane import without picking a scope value powers a reactive Profile 
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -3036,6 +3359,7 @@ test('DATA_COLUMN_TYPES, cell parsing/coercion, change impact detection, stored 
   'email',
   'json',
   'row',
+  'lane',
  ])
  assert.equal(DEFAULT_FIXED_DECIMALS, 2)
  assert.equal(normalizeFixedDecimals(undefined), 2)
@@ -3349,6 +3673,9 @@ test('Data tab supports tables, typed & multiple columns, editable rows, destruc
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -3762,6 +4089,9 @@ test('Data tab Fixed column edits as xxx.xx, stores scaled integer xxxxx, config
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -4120,6 +4450,9 @@ test('Lane tab routing syncs URL on tab click, supports direct URL and popstate,
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -4352,6 +4685,9 @@ test('Data tables right-align only integer and fixed cells, resize columns horiz
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -4565,6 +4901,9 @@ test('Lane header reload button reloads entire lane from server KV while keeping
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -4926,6 +5265,9 @@ test('Data tab row type: stacked schema config, joined table display, and on-dem
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -5315,6 +5657,9 @@ test('main.fs persists horizontal scroll in location.hash via replaceState and r
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -5621,6 +5966,9 @@ test('data|tablename sub-routing parses, formats, selects known tables, falls ba
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -6019,6 +6367,9 @@ test('Lane Source individual line editor supports multiline single-line storage,
   if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
   if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
   if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -6086,7 +6437,12 @@ test('Lane Source individual line editor supports multiline single-line storage,
 
   assert.equal(nb.lines.length, 1)
   assert.equal(nb.lines[0], multilineScript)
-  assert.equal(kv.get('script'), JSON.stringify([multilineScript]))
+  assert.ok(!kv.has('script'))
+  assert.ok(!kv.has('multiline-lane.script'))
+  assert.ok(kv.has('lanes#multiline-lane/script-index'))
+  const persistedMulti = await loadLaneScript(null, laneData, 'multiline-lane', mockWindow)
+  assert.deepEqual(persistedMulti.records.map(r => r.text), [multilineScript])
+  assert.ok(kv.has(scriptLineKey('multiline-lane', persistedMulti.records[0].id)))
   assert.equal(oldInput.removed, true)
   assert.equal(row0['is-multiline'], true)
   assert.equal(row0['input-el'].tag, 'textarea')
@@ -6103,6 +6459,7 @@ test('Lane Source individual line editor supports multiline single-line storage,
    row0['input-el'],
    row0['preview-el'],
    row0['remove-btn'],
+   row0['info-btn'],
    editor,
   ])
   assert.equal(row0['preview-el'].textContent, '[function]')
@@ -6327,6 +6684,9 @@ test('Lane resizing: Width setting in gear modal, 100px min render clamp, no max
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -6801,6 +7161,9 @@ test('Data tab workflow constraint: + constraint on text only, auto from/to, tra
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -7130,6 +7493,9 @@ test('Fixed left and right side rails: styles, chevron minimize buttons, 26px in
   if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -7334,6 +7700,3334 @@ test('Fixed left and right side rails: styles, chevron minimize buttons, 26px in
   await reloaded.f.state['lane-control'].close(rC.id)
   assert.equal(rRails['right-items'].length, 0)
   assert.equal(kv.get(`${rC.id}.minimized`), '')
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('lane Data type helpers: parsing, defaults, validation, coercion, change impact, stored tables, and scope export', () => {
+ assert.equal(normalizeDataColumnType('lane'), 'lane')
+ assert.equal(normalizeDataColumnType('lane[]'), 'lane')
+ assert.deepEqual(parseColumnType('lane'), { type: 'lane', multiple: false })
+ assert.deepEqual(parseColumnType('lane[]'), { type: 'lane', multiple: true })
+ assert.deepEqual(parseColumnType({ type: 'lane', multiple: true }), { type: 'lane', multiple: true })
+ assert.equal(formatColumnType('lane', false), 'lane')
+ assert.equal(formatColumnType('lane', true), 'lane[]')
+
+ assert.strictEqual(defaultDataValue('lane', false), null)
+ assert.deepEqual(defaultDataValue('lane', true), [])
+
+ assert.deepEqual(parseCellValue(null, 'lane'), { ok: true, value: null, error: null })
+ assert.deepEqual(parseCellValue(undefined, 'lane'), { ok: true, value: null, error: null })
+ assert.deepEqual(parseCellValue('   ', 'lane'), { ok: true, value: null, error: null })
+ assert.deepEqual(parseCellValue('  lane-123  ', 'lane'), { ok: true, value: 'lane-123', error: null })
+ assert.equal(parseCellValue(42, 'lane').ok, false)
+ assert.equal(parseCellValue({ id: 'lane-123' }, 'lane').ok, false)
+
+ assert.equal(formatCellInputValue(null, 'lane'), '')
+ assert.equal(formatCellInputValue('lane-123', 'lane'), 'lane-123')
+
+ assert.strictEqual(coerceDataValue('', 'lane', false), null)
+ assert.strictEqual(coerceDataValue('  lane-abc  ', 'lane', false), 'lane-abc')
+ assert.strictEqual(coerceDataValue(null, 'lane', false), null)
+ assert.strictEqual(coerceDataValue({ bad: true }, 'lane', false), null)
+ assert.deepEqual(coerceDataValue('', 'lane', true), [])
+ assert.deepEqual(coerceDataValue([' lane-1 ', '', null], 'lane', true), ['lane-1', null, null])
+ assert.strictEqual(coerceDataValue(['lane-1', 'lane-2'], 'lane', false), 'lane-1')
+ assert.strictEqual(coerceDataValue('lane-1', 'text', false, 'lane'), 'lane-1')
+ assert.strictEqual(coerceDataValue(null, 'text', false, 'lane'), '')
+
+ const sampleTbl = {
+  id: 'tbl-lanes',
+  name: 'routes',
+  columns: [
+   { id: 'c-lane', name: 'target_lane', type: 'lane', multiple: false },
+   { id: 'c-multi', name: 'backup_lanes', type: 'lane', multiple: true },
+  ],
+  rows: [
+   { id: 'r1', values: { 'c-lane': 'lane-a', 'c-multi': ['lane-b', 'lane-c'] } },
+  ],
+ }
+ assert.equal(checkColumnChangeImpact(sampleTbl, 'c-lane', 'lane', false).destructive, false)
+ assert.equal(checkColumnChangeImpact(sampleTbl, 'c-lane', 'lane', true).destructive, false)
+ assert.equal(checkColumnChangeImpact(sampleTbl, 'c-multi', 'lane', false).destructive, true)
+ assert.equal(checkColumnChangeImpact(sampleTbl, 'c-lane', 'integer', false).destructive, true)
+
+ const stored = JSON.stringify([
+  {
+   id: 'tbl-lanes',
+   name: 'routes',
+   columns: [
+    { id: 'c-lane', name: 'target_lane', type: 'lane', multiple: false },
+    { id: 'c-multi', name: 'backup_lanes', type: 'lane', multiple: true },
+   ],
+   rows: [
+    { id: 'r1', values: { 'c-lane': '  lane-a  ', 'c-multi': ['lane-b', ''] } },
+    { id: 'r2', values: {} },
+   ],
+  },
+ ])
+ const parsed = parseStoredTables(stored)
+ assert.equal(parsed[0].columns[0].type, 'lane')
+ assert.equal(parsed[0].columns[1].type, 'lane')
+ assert.equal(parsed[0].columns[1].multiple, true)
+ assert.strictEqual(parsed[0].rows[0].values['c-lane'], 'lane-a')
+ assert.deepEqual(parsed[0].rows[0].values['c-multi'], ['lane-b', null])
+ assert.strictEqual(parsed[0].rows[1].values['c-lane'], null)
+ assert.deepEqual(parsed[0].rows[1].values['c-multi'], [])
+
+ assert.deepEqual(buildTablesScope(parsed), {
+  routes: [
+   { target_lane: 'lane-a', backup_lanes: ['lane-b', null] },
+   { target_lane: null, backup_lanes: [] },
+  ],
+ })
+})
+
+test('Data tab lane type: custom-named lane column, Open-Lane-style picker, live rename, clear, lane[], reload, and Open Lane mode preservation', async () => {
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  return {
+   tag,
+   nodeType: 1,
+   style: {},
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   checked: false,
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   focused: false,
+   removed: false,
+   setAttribute(name, value) { this.attributes[name] = value },
+   appendChild(child) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    this.children.push(child)
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) { this.children.push(child) }
+    else { this.children.splice(idx, 0, child) }
+    return child
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) { this.parentNode.children.splice(idx, 1) }
+     this.parentNode = null
+    }
+   },
+  }
+ }
+
+ const kv = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { kv.set(qualify(key), value) },
+  }
+ }
+
+ let uuid = 0
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ function createRuntime(initialPathname = '/') {
+  const windowListeners = {}
+  const mockWindow = {
+   Array,
+   Boolean,
+   Date,
+   JSON,
+   Math,
+   Object,
+   Reflect,
+   decodeURIComponent,
+   crypto: { randomUUID: () => `lane-type-uuid-${++uuid}` },
+   history: { pushState(_s, _t, url) { mockWindow.location.pathname = url } },
+   location: { pathname: initialPathname, search: '', hash: '' },
+   addEventListener(event, handler) {
+    windowListeners[event] ||= []
+    windowListeners[event].push(handler)
+   },
+   removeEventListener() {},
+  }
+  const dispatchWindowEvent = async (event, ev) => {
+   for (const handler of windowListeners[event] || []) {
+    await handler(ev)
+   }
+  }
+  const mockBody = createMockElement('body')
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: createMockKV(),
+   defaultValueForType,
+   document: {
+    body: mockBody,
+    defaultView: mockWindow,
+    createElement: createMockElement,
+   },
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  return { f, mockWindow, mockBody, dispatchWindowEvent }
+ }
+
+ try {
+  const { f, mockWindow, mockBody, dispatchWindowEvent } = createRuntime('/')
+  await f.run(parse(mainSource, '/src/main.fs'))
+  const laneControl = f.state['lane-control']
+  const modal = f.state['lane-modal']
+
+  // Create 3 lanes: Board, Worker A (closed later), Worker B
+  await f.state.tableHeadRowAddButton.listeners.click()
+  await f.state.tableHeadRowAddButton.listeners.click()
+  await f.state.tableHeadRowAddButton.listeners.click()
+  const [boardLane, workerALane, workerBLane] = f.state.lanes
+  await laneControl.rename(boardLane.id, 'Board')
+  await laneControl.rename(workerALane.id, 'Worker A')
+  await laneControl.rename(workerBLane.id, 'Worker B')
+
+  // Switch Board lane to Data tab, create table "assignments" with custom-named lane & lane[] columns
+  await boardLane.notebook['set-tab']('data')
+  const dv = boardLane.notebook['data-view']
+  await dv['add-table']('assignments')
+  const colLane = await dv['add-column']('target_lane', 'lane', false)
+  const colMulti = await dv['add-column']('backup_lanes', 'lane', true)
+  assert.equal(colLane.type, 'lane')
+  assert.equal(colMulti.type, 'lane')
+
+  // Verify schema dropdown includes 'lane' and lane cells are NOT right-aligned
+  const schemaTypeOpts = dv['schema-rows'][0]['type-el'].children.map(o => o.value)
+  assert.ok(schemaTypeOpts.includes('lane'))
+  assert.equal(dv['grid-head-cells'][1]['type-el'].textContent, 'lane')
+  assert.equal(dv['grid-head-cells'][1]['type-el'].title, 'Stores a selected lane ID')
+  assert.equal(dv['grid-head-cells'][2]['type-el'].textContent, 'lane[]')
+
+  // Add a row -> empty lane trigger says "Select lane…" and open button is hidden
+  const row1 = await dv['add-row']()
+  assert.strictEqual(row1.values[colLane.id], null)
+  assert.deepEqual(row1.values[colMulti.id], [])
+  const cell1 = dv['grid-rows'][0].cells[0]
+  assert.doesNotMatch(cell1.td.className, /lane-data-td--right/)
+  assert.equal(cell1['placeholder-el'].textContent, 'Select lane…')
+  assert.equal(cell1['placeholder-el'].hidden, false)
+  assert.equal(cell1['id-el'].hidden, true)
+  assert.equal(cell1['open-el'].hidden, true)
+  assert.equal(cell1['trigger-el'].className, 'lane-data-row-trigger lane-data-row-trigger--empty lane-data-lane-id-btn')
+
+  // Close Worker A so we verify both closed and open lanes appear in the picker
+  await laneControl.close(workerALane.id)
+
+  // Click cell trigger -> opens full-screen lane-modal in picker mode mimicking Open Lane
+  await cell1['trigger-el'].listeners.click()
+  assert.equal(modal['is-open'], true)
+  assert.equal(modal.mode, 'pick')
+  assert.equal(modal['heading-el'].textContent, 'Select target_lane')
+  assert.equal(modal['clear-btn'].hidden, true)
+  assert.equal(modal['search-input'].focused, true)
+  assert.equal(modal['count-el'].textContent, '3 lanes')
+  assert.ok(mockBody.children.includes(modal.backdrop))
+
+  // Verify Open badge appears for open lanes and Select button appears on rows
+  const workerAItem = modal.items.find(it => it.entry.id === workerALane.id)
+  const workerBItem = modal.items.find(it => it.entry.id === workerBLane.id)
+  assert.equal(workerAItem['is-open'], false)
+  assert.equal(workerBItem['is-open'], true)
+  assert.ok(workerAItem['select-btn'])
+  assert.ok(workerBItem['select-btn'])
+
+  // Filter lanes by title or ID inside the picker
+  modal['search-input'].value = 'worker a'
+  await modal['search-input'].listeners.input()
+  assert.equal(modal['count-el'].textContent, '1 of 3 lanes')
+  assert.equal(modal.items.length, 1)
+  assert.equal(modal.items[0].entry.id, workerALane.id)
+
+  // Filter by lane ID fragment too
+  modal['search-input'].value = workerBLane.id
+  await modal['search-input'].listeners.input()
+  assert.equal(modal.items.length, 1)
+  assert.equal(modal.items[0].entry.id, workerBLane.id)
+
+  // Select Worker B -> closes modal, stores lane ID, splits selected state into ID chooser + Open button with up-right arrow
+  await modal.items[0]['select-btn'].listeners.click()
+  assert.equal(modal['is-open'], false)
+  assert.equal(modal.backdrop.removed, true)
+  assert.strictEqual(row1.values[colLane.id], workerBLane.id)
+  assert.equal(cell1['placeholder-el'].hidden, true)
+  assert.equal(cell1['id-el'].textContent, workerBLane.id)
+  assert.equal(cell1['id-el'].hidden, false)
+  assert.equal(cell1['trigger-el'].className, 'lane-data-row-trigger lane-data-row-trigger--filled lane-data-lane-id-btn')
+  assert.equal(cell1['open-el'].hidden, false)
+  assert.equal(cell1['display-el'].textContent, 'Worker B')
+  assert.equal(cell1['open-el'].children[0], cell1['display-el'])
+  assert.match(cell1['open-el'].children[1].innerHTML, /<svg\b[^>]*class="lane-data-lane-open-icon"[^>]*>.*M3\.5 8\.5L8\.5 3\.5M4\.5 3\.5H8\.5V7\.5/)
+
+  // Verify Source/Scope receives the stored lane ID string under the custom column name
+  boardLane.notebook.rows[0]['input-el'].value = '; to chosen [ get assignments.0.target_lane ]'
+  await boardLane.notebook.rows[0]['input-el'].listeners.input()
+  await boardLane.notebook['set-tab']('source')
+  assert.equal(boardLane.notebook.state.chosen, workerBLane.id)
+  assert.equal(boardLane.notebook.rows[0]['preview-el'].textContent, JSON.stringify(workerBLane.id))
+
+  // Switch back to Data tab and test live rename updates the open-button label while keeping ID chooser
+  await boardLane.notebook['set-tab']('data')
+  await laneControl.rename(workerBLane.id, 'Builder Prime')
+  assert.equal(dv['grid-rows'][0].cells[0]['display-el'].textContent, 'Builder Prime')
+  assert.equal(dv['grid-rows'][0].cells[0]['id-el'].textContent, workerBLane.id)
+
+  // Re-open picker via ID area -> selected lane is highlighted with Selected badge + row Clear + toolbar Clear
+  await dv['grid-rows'][0].cells[0]['trigger-el'].listeners.click()
+  assert.equal(modal['is-open'], true)
+  assert.equal(modal['clear-btn'].hidden, false)
+  const selectedItem = modal.items.find(it => it.entry.id === workerBLane.id)
+  assert.equal(selectedItem['is-selected'], true)
+  assert.equal(selectedItem.el.className, 'lane-modal-item lane-modal-item--selected')
+  assert.ok(selectedItem['clear-btn'])
+
+  // Dismissing with Escape cancels without changing selected value
+  await dispatchWindowEvent('keydown', { key: 'Escape' })
+  assert.equal(modal['is-open'], false)
+  assert.strictEqual(row1.values[colLane.id], workerBLane.id)
+
+  // Re-open picker and dismiss by clicking backdrop -> also cancels without change
+  await dv['grid-rows'][0].cells[0]['trigger-el'].listeners.click()
+  assert.equal(modal['is-open'], true)
+  await modal.backdrop.listeners.click({ target: modal.backdrop })
+  assert.equal(modal['is-open'], false)
+  assert.strictEqual(row1.values[colLane.id], workerBLane.id)
+
+  // Re-open picker and switch selection to closed Worker A, then test Open-to-right insertion between Board and Builder Prime
+  await dv['grid-rows'][0].cells[0]['trigger-el'].listeners.click()
+  await modal.items.find(it => it.entry.id === workerALane.id)['select-btn'].listeners.click()
+  assert.strictEqual(row1.values[colLane.id], workerALane.id)
+  assert.equal(dv['grid-rows'][0].cells[0]['id-el'].textContent, workerALane.id)
+  assert.equal(dv['grid-rows'][0].cells[0]['display-el'].textContent, 'Worker A')
+  assert.deepEqual(f.state.lanes.map(l => l.id), [boardLane.id, workerBLane.id])
+
+  // Click open button on Worker A -> opens Worker A immediately to the right of Board (between Board and Builder Prime)
+  await dv['grid-rows'][0].cells[0]['open-el'].listeners.click()
+  assert.deepEqual(f.state.lanes.map(l => l.id), [boardLane.id, workerALane.id, workerBLane.id])
+  assert.deepEqual(laneControl['lane-ids'], [boardLane.id, workerALane.id, workerBLane.id])
+  assert.equal(f.state.tableHeadRow.children[1], boardLane.element)
+  assert.equal(f.state.tableHeadRow.children[2], laneControl['by-id'][workerALane.id].element)
+  assert.equal(f.state.tableHeadRow.children[3], workerBLane.element)
+  assert.equal(f.state.tableBodyRow.children[1], boardLane.body)
+  assert.equal(f.state.tableBodyRow.children[2], laneControl['by-id'][workerALane.id].body)
+  assert.equal(f.state.tableBodyRow.children[3], workerBLane.body)
+  assert.equal(mockWindow.location.pathname, `/${boardLane.id};data|assignments/${workerALane.id}/${workerBLane.id}`)
+
+  // Clear selection via toolbar Clear button -> hides open button again
+  await dv['grid-rows'][0].cells[0]['trigger-el'].listeners.click()
+  await modal['clear-btn'].listeners.click()
+  assert.equal(modal['is-open'], false)
+  assert.strictEqual(row1.values[colLane.id], null)
+  assert.equal(dv['grid-rows'][0].cells[0]['placeholder-el'].textContent, 'Select lane…')
+  assert.equal(dv['grid-rows'][0].cells[0]['placeholder-el'].hidden, false)
+  assert.equal(dv['grid-rows'][0].cells[0]['id-el'].hidden, true)
+  assert.equal(dv['grid-rows'][0].cells[0]['open-el'].hidden, true)
+
+  // Re-select closed Worker A after closing it so reload persistence can verify closed lane title resolution
+  await laneControl.close(workerALane.id)
+  await dv['grid-rows'][0].cells[0]['trigger-el'].listeners.click()
+  await modal.items.find(it => it.entry.id === workerALane.id)['select-btn'].listeners.click()
+
+  // Test multiple lane[] column: add 2 items, select lanes, verify split controls + open-to-right moves open lane
+  const multiCell = dv['grid-rows'][0].cells[1]
+  await multiCell['add-btn'].listeners.click()
+  await multiCell['add-btn'].listeners.click()
+  assert.equal(multiCell.items.length, 2)
+  await multiCell.items[0]['trigger-el'].listeners.click()
+  await modal.items.find(it => it.entry.id === boardLane.id)['select-btn'].listeners.click()
+  await multiCell.items[1]['trigger-el'].listeners.click()
+  await modal.items.find(it => it.entry.id === workerBLane.id)['select-btn'].listeners.click()
+  assert.deepEqual(row1.values[colMulti.id], [boardLane.id, workerBLane.id])
+  assert.equal(multiCell.items[0]['id-el'].textContent, boardLane.id)
+  assert.equal(multiCell.items[0]['display-el'].textContent, 'Board')
+  assert.equal(multiCell.items[0]['open-el'].hidden, false)
+  assert.equal(multiCell.items[1]['id-el'].textContent, workerBLane.id)
+  assert.equal(multiCell.items[1]['display-el'].textContent, 'Builder Prime')
+  assert.equal(multiCell.items[1]['open-el'].hidden, false)
+
+  // Open Worker A in-between, minimize Builder Prime, then click Builder Prime's open button in lane[] -> restores & moves Builder Prime right next to Board
+  await dv['grid-rows'][0].cells[0]['open-el'].listeners.click()
+  assert.deepEqual(f.state.lanes.map(l => l.id), [boardLane.id, workerALane.id, workerBLane.id])
+  await laneControl.minimize(workerBLane.id, 'left')
+  assert.equal(workerBLane['is-minimized'], true)
+  await multiCell.items[1]['open-el'].listeners.click()
+  assert.equal(workerBLane['is-minimized'], false)
+  assert.deepEqual(f.state.lanes.map(l => l.id), [boardLane.id, workerBLane.id, workerALane.id])
+  assert.equal(f.state.tableHeadRow.children[2], workerBLane.element)
+  assert.equal(f.state.tableHeadRow.children[3], laneControl['by-id'][workerALane.id].element)
+  assert.equal(f.state.tableBodyRow.children[2], workerBLane.body)
+  assert.equal(f.state.tableBodyRow.children[3], laneControl['by-id'][workerALane.id].body)
+
+  // Remove first item from lane[] -> confirm dialog includes "Board (<id>)"
+  await multiCell.items[0]['remove-btn'].listeners.click()
+  const confirmModal = laneControl['confirm-modal']
+  assert.equal(confirmModal['is-open'], true)
+  assert.ok(confirmModal['message-el'].textContent.includes(`Board (${boardLane.id})`))
+  await confirmModal['confirm-btn'].listeners.click()
+  assert.deepEqual(row1.values[colMulti.id], [workerBLane.id])
+
+  // Verify top "Open" button still opens lane-modal in standard Open Lane mode
+  await f.state.tableHeadRowOpenButton.listeners.click()
+  assert.equal(modal['is-open'], true)
+  assert.equal(modal.mode, 'open')
+  assert.equal(modal['heading-el'].textContent, 'Open Lane')
+  assert.equal(modal['clear-btn'].hidden, true)
+  const openModeWorkerA = modal.items.find(it => it.entry.id === workerALane.id)
+  const openModeWorkerB = modal.items.find(it => it.entry.id === workerBLane.id)
+  assert.ok(openModeWorkerA['close-btn'])
+  assert.ok(openModeWorkerB['close-btn'])
+  await modal['close-btn'].listeners.click()
+  assert.equal(modal['is-open'], false)
+
+  // Close Worker A and Builder Prime so both stored lane IDs point to closed lanes on reload
+  await laneControl.close(workerALane.id)
+  await laneControl.close(workerBLane.id)
+
+  // Simulate full reload from URL -> restores stored lane IDs, split controls, and closed lane titles from catalog
+  const reloaded = createRuntime(mockWindow.location.pathname)
+  await reloaded.f.run(parse(mainSource, '/src/main.fs'))
+  assert.equal(reloaded.f.state.lanes.length, 1)
+  const rBoard = reloaded.f.state.lanes[0]
+  const rDv = rBoard.notebook['data-view']
+  const rRow1 = rDv['grid-rows'][0]
+  assert.strictEqual(rRow1.row.values[colLane.id], workerALane.id)
+  assert.equal(rRow1.cells[0]['placeholder-el'].hidden, true)
+  assert.equal(rRow1.cells[0]['id-el'].textContent, workerALane.id)
+  assert.equal(rRow1.cells[0]['id-el'].hidden, false)
+  assert.equal(rRow1.cells[0]['open-el'].hidden, false)
+  assert.equal(rRow1.cells[0]['display-el'].textContent, 'Worker A')
+  assert.equal(rRow1.cells[0]['trigger-el'].className, 'lane-data-row-trigger lane-data-row-trigger--filled lane-data-lane-id-btn')
+  assert.deepEqual(rRow1.row.values[colMulti.id], [workerBLane.id])
+  assert.equal(rRow1.cells[1].items[0]['display-el'].textContent, 'Builder Prime')
+  assert.equal(rRow1.cells[1].items[0]['id-el'].textContent, workerBLane.id)
+  assert.equal(rRow1.cells[1].items[0]['open-el'].hidden, false)
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('Fixed 16px top rail: styles, centered 12px icon buttons, root html fullscreen with corner-inverting SVG, and Open Lane search button', async () => {
+ const indexHtml = await fs.readFile(new URL('./index.html', import.meta.url), 'utf8')
+ assert.match(indexHtml, /:root\s*\{[^}]*padding:\s*calc\(16px \+ 1em\) 1em 1em;/s)
+ assert.match(indexHtml, /\.lane-modal-backdrop\s*\{[^}]*padding:\s*calc\(16px \+ 1\.5em\) calc\(32px \+ 1\.5em\) 1\.5em;/s)
+ assert.match(indexHtml, /\.top-rail\s*\{[^}]*align-items:\s*center;[^}]*background-color:\s*#383838;[^}]*border-bottom:\s*1px solid #ffffff24;[^}]*box-sizing:\s*border-box;[^}]*height:\s*16px;[^}]*justify-content:\s*center;[^}]*position:\s*fixed;[^}]*top:\s*0;[^}]*z-index:\s*2001;/s)
+ assert.match(indexHtml, /\.top-rail-icon\s*\{[^}]*background:\s*#ffffff0e;[^}]*border:\s*1px solid #ffffff24;[^}]*box-sizing:\s*border-box;[^}]*height:\s*12px;[^}]*justify-content:\s*center;[^}]*padding:\s*0;[^}]*width:\s*12px;/s)
+ assert.match(indexHtml, /\.side-rail\s*\{[^}]*padding:\s*20px 0 4px;/s)
+ assert.match(indexHtml, /\.side-rail-preview\s*\{[^}]*top:\s*24px;/s)
+
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  const styleProps = {}
+  const el = {
+   tag,
+   nodeType: 1,
+   style: {
+    setProperty(name, value) { styleProps[name] = value; this[name] = value },
+    removeProperty(name) { delete styleProps[name]; delete this[name] },
+    getPropertyValue(name) { return styleProps[name] || '' },
+   },
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   removed: false,
+   focused: false,
+   setAttribute(name, value) { this.attributes[name] = value },
+   appendChild(child) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    this.children.push(child)
+    return child
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) { this.parentNode.children.splice(idx, 1) }
+     this.parentNode = null
+    }
+   },
+  }
+  return el
+ }
+
+ const kv = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { kv.set(qualify(key), value) },
+  }
+ }
+
+ let uuid = 0
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ const docListeners = {}
+ const mockHtml = createMockElement('html')
+ const mockBody = createMockElement('body')
+ let requestCalls = 0
+ let bodyRequestCalls = 0
+ let exitCalls = 0
+ let rejectNextFullscreen = false
+ mockBody.requestFullscreen = async () => { bodyRequestCalls++ }
+
+ const mockDocument = {
+  body: mockBody,
+  documentElement: mockHtml,
+  fullscreenElement: null,
+  createElement: createMockElement,
+  addEventListener(event, handler) {
+   docListeners[event] ||= []
+   docListeners[event].push(handler)
+  },
+  async exitFullscreen() {
+   exitCalls++
+   mockDocument.fullscreenElement = null
+   for (const handler of docListeners.fullscreenchange || []) {
+    await handler()
+   }
+  },
+ }
+
+ mockHtml.requestFullscreen = async function () {
+  requestCalls++
+  assert.equal(this, mockHtml)
+  if (rejectNextFullscreen) {
+   rejectNextFullscreen = false
+   throw new Error('Fullscreen blocked')
+  }
+  mockDocument.fullscreenElement = mockHtml
+  for (const handler of docListeners.fullscreenchange || []) {
+   await handler()
+  }
+ }
+
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  JSON,
+  Math,
+  Object,
+  Reflect,
+  innerHeight: 600,
+  decodeURIComponent,
+  crypto: { randomUUID: () => `top-rail-uuid-${++uuid}` },
+  history: { pushState(_s, _t, url) { mockWindow.location.pathname = url } },
+  location: { pathname: '/', search: '', hash: '' },
+  addEventListener() {},
+  removeEventListener() {},
+ }
+ mockDocument.defaultView = mockWindow
+
+ const f = field({
+  ...DATA_RUNTIME_ENV,
+  console: { log() {} },
+  createIdleTracker,
+  data: createMockKV(),
+  defaultValueForType,
+  document: mockDocument,
+  formatImportLine,
+  hasImportCycle,
+  normalizePrimitiveType,
+  parseImportLine,
+  primitiveTypes: PRIMITIVE_TYPES,
+  resolveImportValue,
+  resolveScopeColumns,
+  runLines,
+  runTransportedScripts,
+ })
+
+ try {
+  await f.run(parse(mainSource, '/src/main.fs'))
+  const laneControl = f.state['lane-control']
+  const rails = laneControl.rails
+  const modal = laneControl['lane-modal']
+
+  // Top rail is mounted on body with 5 centered icon buttons in order: fullscreen, search, session, packages, preferences
+  const topRail = rails['top-rail']
+  assert.equal(topRail.tag, 'aside')
+  assert.equal(topRail.className, 'top-rail')
+  assert.equal(topRail.attributes.role, 'region')
+  assert.ok(mockBody.children.includes(topRail))
+  assert.equal(topRail.children.length, 5)
+
+  const fsBtn = rails['fullscreen-btn']
+  const searchBtn = rails['search-btn']
+  const sessionBtn = rails['session-btn']
+  const packagesBtn = rails['packages-btn']
+  const prefBtn = rails['preferences-btn']
+  assert.equal(topRail.children[0], fsBtn)
+  assert.equal(topRail.children[1], searchBtn)
+  assert.equal(topRail.children[2], sessionBtn)
+  assert.equal(topRail.children[3], packagesBtn)
+  assert.equal(topRail.children[4], prefBtn)
+  assert.equal(sessionBtn.className, 'top-rail-icon top-rail-icon--session')
+  assert.equal(sessionBtn.textContent, '')
+  assert.match(sessionBtn.innerHTML, /class="top-rail-icon-svg top-rail-icon-svg--session"/)
+  assert.equal(packagesBtn.className, 'top-rail-icon top-rail-icon--packages')
+  assert.equal(packagesBtn.textContent, '')
+  assert.match(packagesBtn.innerHTML, /class="top-rail-icon-svg top-rail-icon-svg--packages"/)
+  assert.equal(prefBtn.className, 'top-rail-icon top-rail-icon--preferences')
+  assert.equal(prefBtn.textContent, '')
+  assert.match(prefBtn.innerHTML, /class="top-rail-icon-svg top-rail-icon-svg--preferences"/)
+
+  // Initial fullscreen button state: no text, outward 4-corners SVG
+  assert.equal(fsBtn.tag, 'button')
+  assert.equal(fsBtn.type, 'button')
+  assert.equal(fsBtn.className, 'top-rail-icon top-rail-icon--fullscreen')
+  assert.equal(fsBtn.textContent, '')
+  assert.equal(rails['is-fullscreen'], false)
+  assert.equal(fsBtn.attributes['data-fullscreen'], 'false')
+  assert.equal(fsBtn.attributes['aria-pressed'], 'false')
+  assert.match(fsBtn.innerHTML, /class="top-rail-icon-svg top-rail-icon-svg--fullscreen-enter"/)
+  assert.match(fsBtn.innerHTML, /M1\.5 3\.5V1\.5H3\.5M6\.5 1\.5H8\.5V3\.5M8\.5 6\.5V8\.5H6\.5M3\.5 8\.5H1\.5V6\.5/)
+
+  // Clicking fullscreen enters fullscreen on root <html> (documentElement) and inverts all 4 corners
+  await fsBtn.listeners.click()
+  assert.equal(requestCalls, 1)
+  assert.equal(bodyRequestCalls, 0)
+  assert.equal(mockDocument.fullscreenElement, mockHtml)
+  assert.equal(rails['is-fullscreen'], true)
+  assert.equal(fsBtn.textContent, '')
+  assert.equal(fsBtn.attributes['data-fullscreen'], 'true')
+  assert.equal(fsBtn.attributes['aria-pressed'], 'true')
+  assert.match(fsBtn.innerHTML, /class="top-rail-icon-svg top-rail-icon-svg--fullscreen-exit"/)
+  assert.match(fsBtn.innerHTML, /M1\.5 3\.5H3\.5V1\.5M6\.5 1\.5V3\.5H8\.5M8\.5 6\.5H6\.5V8\.5M3\.5 8\.5V6\.5H1\.5/)
+
+  // Clicking again exits fullscreen and reverts the 4 corners outward
+  await fsBtn.listeners.click()
+  assert.equal(exitCalls, 1)
+  assert.equal(mockDocument.fullscreenElement, null)
+  assert.equal(rails['is-fullscreen'], false)
+  assert.equal(fsBtn.attributes['data-fullscreen'], 'false')
+  assert.equal(fsBtn.attributes['aria-pressed'], 'false')
+  assert.match(fsBtn.innerHTML, /class="top-rail-icon-svg top-rail-icon-svg--fullscreen-enter"/)
+
+  // External fullscreenchange (e.g. Escape key in browser) keeps the icon synced
+  mockDocument.fullscreenElement = mockHtml
+  for (const handler of docListeners.fullscreenchange || []) { await handler() }
+  assert.equal(rails['is-fullscreen'], true)
+  assert.match(fsBtn.innerHTML, /class="top-rail-icon-svg top-rail-icon-svg--fullscreen-exit"/)
+  mockDocument.fullscreenElement = null
+  for (const handler of docListeners.fullscreenchange || []) { await handler() }
+  assert.equal(rails['is-fullscreen'], false)
+  assert.match(fsBtn.innerHTML, /class="top-rail-icon-svg top-rail-icon-svg--fullscreen-enter"/)
+
+  // Rejected requestFullscreen() promise is handled safely without throwing
+  rejectNextFullscreen = true
+  await fsBtn.listeners.click()
+  assert.equal(requestCalls, 2)
+  assert.equal(mockDocument.fullscreenElement, null)
+  assert.equal(rails['is-fullscreen'], false)
+  assert.match(fsBtn.innerHTML, /class="top-rail-icon-svg top-rail-icon-svg--fullscreen-enter"/)
+
+  // Create and rename a lane, then close it so search modal can show both open and closed lanes
+  await f.state.tableHeadRowAddButton.listeners.click()
+  await f.state.tableHeadRowAddButton.listeners.click()
+  const [lane1, lane2] = f.state.lanes
+  await laneControl.rename(lane1.id, 'Alpha')
+  await laneControl.rename(lane2.id, 'Beta')
+  await laneControl.close(lane2.id)
+
+  // Search button has no text, search SVG, and opens the same Open Lane dialog as Home's Open button
+  assert.equal(searchBtn.tag, 'button')
+  assert.equal(searchBtn.type, 'button')
+  assert.equal(searchBtn.className, 'top-rail-icon top-rail-icon--search')
+  assert.equal(searchBtn.textContent, '')
+  assert.match(searchBtn.innerHTML, /class="top-rail-icon-svg top-rail-icon-svg--search"/)
+
+  await searchBtn.listeners.click()
+  assert.equal(modal['is-open'], true)
+  assert.equal(modal.mode, 'open')
+  assert.equal(modal['heading-el'].textContent, 'Open Lane')
+  assert.equal(modal['clear-btn'].hidden, true)
+  assert.equal(modal['count-el'].textContent, '2 lanes')
+  assert.ok(mockBody.children.includes(modal.backdrop))
+  assert.ok(modal.items.find(it => it.entry.id === lane1.id)['close-btn'])
+  assert.ok(modal.items.find(it => it.entry.id === lane2.id)['open-btn'])
+
+  // Opening Beta from the top-rail search dialog mounts Beta and closes the modal
+  await modal.items.find(it => it.entry.id === lane2.id)['open-btn'].listeners.click()
+  assert.equal(modal['is-open'], false)
+  assert.equal(f.state.lanes.length, 2)
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('Top-rail wrench preferences dropdown: create seeded lane, pick existing lane without seeding, live & startup interface.backgroundColor', async () => {
+ const indexHtml = await fs.readFile(new URL('./index.html', import.meta.url), 'utf8')
+ assert.match(indexHtml, /\.top-rail-menu\s*\{[^}]*position:\s*fixed;[^}]*top:\s*18px;/s)
+
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  const styleProps = {}
+  return {
+   tag,
+   nodeType: 1,
+   style: {
+    setProperty(name, value) { styleProps[name] = value; this[name] = value },
+    removeProperty(name) { delete styleProps[name]; delete this[name] },
+    getPropertyValue(name) { return styleProps[name] || '' },
+   },
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   removed: false,
+   focused: false,
+   rect: { left: 200, width: 12, top: 2, height: 12 },
+   getBoundingClientRect() { return this.rect },
+   contains(target) {
+    if (target === this) { return true }
+    return this.children.some(child => typeof child.contains === 'function' && child.contains(target))
+   },
+   setAttribute(name, value) { this.attributes[name] = value },
+   appendChild(child) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    this.children.push(child)
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) { this.children.push(child) }
+    else { this.children.splice(idx, 0, child) }
+    return child
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) { this.parentNode.children.splice(idx, 1) }
+     this.parentNode = null
+    }
+   },
+  }
+ }
+
+ const kv = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { kv.set(qualify(key), value) },
+  }
+ }
+
+ let uuid = 0
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ function createRuntime(initialPathname = '/') {
+  const docListeners = {}
+  const winListeners = {}
+  const mockHtml = createMockElement('html')
+  const mockBody = createMockElement('body')
+  const mockDocument = {
+   body: mockBody,
+   documentElement: mockHtml,
+   fullscreenElement: null,
+   createElement: createMockElement,
+   addEventListener(event, handler) {
+    docListeners[event] ||= []
+    docListeners[event].push(handler)
+   },
+  }
+  const mockWindow = {
+   Array,
+   Boolean,
+   Date,
+   JSON,
+   Math,
+   Object,
+   Reflect,
+   innerHeight: 600,
+   decodeURIComponent,
+   crypto: { randomUUID: () => `pref-uuid-${++uuid}` },
+   history: { pushState(_s, _t, url) { mockWindow.location.pathname = url } },
+   location: { pathname: initialPathname, search: '', hash: '' },
+   addEventListener(event, handler) {
+    winListeners[event] ||= []
+    winListeners[event].push(handler)
+   },
+   removeEventListener() {},
+  }
+  mockDocument.defaultView = mockWindow
+  const dispatchDocEvent = async (event, ev) => {
+   for (const handler of docListeners[event] || []) { await handler(ev) }
+  }
+  const dispatchWinEvent = async (event, ev) => {
+   for (const handler of winListeners[event] || []) { await handler(ev) }
+  }
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: createMockKV(),
+   defaultValueForType,
+   document: mockDocument,
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  return { f, mockBody, mockWindow, dispatchDocEvent, dispatchWinEvent }
+ }
+
+ try {
+  const { f, mockBody, mockWindow, dispatchDocEvent, dispatchWinEvent } = createRuntime('/')
+  await f.run(parse(mainSource, '/src/main.fs'))
+  const laneControl = f.state['lane-control']
+  const rails = laneControl.rails
+  const modal = laneControl['lane-modal']
+
+  assert.equal(mockBody.style.backgroundColor, '#202020')
+  assert.equal(laneControl['preferences-lane-id'], null)
+
+  // Preferences menu starts closed and mounted on body (not clipped inside top-rail)
+  const prefBtn = rails['preferences-btn']
+  const prefMenu = rails['preferences-menu']
+  assert.ok(mockBody.children.includes(prefMenu))
+  assert.equal(prefMenu.hidden, true)
+  assert.equal(rails['is-preferences-open'], false)
+  assert.equal(rails['preferences-status-el'].textContent, 'No preferences lane set')
+  assert.equal(rails['preferences-open-btn'].hidden, true)
+  assert.equal(rails['preferences-set-btn'].textContent, 'Set preferences lane')
+  assert.equal(rails['preferences-create-btn'].textContent, 'Create preference lane')
+
+  // Clicking wrench opens dropdown centered on wrench; clicking outside or pressing Escape closes it
+  await prefBtn.listeners.click({ stopPropagation() {} })
+  assert.equal(prefMenu.hidden, false)
+  assert.equal(rails['is-preferences-open'], true)
+  assert.equal(prefMenu.style.left, '206px')
+  assert.equal(prefBtn.attributes['aria-expanded'], 'true')
+  await dispatchDocEvent('click', { target: mockBody })
+  assert.equal(prefMenu.hidden, true)
+  assert.equal(rails['is-preferences-open'], false)
+
+  await prefBtn.listeners.click({ stopPropagation() {} })
+  assert.equal(prefMenu.hidden, false)
+  await dispatchWinEvent('keydown', { key: 'Escape' })
+  assert.equal(prefMenu.hidden, true)
+
+  // Create preference lane -> creates lane, assigns global preferences-lane KV, seeds interface.backgroundColor #202020
+  await prefBtn.listeners.click({ stopPropagation() {} })
+  await rails['preferences-create-btn'].listeners.click()
+  assert.equal(prefMenu.hidden, true)
+  assert.equal(f.state.lanes.length, 1)
+  const prefLane = f.state.lanes[0]
+  assert.equal(prefLane.title, 'Preferences')
+  assert.equal(laneControl['preferences-lane-id'], prefLane.id)
+  assert.equal(kv.get('preferences-lane'), prefLane.id)
+  assert.equal(kv.get(`${prefLane.id}.preferences-lane`), undefined)
+  assert.deepEqual(prefLane.notebook.lines, [
+   '; to interface ; object',
+   '; to interface.backgroundColor #202020',
+   '; to interface.scrollbarColor #383838',
+  ])
+  assert.equal(mockBody.style.backgroundColor, '#202020')
+  assert.equal(mockWindow.location.pathname, `/${prefLane.id}`)
+
+  // Editing interface.backgroundColor live updates document.body.style.backgroundColor immediately
+  prefLane.notebook.rows[1]['input-el'].value = '; to interface.backgroundColor #1a2b3c'
+  await prefLane.notebook.rows[1]['input-el'].listeners.input()
+  assert.equal(mockBody.style.backgroundColor, '#1a2b3c')
+
+  // Close preferences lane and simulate full app reload at '/' -> preferences still load & apply on startup
+  await laneControl.close(prefLane.id)
+  assert.equal(f.state.lanes.length, 0)
+
+  const reloaded = createRuntime('/')
+  await reloaded.f.run(parse(mainSource, '/src/main.fs'))
+  const rLaneControl = reloaded.f.state['lane-control']
+  const rRails = rLaneControl.rails
+  const rModal = rLaneControl['lane-modal']
+  assert.equal(reloaded.f.state.lanes.length, 0)
+  assert.equal(rLaneControl['preferences-lane-id'], prefLane.id)
+  assert.equal(reloaded.mockBody.style.backgroundColor, '#1a2b3c')
+
+  // Opening wrench dropdown when preferences lane is set shows its title and "Open preferences lane"
+  await rRails['preferences-btn'].listeners.click({ stopPropagation() {} })
+  assert.equal(rRails['preferences-status-el'].textContent, 'Preferences: Preferences')
+  assert.equal(rRails['preferences-open-btn'].hidden, false)
+  assert.equal(rRails['preferences-open-btn'].textContent, 'Open preferences lane')
+
+  // Clicking "Open preferences lane" opens it cleanly
+  await rRails['preferences-open-btn'].listeners.click()
+  assert.equal(rRails['preferences-menu'].hidden, true)
+  assert.equal(reloaded.f.state.lanes.length, 1)
+  assert.equal(reloaded.f.state.lanes[0].id, prefLane.id)
+
+  // Create a custom theme lane with its own script, then test "Set preferences lane" picker (MUST NOT seed/overwrite script!)
+  await reloaded.f.state.tableHeadRowAddButton.listeners.click()
+  const customLane = reloaded.f.state.lanes[1]
+  await rLaneControl.rename(customLane.id, 'Ocean Theme')
+  customLane.notebook.rows[0]['input-el'].value = '; to interface ; object'
+  await customLane.notebook.rows[0]['input-el'].listeners.input()
+  await customLane.notebook.rows[0]['input-el'].listeners.keydown({ key: 'Enter', preventDefault() {} })
+  customLane.notebook.rows[1]['input-el'].value = '; to interface.backgroundColor #0d1b2a'
+  await customLane.notebook.rows[1]['input-el'].listeners.input()
+
+  // Also create an empty lane to ensure switching to it does NOT seed it and resets background to #202020
+  await reloaded.f.state.tableHeadRowAddButton.listeners.click()
+  const emptyLane = reloaded.f.state.lanes[2]
+  await rLaneControl.rename(emptyLane.id, 'Blank Slate')
+
+  // Use "Set preferences lane" -> picks Empty Lane -> does NOT seed Empty Lane, resets body bg to #202020
+  await rRails['preferences-btn'].listeners.click({ stopPropagation() {} })
+  await rRails['preferences-set-btn'].listeners.click()
+  assert.equal(rModal['is-open'], true)
+  assert.equal(rModal.mode, 'pick')
+  assert.equal(rModal['heading-el'].textContent, 'Set Preferences Lane')
+  await rModal.items.find(it => it.entry.id === emptyLane.id)['select-btn'].listeners.click()
+  assert.equal(rLaneControl['preferences-lane-id'], emptyLane.id)
+  assert.equal(kv.get('preferences-lane'), emptyLane.id)
+  assert.deepEqual(emptyLane.notebook.lines, [''])
+  assert.equal(reloaded.mockBody.style.backgroundColor, '#202020')
+
+  // Use "Set preferences lane" -> picks Ocean Theme -> applies #0d1b2a without overwriting Ocean Theme's lines
+  await rRails['preferences-btn'].listeners.click({ stopPropagation() {} })
+  await rRails['preferences-set-btn'].listeners.click()
+  await rModal.items.find(it => it.entry.id === customLane.id)['select-btn'].listeners.click()
+  assert.equal(rLaneControl['preferences-lane-id'], customLane.id)
+  assert.equal(reloaded.mockBody.style.backgroundColor, '#0d1b2a')
+  assert.deepEqual(customLane.notebook.lines, [
+   '; to interface ; object',
+   '; to interface.backgroundColor #0d1b2a',
+  ])
+
+  // Clear preferences lane via picker Clear button -> clears global key, resets background to #202020
+  await rRails['preferences-btn'].listeners.click({ stopPropagation() {} })
+  await rRails['preferences-set-btn'].listeners.click()
+  assert.equal(rModal['clear-btn'].hidden, false)
+  await rModal['clear-btn'].listeners.click()
+  assert.equal(rLaneControl['preferences-lane-id'], null)
+  assert.equal(kv.get('preferences-lane'), '')
+  assert.equal(reloaded.mockBody.style.backgroundColor, '#202020')
+  assert.equal(rRails['preferences-status-el'].textContent, 'No preferences lane set')
+  assert.equal(rRails['preferences-open-btn'].hidden, true)
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('Lane remembered path helpers: parseLanePath, formatLanePath, and normalizeLanePath', () => {
+ assert.deepEqual(parseLanePath('source'), { tab: 'source', subroute: '' })
+ assert.deepEqual(parseLanePath('INPUT'), { tab: 'input', subroute: '' })
+ assert.deepEqual(parseLanePath(' /scope/ '), { tab: 'scope', subroute: '' })
+ assert.deepEqual(parseLanePath('view'), { tab: 'view', subroute: '' })
+ assert.deepEqual(parseLanePath('data'), { tab: 'data', subroute: '' })
+ assert.deepEqual(parseLanePath('data/orders'), { tab: 'data', subroute: 'orders' })
+ assert.deepEqual(parseLanePath('data|orders'), { tab: 'data', subroute: 'orders' })
+ assert.deepEqual(parseLanePath('/DATA/my table/'), { tab: 'data', subroute: 'my table' })
+ assert.deepEqual(parseLanePath('source/ignored'), { tab: 'source', subroute: '' })
+ assert.equal(parseLanePath(''), null)
+ assert.equal(parseLanePath('   '), null)
+ assert.equal(parseLanePath('/'), null)
+ assert.equal(parseLanePath(null), null)
+ assert.equal(parseLanePath(undefined), null)
+ assert.equal(parseLanePath('unknown'), null)
+
+ assert.equal(formatLanePath('source'), 'source')
+ assert.equal(formatLanePath('data'), 'data')
+ assert.equal(formatLanePath('data', 'orders'), 'data/orders')
+ assert.equal(formatLanePath({ tab: 'data', subroute: 'my table' }), 'data/my table')
+ assert.equal(formatLanePath('view', 'orders'), 'view')
+ assert.equal(formatLanePath('invalid'), '')
+
+ assert.equal(normalizeLanePath('data|orders'), 'data/orders')
+ assert.equal(normalizeLanePath('/DATA/Orders/'), 'data/Orders')
+ assert.equal(normalizeLanePath('  VIEW  '), 'view')
+ assert.equal(normalizeLanePath(''), null)
+ assert.equal(normalizeLanePath('bogus'), null)
+})
+
+test('Lanes remember last navigated path across close/reopen, show Path and Width Reset buttons in Configure Lane modal, and reset to defaults', async () => {
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  const styleProps = {}
+  return {
+   tag,
+   nodeType: 1,
+   style: {
+    setProperty(name, value) { styleProps[name] = value; this[name] = value },
+    removeProperty(name) { delete styleProps[name]; delete this[name] },
+    getPropertyValue(name) { return styleProps[name] || '' },
+   },
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   checked: false,
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   removed: false,
+   focused: false,
+   setAttribute(name, value) { this.attributes[name] = value },
+   appendChild(child) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    this.children.push(child)
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) { this.children.push(child) }
+    else { this.children.splice(idx, 0, child) }
+    return child
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) { this.parentNode.children.splice(idx, 1) }
+     this.parentNode = null
+    }
+   },
+  }
+ }
+
+ const kv = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { kv.set(qualify(key), value) },
+  }
+ }
+
+ let uuid = 0
+ let runCount = 0
+ const countedRunLines = async (lines, opts) => {
+  runCount += 1
+  return runLines(lines, opts)
+ }
+
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ function createRuntime(initialPathname = '/') {
+  const winListeners = {}
+  const mockBody = createMockElement('body')
+  const mockWindow = {
+   Array,
+   Boolean,
+   Date,
+   JSON,
+   Math,
+   Object,
+   Reflect,
+   decodeURIComponent,
+   crypto: { randomUUID: () => `path-uuid-${++uuid}` },
+   history: { pushState(_s, _t, url) { mockWindow.location.pathname = url } },
+   location: { pathname: initialPathname, search: '', hash: '' },
+   addEventListener(event, handler) {
+    winListeners[event] ||= []
+    winListeners[event].push(handler)
+   },
+   removeEventListener() {},
+  }
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: createMockKV(),
+   defaultValueForType,
+   document: {
+    body: mockBody,
+    defaultView: mockWindow,
+    createElement: createMockElement,
+   },
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines: countedRunLines,
+   runTransportedScripts,
+  })
+  const dispatchWindow = async (event, ev) => {
+   for (const handler of winListeners[event] || []) { await handler(ev) }
+  }
+  return { f, mockWindow, mockBody, dispatchWindow }
+ }
+
+ try {
+  const { f, mockWindow, dispatchWindow } = createRuntime('/')
+  await f.run(parse(mainSource, '/src/main.fs'))
+  const laneControl = f.state['lane-control']
+  const configModal = laneControl['config-modal']
+  const openModal = laneControl['lane-modal']
+  const confirmModal = laneControl['confirm-modal']
+
+  // Fresh lane has no remembered path (defaults to natural source view) and disabled Reset buttons in Configure Lane
+  await f.state.tableHeadRowAddButton.listeners.click()
+  const lane1 = f.state.lanes[0]
+  assert.strictEqual(lane1.path, null)
+  assert.equal(kv.get(`${lane1.id}.path`), undefined)
+
+  await lane1['config-btn'].listeners.click()
+  assert.equal(configModal['is-open'], true)
+  assert.equal(configModal['width-input'].value, '')
+  assert.equal(configModal['width-reset-btn'].disabled, true)
+  assert.equal(configModal['path-input'].value, '')
+  assert.equal(configModal['path-reset-btn'].disabled, true)
+  await configModal['cancel-btn'].listeners.click()
+
+  // Navigating tabs updates remembered path in state and KV
+  await lane1.notebook.tabs.input.listeners.click()
+  assert.equal(lane1.path, 'input')
+  assert.equal(kv.get(`${lane1.id}.path`), 'input')
+
+  await lane1.notebook.tabs.scope.listeners.click()
+  assert.equal(lane1.path, 'scope')
+  assert.equal(kv.get(`${lane1.id}.path`), 'scope')
+
+  await lane1.notebook.tabs.view.listeners.click()
+  assert.equal(lane1.path, 'view')
+  assert.equal(kv.get(`${lane1.id}.path`), 'view')
+
+  // Navigating to Data and adding/selecting/renaming/deleting tables persists data/<tablename>
+  await lane1.notebook.tabs.data.listeners.click()
+  assert.equal(lane1.path, 'data')
+  assert.equal(kv.get(`${lane1.id}.path`), 'data')
+
+  const dv1 = lane1.notebook['data-view']
+  const tblUsers = await dv1['add-table']('users')
+  assert.equal(lane1.path, 'data/users')
+  assert.equal(kv.get(`${lane1.id}.path`), 'data/users')
+
+  const tblOrders = await dv1['add-table']('orders')
+  assert.equal(lane1.path, 'data/orders')
+  assert.equal(kv.get(`${lane1.id}.path`), 'data/orders')
+
+  // Select users and rename it -> remembered path tracks active table name
+  await dv1['select-table'](tblUsers.id)
+  assert.equal(lane1.path, 'data/users')
+  dv1['table-name-input'].value = 'customers'
+  await dv1['table-name-input'].listeners.input()
+  assert.equal(lane1.path, 'data/customers')
+  assert.equal(kv.get(`${lane1.id}.path`), 'data/customers')
+
+  // Delete customers -> falls back to remaining table orders and updates remembered path
+  await dv1['delete-table-btn'].listeners.click()
+  await confirmModal['confirm-btn'].listeners.click()
+  assert.equal(lane1.path, 'data/orders')
+  assert.equal(kv.get(`${lane1.id}.path`), 'data/orders')
+
+  // Close lane1 -> KV path remains 'data/orders' -> reopen via Open Lane modal restores data|orders without running Source
+  await laneControl.close(lane1.id)
+  assert.equal(f.state.lanes.length, 0)
+  assert.equal(kv.get(`${lane1.id}.path`), 'data/orders')
+
+  const runsBeforeModalOpen = runCount
+  await f.state.tableHeadRowOpenButton.listeners.click()
+  await openModal.items.find(it => it.entry.id === lane1.id)['open-btn'].listeners.click()
+  assert.equal(f.state.lanes.length, 1)
+  const reopened1 = f.state.lanes[0]
+  assert.equal(runCount, runsBeforeModalOpen)
+  assert.equal(reopened1.path, 'data/orders')
+  assert.equal(reopened1.notebook['active-tab'], 'data')
+  assert.equal(reopened1.notebook['data-view']['get-active-table']().id, tblOrders.id)
+  assert.equal(mockWindow.location.pathname, `/${lane1.id};data|orders`)
+
+  // Reopening via Data lane column open-to-right (open-after) and Preferences (open-preferences-lane) also restores remembered path
+  await f.state.tableHeadRowAddButton.listeners.click()
+  const hostLane = f.state.lanes[1]
+  await hostLane.notebook.tabs.data.listeners.click()
+  const hostDv = hostLane.notebook['data-view']
+  await hostDv['add-table']('links')
+  await hostDv['add-column']('target', 'lane', false)
+  await hostDv['add-row']()
+  await hostDv['grid-rows'][0].cells[0]['trigger-el'].listeners.click()
+  await openModal.items.find(it => it.entry.id === lane1.id)['select-btn'].listeners.click()
+
+  await laneControl.close(lane1.id)
+  await hostDv['grid-rows'][0].cells[0]['open-el'].listeners.click()
+  assert.deepEqual(f.state.lanes.map(l => l.id), [hostLane.id, lane1.id])
+  const afterReopened = f.state.lanes[1]
+  assert.equal(afterReopened.notebook['active-tab'], 'data')
+  assert.equal(afterReopened.notebook['data-view']['get-active-table']().name, 'orders')
+  assert.equal(afterReopened.path, 'data/orders')
+  assert.equal(mockWindow.location.pathname, `/${hostLane.id};data|links/${lane1.id};data|orders`)
+
+  // Preferences lane closed on 'scope' restores 'scope' via open-preferences-lane
+  await laneControl['set-preferences-lane'](lane1.id)
+  await afterReopened.notebook.tabs.scope.listeners.click()
+  assert.equal(afterReopened.path, 'scope')
+  await laneControl.close(lane1.id)
+  await laneControl['open-preferences-lane']()
+  const prefReopened = laneControl['by-id'][lane1.id]
+  assert.equal(prefReopened.notebook['active-tab'], 'scope')
+  assert.equal(prefReopened.path, 'scope')
+
+  // Explicit URL / popstate route still overrides remembered path (e.g. /<id> explicitly routes to source)
+  mockWindow.location.pathname = `/${lane1.id}`
+  await dispatchWindow('popstate', {})
+  assert.equal(laneControl['by-id'][lane1.id].notebook['active-tab'], 'source')
+
+  // Configure Lane modal displays remembered Path & Width, enables Reset buttons, and allows editing Path directly
+  await laneControl['set-width'](lane1.id, 420)
+  await laneControl['by-id'][lane1.id].notebook.tabs.data.listeners.click()
+  const activeLane1 = laneControl['by-id'][lane1.id]
+  assert.equal(activeLane1.path, 'data/orders')
+
+  await activeLane1['config-btn'].listeners.click()
+  assert.equal(configModal['width-input'].value, '420')
+  assert.equal(configModal['width-reset-btn'].disabled, false)
+  assert.equal(configModal['path-input'].value, 'data/orders')
+  assert.equal(configModal['path-reset-btn'].disabled, false)
+
+  // Edit Path directly to 'view' -> switches lane to View and persists 'view'
+  configModal['path-input'].value = 'view'
+  await configModal['path-input'].listeners.input()
+  await configModal.form.listeners.submit({ preventDefault() {} })
+  assert.equal(activeLane1.path, 'view')
+  assert.equal(kv.get(`${lane1.id}.path`), 'view')
+  assert.equal(activeLane1.notebook['active-tab'], 'view')
+  assert.equal(mockWindow.location.pathname, `/${lane1.id};view`)
+
+  // Invalid Path input in Configure Lane preserves existing remembered path
+  await activeLane1['config-btn'].listeners.click()
+  configModal['path-input'].value = 'not-a-tab'
+  await configModal['path-input'].listeners.input()
+  await configModal.form.listeners.submit({ preventDefault() {} })
+  assert.equal(activeLane1.path, 'view')
+  assert.equal(activeLane1.notebook['active-tab'], 'view')
+
+  // Clicking Reset clears input & disables button; Cancel discards those resets
+  await activeLane1['config-btn'].listeners.click()
+  await configModal['width-reset-btn'].listeners.click()
+  await configModal['path-reset-btn'].listeners.click()
+  assert.equal(configModal['width-input'].value, '')
+  assert.equal(configModal['width-reset-btn'].disabled, true)
+  assert.equal(configModal['path-input'].value, '')
+  assert.equal(configModal['path-reset-btn'].disabled, true)
+  await configModal['cancel-btn'].listeners.click()
+  assert.equal(activeLane1.width, 420)
+  assert.equal(activeLane1.path, 'view')
+
+  // Clicking Reset on both Width and Path then Save changes resets width to auto and path to natural default (source)
+  await activeLane1['config-btn'].listeners.click()
+  await configModal['width-reset-btn'].listeners.click()
+  await configModal['path-reset-btn'].listeners.click()
+  await configModal.form.listeners.submit({ preventDefault() {} })
+  assert.strictEqual(activeLane1.width, null)
+  assert.equal(kv.get(`${lane1.id}.width`), '')
+  assert.equal(activeLane1.element.className, 'lane-header')
+  assert.strictEqual(activeLane1.path, null)
+  assert.equal(kv.get(`${lane1.id}.path`), '')
+  assert.equal(activeLane1.notebook['active-tab'], 'source')
+  assert.equal(mockWindow.location.pathname, `/${lane1.id}`)
+
+  // Reopening after reset lands naturally on source and keeps Reset buttons disabled
+  await laneControl.close(lane1.id)
+  await laneControl.open(lane1.id)
+  const resetReopened = laneControl['by-id'][lane1.id]
+  assert.strictEqual(resetReopened.path, null)
+  assert.equal(resetReopened.notebook['active-tab'], 'source')
+  await resetReopened['config-btn'].listeners.click()
+  assert.equal(configModal['width-input'].value, '')
+  assert.equal(configModal['width-reset-btn'].disabled, true)
+  assert.equal(configModal['path-input'].value, '')
+  assert.equal(configModal['path-reset-btn'].disabled, true)
+  await configModal['cancel-btn'].listeners.click()
+
+  // Reloading runtime from KV retains remembered path across sessions too
+  await resetReopened.notebook.tabs.data.listeners.click()
+  assert.equal(kv.get(`${lane1.id}.path`), 'data/orders')
+  const r2 = createRuntime('/')
+  await r2.f.run(parse(mainSource, '/src/main.fs'))
+  await r2.f.state['lane-control'].open(lane1.id)
+  const freshLane1 = r2.f.state['lane-control']['by-id'][lane1.id]
+  assert.equal(freshLane1.path, 'data/orders')
+  assert.equal(freshLane1.notebook['active-tab'], 'data')
+  assert.equal(freshLane1.notebook['data-view']['get-active-table']().name, 'orders')
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('computeLaneScrollLeft calculates horizontal scroll target with side-rail and right breathing-room margins', () => {
+ // Lane extends past right edge -> scrolls so lane right sits 96px inside viewport right edge (1120 - (1000 - 96) = 216)
+ assert.equal(computeLaneScrollLeft(0, 1000, 700, 1120), 216)
+ // Lane already completely inside [48, viewport - 96] -> no scroll needed
+ assert.equal(computeLaneScrollLeft(0, 1000, 48, 904), null)
+ assert.equal(computeLaneScrollLeft(200, 1000, 100, 500), null)
+ // Lane extends past left edge -> scrolls so lane left sits 48px inside viewport left edge ((200 - 100) - 48 = 52)
+ assert.equal(computeLaneScrollLeft(200, 1000, -100, 300), 52)
+ // Wide lane (> usableWidth 456, but <= viewport - 64 = 536) -> centered between 32px side rails (pad = 50)
+ assert.equal(computeLaneScrollLeft(0, 600, 200, 700), 150)
+ // Ultra-wide lane (> viewport - 64) -> aligns left edge at 48px
+ assert.equal(computeLaneScrollLeft(0, 600, 200, 900), 152)
+ // Invalid or degenerate inputs return null
+ assert.equal(computeLaneScrollLeft(0, 0, 100, 400), null)
+ assert.equal(computeLaneScrollLeft(0, 1000, 400, 400), null)
+ assert.equal(computeLaneScrollLeft(0, 1000, NaN, 400), null)
+})
+
+test('Lane scroll landing clears right margin across add/open/restore without clobbering sync/reload, and Data lane CSS enforces non-overlapping 240px/25% bounds', async () => {
+ const indexHtml = await fs.readFile(new URL('./index.html', import.meta.url), 'utf8')
+ // Verify root scroll-padding and Data lane split button non-overlap & 240px / 25% flex rules
+ assert.match(indexHtml, /:root\s*\{[^}]*scroll-padding-inline:\s*48px 96px;/s)
+ assert.match(indexHtml, /\.lane-header\s*\{[^}]*scroll-margin-inline:\s*48px 96px;/s)
+ assert.match(indexHtml, /\.lane-body\s*\{[^}]*scroll-margin-inline:\s*48px 96px;/s)
+ assert.match(indexHtml, /\.lane-data-lane-control\s*\{[^}]*gap:\s*4px;[^}]*overflow:\s*hidden;/s)
+ assert.match(indexHtml, /\.lane-data-lane-id-btn\s*\{[^}]*flex:\s*0 1 auto;[^}]*max-width:\s*min\(240px,\s*calc\(75% - 4px\)\);[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;/s)
+ assert.match(indexHtml, /\.lane-data-lane-id\s*\{[^}]*flex:\s*0 1 auto;[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;/s)
+ assert.match(indexHtml, /\.lane-data-lane-open-btn\s*\{[^}]*flex:\s*1 1 25%;[^}]*min-width:\s*25%;[^}]*overflow:\s*hidden;/s)
+ assert.doesNotMatch(indexHtml, /\.lane-data-td--sized \.lane-data-lane-open-btn/)
+
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ const laneBounds = new Map()
+ function createMockElement(tag) {
+  const styleProps = {}
+  return {
+   tag,
+   nodeType: 1,
+   style: {
+    setProperty(name, value) { styleProps[name] = value; this[name] = value },
+    removeProperty(name) { delete styleProps[name]; delete this[name] },
+    getPropertyValue(name) { return styleProps[name] || '' },
+   },
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   checked: false,
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   removed: false,
+   focused: false,
+   setAttribute(name, value) { this.attributes[name] = value },
+   getBoundingClientRect() {
+    const id = this.attributes['data-lane-id']
+    const entry = id && laneBounds.get(id)
+    if (!entry) { return { left: 0, right: 0, width: 0, top: 0, height: 0 } }
+    const rect = this.tag === 'td' && entry.body ? entry.body : entry.header
+    return rect || { left: 0, right: 0, width: 0, top: 0, height: 0 }
+   },
+   appendChild(child) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    this.children.push(child)
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) { this.children.push(child) }
+    else { this.children.splice(idx, 0, child) }
+    return child
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) { this.parentNode.children.splice(idx, 1) }
+     this.parentNode = null
+    }
+   },
+  }
+ }
+
+ const kv = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { kv.set(qualify(key), value) },
+  }
+ }
+
+ let uuid = 0
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ function createRuntime(initialPathname = '/', initialHash = '') {
+  const scrollToCalls = []
+  const rafQueue = []
+  const cancelledRafs = []
+  let nextRafId = 1
+  const mockBody = createMockElement('body')
+  const documentElement = { clientWidth: 1000, scrollLeft: 0, scrollTop: 0 }
+  const mockWindow = {
+   Array,
+   Boolean,
+   Date,
+   JSON,
+   Math,
+   Object,
+   Reflect,
+   innerWidth: 1000,
+   scrollX: 0,
+   scrollY: 0,
+   decodeURIComponent,
+   crypto: { randomUUID: () => `scroll-land-uuid-${++uuid}` },
+   history: {
+    pushState(_s, _t, url) { mockWindow.location.pathname = url },
+    replaceState(_s, _t, url) { mockWindow.location.pathname = url },
+   },
+   location: { pathname: initialPathname, search: '', hash: initialHash },
+   scrollTo(arg1, arg2) {
+    if (arg1 && typeof arg1 === 'object') {
+     scrollToCalls.push(arg1)
+     if (typeof arg1.left === 'number') {
+      mockWindow.scrollX = arg1.left
+      documentElement.scrollLeft = arg1.left
+     }
+    }
+    else {
+     scrollToCalls.push({ left: arg1, top: arg2 })
+     mockWindow.scrollX = arg1
+     documentElement.scrollLeft = arg1
+    }
+   },
+   requestAnimationFrame(fn) {
+    const id = nextRafId++
+    rafQueue.push({ id, fn, cancelled: false })
+    return id
+   },
+   cancelAnimationFrame(id) {
+    cancelledRafs.push(id)
+    const entry = rafQueue.find(r => r.id === id)
+    if (entry) { entry.cancelled = true }
+   },
+   addEventListener() {},
+   removeEventListener() {},
+  }
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: createMockKV(),
+   defaultValueForType,
+   document: {
+    body: mockBody,
+    documentElement,
+    defaultView: mockWindow,
+    createElement: createMockElement,
+   },
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  const flushRaf = async () => {
+   while (rafQueue.length > 0) {
+    const item = rafQueue.shift()
+    if (!item.cancelled) { await item.fn() }
+   }
+  }
+  return { f, mockWindow, documentElement, scrollToCalls, cancelledRafs, flushRaf }
+ }
+
+ try {
+  const { f, mockWindow, scrollToCalls, cancelledRafs, flushRaf } = createRuntime('/')
+  await f.run(parse(mainSource, '/src/main.fs'))
+  const laneControl = f.state['lane-control']
+  const openModal = laneControl['lane-modal']
+  const rails = laneControl.rails
+
+  // Helper: positions a lane in viewport relative to current scrollX
+  const setWorldBounds = (id, worldLeft, headerWidth, bodyWidth = headerWidth) => {
+   const cur = mockWindow.scrollX
+   laneBounds.set(id, {
+    header: { left: worldLeft - cur, right: worldLeft - cur + headerWidth, width: headerWidth },
+    body: { left: worldLeft - cur, right: worldLeft - cur + bodyWidth, width: bodyWidth },
+   })
+  }
+
+  // 1. Adding a lane (+ Lane) scrolls it into view with 96px right clearance using union of header & body widths
+  setWorldBounds('scroll-land-uuid-1', 700, 320, 420)
+  await f.state.tableHeadRowAddButton.listeners.click()
+  const lane1 = f.state.lanes[0]
+  await flushRaf()
+  // body right is 700 + 420 = 1120 -> 1120 - (1000 - 96) = 216
+  assert.deepEqual(scrollToCalls.at(-1), { left: 216, top: 0, behavior: 'smooth' })
+  assert.equal(mockWindow.scrollX, 216)
+
+  // 2. Adding two lanes back-to-back coalesces rAF frames via cancelAnimationFrame
+  setWorldBounds('scroll-land-uuid-2', 1150, 350)
+  setWorldBounds('scroll-land-uuid-3', 1520, 380)
+  await f.state.tableHeadRowAddButton.listeners.click()
+  const lane2 = f.state.lanes[1]
+  await f.state.tableHeadRowAddButton.listeners.click()
+  const lane3 = f.state.lanes[2]
+  assert.equal(cancelledRafs.length, 1)
+  await flushRaf()
+  // Lane 3 right = 1520 + 380 = 1900 -> 1900 - 904 = 996
+  assert.deepEqual(scrollToCalls.at(-1), { left: 996, top: 0, behavior: 'smooth' })
+  assert.equal(mockWindow.scrollX, 996)
+
+  // 3. Reloading lane1 does NOT scroll away from current scrollX
+  const callsBeforeReload = scrollToCalls.length
+  await lane1['reload-btn'].listeners.click()
+  await flushRaf()
+  assert.equal(scrollToCalls.length, callsBeforeReload)
+
+  // 4. Closing lane1 and reopening via Open Lane modal scrolls back left so lane1 clears left 48px margin
+  await laneControl.close(lane1.id)
+  setWorldBounds(lane1.id, 100, 420)
+  await f.state.tableHeadRowOpenButton.listeners.click()
+  await openModal.items.find(it => it.entry.id === lane1.id)['open-btn'].listeners.click()
+  await flushRaf()
+  // lane1 absLeft = 100, visibleLeft = 48 -> target = 100 - 48 = 52
+  assert.deepEqual(scrollToCalls.at(-1), { left: 52, top: 0, behavior: 'smooth' })
+  assert.equal(mockWindow.scrollX, 52)
+
+  // 5. Restoring a minimized lane from the side rail scrolls it smoothly into view with right margin
+  await laneControl.minimize(lane3.id, 'right')
+  setWorldBounds(lane3.id, 1520, 380)
+  await rails['right-items'][0]['icon-el'].listeners.click()
+  await flushRaf()
+  assert.equal(lane3['is-minimized'], false)
+  // absRight = 1900 -> 1900 - 904 = 996
+  assert.deepEqual(scrollToCalls.at(-1), { left: 996, top: 0, behavior: 'smooth' })
+
+  // 6. Data lane column open-to-right (open-after) scrolls opened lane into view with right margin
+  await lane1.notebook.tabs.data.listeners.click()
+  const dv1 = lane1.notebook['data-view']
+  await dv1['add-table']('nav')
+  await dv1['add-column']('target', 'lane', false)
+  await dv1['add-row']()
+  await dv1['grid-rows'][0].cells[0]['trigger-el'].listeners.click()
+  await openModal.items.find(it => it.entry.id === lane2.id)['select-btn'].listeners.click()
+  await laneControl.close(lane2.id)
+  mockWindow.scrollX = 0
+  setWorldBounds(lane2.id, 780, 400)
+  await dv1['grid-rows'][0].cells[0]['open-el'].listeners.click()
+  await flushRaf()
+  // 780 + 400 = 1180 -> 1180 - 904 = 276
+  assert.deepEqual(scrollToCalls.at(-1), { left: 276, top: 0, behavior: 'smooth' })
+
+  // 7. Creating & opening Preferences lane from top-rail menu scrolls into view with right margin
+  mockWindow.scrollX = 0
+  await rails['preferences-create-btn'].listeners.click()
+  const prefLane = f.state.lanes.at(-1)
+  setWorldBounds(prefLane.id, 1000, 360)
+  await flushRaf()
+  // 1000 + 360 = 1360 -> 1360 - 904 = 456
+  assert.deepEqual(scrollToCalls.at(-1), { left: 456, top: 0, behavior: 'smooth' })
+
+  await laneControl.close(prefLane.id)
+  mockWindow.scrollX = 0
+  setWorldBounds(prefLane.id, 1100, 360)
+  await rails['preferences-open-btn'].listeners.click()
+  await flushRaf()
+  // 1100 + 360 = 1460 -> 1460 - 904 = 556
+  assert.deepEqual(scrollToCalls.at(-1), { left: 556, top: 0, behavior: 'smooth' })
+
+  // 8. Startup sync with #scroll.left=333 preserves hash scroll without scroll-lane-into-view overriding it
+  const rHash = createRuntime(`/${lane1.id}`, '#scroll.left=333')
+  await rHash.f.run(parse(mainSource, '/src/main.fs'))
+  await rHash.flushRaf()
+  assert.equal(rHash.mockWindow.scrollX, 333)
+  assert.deepEqual(rHash.scrollToCalls, [{ left: 333, top: 0 }])
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('data.mjs httpKV hashNamespace and real diskKV directory layout enforce <= 1024b per file without collisions', async () => {
+ // 1. httpKV URL key construction & idempotent 404 delete
+ const requests = []
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async (url, init = {}) => {
+  requests.push({ url: String(url), method: init.method || 'GET', body: init.body })
+  const key = new URL(url).searchParams.get('key')
+  if (init.method === 'DELETE' && key === 'missing-del') {
+   return { ok: false, status: 404, statusText: 'Not Found', text: async () => '' }
+  }
+  return { ok: true, status: 200, statusText: 'OK', text: async () => 'ok' }
+ }
+ try {
+  const root = httpKV({ baseUrl: 'http://localhost:8080/api/data?mode=disk' })
+  assert.equal(root.root, root)
+  const legacySub = root.namespace('lane-1')
+  assert.equal(legacySub.root, root)
+  await legacySub.get('title')
+  const hashed = root.hashNamespace('lanes').namespace('lane.1').namespace('tables').namespace('t.2').get('schema')
+  await hashed
+  await root.delete('missing-del')
+  await root.hashNamespace('sessions').namespace('s1').delete('meta')
+  assert.equal(new URL(requests[0].url).searchParams.get('key'), 'lane-1.title')
+  assert.equal(new URL(requests[1].url).searchParams.get('key'), 'lanes#lane%2E1/tables/t%2E2/schema')
+  assert.equal(requests[2].method, 'DELETE')
+  assert.equal(new URL(requests[3].url).searchParams.get('key'), 'sessions#s1/meta')
+  assert.equal(requests[3].method, 'DELETE')
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+
+ // 2. Real temp-dir diskKV mimicking civil-memory's diskKV on-disk folder/file mapping
+ const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-diskkv-'))
+ function createDiskKV(baseDir) {
+  const encodeSeg = seg => encodeURIComponent(String(seg))
+  const keyToFile = rawKey => {
+   const hashParts = String(rawKey).split('#')
+   if (hashParts.length > 2) {
+    throw new Error(`Invalid multiple # in key: ${rawKey}`)
+   }
+   const ns = hashParts.length === 2 ? hashParts[0] : 'main'
+   const rel = hashParts.length === 2 ? hashParts[1] : rawKey
+   const segments = rel.split('/').filter(s => s.length > 0)
+   if (segments.length === 0) {
+    throw new Error(`Empty key path for: ${rawKey}`)
+   }
+   for (const seg of segments) {
+    const enc = encodeSeg(seg)
+    if (enc === '.' || enc === '..') {
+     throw new Error(`Unsafe segment in key: ${rawKey}`)
+    }
+   }
+   return path.join(baseDir, encodeSeg(ns), ...segments.map(encodeSeg))
+  }
+  const makeClient = (namespace = '', rootRef = null) => {
+   const isHash = namespace.includes('#')
+   const qualify = k => (isHash ? (namespace.endsWith('#') ? `${namespace}${k}` : `${namespace}/${k}`) : (namespace ? `${namespace}.${k}` : k))
+   const client = {
+    prefix: namespace,
+    root: rootRef || null,
+    namespace(name) {
+     const nextNs = isHash ? qualify(encodeKeySegment(name)) : qualify(name)
+     return makeClient(nextNs, client.root)
+    },
+    hashNamespace(name) {
+     return makeClient(`${encodeKeySegment(name)}#`, client.root)
+    },
+    async get(key) {
+     const fp = keyToFile(qualify(key))
+     try {
+      return await fs.readFile(fp, 'utf8')
+     }
+     catch (err) {
+      if (err && err.code === 'ENOENT') return null
+      throw err
+     }
+    },
+    async set(key, value) {
+     const fp = keyToFile(qualify(key))
+     await fs.mkdir(path.dirname(fp), { recursive: true })
+     await fs.writeFile(fp, String(value), 'utf8')
+    },
+    async delete(key) {
+     const fp = keyToFile(qualify(key))
+     await fs.rm(fp, { force: true })
+    },
+   }
+   if (!client.root) client.root = client
+   return client
+  }
+  return makeClient()
+ }
+
+ try {
+  const disk = createDiskKV(tempDir)
+  const memWindow = {}
+  const sess = await initSessionState(disk, memWindow)
+  const createdPkg = await createPackage(disk, sess.sessionId, { name: 'Alpha', passphrase: 'pass' }, memWindow)
+  const laneId = 'lane.disk.1'
+  const laneData = disk.namespace(laneId)
+  await laneData.set('title', 'Disk Layout Test')
+  await registerLaneInPackage(disk, laneId, 'Disk Layout Test', createdPkg.pkg.id)
+
+  // Seed exempt .inputs key (> 1024 bytes explicitly allowed only for .inputs)
+  const bigInputs = Array.from({ length: 40 }, (_, i) => ({ name: `inp_${i}`, type: 'string', value: 'v'.repeat(30) }))
+  await laneData.set('inputs', JSON.stringify(bigInputs))
+
+  // Add 2 tables with wide columns and large (> 1024b) multi-byte row payload
+  const t1 = {
+   id: 't1',
+   name: 'items',
+   columns: Array.from({ length: 12 }, (_, i) => ({ id: `c${i}`, name: `column_long_name_${i}`, type: 'text', multiple: false, width: null })),
+   rows: [],
+  }
+  const t2 = {
+   id: 't2',
+   name: 'notes',
+   columns: [{ id: 'nc0', name: 'body', type: 'text', multiple: false, width: null }],
+   rows: [],
+  }
+  await addLaneTable(disk, laneData, laneId, t1, ['t1'])
+  await addLaneTable(disk, laneData, laneId, t2, ['t1', 't2'])
+
+  const bigEmojiRow = { id: 'r_big', values: { c0: '🚀'.repeat(450), c1: 'a'.repeat(500) } }
+  t1.rows.push(bigEmojiRow)
+  await addTableRow(disk, laneData, laneId, 't1', bigEmojiRow, ['r_big'])
+
+  // Save script lines including > 1500 byte line
+  await saveLaneScript(disk, laneData, laneId, [
+   '; to a 1',
+   `-- ${'x'.repeat(1600)}`,
+   '; to b ; add $a 2',
+  ], memWindow)
+
+  // Walk every file on disk under tempDir
+  const allFiles = []
+  async function walk(dir) {
+   const entries = await fs.readdir(dir, { withFileTypes: true })
+   for (const ent of entries) {
+    const full = path.join(dir, ent.name)
+    if (ent.isDirectory()) {
+     await walk(full)
+    }
+    else {
+     allFiles.push(path.relative(tempDir, full))
+    }
+   }
+  }
+  await walk(tempDir)
+
+  const diskLaneDir = `lanes/${encodeURIComponent(encodeKeySegment(laneId))}`
+  assert.ok(allFiles.some(f => f.startsWith(`${diskLaneDir}/tables/t1/schema`)))
+  assert.ok(allFiles.some(f => f.startsWith(`${diskLaneDir}/tables/t1/rows/r_big.chunks/`)))
+  assert.ok(allFiles.some(f => f.startsWith(`${diskLaneDir}/tables/t2/schema`)))
+  assert.ok(allFiles.some(f => f === `${diskLaneDir}/script-index`))
+  assert.ok(allFiles.some(f => f === 'packages/default/meta'))
+  assert.ok(allFiles.some(f => f === `packages/${encodeURIComponent(createdPkg.pkg.id)}/meta`))
+  assert.ok(allFiles.some(f => f === `sessions/${encodeURIComponent(sess.sessionId)}/meta`))
+
+  for (const relPath of allFiles) {
+   if (relPath.endsWith(`${laneId}.inputs`) || relPath === `main/${laneId}.inputs`) {
+    continue
+   }
+   const raw = await fs.readFile(path.join(tempDir, relPath), 'utf8')
+   assert.ok(
+    Buffer.byteLength(raw, 'utf8') <= MAX_KV_VALUE_BYTES,
+    `File ${relPath} exceeded ${MAX_KV_VALUE_BYTES} bytes (${Buffer.byteLength(raw, 'utf8')} bytes)`
+   )
+  }
+
+  // Reload from diskKV to verify integrity
+  const loadedTables = await loadLaneTables(disk, laneData, laneId)
+  assert.equal(loadedTables.length, 2)
+  assert.equal(loadedTables[0].rows[0].values.c0, '🚀'.repeat(450))
+  const loadedScript = await loadLaneScript(disk, laneData, laneId, memWindow)
+  assert.equal(loadedScript.records.length, 3)
+  assert.equal(loadedScript.records[1].text, `-- ${'x'.repeat(1600)}`)
+ }
+ finally {
+  await fs.rm(tempDir, { recursive: true, force: true })
+ }
+})
+
+test('storage.mjs chunking, multi-byte UTF-8 splitting, and paged ID indexes stay <= 1024 bytes', async () => {
+ const emojiText = '🧪'.repeat(600) + 'hello' + 'あ'.repeat(400)
+ const chunks = splitUtf8Chunks(emojiText, MAX_KV_VALUE_BYTES)
+ assert.ok(chunks.length > 2)
+ for (const ch of chunks) {
+  assert.ok(utf8ByteLength(ch) <= MAX_KV_VALUE_BYTES)
+  assert.equal(/[\uD800-\uDFFF]/.test(ch.slice(0, 1)) && !/^[\uD800-\uDBFF][\uDC00-\uDFFF]/.test(ch.slice(0, 2)), false)
+ }
+ assert.equal(chunks.join(''), emojiText)
+
+ const store = new Map()
+ const writes = []
+ const kv = {
+  async get(k) { return store.has(k) ? store.get(k) : null },
+  async set(k, v) { writes.push(k); store.set(k, v) },
+  async delete(k) { store.delete(k) },
+ }
+
+ // Chunk roundtrip + stale chunk cleanup on shrink + delete
+ const bigPayload = JSON.stringify({ data: emojiText })
+ await kvSetChunked(kv, 'k1', bigPayload)
+ assert.ok(store.has('k1.chunks/0'))
+ assert.ok(store.has('k1.chunks/1'))
+ for (const [, val] of store.entries()) {
+  assert.ok(utf8ByteLength(val) <= MAX_KV_VALUE_BYTES)
+ }
+ assert.equal(await kvGetChunked(kv, 'k1'), bigPayload)
+
+ // Shrink <= 1024 bytes deletes old chunk keys
+ await kvSetChunked(kv, 'k1', 'small-value')
+ assert.equal(store.get('k1'), 'small-value')
+ assert.equal(store.has('k1.chunks/0'), false)
+ assert.equal(store.has('k1.chunks/1'), false)
+ assert.equal(await kvGetChunked(kv, 'k1'), 'small-value')
+
+ await kvSetChunked(kv, 'k1', bigPayload)
+ await kvDeleteChunked(kv, 'k1')
+ assert.equal(store.has('k1'), false)
+ assert.equal(store.has('k1.chunks/0'), false)
+ assert.equal(await kvGetChunked(kv, 'k1'), null)
+
+ // Paged ID indexes (100 long IDs -> multiple pages, incremental write skip, shrink & delete cleanup)
+ const ids = Array.from({ length: 100 }, (_, i) => `long-item-identifier-segment-${String(i).padStart(4, '0')}`)
+ await writePagedIds(kv, 'items', ids)
+ const pageKeysBefore = Array.from(store.keys()).filter(k => k.startsWith('items-pages/'))
+ assert.ok(pageKeysBefore.length >= 3)
+ for (const [k, val] of store.entries()) {
+  if (k.startsWith('items')) {
+   assert.ok(utf8ByteLength(val) <= MAX_KV_VALUE_BYTES, `${k} exceeded 1024 bytes`)
+  }
+ }
+ const readBack = await readPagedIds(kv, 'items')
+ assert.equal(readBack.exists, true)
+ assert.deepEqual(readBack.ids, ids)
+
+ // Modify only the last item -> unchanged earlier pages must NOT be rewritten
+ writes.length = 0
+ const modifiedIds = ids.slice()
+ modifiedIds[99] = 'long-item-identifier-segment-updated-99'
+ await writePagedIds(kv, 'items', modifiedIds)
+ assert.equal(writes.includes('items-pages/0'), false)
+ assert.equal(writes.includes('items-pages/1'), false)
+ assert.ok(writes.includes(`items-pages/${pageKeysBefore.length - 1}`))
+
+ // Shrink to 2 IDs -> deletes trailing pages
+ await writePagedIds(kv, 'items', ['id-a', 'id-b'])
+ assert.equal(store.has('items-pages/1'), false)
+ assert.deepEqual((await readPagedIds(kv, 'items')).ids, ['id-a', 'id-b'])
+
+ await deletePagedIds(kv, 'items')
+ assert.equal((await readPagedIds(kv, 'items')).exists, false)
+ assert.equal(store.has('items-pages/0'), false)
+})
+
+test('Tables split storage: instant legacy migration, single-row & single-schema writes, deletions, and evaluate-stored-lane', async () => {
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  return {
+   tag,
+   nodeType: 1,
+   style: {},
+   attributes: {},
+   children: [],
+   listeners: {},
+   textContent: '',
+   value: '',
+   checked: false,
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   focused: false,
+   removed: false,
+   setAttribute(name, value) { this.attributes[name] = value },
+   appendChild(child) { this.children.push(child); return child },
+   insertBefore(child, ref) {
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) this.children.push(child)
+    else this.children.splice(idx, 0, child)
+    return child
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() { this.removed = true },
+  }
+ }
+
+ const kv = new Map()
+ const writtenKeys = []
+ const deletedKeys = []
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { const k = qualify(key); writtenKeys.push(k); kv.set(k, value) },
+   async delete(key) { const k = qualify(key); deletedKeys.push(k); kv.delete(k) },
+  }
+ }
+
+ // Seed legacy .tables + legacy .script for leg-lane-1
+ kv.set('lanes', JSON.stringify({ 'leg-lane-1': { id: 'leg-lane-1', title: 'Legacy Tables Lane' } }))
+ kv.set('leg-lane-1.title', 'Legacy Tables Lane')
+ kv.set('leg-lane-1.tables', JSON.stringify([
+  {
+   id: 't-users',
+   name: 'users',
+   columns: [{ id: 'cu', name: 'name', type: 'text', multiple: false, width: null }],
+   rows: [
+    { id: 'u1', values: { cu: 'Alice' } },
+    { id: 'u2', values: { cu: 'Bob' } },
+   ],
+  },
+  {
+   id: 't-orders',
+   name: 'orders',
+   columns: [
+    { id: 'co-item', name: 'item', type: 'text', multiple: false, width: null },
+    { id: 'co-qty', name: 'qty', type: 'integer', multiple: false, width: null },
+   ],
+   rows: [
+    { id: 'o1', values: { 'co-item': 'Widget', 'co-qty': 4 } },
+    { id: 'o2', values: { 'co-item': 'Gadget', 'co-qty': 7 } },
+   ],
+  },
+ ]))
+ kv.set('leg-lane-1.script', JSON.stringify(['$users']))
+
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  JSON,
+  Math,
+  Object,
+  Reflect,
+  decodeURIComponent,
+  crypto: { randomUUID: () => 'unused-lane-uuid' },
+  history: { pushState(_s, _t, url) { mockWindow.location.pathname = url } },
+  location: { pathname: '/leg-lane-1;data' },
+  addEventListener() {},
+  removeEventListener() {},
+ }
+ const mockDocument = { body: createMockElement('body'), defaultView: mockWindow, createElement: createMockElement }
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: createMockKV(),
+   defaultValueForType,
+   document: mockDocument,
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  await f.run(parse(mainSource, '/src/main.fs'))
+
+  // Legacy .tables migrated immediately & deleted
+  assert.equal(kv.has('leg-lane-1.tables'), false)
+  assert.ok(deletedKeys.includes('leg-lane-1.tables'))
+  assert.ok(kv.has('lanes#leg-lane-1/tables-index'))
+  assert.ok(kv.has(tableSchemaKey('leg-lane-1', 't-users')))
+  assert.ok(kv.has(tableSchemaKey('leg-lane-1', 't-orders')))
+  assert.ok(kv.has(tableRowKey('leg-lane-1', 't-users', 'u1')))
+  assert.ok(kv.has(tableRowKey('leg-lane-1', 't-orders', 'o1')))
+
+  // Verify no two tables share the same KV value
+  assert.doesNotMatch(kv.get(tableSchemaKey('leg-lane-1', 't-users')), /orders/)
+  assert.doesNotMatch(kv.get(tableSchemaKey('leg-lane-1', 't-orders')), /users/)
+
+  const lane = f.state.lanes[0]
+  const dv = lane.notebook['data-view']
+  const confirmModal = dv['confirm-modal']
+  // Select `orders` table tab
+  await dv['table-tabs'][1].el.listeners.click()
+  assert.equal(dv['active-table-id'], 't-orders')
+
+  // Edit 1 cell in orders row o1 -> ONLY that 1 row key is written!
+  writtenKeys.length = 0
+  dv['grid-rows'][0].cells[0]['input-el'].value = 'UpdatedWidget'
+  await dv['grid-rows'][0].cells[0]['input-el'].listeners.input()
+  assert.deepEqual(writtenKeys, [tableRowKey('leg-lane-1', 't-orders', 'o1')])
+
+  // Rename column in orders -> ONLY orders schema key is written (never users)
+  writtenKeys.length = 0
+  dv['schema-rows'][0]['name-el'].value = 'product'
+  await dv['schema-rows'][0]['name-el'].listeners.input()
+  assert.deepEqual(writtenKeys, [tableSchemaKey('leg-lane-1', 't-orders')])
+
+  // Delete row o2, then clear rows, then delete orders table
+  await dv['grid-rows'][1]['remove-btn'].listeners.click()
+  await confirmModal['confirm-btn'].listeners.click()
+  assert.equal(kv.has(tableRowKey('leg-lane-1', 't-orders', 'o2')), false)
+  assert.equal(kv.has(tableRowKey('leg-lane-1', 't-orders', 'o1')), true)
+
+  await dv['clear-rows-btn'].listeners.click()
+  await confirmModal['confirm-btn'].listeners.click()
+  assert.equal(kv.has(tableRowKey('leg-lane-1', 't-orders', 'o1')), false)
+
+  await dv['delete-table-btn'].listeners.click()
+  await confirmModal['confirm-btn'].listeners.click()
+  assert.equal(kv.has(tableSchemaKey('leg-lane-1', 't-orders')), false)
+  assert.equal(dv.tables.length, 1)
+  assert.equal(dv.tables[0].id, 't-users')
+
+  // evaluate-stored-lane reads remaining split table when lane is closed
+  const laneControl = f.state['lane-control']
+  await laneControl.close('leg-lane-1')
+  const storedRes = await laneControl['get-lane-final-state']('leg-lane-1')
+  assert.equal(storedRes.ok, true)
+  assert.deepEqual(storedRes.state.users, [{ name: 'Alice' }, { name: 'Bob' }])
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('Per-line scripts: instant legacy migration, Unknown/ISO timestamps, hover info modal, single-line writes, and intact .inputs', async () => {
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  return {
+   tag,
+   style: {},
+   attributes: {},
+   children: [],
+   listeners: {},
+   textContent: '',
+   value: '',
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   focused: false,
+   removed: false,
+   setAttribute(name, value) { this.attributes[name] = value },
+   appendChild(child) { this.children.push(child); return child },
+   insertBefore(child, ref) {
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) this.children.push(child)
+    else this.children.splice(idx, 0, child)
+    return child
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() { this.removed = true },
+  }
+ }
+
+ const kv = new Map()
+ const writtenKeys = []
+ const deletedKeys = []
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { const k = qualify(key); writtenKeys.push(k); kv.set(k, value) },
+   async delete(key) { const k = qualify(key); deletedKeys.push(k); kv.delete(k) },
+  }
+ }
+
+ const inputsPayload = JSON.stringify([{ name: 'seed', type: 'number' }])
+ kv.set('leg-script-1.title', 'Legacy Script')
+ kv.set('leg-script-1.inputs', inputsPayload)
+ kv.set('leg-script-1.script', JSON.stringify(['; to x 10', '; to y ; add $x $seed', '$y']))
+
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  JSON,
+  Math,
+  Object,
+  Reflect,
+  decodeURIComponent,
+  crypto: { randomUUID: () => 'unused-script-uuid' },
+  history: { pushState(_s, _t, url) { mockWindow.location.pathname = url } },
+  location: { pathname: '/leg-script-1' },
+  addEventListener() {},
+  removeEventListener() {},
+ }
+ const mockDocument = { body: createMockElement('body'), defaultView: mockWindow, createElement: createMockElement }
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: createMockKV(),
+   defaultValueForType,
+   document: mockDocument,
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  await f.run(parse(mainSource, '/src/main.fs'))
+
+  // Legacy .script deleted, .inputs kept intact in 1 key
+  assert.equal(kv.has('leg-script-1.script'), false)
+  assert.ok(deletedKeys.includes('leg-script-1.script'))
+  assert.equal(kv.get('leg-script-1.inputs'), inputsPayload)
+
+  const nb = f.state.lanes[0].notebook
+  assert.deepEqual(nb.lines, ['; to x 10', '; to y ; add $x $seed', '$y'])
+  assert.equal(nb.state.seed, 0)
+  assert.equal(nb.state.y, 10)
+  assert.equal(nb['line-records'].length, 3)
+  assert.equal(nb['line-records'][0].updatedAt, null)
+
+  // Hover info button on migrated line shows "Unknown"
+  const infoModal = nb['info-modal']
+  const rec0 = nb['line-records'][0]
+  await nb.rows[0]['info-btn'].listeners.click()
+  assert.equal(infoModal['is-open'], true)
+  assert.equal(infoModal['line-val-el'].textContent, '#1')
+  assert.equal(infoModal['id-val-el'].textContent, rec0.id)
+  assert.equal(infoModal['mod-val-el'].textContent, 'Unknown')
+  assert.equal(infoModal['iso-val-el'].hidden, true)
+  await infoModal['ok-btn'].listeners.click()
+  assert.equal(infoModal['is-open'], false)
+
+  // Editing line 2 writes ONLY line 2's key & sets ISO modification timestamp
+  writtenKeys.length = 0
+  const rec1 = nb['line-records'][1]
+  nb.rows[1]['input-el'].value = '; to y ; add $x 90'
+  await nb.rows[1]['input-el'].listeners.input()
+  assert.deepEqual(writtenKeys, [scriptLineKey('leg-script-1', rec1.id)])
+  assert.ok(typeof rec1.updatedAt === 'string' && rec1.updatedAt.includes('T'))
+  assert.equal(nb.state.y, 100)
+
+  await nb.rows[1]['info-btn'].listeners.click()
+  assert.equal(infoModal['is-open'], true)
+  assert.notEqual(infoModal['mod-val-el'].textContent, 'Unknown')
+  assert.equal(infoModal['iso-val-el'].hidden, false)
+  assert.equal(infoModal['iso-val-el'].textContent, rec1.updatedAt)
+  await infoModal['ok-btn'].listeners.click()
+
+  // Insert & remove line updates index and deletes removed line key
+  await nb['add-btn'].listeners.click()
+  const insertedRec = nb['line-records'][3]
+  assert.ok(kv.has(scriptLineKey('leg-script-1', insertedRec.id)))
+  await nb.rows[3]['remove-btn'].listeners.click()
+  assert.equal(kv.has(scriptLineKey('leg-script-1', insertedRec.id)), false)
+  assert.ok(deletedKeys.includes(scriptLineKey('leg-script-1', insertedRec.id)))
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('Two-level Sessions (localStorage + sessionStorage) and Packages access control, unlock flow, top-rail UI, and Open Lane filtering', async () => {
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  return {
+   tag,
+   style: {},
+   attributes: {},
+   children: [],
+   listeners: {},
+   textContent: '',
+   value: '',
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   focused: false,
+   removed: false,
+   setAttribute(name, value) { this.attributes[name] = value },
+   appendChild(child) { this.children.push(child); return child },
+   insertBefore(child, ref) {
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) this.children.push(child)
+    else this.children.splice(idx, 0, child)
+    return child
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() { this.removed = true },
+  }
+ }
+
+ const kv = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { kv.set(qualify(key), value) },
+   async delete(key) { kv.delete(qualify(key)) },
+  }
+ }
+
+ const makeMemStorage = () => {
+  const m = new Map()
+  return {
+   getItem(k) { return m.has(k) ? m.get(k) : null },
+   setItem(k, v) { m.set(k, String(v)) },
+   removeItem(k) { m.delete(k) },
+  }
+ }
+
+ // Seed legacy global `lanes` catalog to verify instant migration to Default package
+ kv.set('lanes', JSON.stringify({ 'legacy-1': { id: 'legacy-1', title: 'Legacy Alpha' } }))
+ kv.set('legacy-1.title', 'Legacy Alpha')
+ kv.set('legacy-1.script', JSON.stringify(['; to baseSecret 42']))
+
+ let uuid = 0
+ const localStore = makeMemStorage()
+ const sessionStore = makeMemStorage()
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  JSON,
+  Math,
+  Object,
+  Reflect,
+  decodeURIComponent,
+  localStorage: localStore,
+  sessionStorage: sessionStore,
+  crypto: { randomUUID: () => `sp-uuid-${++uuid}` },
+  history: { pushState(_s, _t, url) { mockWindow.location.pathname = url } },
+  location: { pathname: '/' },
+  addEventListener() {},
+  removeEventListener() {},
+ }
+ const mockDocument = { body: createMockElement('body'), defaultView: mockWindow, createElement: createMockElement }
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: createMockKV(),
+   defaultValueForType,
+   document: mockDocument,
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  await f.run(parse(mainSource, '/src/main.fs'))
+  const laneControl = f.state['lane-control']
+  const rails = laneControl.rails
+  const openModal = laneControl['lane-modal']
+  const configModal = laneControl['config-modal']
+  const sessionModal = laneControl['session-modal']
+  const packageModal = laneControl['package-modal']
+
+  // 1. Legacy catalog migrated to Default package & deleted; two-level browser/tab session initialized
+  assert.equal(kv.has('lanes'), false)
+  assert.equal(kv.get(lanePackageKey('legacy-1')), DEFAULT_PACKAGE_ID)
+  assert.ok(kv.has(packageLaneKey(DEFAULT_PACKAGE_ID, 'legacy-1')))
+  const browserSessId = localStore.getItem(SESSION_STORAGE_KEY)
+  assert.ok(browserSessId)
+  assert.equal(sessionStore.getItem(SESSION_STORAGE_KEY), browserSessId)
+  assert.equal(laneControl['session-overridden'], false)
+
+  // 2. Top-rail session dropdown mutually exclusive with preferences dropdown
+  await rails['session-btn'].listeners.click({ stopPropagation() {} })
+  assert.equal(rails['is-session-open'], true)
+  assert.equal(rails['session-menu'].hidden, false)
+  await rails['preferences-btn'].listeners.click({ stopPropagation() {} })
+  assert.equal(rails['is-session-open'], false)
+  assert.equal(rails['is-preferences-open'], true)
+
+  // 3. Create unprotected "Work" package and passphrase-protected "Vault" package
+  const workPkg = await laneControl['create-package']('Work', '')
+  assert.equal(laneControl['active-package-id'], workPkg.pkg.id)
+  await f.state.tableHeadRowAddButton.listeners.click()
+  const laneWork = f.state.lanes[0]
+  assert.equal(laneWork['package-id'], workPkg.pkg.id)
+
+  // Move laneWork to Default and back via Configure Lane modal
+  await laneWork['config-btn'].listeners.click()
+  configModal['pkg-select'].value = DEFAULT_PACKAGE_ID
+  await configModal.form.listeners.submit({ preventDefault() {} })
+  assert.equal(laneWork['package-id'], DEFAULT_PACKAGE_ID)
+  await laneWork['config-btn'].listeners.click()
+  configModal['pkg-select'].value = workPkg.pkg.id
+  await configModal.form.listeners.submit({ preventDefault() {} })
+  assert.equal(laneWork['package-id'], workPkg.pkg.id)
+
+  const vaultPkg = await laneControl['create-package']('Vault', 's3cr3t-pass')
+  assert.equal(laneControl['active-package-id'], vaultPkg.pkg.id)
+  await f.state.tableHeadRowAddButton.listeners.click()
+  const laneVault = f.state.lanes[1]
+  assert.equal(laneVault['package-id'], vaultPkg.pkg.id)
+  laneVault.notebook.rows[0]['input-el'].value = '; to vaultVal 777'
+  await laneVault.notebook.rows[0]['input-el'].listeners.input()
+
+  // 4. Open Lane modal package pill filter (verifying $modal.package-filter)
+  await f.state.tableHeadRowOpenButton.listeners.click()
+  assert.equal(openModal.items.length, 3)
+  const workPill = openModal['pkg-pills'].find(p => p.id === workPkg.pkg.id)
+  assert.ok(workPill)
+  await workPill.el.listeners.click()
+  assert.equal(openModal['package-filter'], workPkg.pkg.id)
+  assert.equal(openModal.items.length, 1)
+  assert.equal(openModal.items[0].entry.id, laneWork.id)
+  await openModal['close-btn'].listeners.click()
+
+  // Save browser session version so returning to it restores Work & Vault lanes via URL redirect
+  await laneControl['save-session-draft']()
+  assert.equal(laneControl['session-dirty'], false)
+
+  // 5. Create new tab-only session -> sessionStorage overrides, localStorage stays intact, URL redirects to empty session
+  await laneControl['new-tab-session']('Tab Workspace')
+  const tabSessId = sessionStore.getItem(SESSION_STORAGE_KEY)
+  assert.notEqual(tabSessId, browserSessId)
+  assert.equal(localStore.getItem(SESSION_STORAGE_KEY), browserSessId)
+  assert.equal(laneControl['session-overridden'], true)
+  assert.equal(mockWindow.location.pathname, '/')
+  assert.equal(laneControl.lanes.length, 0)
+
+  // Advanced section in Session modal exposes Tab vs. Browser return/promote controls
+  await sessionModal['open-switch-session']()
+  assert.equal(sessionModal['adv-body'].hidden, true)
+  await sessionModal['adv-toggle'].listeners.click()
+  assert.equal(sessionModal['adv-body'].hidden, false)
+  assert.equal(sessionModal['override-actions'].hidden, false)
+  await sessionModal.close()
+
+  // Only Default lane is visible in catalog
+  const visibleInTab = await laneControl['list-known']()
+  assert.deepEqual(visibleInTab.map(e => e.id), ['legacy-1'])
+
+  // Cross-lane import / evaluate blocked for unopened Vault lane
+  const blockedEval = await laneControl['get-lane-final-state'](laneVault.id, 'legacy-1')
+  assert.equal(blockedEval.ok, false)
+  assert.match(blockedEval.error, /Access denied/)
+
+  // Direct URL navigation to unopened Work & Vault lanes mounts Locked Lane cards without leaking contents
+  mockWindow.location.pathname = `/${laneWork.id}/${laneVault.id}`
+  await laneControl.sync()
+  const mountedVault = laneControl['by-id'][laneVault.id]
+  assert.equal(mountedVault['is-locked'], true)
+  assert.equal(mountedVault.title, 'Locked Lane')
+  assert.equal(mountedVault.element.className, 'lane-header lane-header--locked')
+  assert.equal(mountedVault.body.className, 'lane-body lane-body--locked')
+
+  // Wrong passphrase fails unlock & leaves lane locked
+  await mountedVault['unlock-btn'].listeners.click()
+  assert.equal(packageModal['is-open'], true)
+  assert.equal(packageModal.mode, 'unlock')
+  assert.equal(packageModal['unlock-id-input'].value, vaultPkg.pkg.id)
+  packageModal['unlock-pass-input'].value = 'wrong-pass'
+  await packageModal['unlock-form'].listeners.submit({ preventDefault() {} })
+  assert.equal(packageModal['is-open'], true)
+  assert.equal(packageModal['error-el'].hidden, false)
+  assert.equal(laneControl['by-id'][laneVault.id]['is-locked'], true)
+
+  // Correct passphrase unlocks & reloads laneVault automatically
+  packageModal['unlock-pass-input'].value = 's3cr3t-pass'
+  await packageModal['unlock-form'].listeners.submit({ preventDefault() {} })
+  assert.equal(packageModal['is-open'], false)
+  const unlockedVault = laneControl['by-id'][laneVault.id]
+  assert.equal(unlockedVault['is-locked'], false)
+  assert.equal(unlockedVault.notebook.state.vaultVal, 777)
+
+  // Closing Vault package immediately re-locks open laneVault
+  await laneControl['close-package'](vaultPkg.pkg.id)
+  assert.equal(laneControl['by-id'][laneVault.id]['is-locked'], true)
+
+  // Return to browser session restores original browser session, redirects URL to its saved lanes, and restores Work/Vault access
+  await laneControl['return-to-browser-session']()
+  assert.equal(sessionStore.getItem(SESSION_STORAGE_KEY), browserSessId)
+  assert.equal(laneControl['session-overridden'], false)
+  assert.equal(mockWindow.location.pathname, `/${laneWork.id}/${laneVault.id}`)
+  assert.equal(laneControl['by-id'][laneVault.id]['is-locked'], false)
+
+  // New tab + rename + promote to browser session updates localStorage
+  await laneControl['new-tab-session']('Custom Tab')
+  const promotedId = sessionStore.getItem(SESSION_STORAGE_KEY)
+  await laneControl['rename-session']('Renamed Promoted')
+  assert.equal(laneControl['session-meta'].name, 'Renamed Promoted')
+  await laneControl['promote-tab-session']()
+  assert.equal(localStore.getItem(SESSION_STORAGE_KEY), promotedId)
+  assert.equal(laneControl['session-overridden'], false)
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('Scrollbar color helpers: resolveScrollbarColor, seedPreferencesScrollbarSource, and seedPreferencesScrollbarRecords', () => {
+ assert.equal(DEFAULT_SCROLLBAR_COLOR, '#383838')
+ assert.deepEqual(resolveScrollbarColor(null), {
+  color: '#383838',
+  css: '#383838 transparent',
+  thumb: '#383838',
+  track: 'transparent',
+ })
+ assert.deepEqual(resolveScrollbarColor(''), {
+  color: '#383838',
+  css: '#383838 transparent',
+  thumb: '#383838',
+  track: 'transparent',
+ })
+ assert.deepEqual(resolveScrollbarColor('#9ce5ff'), {
+  color: '#9ce5ff',
+  css: '#9ce5ff transparent',
+  thumb: '#9ce5ff',
+  track: 'transparent',
+ })
+ assert.deepEqual(resolveScrollbarColor('rgb(56, 56, 56)'), {
+  color: 'rgb(56, 56, 56)',
+  css: 'rgb(56, 56, 56) transparent',
+  thumb: 'rgb(56, 56, 56)',
+  track: 'transparent',
+ })
+ assert.deepEqual(resolveScrollbarColor('#555555 #181818'), {
+  color: '#555555 #181818',
+  css: '#555555 #181818',
+  thumb: '#555555',
+  track: '#181818',
+ })
+ assert.deepEqual(resolveScrollbarColor('auto'), {
+  color: 'auto',
+  css: 'auto',
+  thumb: '',
+  track: '',
+ })
+
+ // Seeds scrollbarColor right after existing interface lines while preserving line IDs & updatedAt
+ let seq = 0
+ const seededExisting = seedPreferencesScrollbarRecords(
+  [
+   { id: 'ln-1', text: '; to interface ; object', updatedAt: '2026-11-24T10:00:00.000Z' },
+   { id: 'ln-2', text: '; to interface.backgroundColor #1a2b3c', updatedAt: '2026-11-24T10:05:00.000Z' },
+   { id: 'ln-3', text: '; to extra 42', updatedAt: '2026-11-24T10:10:00.000Z' },
+  ],
+  '#383838',
+  () => `ln-new-${++seq}`
+ )
+ assert.equal(seededExisting.seeded, true)
+ assert.deepEqual(seededExisting.lines, [
+  '; to interface ; object',
+  '; to interface.backgroundColor #1a2b3c',
+  '; to interface.scrollbarColor #383838',
+  '; to extra 42',
+ ])
+ assert.equal(seededExisting.records[0].id, 'ln-1')
+ assert.equal(seededExisting.records[0].updatedAt, '2026-11-24T10:00:00.000Z')
+ assert.equal(seededExisting.records[1].id, 'ln-2')
+ assert.equal(seededExisting.records[1].updatedAt, '2026-11-24T10:05:00.000Z')
+ assert.equal(seededExisting.records[2].id, 'ln-new-1')
+ assert.equal(seededExisting.records[2].updatedAt, null)
+ assert.equal(seededExisting.records[3].id, 'ln-3')
+
+ // Re-running is idempotent
+ const secondPass = seedPreferencesScrollbarRecords(seededExisting.records)
+ assert.equal(secondPass.seeded, false)
+ assert.deepEqual(secondPass.lines, seededExisting.lines)
+
+ // Recognizes set, object literal, assign, and commented scrollbarColor without duplicating
+ for (const lines of [
+  ['; to interface ; object', '; set #9ce5ff interface.scrollbarColor'],
+  ['; to interface [ object { backgroundColor #202020 } { scrollbarColor #444444 } ]'],
+  ['; to interface ; object', '; assign interface { scrollbarColor #444444 }'],
+  ['; to interface ; object', '-- ; to interface.scrollbarColor #383838'],
+ ]) {
+  const res = seedPreferencesScrollbarSource(lines)
+  assert.equal(res.seeded, false)
+  assert.deepEqual(res.lines, lines)
+ }
+
+ // Seeds interface object + scrollbarColor into blank lane without leaving an empty leading row
+ const seededBlank = seedPreferencesScrollbarSource([''])
+ assert.equal(seededBlank.seeded, true)
+ assert.deepEqual(seededBlank.lines, [
+  '; to interface ; object',
+  '; to interface.scrollbarColor #383838',
+ ])
+})
+
+test('Default #383838 scrollbar styling, live interface.scrollbarColor preference, and seeding on create or opening already-selected preferences lane', async () => {
+ const indexHtml = await fs.readFile(new URL('./index.html', import.meta.url), 'utf8')
+ assert.match(indexHtml, /:root\s*\{[^}]*--scrollbar-color:\s*#383838 transparent;[^}]*scrollbar-color:\s*var\(--scrollbar-color\);/s)
+ assert.match(indexHtml, /@supports not \(scrollbar-color:\s*#383838 transparent\)/)
+ assert.match(indexHtml, /\.side-rail\s*\{[^}]*background-color:\s*#383838;/s)
+
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  const styleProps = {}
+  return {
+   tag,
+   nodeType: 1,
+   style: {
+    setProperty(name, value) { styleProps[name] = value; this[name] = value },
+    removeProperty(name) { delete styleProps[name]; delete this[name] },
+    getPropertyValue(name) { return styleProps[name] || '' },
+   },
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   removed: false,
+   focused: false,
+   rect: { left: 200, width: 12, top: 2, height: 12 },
+   getBoundingClientRect() { return this.rect },
+   contains(target) {
+    if (target === this) { return true }
+    return this.children.some(child => typeof child.contains === 'function' && child.contains(target))
+   },
+   setAttribute(name, value) { this.attributes[name] = value },
+   appendChild(child) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    this.children.push(child)
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) { this.children.push(child) }
+    else { this.children.splice(idx, 0, child) }
+    return child
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) { this.parentNode.children.splice(idx, 1) }
+     this.parentNode = null
+    }
+   },
+  }
+ }
+
+ const kv = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { kv.set(qualify(key), value) },
+   async delete(key) { kv.delete(qualify(key)) },
+  }
+ }
+
+ let uuid = 0
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ function createRuntime(initialPathname = '/') {
+  const mockHtml = createMockElement('html')
+  const mockBody = createMockElement('body')
+  const mockDocument = {
+   body: mockBody,
+   documentElement: mockHtml,
+   fullscreenElement: null,
+   createElement: createMockElement,
+   addEventListener() {},
+  }
+  const mockWindow = {
+   Array,
+   Boolean,
+   Date,
+   JSON,
+   Math,
+   Object,
+   Reflect,
+   innerHeight: 600,
+   decodeURIComponent,
+   crypto: { randomUUID: () => `sb-uuid-${++uuid}` },
+   history: { pushState(_s, _t, url) { mockWindow.location.pathname = url } },
+   location: { pathname: initialPathname, search: '', hash: '' },
+   addEventListener() {},
+   removeEventListener() {},
+  }
+  mockDocument.defaultView = mockWindow
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: createMockKV(),
+   defaultValueForType,
+   document: mockDocument,
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  return { f, mockHtml, mockBody, mockWindow }
+ }
+
+ try {
+  // 1. Pre-existing legacy preferences lane without interface.scrollbarColor in KV
+  const rootKv = createMockKV()
+  const legacyPrefId = 'legacy-pref-lane'
+  await rootKv.set('preferences-lane', legacyPrefId)
+  await rootKv.namespace(legacyPrefId).set('title', 'My Prefs')
+  await saveLaneScript(
+   rootKv,
+   rootKv.namespace(legacyPrefId),
+   legacyPrefId,
+   [
+    '; to interface ; object',
+    '; to interface.backgroundColor #1b222c',
+   ],
+   null,
+   '2026-11-24T09:00:00.000Z'
+  )
+
+  // Startup at '/' applies default #383838 scrollbar color without mutating unmounted lane yet
+  const boot = createRuntime('/')
+  await boot.f.run(parse(mainSource, '/src/main.fs'))
+  const laneControl = boot.f.state['lane-control']
+  const rails = laneControl.rails
+  assert.equal(boot.mockBody.style.backgroundColor, '#1b222c')
+  assert.equal(boot.mockHtml.style.scrollbarColor, '#383838 transparent')
+  assert.equal(boot.mockHtml.style.getPropertyValue('--scrollbar-color'), '#383838 transparent')
+  assert.equal(boot.mockHtml.style.getPropertyValue('--scrollbar-thumb-color'), '#383838')
+  assert.equal(laneControl.preferences.interface.scrollbarColor, '#383838')
+
+  // Opening already-selected preferences lane seeds interface.scrollbarColor #383838 when missing
+  await rails['preferences-open-btn'].listeners.click()
+  assert.equal(boot.f.state.lanes.length, 1)
+  const openedPref = boot.f.state.lanes[0]
+  assert.equal(openedPref.id, legacyPrefId)
+  assert.deepEqual(openedPref.notebook.lines, [
+   '; to interface ; object',
+   '; to interface.backgroundColor #1b222c',
+   '; to interface.scrollbarColor #383838',
+  ])
+  assert.equal(openedPref.notebook['line-records'][0].updatedAt, '2026-11-24T09:00:00.000Z')
+  assert.equal(openedPref.notebook['line-records'][1].updatedAt, '2026-11-24T09:00:00.000Z')
+
+  // Editing interface.scrollbarColor live updates document.documentElement.style.scrollbarColor (both single color and two-color pair)
+  openedPref.notebook.rows[2]['input-el'].value = '; to interface.scrollbarColor #9ce5ff'
+  await openedPref.notebook.rows[2]['input-el'].listeners.input()
+  assert.equal(boot.mockHtml.style.scrollbarColor, '#9ce5ff transparent')
+  assert.equal(boot.mockHtml.style.getPropertyValue('--scrollbar-thumb-color'), '#9ce5ff')
+  assert.equal(laneControl.preferences.interface.scrollbarColor, '#9ce5ff')
+
+  openedPref.notebook.rows[2]['input-el'].value = "; to interface.scrollbarColor '#66ccff #101820'"
+  await openedPref.notebook.rows[2]['input-el'].listeners.input()
+  assert.equal(boot.mockHtml.style.scrollbarColor, '#66ccff #101820')
+  assert.equal(boot.mockHtml.style.getPropertyValue('--scrollbar-thumb-color'), '#66ccff')
+  assert.equal(boot.mockHtml.style.getPropertyValue('--scrollbar-track-color'), '#101820')
+
+  // Re-opening already-selected preferences lane does NOT duplicate or overwrite custom scrollbarColor
+  await laneControl.close(legacyPrefId)
+  await laneControl['open-preferences-lane']()
+  assert.deepEqual(boot.f.state.lanes[0].notebook.lines, [
+   '; to interface ; object',
+   '; to interface.backgroundColor #1b222c',
+   "; to interface.scrollbarColor '#66ccff #101820'",
+  ])
+
+  // Selecting an already-open lane via Set Preferences Lane does NOT seed until opened as selected preferences lane
+  const customLane = await laneControl.add()
+  customLane.notebook.rows[0]['input-el'].value = '; to interface ; object'
+  await customLane.notebook.rows[0]['input-el'].listeners.input()
+  await laneControl['set-preferences-lane'](customLane.id)
+  assert.deepEqual(customLane.notebook.lines, ['; to interface ; object'])
+  assert.equal(boot.mockHtml.style.scrollbarColor, '#383838 transparent')
+
+  // Clicking Open preferences lane on that already-mounted selected preferences lane seeds interface.scrollbarColor
+  await laneControl['open-preferences-lane']()
+  assert.deepEqual(customLane.notebook.lines, [
+   '; to interface ; object',
+   '; to interface.scrollbarColor #383838',
+  ])
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+
+test('Session & Package UI rework: split top-rail menus, workspace summary, draft Save/Fork/Abandon, URL switching, Package Page, and Session History Page', async () => {
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  return {
+   tag,
+   style: {},
+   attributes: {},
+   children: [],
+   listeners: {},
+   textContent: '',
+   value: '',
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   focused: false,
+   removed: false,
+   setAttribute(name, value) { this.attributes[name] = value },
+   appendChild(child) { this.children.push(child); return child },
+   insertBefore(child, ref) {
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) this.children.push(child)
+    else this.children.splice(idx, 0, child)
+    return child
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() { this.removed = true },
+  }
+ }
+
+ const kv = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { kv.set(qualify(key), value) },
+   async delete(key) { kv.delete(qualify(key)) },
+  }
+ }
+
+ const makeMemStorage = () => {
+  const m = new Map()
+  return {
+   getItem(k) { return m.has(k) ? m.get(k) : null },
+   setItem(k, v) { m.set(k, String(v)) },
+   removeItem(k) { m.delete(k) },
+  }
+ }
+
+ let uuid = 0
+ const localStore = makeMemStorage()
+ const sessionStore = makeMemStorage()
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  JSON,
+  Math,
+  Object,
+  Reflect,
+  decodeURIComponent,
+  localStorage: localStore,
+  sessionStorage: sessionStore,
+  crypto: { randomUUID: () => `rework-uuid-${++uuid}` },
+  history: { pushState(_s, _t, url) { mockWindow.location.pathname = url } },
+  location: { pathname: '/' },
+  addEventListener() {},
+  removeEventListener() {},
+ }
+ const mockDocument = { body: createMockElement('body'), defaultView: mockWindow, createElement: createMockElement }
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: createMockKV(),
+   defaultValueForType,
+   document: mockDocument,
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  await f.run(parse(mainSource, '/src/main.fs'))
+  const laneControl = f.state['lane-control']
+  const rails = laneControl.rails
+  const sessionModal = laneControl['session-modal']
+  const packageModal = laneControl['package-modal']
+  const summary = laneControl['workspace-summary']
+
+  // 1. Workspace summary mounts below + Lane / Open and starts clean at v1
+  assert.ok(summary)
+  assert.equal(f.state.tableBodyRowSpacer.children.includes(summary.panel), true)
+  assert.equal(laneControl['session-dirty'], false)
+  assert.equal(summary['draft-box'].hidden, true)
+  assert.equal(summary['sess-ver'].textContent, 'v1')
+  assert.equal(summary['pkg-items'].length, 1)
+  assert.equal(summary['pkg-items'][0].pkg.id, DEFAULT_PACKAGE_ID)
+
+  // 2. Top-rail Sessions & Packages menus are separate and mutually exclusive
+  await rails['session-btn'].listeners.click({ stopPropagation() {} })
+  assert.equal(rails['is-session-open'], true)
+  assert.equal(rails['is-packages-open'], false)
+  await rails['packages-btn'].listeners.click({ stopPropagation() {} })
+  assert.equal(rails['is-session-open'], false)
+  assert.equal(rails['is-packages-open'], true)
+  assert.equal(rails['pkg-items'].length, 1)
+  await rails['close-packages-menu']()
+
+  // 3. Structural change (add lane + create package) marks draft dirty; tab switch does NOT
+  const baseSessId = laneControl['session-id']
+  await laneControl['rename-session']('Main Workspace')
+  const pkgAlpha = await laneControl['create-package']('Alpha', '')
+  const laneA = await laneControl.add()
+  assert.equal(laneControl['session-dirty'], true)
+  assert.equal(summary['draft-box'].hidden, false)
+  assert.equal(summary['sess-ver'].textContent, 'v1*')
+  assert.match(rails['session-btn'].className, /top-rail-icon--dirty/)
+
+  // Save draft -> commits v2 and clears dirty
+  await summary['draft-save-btn'].listeners.click()
+  assert.equal(laneControl['session-dirty'], false)
+  assert.equal(summary['draft-box'].hidden, true)
+  assert.equal(summary['sess-ver'].textContent, 'v2')
+
+  // Switching lane tab (Source -> Data) and selecting tables marks session dirty so any lane path change can be Saved/Forked/Abandoned
+  await laneA.notebook['set-tab']('data')
+  assert.equal(laneControl['session-dirty'], true)
+  const dvA = laneA.notebook['data-view']
+  await dvA['add-table-btn'].listeners.click()
+  dvA['table-name-input'].value = 'Users'
+  await dvA['table-name-input'].listeners.input()
+  await dvA['add-table-btn'].listeners.click()
+  dvA['table-name-input'].value = 'Orders'
+  await dvA['table-name-input'].listeners.input()
+  assert.equal(mockWindow.location.pathname, `/${laneA.id};data|Orders`)
+
+  // Select Users table and Save Main Workspace as v3 (session-specific lane path: /laneA;data|Users)
+  await dvA['table-tabs'][0].el.listeners.click()
+  assert.equal(mockWindow.location.pathname, `/${laneA.id};data|Users`)
+  await summary['draft-save-btn'].listeners.click()
+  assert.equal(laneControl['session-dirty'], false)
+  assert.equal(summary['sess-ver'].textContent, 'v3')
+
+  // 4. Switch to Orders table & add a second lane, then Abandon -> reverts URL, lanes, AND selected table back to Users
+  await dvA['table-tabs'][1].el.listeners.click()
+  assert.equal(laneControl['session-dirty'], true)
+  const laneB = await laneControl.add()
+  assert.equal(mockWindow.location.pathname, `/${laneA.id};data|Orders/${laneB.id}`)
+  await summary['draft-abandon-btn'].listeners.click()
+  assert.equal(laneControl['session-dirty'], false)
+  assert.equal(mockWindow.location.pathname, `/${laneA.id};data|Users`)
+  assert.deepEqual(laneControl['lane-ids'], [laneA.id])
+  assert.equal(laneControl['by-id'][laneA.id].notebook['data-view']['get-active-table']().name, 'Users')
+
+  // 5. Switch to Orders table + add a lane and Fork -> new session has Orders + laneC, while Main Workspace stays on Users
+  await laneControl['by-id'][laneA.id].notebook['data-view']['table-tabs'][1].el.listeners.click()
+  assert.equal(laneControl['session-dirty'], true)
+  const laneC = await laneControl.add()
+  await summary['draft-fork-btn'].listeners.click()
+  const forkSessId = laneControl['session-id']
+  assert.notEqual(forkSessId, baseSessId)
+  assert.equal(laneControl['session-dirty'], false)
+  assert.deepEqual(laneControl['lane-ids'], [laneA.id, laneC.id])
+  assert.equal(mockWindow.location.pathname, `/${laneA.id};data|Orders/${laneC.id}`)
+  assert.equal(laneControl['by-id'][laneA.id].notebook['data-view']['get-active-table']().name, 'Orders')
+
+  // 6. Full-screen Package Page (in dedicated package-modal) lists BOTH Main Workspace and the Forked session as having Alpha open
+  //    and keeps Create / Open-by-ID forms hidden until their pill buttons are clicked (and returns to Packages on Cancel)
+  const indexHtml = await fs.readFile(new URL('./index.html', import.meta.url), 'utf8')
+  assert.match(indexHtml, /\[hidden\]\s*\{\s*display:\s*none\s*!important;/)
+  assert.match(indexHtml, /\.lane-config-form\[hidden\]\s*\{\s*display:\s*none;/)
+
+  await summary['pkg-items'].find(item => item.pkg.id === pkgAlpha.pkg.id)['name-btn'].listeners.click()
+  assert.equal(packageModal['is-open'], true)
+  assert.equal(sessionModal['is-open'], false)
+  assert.equal(packageModal.mode, 'packages')
+  assert.equal(packageModal['create-form'].hidden, true)
+  assert.equal(packageModal['unlock-form'].hidden, true)
+  assert.equal(packageModal['packages-page'].hidden, false)
+  assert.equal(packageModal['selected-pkg-id'], pkgAlpha.pkg.id)
+  const pkgSessionIds = packageModal['pkg-session-items'].map(it => it.session.id)
+  assert.ok(pkgSessionIds.includes(baseSessId))
+  assert.ok(pkgSessionIds.includes(forkSessId))
+  assert.ok(packageModal['pkg-lane-items'].some(it => it.lane.id === laneA.id))
+
+  // Clicking "+ Create package" pill switches to create form, and Cancel returns to Packages page
+  const createPill = packageModal['pkg-pill-els'].find(el => el.textContent === '+ Create package')
+  assert.ok(createPill)
+  await createPill.listeners.click()
+  assert.equal(packageModal.mode, 'create')
+  assert.equal(packageModal['create-form'].hidden, false)
+  assert.equal(packageModal['unlock-form'].hidden, true)
+  assert.equal(packageModal['packages-page'].hidden, true)
+  await packageModal['create-cancel-btn'].listeners.click()
+  assert.equal(packageModal['is-open'], true)
+  assert.equal(packageModal.mode, 'packages')
+  assert.equal(packageModal['create-form'].hidden, true)
+  assert.equal(packageModal['packages-page'].hidden, false)
+  await packageModal.close()
+
+  // 7. Full-screen Session History Page (in dedicated session-modal) hides session-body, logs both sessions, and switches URL back to Main Workspace on click
+  await summary['quick-history-btn'].listeners.click()
+  assert.equal(sessionModal['is-open'], true)
+  assert.equal(packageModal['is-open'], false)
+  assert.equal(sessionModal['session-body'].hidden, true)
+  assert.equal(sessionModal['history-page'].hidden, false)
+  assert.equal(sessionModal.mode, 'history')
+  assert.ok(sessionModal['hist-items'].length >= 2)
+  assert.equal(sessionModal['hist-items'][0].entry.sessionId, forkSessId)
+  assert.equal(sessionModal['hist-items'][0].entry.endedAt, null)
+  const prevEntry = sessionModal['hist-items'].find(it => it.entry.sessionId === baseSessId)
+  assert.ok(prevEntry)
+  assert.ok(prevEntry.entry.endedAt)
+
+  // Switch back to Main Workspace -> URL redirects to /[laneA.id];data|Users and restores Users table!
+  await laneControl['switch-session'](baseSessId)
+  assert.equal(laneControl['session-id'], baseSessId)
+  assert.equal(mockWindow.location.pathname, `/${laneA.id};data|Users`)
+  assert.deepEqual(laneControl['lane-ids'], [laneA.id])
+  assert.equal(laneControl['by-id'][laneA.id].notebook['data-view']['get-active-table']().name, 'Users')
+
+  // Switch back to Forked session -> URL redirects to /[laneA.id];data|Orders/[laneC.id] and restores Orders table!
+  await laneControl['switch-session'](forkSessId)
+  assert.equal(laneControl['session-id'], forkSessId)
+  assert.equal(mockWindow.location.pathname, `/${laneA.id};data|Orders/${laneC.id}`)
+  assert.equal(laneControl['by-id'][laneA.id].notebook['data-view']['get-active-table']().name, 'Orders')
  }
  finally {
   globalThis.fetch = origFetch

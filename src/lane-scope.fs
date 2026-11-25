@@ -16,24 +16,153 @@
   { columns {} }
   { col-els {} }
   { crumb-els {} }
+  { filter-query '' }
+  { filter-col-idx null }
+  { last-filter-col-idx 0 }
+  { show-proto true }
+  { copy-timer null }
  ]
 
  ; to root-el !document.createElement div
  ; set lane-scope root-el.className
+
+ ; to toolbar-el !document.createElement div
+ ; set lane-scope-toolbar toolbar-el.className
+
+ ; to filter-wrap !document.createElement div
+ ; set lane-scope-filter-wrap filter-wrap.className
+ ; to filter-input !document.createElement input
+ ; assign $filter-input { type text } { className lane-scope-filter-input } { placeholder 'Filter scope…' } { spellcheck false } { autocomplete off }
+ !filter-input.setAttribute aria-label 'Filter scope names'
+ ; to filter-count-el !document.createElement span
+ ; assign $filter-count-el { className lane-scope-filter-count } { hidden true }
+ ; to filter-clear-btn !document.createElement button
+ ; assign $filter-clear-btn { type button } { className lane-scope-filter-clear } { textContent '×' } { title 'Clear filter (Esc)' } { hidden true }
+ !filter-clear-btn.setAttribute aria-label 'Clear scope filter'
+ !filter-wrap.appendChild $filter-input
+ !filter-wrap.appendChild $filter-count-el
+ !filter-wrap.appendChild $filter-clear-btn
+
+ ; to proto-btn !document.createElement button
+ ; assign $proto-btn { type button } { className 'lane-scope-proto-btn lane-scope-proto-btn--active' } { textContent proto } { title 'Toggle inherited prototype properties' }
+ !proto-btn.setAttribute aria-pressed true
+
+ !toolbar-el.appendChild $filter-wrap
+ !toolbar-el.appendChild $proto-btn
+
  ; to breadcrumb-el !document.createElement div
  ; set lane-scope-breadcrumb breadcrumb-el.className
+ ; to crumb-list-el !document.createElement div
+ ; set lane-scope-crumb-list crumb-list-el.className
+ ; to copy-btn !document.createElement button
+ ; assign $copy-btn { type button } { className lane-scope-copy-btn } { textContent Copy } { title 'Copy FieldScript $path' } { hidden true }
+ !breadcrumb-el.appendChild $crumb-list-el
+ !breadcrumb-el.appendChild $copy-btn
+
  ; to columns-el !document.createElement div
  ; set lane-scope-columns columns-el.className
 
+ !root-el.appendChild $toolbar-el
  !root-el.appendChild $breadcrumb-el
  !root-el.appendChild $columns-el
  !container.appendChild $root-el
- ; assign $view { element $root-el } { breadcrumb-el $breadcrumb-el } { columns-el $columns-el }
+ [ assign $view
+  { element $root-el }
+  { toolbar-el $toolbar-el }
+  { filter-input $filter-input }
+  { filter-count-el $filter-count-el }
+  { filter-clear-btn $filter-clear-btn }
+  { proto-btn $proto-btn }
+  { breadcrumb-el $breadcrumb-el }
+  { crumb-list-el $crumb-list-el }
+  { copy-btn $copy-btn }
+  { columns-el $columns-el }
+ ]
+
+ ; to view.deepest-entries-index (
+  -- Finds the index of the deepest entries column currently rendered
+  ; to found ; object { idx 0 }
+  ; each $view.columns (
+   ; to { col idx } $argv
+   ; condition { propertyIs entries col.kind } : ; set $idx found.idx
+  )
+  $found.idx
+ )
+
+ ; to view.sync-proto-btn (
+  -- Syncs prototype toggle button visual state
+  ; to cls [ ternary $view.show-proto 'lane-scope-proto-btn lane-scope-proto-btn--active' lane-scope-proto-btn ]
+  ; set $cls proto-btn.className
+  !proto-btn.setAttribute aria-pressed [ ternary $view.show-proto true false ]
+ )
+
+ ; to view.set-filter (
+  -- Updates the active filter query targeting the deepest entries column
+  ; to { next-query } $argv
+  ; to text [ match
+   { $next-query : ; add '' $next-query }
+   { true : '' }
+  ]
+  ; set $text view.filter-query
+  ; to same-input [ propertyIs $filter-input.value text ]
+  ; condition { propertyIs false same-input } : ; set $text filter-input.value
+  ; to trimmed !text.trim
+  [ match
+   { [ propertyIs '' trimmed ] : ; set null view.filter-col-idx }
+   { true : ; set [ !view.deepest-entries-index ] view.filter-col-idx }
+  ]
+  !view.render $view.state
+ )
+
+ ; to view.clear-filter (
+  -- Clears the active scope filter and restores full column entries
+  ; set '' view.filter-query
+  ; set '' filter-input.value
+  ; set null view.filter-col-idx
+  !view.render $view.state
+ )
+
+ ; to view.toggle-proto (
+  -- Toggles showing inherited prototype properties in object/list columns
+  ; set [ ternary $view.show-proto false true ] view.show-proto
+  !view.sync-proto-btn
+  !view.render $view.state
+ )
+
+ ; to view.copy-path (
+  -- Copies the currently selected $path expression to the clipboard
+  ; condition { propertyIsGreaterThan 0 view.selected-path.length } (
+   ; to joined !view.selected-path.join '.'
+   ; to expr ; add '$' $joined
+   [ match
+    { $window.navigator.clipboard.writeText : !window.navigator.clipboard.writeText $expr }
+   ]
+   ; set Copied copy-btn.textContent
+   [ match
+    { $window.setTimeout (
+     [ match
+      { $view.copy-timer : !window.clearTimeout $view.copy-timer }
+     ]
+     ; to next-timer !window.setTimeout (
+      ; set Copy copy-btn.textContent
+      ; set null view.copy-timer
+     ) 1200
+     ; set $next-timer view.copy-timer
+    ) }
+   ]
+   $expr
+  )
+ )
 
  ; to view.select (
   -- Updates the selected property path and re-renders the multi-column browser
   ; to { next-path } $argv
   ; set $next-path view.selected-path
+  [ match
+   { { propertyIsGreaterThanOrEqual 0 view.filter-col-idx } (
+    ; condition { propertyIsGreaterThan $next-path.length view.filter-col-idx } : ; set null view.filter-col-idx
+   ) }
+  ]
   !view.render $view.state
   [ match
    { $view.on-select (
@@ -53,7 +182,7 @@
   ; to root-btn !document.createElement button
   ; assign $root-btn { type button } { className lane-scope-crumb } { textContent scope }
   !root-btn.addEventListener click : !view.select {}
-  !breadcrumb-el.appendChild $root-btn
+  !crumb-list-el.appendChild $root-btn
   !view.crumb-els.push $root-btn
 
   ; to prefix {}
@@ -65,7 +194,7 @@
     { true : '.' }
    ]
    ; assign $sep { className lane-scope-crumb-sep } { textContent $sep-text }
-   !breadcrumb-el.appendChild $sep
+   !crumb-list-el.appendChild $sep
    !view.crumb-els.push $sep
 
    !prefix.push $seg
@@ -73,37 +202,58 @@
    ; to seg-btn !document.createElement button
    ; assign $seg-btn { type button } { className lane-scope-crumb } { textContent $seg }
    !seg-btn.addEventListener click : !view.select $target-path
-   !breadcrumb-el.appendChild $seg-btn
+   !crumb-list-el.appendChild $seg-btn
    !view.crumb-els.push $seg-btn
   )
+
+  ; to has-path [ propertyIsGreaterThan 0 view.selected-path.length ]
+  ; set [ ternary $has-path false true ] copy-btn.hidden
+  [ match
+   { $has-path (
+    ; to joined !view.selected-path.join '.'
+    ; set [ ; add 'Copy $' $joined ] copy-btn.title
+   ) }
+   { true : ; set Copy copy-btn.textContent }
+  ]
  )
 
  ; to view.render-entries-col (
   -- Renders a column listing an object's or scope's properties
   ; to { col } $argv
   ; to col-el !document.createElement div
-  ; set lane-scope-col col-el.className
+  ; to col-cls [ ternary $col.filtered 'lane-scope-col lane-scope-col--filtered' lane-scope-col ]
+  ; set $col-cls col-el.className
 
   ; to header-el !document.createElement div
   ; set lane-scope-col-header header-el.className
   ; to title-el !document.createElement span
-  ; assign $title-el { className lane-scope-col-title } { textContent $col.title }
+  ; assign $title-el { className lane-scope-col-title } { textContent $col.title } { title $col.title }
+  ; to meta-text [ match
+   { $col.filtered : ; add $col.matchCount ; add ' / ' $col.unfilteredCount }
+   { true : $col.valueSummary }
+  ]
+  ; to meta-cls [ match
+   { $col.filtered : 'lane-scope-col-meta lane-scope-col-meta--filtered' }
+   { true : ; add 'lane-scope-col-meta lane-scope-type--' $col.valueType }
+  ]
   ; to meta-el !document.createElement span
-  ; assign $meta-el { className lane-scope-col-meta } { textContent $col.valueSummary }
+  ; assign $meta-el { className $meta-cls } { textContent $meta-text } { title $col.valueSummary }
   !header-el.appendChild $title-el
   !header-el.appendChild $meta-el
   !col-el.appendChild $header-el
 
-  -- For functions or dates/regexps, show a compact value preview above properties
+  -- For will blocks, functions, dates, regexps, or errors, show a compact value preview above properties
   ; to show-banner [ match
+   { [ propertyIs will col.valueType ] : true }
    { [ propertyIs function col.valueType ] : true }
    { [ propertyIs date col.valueType ] : true }
    { [ propertyIs regexp col.valueType ] : true }
+   { [ propertyIs error col.valueType ] : true }
    { true : false }
   ]
   ; condition { propertyIs true show-banner } (
    ; to banner-el !document.createElement div
-   ; assign $banner-el { className lane-scope-col-banner } { textContent $col.valueDetail }
+   ; assign $banner-el { className lane-scope-col-banner } { textContent $col.valueDetail } { title $col.valueDetail }
    !col-el.appendChild $banner-el
   )
 
@@ -113,8 +263,9 @@
 
   [ match
    { [ propertyIs 0 col.entries.length ] (
+    ; to empty-text [ ternary $col.filtered 'No matching names' '(no properties)' ]
     ; to empty-el !document.createElement div
-    ; assign $empty-el { className lane-scope-empty } { textContent '(no properties)' }
+    ; assign $empty-el { className lane-scope-empty } { textContent $empty-text }
     !list-el.appendChild $empty-el
    ) }
    { true (
@@ -146,12 +297,17 @@
      !item-btn.setAttribute aria-selected [ ternary $is-selected 'true' 'false' ]
 
      ; to key-el !document.createElement span
-     ; assign $key-el { className lane-scope-item-key } { textContent $entry.key }
+     ; assign $key-el { className lane-scope-item-key } { textContent $entry.key } { title $entry.key }
 
      ; to right-el !document.createElement span
      ; set lane-scope-item-right right-el.className
+     ; to hint-cls ; add 'lane-scope-item-hint lane-scope-type--' $entry.type
+     ; to hint-title [ match
+      { $entry.detail : $entry.detail }
+      { true : $entry.summary }
+     ]
      ; to hint-el !document.createElement span
-     ; assign $hint-el { className lane-scope-item-hint } { textContent $entry.summary }
+     ; assign $hint-el { className $hint-cls } { textContent $entry.summary } { title $hint-title }
      !right-el.appendChild $hint-el
 
      [ match
@@ -193,9 +349,10 @@
   ; to header-el !document.createElement div
   ; set lane-scope-col-header header-el.className
   ; to title-el !document.createElement span
-  ; assign $title-el { className lane-scope-col-title } { textContent $col.title }
+  ; assign $title-el { className lane-scope-col-title } { textContent $col.title } { title $col.title }
+  ; to badge-cls ; add 'lane-scope-type-badge lane-scope-type--' $col.valueType
   ; to badge-el !document.createElement span
-  ; assign $badge-el { className lane-scope-type-badge } { textContent $col.valueType }
+  ; assign $badge-el { className $badge-cls } { textContent $col.valueType }
   !header-el.appendChild $title-el
   !header-el.appendChild $badge-el
   !col-el.appendChild $header-el
@@ -221,16 +378,52 @@
   ; object { kind value } { data $col } { el $col-el } { value-el $code-el } { type-el $badge-el } { path-el $path-el } { items {} }
  )
 
+ ; to view.sync-filter-bar (
+  -- Updates filter bar placeholder, clear button visibility, and match counter
+  ; to { resolved } $argv
+  ; to target-idx $resolved.filterColumnIndex
+  ; set $target-idx view.last-filter-col-idx
+  ; to target-col [ get resolved.columns $target-idx ]
+  ; to target-name [ match
+   { $target-col.title : $target-col.title }
+   { true : scope }
+  ]
+  ; set [ ; add 'Filter ' ; add $target-name '…' ] filter-input.placeholder
+  ; to trimmed !view.filter-query.trim
+  ; to has-query [ match
+   { [ propertyIs '' trimmed ] : false }
+   { true : true }
+  ]
+  ; set [ ternary $has-query false true ] filter-clear-btn.hidden
+  [ match
+   { $has-query (
+    ; to count-txt ; add $target-col.matchCount ; add ' / ' $target-col.unfilteredCount
+    ; set $count-txt filter-count-el.textContent
+    ; set false filter-count-el.hidden
+   ) }
+   { true (
+    ; set '' filter-count-el.textContent
+    ; set true filter-count-el.hidden
+   ) }
+  ]
+ )
+
  ; to view.render (
   -- Resolves and renders all Miller columns for the given final scope state
   ; to { next-state } $argv
   [ match
    { $next-state : ; set $next-state view.state }
   ]
-  ; to resolved !resolveScopeColumns $view.state $view.selected-path
+  ; to resolve-opts [ object
+   { filter $view.filter-query }
+   { filterColumnIndex $view.filter-col-idx }
+   { includeInherited $view.show-proto }
+  ]
+  ; to resolved !resolveScopeColumns $view.state $view.selected-path $resolve-opts
   ; set $resolved.path view.selected-path
 
   !view.render-breadcrumb
+  !view.sync-filter-bar $resolved
 
   ; while { propertyIsGreaterThan 0 view.col-els.length } (
    ; to old-el !view.col-els.pop
@@ -254,6 +447,42 @@
   )
   $view.columns
  )
+
+ !filter-input.addEventListener input : !view.set-filter $filter-input.value
+ !filter-input.addEventListener keydown (
+  ; to { ev } $argv
+  [ match
+   { [ propertyIs Escape ev.key ] (
+    ; to trimmed !view.filter-query.trim
+    ; to is-empty [ propertyIs '' trimmed ]
+    ; condition { propertyIs false is-empty } (
+     [ match
+      { $ev.stopPropagation : !ev.stopPropagation }
+     ]
+     !view.clear-filter
+    )
+   ) }
+   { [ propertyIs Enter ev.key ] (
+    [ match
+     { $ev.preventDefault : !ev.preventDefault }
+    ]
+    ; to target-col [ get view.columns $view.last-filter-col-idx ]
+    ; condition { propertyIsGreaterThan 0 target-col.items.length } (
+     ; to first-key $target-col.items.0.key
+     ; to next-path !target-col.data.path.concat { $first-key }
+     !view.select $next-path
+    )
+   ) }
+  ]
+ )
+ !filter-clear-btn.addEventListener click (
+  !view.clear-filter
+  [ match
+   { $filter-input.focus : !filter-input.focus }
+  ]
+ )
+ !proto-btn.addEventListener click $view.toggle-proto
+ !copy-btn.addEventListener click $view.copy-path
 
  $view
 )

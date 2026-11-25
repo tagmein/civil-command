@@ -178,10 +178,38 @@
   ]
  )
 
+ ; to collect-ids (
+  -- Extracts string IDs from an array of table or row records
+  ; to { list } $argv
+  ; to ids {}
+  ; each $list (
+   ; to { item } $argv
+   !ids.push $item.id
+  )
+  $ids
+ )
+
  ; to view.save (
-  -- Persists all tables (schemas and rows) to the lane KV namespace
-  ; to serialized !window.JSON.stringify $view.tables
-  !view.lane.data.set tables $serialized
+  -- Persists all tables (schemas and rows) across split per-table and per-row KV keys
+  !saveLaneTables $data $view.lane.data $view.lane.id $view.tables
+ )
+
+ ; to view.save-row (
+  -- Persists a single table row to its own KV key
+  ; to { tbl row } $argv
+  !saveTableRow $data $view.lane.data $view.lane.id $tbl.id $row
+ )
+
+ ; to view.save-schema (
+  -- Persists a single table schema (name and columns) to its own KV key
+  ; to { tbl } $argv
+  !saveTableSchema $data $view.lane.data $view.lane.id $tbl
+ )
+
+ ; to view.save-schema-and-rows (
+  -- Persists a single table schema and its rows after a structural column change
+  ; to { tbl } $argv
+  !saveTableSchemaAndRows $data $view.lane.data $view.lane.id $tbl
  )
 
  ; to view.seed-env (
@@ -288,22 +316,95 @@
   !fetchRowOptionsPage $view.tables $col $page-opts
  )
 
+ ; to view.lookup-lane-info (
+  -- Resolves display metadata for a stored lane ID from open lanes or persistent catalog
+  ; to { raw-id } $argv
+  ; to str [ match
+   { [ propertyIs undefined raw-id ] : '' }
+   { [ propertyIs null raw-id ] : '' }
+   { true : ; add '' $raw-id }
+  ]
+  ; to id !str.trim
+  [ match
+   { [ propertyIs '' id ] : ; object { is-empty true } { found false } { id '' } { title '' } { has-separate-title false } { label '' } }
+   { true (
+    ; to open-lane [ get lane-control.by-id $id ]
+    ; to cat-entry [ get lane-control.catalog $id ]
+    ; to found [ match
+     { $open-lane : true }
+     { $cat-entry : true }
+     { true : false }
+    ]
+    ; to title [ match
+     { $open-lane.title : $open-lane.title }
+     { $cat-entry.title : $cat-entry.title }
+     { $lane-control.get-lane-title : !lane-control.get-lane-title $id }
+     { true : $id }
+    ]
+    ; to has-separate-title [ match
+     { [ propertyIs '' title ] : false }
+     { [ propertyIs $id title ] : false }
+     { true : true }
+    ]
+    ; to label [ match
+     { $has-separate-title : ; add $title ; add ' (' ; add $id ')' }
+     { true : $id }
+    ]
+    ; object { is-empty false } { found $found } { id $id } { title $title } { has-separate-title $has-separate-title } { label $label }
+   ) }
+  ]
+ )
+
+ ; to view.refresh-lane-labels (
+  -- Re-renders lane cell trigger labels across the active table grid after a lane rename or reload
+  ; each $view.grid-rows (
+   ; to { grow } $argv
+   ; each $grow.cells (
+    ; to { cell } $argv
+    ; condition { propertyIs lane cell.col.type } (
+     ; to val [ get grow.row.values $cell.col.id ]
+     [ match
+      { $cell.multi (
+       ; to arr [ match
+        { [ !window.Array.isArray $val ] : $val }
+        { true : {} }
+       ]
+       ; each $cell.items (
+        ; to { item idx } $argv
+        [ match
+         { $item.update-trigger : !item.update-trigger [ get arr $idx ] }
+        ]
+       )
+      ) }
+      { $cell.update-trigger : !cell.update-trigger $val }
+     ]
+    )
+   )
+  )
+ )
+
+ ; to create-picker-trigger (
+  -- Creates the shared trigger button DOM skeleton (display span, ID badge span, caret) for row and lane cells
+  ; to trigger-btn !document.createElement button
+  ; assign $trigger-btn { type button } { className lane-data-row-trigger }
+  ; to display-el !document.createElement span
+  ; set lane-data-row-cell-display display-el.className
+  ; to id-el !document.createElement span
+  ; set lane-data-row-cell-id id-el.className
+  ; to caret-el !document.createElement span
+  ; assign $caret-el { className lane-data-row-cell-caret } { textContent '▾' }
+  !trigger-btn.appendChild $display-el
+  !trigger-btn.appendChild $id-el
+  !trigger-btn.appendChild $caret-el
+  { $trigger-btn $display-el $id-el }
+ )
+
  ; to view.create-typed-control (
-  -- Builds an editable typed input, checkbox, or async row picker trigger for a single value of col.type
+  -- Builds an editable typed input, checkbox, or async row/lane picker trigger for a single value of col.type
   ; to { col initial-val on-valid on-enter } $argv
   [ match
    { [ propertyIs row col.type ] (
-    ; to trigger-btn !document.createElement button
-    ; assign $trigger-btn { type button } { className lane-data-row-trigger }
-    ; to display-el !document.createElement span
-    ; set lane-data-row-cell-display display-el.className
-    ; to id-el !document.createElement span
-    ; set lane-data-row-cell-id id-el.className
-    ; to caret-el !document.createElement span
-    ; assign $caret-el { className lane-data-row-cell-caret } { textContent '▾' }
-    !trigger-btn.appendChild $display-el
-    !trigger-btn.appendChild $id-el
-    !trigger-btn.appendChild $caret-el
+    ; to { trigger-btn display-el id-el } !create-picker-trigger
 
     ; to ctrl-state ; object { value $initial-val }
     ; to update-trigger (
@@ -414,6 +515,127 @@
      )
     )
     ; object { el $trigger-btn } { input-el $trigger-btn } { trigger-el $trigger-btn } { display-el $display-el } { id-el $id-el } { update-trigger $update-trigger }
+   ) }
+   { [ propertyIs lane col.type ] (
+    ; to open-icon-svg '<svg class="lane-data-lane-open-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5L8.5 3.5M4.5 3.5H8.5V7.5"></path></svg>'
+    ; to control-wrap !document.createElement div
+    ; set 'lane-data-lane-control lane-data-lane-control--empty' control-wrap.className
+
+    ; to trigger-btn !document.createElement button
+    ; assign $trigger-btn { type button } { className 'lane-data-row-trigger lane-data-row-trigger--empty lane-data-lane-id-btn' }
+    ; to placeholder-el !document.createElement span
+    ; set 'lane-data-row-cell-display lane-data-lane-placeholder' placeholder-el.className
+    ; to id-el !document.createElement span
+    ; set 'lane-data-row-cell-id lane-data-lane-id' id-el.className
+    ; to caret-el !document.createElement span
+    ; assign $caret-el { className lane-data-row-cell-caret } { textContent '▾' }
+    !trigger-btn.appendChild $placeholder-el
+    !trigger-btn.appendChild $id-el
+    !trigger-btn.appendChild $caret-el
+
+    ; to open-btn !document.createElement button
+    ; assign $open-btn { type button } { className lane-data-lane-open-btn } { hidden true }
+    ; to display-el !document.createElement span
+    ; set lane-data-lane-open-label display-el.className
+    ; to open-icon-el !document.createElement span
+    ; assign $open-icon-el { className lane-data-lane-open-icon-wrap } { innerHTML $open-icon-svg }
+    !open-btn.appendChild $display-el
+    !open-btn.appendChild $open-icon-el
+
+    !control-wrap.appendChild $trigger-btn
+    !control-wrap.appendChild $open-btn
+
+    ; to ctrl-state ; object { value $initial-val }
+    ; to set-trigger-view (
+     ; to { wrap-cls trig-cls ph-txt hide-ph id-txt hide-id trig-ttl hide-open open-cls disp-txt open-ttl trig-disabled open-disabled } $argv
+     ; set $wrap-cls control-wrap.className
+     ; set $trig-cls trigger-btn.className
+     ; set $ph-txt placeholder-el.textContent
+     ; set $hide-ph placeholder-el.hidden
+     ; set $id-txt id-el.textContent
+     ; set $hide-id id-el.hidden
+     ; set $trig-ttl trigger-btn.title
+     ; set $trig-disabled trigger-btn.disabled
+     ; set $hide-open open-btn.hidden
+     ; set $open-cls open-btn.className
+     ; set $disp-txt display-el.textContent
+     ; set $open-ttl open-btn.title
+     ; set $open-disabled open-btn.disabled
+     !open-btn.setAttribute aria-label $open-ttl
+    )
+    ; to update-trigger (
+     ; to { next-val } $argv
+     ; set $next-val ctrl-state.value
+     ; to info !view.lookup-lane-info $next-val
+     ; to has-picker [ match
+      { $lane-control.pick-lane : true }
+      { true : false }
+     ]
+     ; to has-open [ match
+      { $lane-control.open-after : true }
+      { $lane-control.open : true }
+      { true : false }
+     ]
+     ; to trig-disabled [ ternary $has-picker false true ]
+     ; to open-disabled [ ternary $has-open false true ]
+     [ match
+      { $info.is-empty : !set-trigger-view 'lane-data-lane-control lane-data-lane-control--empty' 'lane-data-row-trigger lane-data-row-trigger--empty lane-data-lane-id-btn' 'Select lane…' false '' true 'Select a lane' true lane-data-lane-open-btn '' '' $trig-disabled $open-disabled }
+      { [ propertyIs false info.found ] (
+       ; to chg-ttl ; add 'Change lane (' ; add $info.id ')'
+       ; to op-ttl ; add 'Open ' ; add $info.id ' to the right'
+       !set-trigger-view 'lane-data-lane-control lane-data-lane-control--missing' 'lane-data-row-trigger lane-data-row-trigger--missing lane-data-lane-id-btn' '' true $info.id false $chg-ttl false 'lane-data-lane-open-btn lane-data-lane-open-btn--missing' '(not found)' $op-ttl $trig-disabled $open-disabled
+      ) }
+      { $info.has-separate-title (
+       ; to chg-ttl ; add 'Change lane (' ; add $info.label ')'
+       ; to op-ttl ; add 'Open ' ; add $info.title ' to the right'
+       !set-trigger-view 'lane-data-lane-control lane-data-lane-control--filled' 'lane-data-row-trigger lane-data-row-trigger--filled lane-data-lane-id-btn' '' true $info.id false $chg-ttl false lane-data-lane-open-btn $info.title $op-ttl $trig-disabled $open-disabled
+      ) }
+      { true (
+       ; to chg-ttl ; add 'Change lane (' ; add $info.id ')'
+       ; to op-ttl ; add 'Open ' ; add $info.id ' to the right'
+       !set-trigger-view 'lane-data-lane-control lane-data-lane-control--filled' 'lane-data-row-trigger lane-data-row-trigger--filled lane-data-lane-id-btn' '' true $info.id false $chg-ttl false lane-data-lane-open-btn Open $op-ttl $trig-disabled $open-disabled
+      ) }
+     ]
+    )
+    !update-trigger $initial-val
+
+    !trigger-btn.addEventListener click (
+     [ match
+      { $lane-control.pick-lane (
+       ; to trimmed-name !col.name.trim
+       ; to title [ match
+        { [ propertyIs '' trimmed-name ] : 'Select Lane' }
+        { true : ; add 'Select ' $trimmed-name }
+       ]
+       ; to pick-opts [ object
+        { title $title }
+        { current-value $ctrl-state.value }
+        { on-select (
+         ; to { chosen-id } $argv
+         !update-trigger $chosen-id
+         !$on-valid $chosen-id
+        ) }
+       ]
+       !lane-control.pick-lane $pick-opts
+      ) }
+     ]
+    )
+    !open-btn.addEventListener click (
+     [ match
+      { $ctrl-state.value (
+       [ match
+        { $lane-control.open-after : !lane-control.open-after $ctrl-state.value $view.lane.id }
+        { $lane-control.open (
+         !lane-control.open $ctrl-state.value
+         [ match
+          { $lane-control.update-url : !lane-control.update-url }
+         ]
+        ) }
+       ]
+      ) }
+     ]
+    )
+    ; object { el $control-wrap } { input-el $trigger-btn } { trigger-el $trigger-btn } { open-el $open-btn } { placeholder-el $placeholder-el } { display-el $display-el } { id-el $id-el } { update-trigger $update-trigger }
    ) }
    { [ propertyIs boolean col.type ] (
     ; to wrap !document.createElement label
@@ -590,14 +812,14 @@
    ; to on-item-valid (
     ; to { next-val } $argv
     ; to arr $item-idx $next-val
-    !view.save
+    !view.save-row $tbl $row
    )
    ; to on-item-enter (
     ; to next-idx ; add $item-idx 1
     ; to def-item !defaultDataValue $col false
     !arr.splice $next-idx 0 $def-item
     !view.render-multi-cell $tbl $row $row-idx $col $cell-rec $next-idx
-    !view.save
+    !view.save-row $tbl $row
    )
    ; to ctrl !view.create-typed-control $col $item-val $on-item-valid $on-item-enter
    ; to rm-btn !document.createElement button
@@ -612,6 +834,8 @@
     { select-el $ctrl.select-el }
     { option-els $ctrl.option-els }
     { trigger-el $ctrl.trigger-el }
+    { open-el $ctrl.open-el }
+    { placeholder-el $ctrl.placeholder-el }
     { display-el $ctrl.display-el }
     { id-el $ctrl.id-el }
     { update-trigger $ctrl.update-trigger }
@@ -647,6 +871,14 @@
      { true : $info.label }
     ]
    ) }
+   { [ propertyIs lane col.type ] (
+    ; to info !view.lookup-lane-info $item-val
+    [ match
+     { $info.is-empty : empty }
+     { [ propertyIs '' info.label ] : empty }
+     { true : $info.label }
+    ]
+   ) }
    { true : !formatCellInputValue $item-val $col undefined $view.tables }
   ]
   ; to msg ; add 'Remove item #' ; add $item-num ; add ' ("' ; add $val-str ; add '") from "' ; add $col-label ; add '" in row #' ; add $row-num '?'
@@ -657,7 +889,7 @@
    { on-confirm (
     !arr.splice $item-idx 1
     !view.render-multi-cell $tbl $row $row-idx $col $cell-rec -1
-    !view.save
+    !view.save-row $tbl $row
    ) }
   ]
   !view.confirm $opts
@@ -776,6 +1008,7 @@
           { true : ; set 'Workflow constraint not configured' type-span.title }
          ]
         ) }
+        { [ propertyIs lane col.type ] : ; set 'Stores a selected lane ID' type-span.title }
        ]
        ; to resizer-el !document.createElement div
        ; assign $resizer-el { className lane-data-col-resizer } { title 'Drag to resize column (double-click to reset)' }
@@ -837,7 +1070,7 @@
           ) }
          ]
          [ match
-          { $drag.moved : !view.save }
+          { $drag.moved : !view.save-schema $tbl }
          ]
         )
         !window.addEventListener mousemove $on-move
@@ -849,7 +1082,7 @@
          { true : ; set undefined col.width }
         ]
         !view.apply-column-width $col-idx null
-        !view.save
+        !view.save-schema $tbl
        )
        !th-inner.appendChild $name-span
        !th-inner.appendChild $type-span
@@ -912,7 +1145,7 @@
            !list.push $def-val
            ; to new-idx ; subtract $list.length 1
            !view.render-multi-cell $tbl $row $row-idx $col $cell-rec $new-idx
-           !view.save
+           !view.save-row $tbl $row
           )
           !view.render-multi-cell $tbl $row $row-idx $col $cell-rec -1
           !cells.push $cell-rec
@@ -921,7 +1154,7 @@
           ; to on-valid (
            ; to { next-val } $argv
            ; to row.values $col.id $next-val
-           !view.save
+           !view.save-row $tbl $row
           )
           ; to ctrl !view.create-typed-control $col $cur-val $on-valid null
           !td.appendChild $ctrl.el
@@ -933,6 +1166,8 @@
            { select-el $ctrl.select-el }
            { option-els $ctrl.option-els }
            { trigger-el $ctrl.trigger-el }
+           { open-el $ctrl.open-el }
+           { placeholder-el $ctrl.placeholder-el }
            { display-el $ctrl.display-el }
            { id-el $ctrl.id-el }
            { update-trigger $ctrl.update-trigger }
@@ -1037,7 +1272,7 @@
   )
   !view.render-schema
   !view.render-grid
-  !view.save
+  !view.save-schema-and-rows $tbl
  )
 
  ; to view.request-column-change (
@@ -1102,7 +1337,7 @@
       )
       !view.render-schema
       !view.render-grid
-      !view.save
+      !view.save-schema-and-rows $tbl
      ) }
     ]
     !view.confirm $opts
@@ -1122,10 +1357,15 @@
    { message $msg }
    { confirm-label 'Delete row' }
    { on-confirm (
+    ; to removed [ get tbl.rows $row-idx ]
     !tbl.rows.splice $row-idx 1
     !view.render-grid
     !view.update-table-tabs-text
-    !view.save
+    ; to row-ids !collect-ids $tbl.rows
+    [ match
+     { $removed : !deleteTableRow $data $view.lane.data $view.lane.id $tbl.id $removed.id $row-ids }
+     { true : !view.save-schema-and-rows $tbl }
+    ]
    ) }
   ]
   !view.confirm $opts
@@ -1147,10 +1387,11 @@
       { message $msg }
       { confirm-label 'Clear rows' }
       { on-confirm (
+       ; to removed-ids !collect-ids $tbl.rows
        ; set 0 tbl.rows.length
        !view.render-grid
        !view.update-table-tabs-text
-       !view.save
+       !clearTableRows $data $view.lane.data $view.lane.id $tbl.id $removed-ids
       ) }
      ]
      !view.confirm $opts
@@ -1192,7 +1433,9 @@
       ; set [ match { $next-tbl : $next-tbl.name } { true : '' } ] lane.subroute
       ; set [ !view.default-schema-open $next-tbl ] view.schema-open
       !view.render
-      !view.save
+      ; to table-ids !collect-ids $view.tables
+      !deleteLaneTable $data $view.lane.data $view.lane.id $tbl $table-ids
+      !view.sync-data-path
       [ match
        { $lane-control.update-url : !lane-control.update-url }
       ]
@@ -1600,7 +1843,7 @@
       [ match
        { $h-cell.name-el : ; set [ !view.display-col-name $col ] h-cell.name-el.textContent }
       ]
-      !view.save
+      !view.save-schema $tbl
      )
      !name-el.addEventListener keydown (
       ; to { ev } $argv
@@ -1682,7 +1925,7 @@
       ; set $ref-display-el.value col.refDisplayColumnId
       !view.render-schema
       !view.render-grid
-      !view.save
+      !view.save-schema $tbl
      )
      !decimals-el.addEventListener change (
       ; to next-decimals !normalizeFixedDecimals $decimals-el.value
@@ -1711,7 +1954,7 @@
         ; set $next-constraint col.constraint
         !view.render-schema
         !view.render-grid
-        !view.save
+        !view.save-schema $tbl
        ) }
       ]
      )
@@ -1722,7 +1965,7 @@
       ]
       !view.render-schema
       !view.render-grid
-      !view.save
+      !view.save-schema $tbl
      )
      !constraint-type-el.addEventListener change (
       ; to next-ctype $constraint-type-el.value
@@ -1738,7 +1981,7 @@
         ; set $next-constraint col.constraint
         !view.render-schema
         !view.render-grid
-        !view.save
+        !view.save-schema $tbl
        ) }
       ]
      )
@@ -1759,7 +2002,7 @@
       ; set $next-constraint col.constraint
       !view.render-schema
       !view.render-grid
-      !view.save
+      !view.save-schema $tbl
      )
      !constraint-from-el.addEventListener change (
       ; to existing !normalizeColumnConstraint $col.constraint
@@ -1774,7 +2017,7 @@
         ; set $next-constraint col.constraint
         !view.render-schema
         !view.render-grid
-        !view.save
+        !view.save-schema $tbl
        ) }
       ]
      )
@@ -1791,7 +2034,7 @@
         ; set $next-constraint col.constraint
         !view.render-schema
         !view.render-grid
-        !view.save
+        !view.save-schema $tbl
        ) }
       ]
      )
@@ -1829,6 +2072,17 @@
   ]
  )
 
+ ; to view.sync-data-path (
+  -- Updates the lane's remembered path when currently on the Data tab
+  [ match
+   { [ propertyIs data lane.tab ] (
+    [ match
+     { $lane-control.remember-path : !lane-control.remember-path $lane }
+    ]
+   ) }
+  ]
+ )
+
  ; to view.find-table-by-name (
   -- Finds a table by exact name, or returns null when not found
   ; to { name } $argv
@@ -1857,7 +2111,12 @@
   !view.render
   [ match
    { $skip-url : null }
-   { $lane-control.update-url : !lane-control.update-url }
+   { true (
+    !view.sync-data-path
+    [ match
+     { $lane-control.update-url : !lane-control.update-url }
+    ]
+   ) }
   ]
  )
 
@@ -1906,7 +2165,9 @@
   [ match
    { $table-name-input.select : !table-name-input.select }
   ]
-  !view.save
+  ; to table-ids !collect-ids $view.tables
+  !addLaneTable $data $view.lane.data $view.lane.id $tbl $table-ids
+  !view.sync-data-path
   [ match
    { $lane-control.update-url : !lane-control.update-url }
   ]
@@ -1970,7 +2231,7 @@
     [ match
      { $last-srow.name-el.focus : !last-srow.name-el.focus }
     ]
-    !view.save
+    !view.save-schema-and-rows $tbl
     $col
    ) }
   ]
@@ -2002,7 +2263,8 @@
       { $first-cell.input-el.focus : !first-cell.input-el.focus }
       { $first-cell.add-btn.focus : !first-cell.add-btn.focus }
      ]
-     !view.save
+     ; to row-ids !collect-ids $tbl.rows
+     !addTableRow $data $view.lane.data $view.lane.id $tbl.id $row $row-ids
      $row
     )
    ) }
@@ -2017,7 +2279,8 @@
     ; set $table-name-input.value tbl.name
     ; set $tbl.name lane.subroute
     !view.update-table-tabs-text
-    !view.save
+    !view.save-schema $tbl
+    !view.sync-data-path
     [ match
      { $lane-control.update-url : !lane-control.update-url }
     ]
@@ -2033,14 +2296,15 @@
  !clear-rows-btn.addEventListener click $view.request-clear-rows
  !delete-table-btn.addEventListener click $view.request-delete-table
 
- ; to stored !lane.data.get tables
- ; to initial-tables !parseStoredTables $stored
+ ; to initial-tables !loadLaneTables $data $lane.data $lane.id
+ ; to needs-catalog ; object { hit false }
  ; each $initial-tables (
   ; to { tbl } $argv
   ; to view.used-ids $tbl.id true
   ; each $tbl.columns (
    ; to { col } $argv
    ; to view.used-ids $col.id true
+   ; condition { propertyIs lane col.type } : ; set true needs-catalog.hit
   )
   ; each $tbl.rows (
    ; to { row } $argv
@@ -2048,6 +2312,11 @@
   )
   !view.tables.push $tbl
  )
+ [ match
+  { $needs-catalog.hit [ match
+   { $lane-control.load-catalog : !lane-control.load-catalog }
+  ] }
+ ]
  ; condition { propertyIsGreaterThan 0 view.tables.length } (
   ; to matched-tbl !view.find-table-by-name $lane.subroute
   ; to initial-tbl [ match

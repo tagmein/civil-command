@@ -1283,6 +1283,61 @@ export function normalizeLaneTab(tab) {
  return DEFAULT_LANE_TAB
 }
 
+export function parseLanePath(rawPath) {
+ if (typeof rawPath !== 'string') {
+  return null
+ }
+ const trimmed = rawPath.trim().replace(/^\/+|\/+$/g, '')
+ if (trimmed.length === 0) {
+  return null
+ }
+ let sepIdx = -1
+ for (let i = 0; i < trimmed.length; i++) {
+  const ch = trimmed[i]
+  if (ch === '/' || ch === '|') {
+   sepIdx = i
+   break
+  }
+ }
+ if (sepIdx === -1) {
+  const tab = trimmed.toLowerCase()
+  return LANE_TABS.includes(tab) ? { tab, subroute: '' } : null
+ }
+ const tab = trimmed.slice(0, sepIdx).trim().toLowerCase()
+ if (!LANE_TABS.includes(tab)) {
+  return null
+ }
+ const rest = trimmed.slice(sepIdx + 1)
+ const subroute = tab === 'data' && rest.length > 0 ? rest : ''
+ return { tab, subroute }
+}
+
+export function formatLanePath(tab, subroute = '') {
+ let rawTab = tab
+ let rawSub = subroute
+ if (tab && typeof tab === 'object') {
+  rawTab = tab.tab
+  rawSub = tab.subroute
+ }
+ if (typeof rawTab !== 'string') {
+  return ''
+ }
+ const normalizedTab = rawTab.trim().toLowerCase()
+ if (!LANE_TABS.includes(normalizedTab)) {
+  return ''
+ }
+ if (normalizedTab === 'data') {
+  const sub = typeof rawSub === 'string' ? rawSub : ''
+  return sub.length > 0 ? `data/${sub}` : 'data'
+ }
+ return normalizedTab
+}
+
+export function normalizeLanePath(rawPath) {
+ const parsed = parseLanePath(rawPath)
+ return parsed ? formatLanePath(parsed.tab, parsed.subroute) : null
+}
+
 function safeDecodeURIComponent(value) {
  try {
   return decodeURIComponent(value)
@@ -1536,6 +1591,7 @@ export const DATA_COLUMN_TYPES = [
  'email',
  'json',
  'row',
+ 'lane',
 ]
 
 export const DATA_CONSTRAINT_TYPES = [
@@ -1599,6 +1655,360 @@ export function getLaneInitial(title, fallback = '') {
  }
  const chars = Array.from(source)
  return chars[0].toUpperCase()
+}
+
+export const LANE_SCROLL_LEFT_MARGIN = 48
+export const LANE_SCROLL_RIGHT_MARGIN = 96
+
+export function computeLaneScrollLeft(
+ currentScrollLeft,
+ viewportWidth,
+ laneLeft,
+ laneRight,
+ leftMargin = LANE_SCROLL_LEFT_MARGIN,
+ rightMargin = LANE_SCROLL_RIGHT_MARGIN
+) {
+ if (
+  !Number.isFinite(viewportWidth) ||
+  viewportWidth <= 0 ||
+  !Number.isFinite(laneLeft) ||
+  !Number.isFinite(laneRight) ||
+  laneRight <= laneLeft
+ ) {
+  return null
+ }
+ const cur = Number.isFinite(currentScrollLeft) ? currentScrollLeft : 0
+ const laneWidth = laneRight - laneLeft
+ const absLeft = cur + laneLeft
+ const absRight = cur + laneRight
+ const visibleLeft = Math.max(0, Number.isFinite(leftMargin) ? leftMargin : LANE_SCROLL_LEFT_MARGIN)
+ const visibleRight = viewportWidth - Math.max(0, Number.isFinite(rightMargin) ? rightMargin : LANE_SCROLL_RIGHT_MARGIN)
+ const usableWidth = visibleRight - visibleLeft
+ let target = null
+ if (usableWidth > 0 && laneWidth <= usableWidth) {
+  if (laneLeft >= visibleLeft && laneRight <= visibleRight) {
+   return null
+  }
+  target = laneRight > visibleRight
+   ? Math.max(0, Math.round(absRight - visibleRight))
+   : Math.max(0, Math.round(absLeft - visibleLeft))
+ }
+ else if (laneWidth <= viewportWidth - 64) {
+  const pad = Math.floor((viewportWidth - laneWidth) / 2)
+  target = Math.max(0, Math.round(absLeft - pad))
+ }
+ else {
+  target = Math.max(0, Math.round(absLeft - visibleLeft))
+ }
+ return target === Math.round(cur) ? null : target
+}
+
+export const DEFAULT_SCROLLBAR_COLOR = '#383838'
+
+const SCROLLBAR_COLOR_KEYWORDS = new Set(['auto', 'inherit', 'initial', 'unset', 'revert', 'revert-layer'])
+
+function splitTopLevelCssTokens(str) {
+ const tokens = []
+ let depth = 0
+ let quote = ''
+ let start = -1
+ for (let i = 0; i < str.length; i++) {
+  const ch = str[i]
+  if (quote) {
+   if (ch === '\\' && i + 1 < str.length) {
+    i += 1
+    continue
+   }
+   if (ch === quote) {
+    quote = ''
+   }
+   continue
+  }
+  if (ch === '"' || ch === "'") {
+   if (start === -1) {
+    start = i
+   }
+   quote = ch
+   continue
+  }
+  if (ch === '(') {
+   if (start === -1) {
+    start = i
+   }
+   depth += 1
+   continue
+  }
+  if (ch === ')') {
+   if (depth > 0) {
+    depth -= 1
+   }
+   continue
+  }
+  if (depth === 0 && /\s/.test(ch)) {
+   if (start !== -1) {
+    tokens.push(str.slice(start, i))
+    start = -1
+   }
+   continue
+  }
+  if (start === -1) {
+   start = i
+  }
+ }
+ if (start !== -1) {
+  tokens.push(str.slice(start))
+ }
+ return tokens
+}
+
+export function resolveScrollbarColor(rawColor, fallbackColor = DEFAULT_SCROLLBAR_COLOR) {
+ const fallback = typeof fallbackColor === 'string' && fallbackColor.trim().length > 0
+  ? fallbackColor.trim()
+  : DEFAULT_SCROLLBAR_COLOR
+ const raw = rawColor === null || rawColor === undefined ? '' : String(rawColor).trim()
+ const color = raw.length > 0 ? raw : fallback
+ const lower = color.toLowerCase()
+ if (SCROLLBAR_COLOR_KEYWORDS.has(lower)) {
+  return { color, css: lower, thumb: '', track: '' }
+ }
+ const tokens = splitTopLevelCssTokens(color)
+ if (tokens.length === 1) {
+  return { color, css: `${tokens[0]} transparent`, thumb: tokens[0], track: 'transparent' }
+ }
+ if (tokens.length >= 2) {
+  return { color, css: color, thumb: tokens[0], track: tokens.slice(1).join(' ') }
+ }
+ return { color: fallback, css: `${fallback} transparent`, thumb: fallback, track: 'transparent' }
+}
+
+function objectAstHasKey(node, keyName) {
+ if (!Array.isArray(node) || node[0] !== '@' || node[1] !== 'object') {
+  return false
+ }
+ for (let i = 2; i < node.length; i++) {
+  const pair = node[i]
+  if (Array.isArray(pair) && pair[0] === keyName) {
+   return true
+  }
+ }
+ return false
+}
+
+function inspectInterfaceAstNode(node, info) {
+ if (!Array.isArray(node) || isCommentNode(node)) {
+  return
+ }
+ if (node[0] === '@') {
+  const cmd = node[1]
+  if (cmd === 'to' && node.length >= 4) {
+   const targets = node.slice(2, -1)
+   const valNode = node[node.length - 1]
+   if (typeof targets[0] === 'string') {
+    const segs = [ ...targets[0].split('.'), ...targets.slice(1).filter(s => typeof s === 'string') ]
+    if (segs[0] === 'interface') {
+     info.touchesInterface = true
+     if (segs.length === 1) {
+      info.definesInterface = true
+      if (objectAstHasKey(valNode, 'scrollbarColor')) {
+       info.hasScrollbarColor = true
+      }
+     }
+     else if (segs[1] === 'scrollbarColor') {
+      info.hasScrollbarColor = true
+     }
+    }
+   }
+  }
+  else if (cmd === 'set' && node.length >= 4) {
+   const valNode = node[2]
+   const targets = node.slice(3)
+   if (typeof targets[0] === 'string') {
+    const segs = [ ...targets[0].split('.'), ...targets.slice(1).filter(s => typeof s === 'string') ]
+    if (segs[0] === 'interface') {
+     info.touchesInterface = true
+     if (segs.length === 1) {
+      info.definesInterface = true
+      if (objectAstHasKey(valNode, 'scrollbarColor')) {
+       info.hasScrollbarColor = true
+      }
+     }
+     else if (segs[1] === 'scrollbarColor') {
+      info.hasScrollbarColor = true
+     }
+    }
+   }
+  }
+  else if (cmd === 'assign' && node.length >= 3) {
+   const target = node[2]
+   const isInterfaceTarget = target === 'interface' || (
+    Array.isArray(target) &&
+    target.length === 3 &&
+    target[0] === '@' &&
+    target[1] === 'get' &&
+    target[2] === 'interface'
+   )
+   if (isInterfaceTarget) {
+    info.touchesInterface = true
+    for (let i = 3; i < node.length; i++) {
+     const pair = node[i]
+     if (Array.isArray(pair) && pair[0] === 'scrollbarColor') {
+      info.hasScrollbarColor = true
+     }
+    }
+   }
+  }
+ }
+ for (let i = 0; i < node.length; i++) {
+  if (Array.isArray(node[i])) {
+   inspectInterfaceAstNode(node[i], info)
+  }
+ }
+}
+
+let seedFallbackLineSeq = 0
+function makeSeedLineId(createId) {
+ if (typeof createId === 'function') {
+  const generated = createId()
+  if (typeof generated === 'string' && generated.length > 0) {
+   return generated
+  }
+ }
+ const c = globalThis.crypto
+ if (c && typeof c.randomUUID === 'function') {
+  return `ln-${c.randomUUID()}`
+ }
+ seedFallbackLineSeq += 1
+ return `ln-seed-${Date.now()}-${seedFallbackLineSeq}`
+}
+
+export function seedPreferencesScrollbarRecords(records, defaultScrollbarColor = DEFAULT_SCROLLBAR_COLOR, createId = null) {
+ const rawList = Array.isArray(records) ? records : []
+ const normalized = rawList.map(item => {
+  if (item && typeof item === 'object') {
+   return {
+    ...item,
+    id: typeof item.id === 'string' && item.id.length > 0 ? item.id : makeSeedLineId(createId),
+    text: item.text === null || item.text === undefined ? '' : String(item.text),
+    updatedAt: typeof item.updatedAt === 'string' && item.updatedAt.length > 0 ? item.updatedAt : null,
+   }
+  }
+  return {
+   id: makeSeedLineId(createId),
+   text: item === null || item === undefined ? '' : String(item),
+   updatedAt: null,
+  }
+ })
+
+ let hasScrollbarColor = false
+ let definesInterface = false
+ let firstInterfaceIdx = -1
+ let lastInterfaceIdx = -1
+ let lastNonEmptyIdx = -1
+
+ for (let i = 0; i < normalized.length; i++) {
+  const text = normalized[i].text
+  if (text.trim().length > 0) {
+   lastNonEmptyIdx = i
+  }
+  if (/\binterface\.scrollbarColor\b/.test(text)) {
+   hasScrollbarColor = true
+  }
+  const lineInfo = {
+   hasScrollbarColor: false,
+   definesInterface: false,
+   touchesInterface: false,
+  }
+  try {
+   const ast = parse(`${text}\n`)
+   inspectInterfaceAstNode(ast, lineInfo)
+  }
+  catch {
+   // ignore syntax errors in user script lines
+  }
+  if (lineInfo.hasScrollbarColor) {
+   hasScrollbarColor = true
+  }
+  if (lineInfo.definesInterface) {
+   definesInterface = true
+  }
+  if (lineInfo.definesInterface || lineInfo.touchesInterface) {
+   if (firstInterfaceIdx === -1) {
+    firstInterfaceIdx = i
+   }
+   lastInterfaceIdx = i
+  }
+ }
+
+ if (hasScrollbarColor) {
+  return {
+   seeded: false,
+   records: normalized,
+   lines: normalized.map(r => r.text),
+  }
+ }
+
+ const color = typeof defaultScrollbarColor === 'string' && defaultScrollbarColor.trim().length > 0
+  ? defaultScrollbarColor.trim()
+  : DEFAULT_SCROLLBAR_COLOR
+ const ifaceLine = '; to interface ; object'
+ const sbLine = `; to interface.scrollbarColor ${color}`
+
+ if (lastNonEmptyIdx === -1) {
+  const firstId = normalized.length > 0 ? normalized[0].id : makeSeedLineId(createId)
+  const nextRecords = [
+   { id: firstId, text: ifaceLine, updatedAt: null },
+   { id: makeSeedLineId(createId), text: sbLine, updatedAt: null },
+  ]
+  return {
+   seeded: true,
+   records: nextRecords,
+   lines: nextRecords.map(r => r.text),
+  }
+ }
+
+ const nextRecords = normalized.slice()
+ if (definesInterface) {
+  nextRecords.splice(lastInterfaceIdx + 1, 0, {
+   id: makeSeedLineId(createId),
+   text: sbLine,
+   updatedAt: null,
+  })
+ }
+ else if (firstInterfaceIdx !== -1) {
+  nextRecords.splice(firstInterfaceIdx, 0, {
+   id: makeSeedLineId(createId),
+   text: ifaceLine,
+   updatedAt: null,
+  })
+  nextRecords.splice(lastInterfaceIdx + 2, 0, {
+   id: makeSeedLineId(createId),
+   text: sbLine,
+   updatedAt: null,
+  })
+ }
+ else {
+  nextRecords.splice(
+   lastNonEmptyIdx + 1,
+   0,
+   { id: makeSeedLineId(createId), text: ifaceLine, updatedAt: null },
+   { id: makeSeedLineId(createId), text: sbLine, updatedAt: null }
+  )
+ }
+
+ return {
+  seeded: true,
+  records: nextRecords,
+  lines: nextRecords.map(r => r.text),
+ }
+}
+
+export function seedPreferencesScrollbarSource(lines, defaultScrollbarColor = DEFAULT_SCROLLBAR_COLOR) {
+ const list = Array.isArray(lines) ? lines : []
+ const outcome = seedPreferencesScrollbarRecords(list, defaultScrollbarColor)
+ return {
+  seeded: outcome.seeded,
+  lines: outcome.lines,
+ }
 }
 
 export const MIN_COLUMN_WIDTH = 48
@@ -2035,6 +2445,7 @@ export function defaultDataValue(type, multiple, decimals) {
    return false
   case 'json':
   case 'row':
+  case 'lane':
    return null
   case 'date':
   case 'datetime':
@@ -2195,6 +2606,16 @@ export function parseCellValue(raw, type, decimals, tables = null) {
    }
    return { ok: true, value: raw, error: null }
   }
+  case 'lane': {
+   if (raw === null || raw === undefined) {
+    return { ok: true, value: null, error: null }
+   }
+   if (typeof raw !== 'string') {
+    return { ok: false, value: null, error: 'Must be a lane ID string' }
+   }
+   const trimmed = raw.trim()
+   return { ok: true, value: trimmed === '' ? null : trimmed, error: null }
+  }
   case 'text':
   default:
    return { ok: true, value: raw === null || raw === undefined ? '' : String(raw), error: null }
@@ -2344,6 +2765,13 @@ function coerceSingleDataValue(value, targetSpec, fromSpec = null, tables = null
     }
    }
    return inputVal
+  }
+  case 'lane': {
+   if (inputVal === null || inputVal === undefined || typeof inputVal === 'object') {
+    return null
+   }
+   const trimmed = String(inputVal).trim()
+   return trimmed === '' ? null : trimmed
   }
   case 'date':
   case 'datetime':
@@ -2991,19 +3419,25 @@ export function describeValue(value) {
   return { type: 'string', summary: truncateText(full), detail: full, expandable: false }
  }
  if (t === 'function') {
-  const summary = value.name ? `fn ${value.name}()` : 'fn()'
-  return { type: 'function', summary, detail: formatValue(value), expandable: true }
+  if (Array.isArray(value.ast)) {
+   const firstNode = value.ast[0]
+   const doc = isCommentNode(firstNode) ? String(firstNode[2] ?? '').trim() : ''
+   const detail = doc.length > 0 ? `will — ${doc}` : 'will'
+   return { type: 'will', summary: 'will', detail, expandable: true }
+  }
+  const label = value.name ? `fn ${value.name}` : 'fn'
+  return { type: 'function', summary: label, detail: label, expandable: true }
  }
  if (Array.isArray(value)) {
   return {
-   type: 'array',
-   summary: `Array(${value.length})`,
+   type: 'list',
+   summary: `list{${value.length}}`,
    detail: safePrettyJson(value),
    expandable: true,
   }
  }
  if (value instanceof Date) {
-  const text = Number.isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString()
+  const text = Number.isNaN(value.getTime()) ? 'invalid date' : value.toISOString()
   return { type: 'date', summary: text, detail: text, expandable: true }
  }
  if (value instanceof RegExp) {
@@ -3011,19 +3445,38 @@ export function describeValue(value) {
   return { type: 'regexp', summary: text, detail: text, expandable: true }
  }
  if (value instanceof Map) {
-  const text = `Map(${value.size})`
+  const text = `map{${value.size}}`
   return { type: 'map', summary: text, detail: text, expandable: true }
  }
  if (value instanceof Set) {
-  const text = `Set(${value.size})`
+  const text = `set{${value.size}}`
   return { type: 'set', summary: text, detail: text, expandable: true }
+ }
+ if (value instanceof Promise) {
+  return { type: 'promise', summary: 'promise', detail: 'promise', expandable: true }
+ }
+ if (value instanceof Error) {
+  const name = value.name || 'Error'
+  const detail = value.message ? `${name}: ${value.message}` : name
+  return { type: 'error', summary: 'error', detail, expandable: true }
+ }
+ if (ArrayBuffer.isView(value)) {
+  const ctorName = value.constructor && typeof value.constructor.name === 'string' && value.constructor.name.length > 0
+   ? value.constructor.name
+   : 'bytes'
+  return {
+   type: 'bytes',
+   summary: `bytes{${value.byteLength}}`,
+   detail: `${ctorName}{${value.byteLength}}`,
+   expandable: true,
+  }
  }
  const ctorName = value.constructor && typeof value.constructor.name === 'string' && value.constructor.name.length > 0
   ? value.constructor.name
   : 'Object'
  return {
   type: 'object',
-  summary: ctorName,
+  summary: ctorName === 'Object' ? 'object' : ctorName,
   detail: safePrettyJson(value),
   expandable: true,
  }
@@ -3070,7 +3523,7 @@ function makeEntry(key, target, { inherited = false, enumerable = true, override
    value: undefined,
    error: message,
    type: 'error',
-   summary: 'Error',
+   summary: 'error',
    detail: message,
    expandable: false,
    inherited,
@@ -3154,9 +3607,32 @@ export function listScopeEntries(target, options = {}) {
  ]
 }
 
+export function filterScopeEntries(entries, query = '', options = {}) {
+ const list = Array.isArray(entries) ? entries : []
+ const q = String(query ?? '').trim().toLowerCase()
+ const includeInherited = options.includeInherited !== false
+ const selectedKey = options.selectedKey ?? null
+ const keepSelected = options.keepSelected === true
+
+ return list.filter(entry => {
+  if (!includeInherited && entry.inherited && !(selectedKey !== null && entry.key === selectedKey)) {
+   return false
+  }
+  if (q.length === 0) {
+   return true
+  }
+  if (keepSelected && selectedKey !== null && entry.key === selectedKey) {
+   return true
+  }
+  return String(entry.key ?? '').toLowerCase().includes(q)
+ })
+}
+
 export function resolveScopeColumns(state, selectedPath = [], options = {}) {
  const rootState = state && typeof state === 'object' ? state : {}
  const pathList = Array.isArray(selectedPath) ? selectedPath : []
+ const includeInherited = options.includeInherited !== false
+ const filterQuery = String(options.filter ?? '').trim()
  const rootEntries = listScopeEntries(rootState, { isRoot: true, argv: options.argv ?? [] })
  const validPath = []
  const columns = [
@@ -3169,6 +3645,11 @@ export function resolveScopeColumns(state, selectedPath = [], options = {}) {
    valueSummary: `${rootEntries.length}`,
    valueDetail: '',
    entries: rootEntries,
+   totalCount: rootEntries.length,
+   unfilteredCount: rootEntries.length,
+   matchCount: rootEntries.length,
+   inheritedCount: rootEntries.filter(e => e.inherited).length,
+   filtered: false,
   },
  ]
 
@@ -3193,6 +3674,11 @@ export function resolveScopeColumns(state, selectedPath = [], options = {}) {
     valueSummary: match.summary,
     valueDetail: match.detail,
     entries: childEntries,
+    totalCount: childEntries.length,
+    unfilteredCount: childEntries.length,
+    matchCount: childEntries.length,
+    inheritedCount: childEntries.filter(e => e.inherited).length,
+    filtered: false,
    })
    currentEntries = childEntries
   }
@@ -3212,9 +3698,47 @@ export function resolveScopeColumns(state, selectedPath = [], options = {}) {
   }
  }
 
+ let deepestEntriesIdx = 0
+ for (let i = 0; i < columns.length; i++) {
+  const col = columns[i]
+  if (col.kind !== 'entries') {
+   continue
+  }
+  deepestEntriesIdx = i
+  if (!includeInherited && i > 0) {
+   col.entries = filterScopeEntries(col.entries, '', {
+    includeInherited: false,
+    selectedKey: col.selectedKey,
+   })
+   col.unfilteredCount = col.entries.length
+   col.matchCount = col.entries.length
+  }
+ }
+
+ const requestedIdx = typeof options.filterColumnIndex === 'number' ? options.filterColumnIndex : null
+ const filterColumnIndex =
+  requestedIdx !== null &&
+  requestedIdx >= 0 &&
+  requestedIdx < columns.length &&
+  columns[requestedIdx].kind === 'entries'
+   ? requestedIdx
+   : deepestEntriesIdx
+
+ if (filterQuery.length > 0 && filterColumnIndex >= 0 && columns[filterColumnIndex].kind === 'entries') {
+  const col = columns[filterColumnIndex]
+  col.unfilteredCount = col.entries.length
+  col.entries = filterScopeEntries(col.entries, filterQuery, {
+   includeInherited: true,
+   keepSelected: false,
+  })
+  col.matchCount = col.entries.length
+  col.filtered = true
+ }
+
  return {
   path: validPath,
   columns,
+  filterColumnIndex,
  }
 }
 
