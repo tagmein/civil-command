@@ -71,10 +71,13 @@ const TRANSPORT_EXCLUDED_BINDINGS = new Set([
  'data',
  'Date',
  'document',
+ 'exportLaneLine',
  'importLane',
  'JSON',
  'Math',
  'output',
+ 'respond',
+ 'setLaneLine',
  'window',
 ])
 
@@ -1270,8 +1273,42 @@ export function parse(text, filename, startRow = 0) {
 
 export const PRIMITIVE_TYPES = ['string', 'number', 'boolean', 'null', 'undefined']
 
-export const LANE_TABS = ['source', 'input', 'scope', 'data', 'view']
+export const LANE_TABS = ['source', 'input', 'scope', 'data', 'view', 'server']
 export const DEFAULT_LANE_TAB = 'source'
+
+export const LANE_FEATURES = ['httpServer']
+
+export function normalizeLaneFeatures(raw) {
+ if (typeof raw === 'string') {
+  return parseLaneFeatures(raw)
+ }
+ if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+  return { httpServer: false }
+ }
+ return {
+  httpServer: Boolean(raw.httpServer),
+ }
+}
+
+export function parseLaneFeatures(raw) {
+ if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+  return normalizeLaneFeatures(raw)
+ }
+ if (typeof raw !== 'string') {
+  return { httpServer: false }
+ }
+ const trimmed = raw.trim()
+ if (!trimmed) {
+  return { httpServer: false }
+ }
+ try {
+  const parsed = JSON.parse(trimmed)
+  return normalizeLaneFeatures(parsed)
+ }
+ catch {
+  return { httpServer: false }
+ }
+}
 
 export function normalizeLaneTab(tab) {
  if (typeof tab === 'string') {
@@ -3831,6 +3868,316 @@ export function parseImportLine(source) {
  }
 }
 
+const EXPORT_LINE_FN_NAMES = new Set(['exportLaneLine', 'setLaneLine'])
+
+function normalizeExportTarget(target) {
+ if (!target) {
+  return null
+ }
+ if (Array.isArray(target)) {
+  if (target.length < 2) {
+   return null
+  }
+  const laneId = String(target[0] ?? '').trim()
+  const lineId = String(target[1] ?? '').trim()
+  if (!laneId || !lineId) {
+   return null
+  }
+  return { laneId, lineId }
+ }
+ if (typeof target === 'object') {
+  const laneId = String(target.laneId ?? '').trim()
+  const lineId = String(target.lineId ?? '').trim()
+  if (!laneId || !lineId) {
+   return null
+  }
+  return { laneId, lineId }
+ }
+ return null
+}
+
+export function formatExportLine(spec = {}) {
+ const alias = String(spec.alias ?? '').trim()
+ const fnName = spec.fnName === 'setLaneLine' ? 'setLaneLine' : 'exportLaneLine'
+ const rawTargets = Array.isArray(spec.targets) ? spec.targets : []
+ const targets = []
+ for (const item of rawTargets) {
+  const norm = normalizeExportTarget(item)
+  if (norm) {
+   targets.push(norm)
+  }
+ }
+ const targetsStr = targets.length > 0
+  ? `{ ${targets.map(t => `{ ${quoteFieldToken(t.laneId)} ${quoteFieldToken(t.lineId)} }`).join(' ')} }`
+  : '{}'
+ const rawExpr = String(spec.contentExpr ?? '').trim()
+ let exprStr
+ if (rawExpr.length === 0) {
+  exprStr = "''"
+ }
+ else if (rawExpr.startsWith(';') || rawExpr.startsWith('!') || rawExpr.startsWith(':')) {
+  exprStr = `[ ${rawExpr} ]`
+ }
+ else {
+  exprStr = rawExpr
+ }
+ if (alias.length > 0) {
+  return `; to ${quoteFieldToken(alias)} !${fnName} ${targetsStr} ${exprStr}`
+ }
+ return `!${fnName} ${targetsStr} ${exprStr}`
+}
+
+function isExportInvokeNode(node) {
+ if (
+  !Array.isArray(node) ||
+  node.length !== 4 ||
+  node[0] !== '@' ||
+  node[1] !== 'invoke' ||
+  !Array.isArray(node[2]) ||
+  !EXPORT_LINE_FN_NAMES.has(node[3])
+ ) {
+  return false
+ }
+ const args = node[2]
+ if (args.length === 2 && Array.isArray(args[0])) {
+  return args[0].every(pair =>
+   Array.isArray(pair) &&
+   pair.length === 2 &&
+   (typeof pair[0] === 'string' || typeof pair[0] === 'number') &&
+   (typeof pair[1] === 'string' || typeof pair[1] === 'number')
+  )
+ }
+ if (args.length === 3) {
+  return (
+   (typeof args[0] === 'string' || typeof args[0] === 'number') &&
+   (typeof args[1] === 'string' || typeof args[1] === 'number')
+  )
+ }
+ return false
+}
+
+function skipWsAndComments(src, start) {
+ let i = start
+ while (i < src.length) {
+  const ch = src[i]
+  if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n' || ch === ',') {
+   i += 1
+   continue
+  }
+  if (
+   ch === '-' &&
+   src[i + 1] === '-' &&
+   (i + 2 === src.length || src[i + 2] === ' ' || src[i + 2] === '\t' || src[i + 2] === '\n' || src[i + 2] === '\r')
+  ) {
+   i += 2
+   while (i < src.length && src[i] !== '\n') {
+    i += 1
+   }
+   continue
+  }
+  break
+ }
+ return i
+}
+
+function skipFieldTerm(src, startPos) {
+ const start = skipWsAndComments(src, startPos)
+ if (start >= src.length) {
+  return { start, end: start }
+ }
+ const first = src[start]
+ if (first === "'") {
+  let i = start + 1
+  while (i < src.length) {
+   if (src[i] === '\\') {
+    i += 2
+    continue
+   }
+   if (src[i] === "'") {
+    return { start, end: i + 1 }
+   }
+   i += 1
+  }
+  return { start, end: src.length }
+ }
+ if (first === '{' || first === '[' || first === '(') {
+  const stack = [first === '{' ? '}' : first === '[' ? ']' : ')']
+  let i = start + 1
+  while (i < src.length && stack.length > 0) {
+   const ch = src[i]
+   if (ch === "'") {
+    i += 1
+    while (i < src.length) {
+     if (src[i] === '\\') {
+      i += 2
+      continue
+     }
+     if (src[i] === "'") {
+      break
+     }
+     i += 1
+    }
+    i += 1
+    continue
+   }
+   if (
+    ch === '-' &&
+    src[i + 1] === '-' &&
+    (i + 2 === src.length || src[i + 2] === ' ' || src[i + 2] === '\t' || src[i + 2] === '\n' || src[i + 2] === '\r')
+   ) {
+    while (i < src.length && src[i] !== '\n') {
+     i += 1
+    }
+    continue
+   }
+   if (ch === '{') { stack.push('}') }
+   else if (ch === '[') { stack.push(']') }
+   else if (ch === '(') { stack.push(')') }
+   else if (ch === stack[stack.length - 1]) {
+    stack.pop()
+    if (stack.length === 0) {
+     return { start, end: i + 1 }
+    }
+   }
+   i += 1
+  }
+  return { start, end: src.length }
+ }
+ let i = start
+ while (i < src.length) {
+  const ch = src[i]
+  if (
+   ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n' || ch === ',' ||
+   ch === '{' || ch === '}' || ch === '[' || ch === ']' || ch === '(' || ch === ')' ||
+   ch === ';' || ch === ':' || ch === '!' || ch === "'"
+  ) {
+   break
+  }
+  i += 1
+ }
+ return { start, end: i }
+}
+
+function unwrapExportContentExpr(raw) {
+ const trimmed = String(raw ?? '').trim()
+ if (trimmed === "''") {
+  return ''
+ }
+ if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+  const scanned = skipFieldTerm(trimmed, 0)
+  if (scanned.start === 0 && scanned.end === trimmed.length) {
+   const inner = trimmed.slice(1, -1).trim()
+   if (inner.startsWith(';') || inner.startsWith('!') || inner.startsWith(':')) {
+    return inner
+   }
+  }
+ }
+ return trimmed
+}
+
+function extractExportExprFromSource(source, hasAlias, isSingleTarget) {
+ let pos = skipWsAndComments(source, 0)
+ if (hasAlias) {
+  if (source[pos] === ';') {
+   pos += 1
+  }
+  pos = skipFieldTerm(source, pos).end // to
+  pos = skipFieldTerm(source, pos).end // alias
+  pos = skipWsAndComments(source, pos)
+ }
+ if (source[pos] === '!') {
+  pos += 1
+ }
+ pos = skipFieldTerm(source, pos).end // exportLaneLine | setLaneLine
+ if (isSingleTarget) {
+  pos = skipFieldTerm(source, pos).end // laneId
+  pos = skipFieldTerm(source, pos).end // lineId
+ }
+ else {
+  pos = skipFieldTerm(source, pos).end // targets list
+ }
+ pos = skipWsAndComments(source, pos)
+ if (pos >= source.length) {
+  return ''
+ }
+ const ch = source[pos]
+ if (ch === ';' || ch === ':' || ch === '!') {
+  let end = source.length
+  for (let i = pos; i < source.length; i++) {
+   if (source[i] === "'") {
+    const strTerm = skipFieldTerm(source, i)
+    i = strTerm.end - 1
+    continue
+   }
+   if (
+    source[i] === '-' &&
+    source[i + 1] === '-' &&
+    (i + 2 === source.length || source[i + 2] === ' ' || source[i + 2] === '\t' || source[i + 2] === '\n' || source[i + 2] === '\r')
+   ) {
+    end = i
+    break
+   }
+   if (source[i] === '\n' || source[i] === ',') {
+    end = i
+    break
+   }
+  }
+  return unwrapExportContentExpr(source.slice(pos, end))
+ }
+ const term = skipFieldTerm(source, pos)
+ return unwrapExportContentExpr(source.slice(term.start, term.end))
+}
+
+export function parseExportLine(source) {
+ const text = String(source ?? '')
+ if (text.trim().length === 0) {
+  return null
+ }
+ try {
+  const ast = parse(`${text}\n`)
+  const stmts = ast.filter(node => !isCommentNode(node))
+  if (stmts.length !== 1) {
+   return null
+  }
+  const stmt = stmts[0]
+  let alias = ''
+  let invokeNode = null
+  if (
+   Array.isArray(stmt) &&
+   stmt.length === 4 &&
+   stmt[0] === '@' &&
+   stmt[1] === 'to' &&
+   typeof stmt[2] === 'string' &&
+   isExportInvokeNode(stmt[3])
+  ) {
+   alias = stmt[2]
+   invokeNode = stmt[3]
+  }
+  else if (isExportInvokeNode(stmt)) {
+   invokeNode = stmt
+  }
+  else {
+   return null
+  }
+  const fnName = invokeNode[3]
+  const args = invokeNode[2]
+  const isSingleTarget = args.length === 3
+  const targets = isSingleTarget
+   ? [normalizeExportTarget([args[0], args[1]])].filter(Boolean)
+   : args[0].map(normalizeExportTarget).filter(Boolean)
+  const contentExpr = extractExportExprFromSource(text, alias.length > 0, isSingleTarget)
+  return {
+   alias,
+   fnName,
+   targets,
+   contentExpr,
+  }
+ }
+ catch {
+  return null
+ }
+}
+
 export function resolveScopePath(state, path = [], options = {}) {
  const segments = Array.isArray(path) ? path.map(seg => String(seg)) : []
  if (segments.length === 0) {
@@ -3875,7 +4222,19 @@ export function resolveScopePath(state, path = [], options = {}) {
  }
 }
 
-const LANE_EXPORT_EXCLUDED_KEYS = new Set(['argv', 'console', 'data', 'Date', 'importLane', 'JSON', 'Math'])
+const LANE_EXPORT_EXCLUDED_KEYS = new Set([
+ 'argv',
+ 'console',
+ 'data',
+ 'Date',
+ 'exportLaneLine',
+ 'importLane',
+ 'JSON',
+ 'Math',
+ 'req',
+ 'respond',
+ 'setLaneLine',
+])
 
 export function extractLaneExports(state) {
  const out = {}

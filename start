@@ -5,6 +5,8 @@ const path = require('path')
 
 const rootDir = path.resolve('.')
 const indexPath = path.join(rootDir, 'index.html')
+const fsApiPromise = import('./fs-api.mjs')
+const deployApiPromise = import('./deploy-api.mjs')
 
 const mimeTypes = {
  '.html': 'text/html; charset=utf-8',
@@ -42,7 +44,30 @@ function serveFile(filePath, res) {
  .pipe(res)
 }
 
-http.createServer((req, res) => {
+const server = http.createServer((req, res) => {
+ const reqPathname = req.url.split('?')[0]
+ if (reqPathname === '/api/fs' || reqPathname.startsWith('/api/fs/')) {
+  return fsApiPromise
+   .then(({ handleFsApiRequest }) => handleFsApiRequest(req, res))
+   .catch(err => {
+    if (!res.headersSent) {
+     res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
+    }
+    res.end(JSON.stringify({ ok: false, error: err && err.message ? err.message : 'Filesystem error' }))
+   })
+ }
+
+ if (reqPathname === '/api/deploy' || reqPathname.startsWith('/api/deploy/')) {
+  return deployApiPromise
+   .then(({ handleDeployApiRequest }) => handleDeployApiRequest(req, res))
+   .catch(err => {
+    if (!res.headersSent) {
+     res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
+    }
+    res.end(JSON.stringify({ ok: false, error: err && err.message ? err.message : 'Deploy API error' }))
+   })
+ }
+
  if (req.url.startsWith('/api/data')) {
   const p = http.request({
    hostname: 'localhost',
@@ -76,6 +101,23 @@ http.createServer((req, res) => {
   // SPA fallback for client-side routes (e.g., /dashboard/settings)
   serveFile(indexPath, res)
  })
-}).listen(8080, () => {
+})
+
+server.on('upgrade', (req, socket, head) => {
+ const reqPathname = (req.url || '/').split('?')[0]
+ if (reqPathname === '/api/deploy/terminal/ws') {
+  deployApiPromise
+   .then(({ handleDeployUpgrade }) => handleDeployUpgrade(req, socket, head))
+   .catch(() => {
+    if (!socket.destroyed) {
+     socket.destroy()
+    }
+   })
+  return
+ }
+ socket.destroy()
+})
+
+server.listen(8080, () => {
  console.log('Serving on http://localhost:8080')
 })

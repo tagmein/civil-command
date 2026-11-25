@@ -3,12 +3,17 @@
 ; to lane-inputs ; load /src/lane-inputs.fs
 ; to lane-config-modal ; load /src/lane-config-modal.fs
 ; to lane-import-modal ; load /src/lane-import-modal.fs
+; to lane-export-modal ; load /src/lane-export-modal.fs
+; to lane-export-deploy-modal ; load /src/lane-export-deploy-modal.fs
 ; to lane-modal-mod ; load /src/lane-modal.fs
 ; to confirm-modal-mod ; load /src/confirm-modal.fs
 ; to row-picker-modal-mod ; load /src/lane-row-picker-modal.fs
 ; to lane-session-modal-mod ; load /src/lane-session-modal.fs
 ; to lane-package-modal-mod ; load /src/lane-package-modal.fs
+; to lane-dir-modal-mod ; load /src/lane-dir-modal.fs
 ; to lane-line-info-mod ; load /src/lane-line-info-modal.fs
+; to lane-terminal-modal-mod ; load /src/lane-terminal-modal.fs
+; to lane-servers-modal-mod ; load /src/lane-servers-modal.fs
 ; to lane-rails ; load /src/lane-rails.fs
 ; to default-body-bg '#202020'
 ; to default-scrollbar-color [ match
@@ -27,6 +32,8 @@
  { session-id null }
  { browser-session-id null }
  { session-overridden false }
+ { session-data-dir null }
+ { session-data-dir-confirmed false }
  { session-meta ; object }
  { open-package-ids {} }
  { open-packages {} }
@@ -44,6 +51,10 @@
 ; set $config-modal scope.config-modal
 ; to import-modal !lane-import-modal.create $scope
 ; set $import-modal scope.import-modal
+; to export-modal !lane-export-modal.create $scope
+; set $export-modal scope.export-modal
+; to export-deploy-modal !lane-export-deploy-modal.create $scope
+; set $export-deploy-modal scope.export-deploy-modal
 ; to lane-modal !lane-modal-mod.create $scope
 ; set $lane-modal scope.lane-modal
 ; to confirm-modal !confirm-modal-mod.create
@@ -54,8 +65,14 @@
 ; set $session-modal scope.session-modal
 ; to package-modal !lane-package-modal-mod.create $scope
 ; set $package-modal scope.package-modal
+; to dir-modal !lane-dir-modal-mod.create $scope
+; set $dir-modal scope.dir-modal
 ; to line-info-modal !lane-line-info-mod.create
 ; set $line-info-modal scope.line-info-modal
+; to terminal-modal !lane-terminal-modal-mod.create
+; set $terminal-modal scope.terminal-modal
+; to servers-modal !lane-servers-modal-mod.create $scope
+; set $servers-modal scope.servers-modal
 ; to rails !lane-rails.create $scope
 ; set $rails scope.rails
 ; to copy-id-list (
@@ -155,6 +172,16 @@
  ]
  $sess-rec
 )
+; to scope.format-data-dir-label (
+ -- Formats a session data directory label using formatDataDirLabel with a safe fallback
+ ; to { raw-dir confirmed } $argv
+ [ match
+  { $formatDataDirLabel : !formatDataDirLabel $raw-dir $confirmed }
+  { $raw-dir : $raw-dir }
+  { [ propertyIs true confirmed ] : Default }
+  { true : 'Default (unconfirmed)' }
+ ]
+)
 ; to scope.apply-session-state (
  -- Updates full session state and saved baseline on scope from storage session helper results
  ; to { sess } $argv
@@ -163,6 +190,23 @@
    ; set $sess.sessionId scope.session-id
    ; set $sess.browserSessionId scope.browser-session-id
    ; set [ ternary $sess.isOverridden true false ] scope.session-overridden
+   ; to raw-dir [ match
+    { [ propertyIs undefined sess.meta.dataDir ] : $sess.dataDir }
+    { true : $sess.meta.dataDir }
+   ]
+   ; to norm-dir [ match
+    { $normalizeDataDir : !normalizeDataDir $raw-dir }
+    { $raw-dir : $raw-dir }
+    { true : null }
+   ]
+   ; to dir-confirmed [ match
+    { [ propertyIs true sess.meta.dataDirConfirmed ] : true }
+    { [ propertyIs true sess.dataDirConfirmed ] : true }
+    { $norm-dir : true }
+    { true : false }
+   ]
+   ; set $norm-dir scope.session-data-dir
+   ; set $dir-confirmed scope.session-data-dir-confirmed
    ; set $sess.recentSessions scope.recent-sessions
    [ match
     { $sess.sessionHistory : ; set $sess.sessionHistory scope.session-history }
@@ -224,48 +268,113 @@
  !scope.sync
  !scope.recompute-session-dirty
  [ match
+  { $scope.load-preferences-lane : !scope.load-preferences-lane }
+ ]
+ [ match
   { $rails.sync-preferences-menu : !rails.sync-preferences-menu }
  ]
  !scope.apply-preferences
 )
+; to capture-previous-confirmed (
+ -- Captures the active session ID and tab-override flag when already confirmed and distinct from target-id
+ ; to { target-id } $argv
+ [ match
+  { [ propertyIs true scope.session-data-dir-confirmed ] (
+   [ match
+    { $scope.session-id (
+     [ match
+      { [ propertyIs $target-id scope.session-id ] : null }
+      { true : ; object { id $scope.session-id } { was-tab $scope.session-overridden } }
+     ]
+    ) }
+    { true : null }
+   ]
+  ) }
+  { true : null }
+ ]
+)
+; to maybe-prompt-confirm (
+ -- Prompts data directory selection when switching to an unconfirmed session
+ ; to { prev-info } $argv
+ [ match
+  { [ propertyIs false scope.session-data-dir-confirmed ] (
+   [ match
+    { $prev-info.id : !dir-modal.open-confirm [ object { previous-session-id $prev-info.id } { previous-was-tab $prev-info.was-tab } ] }
+    { true : !dir-modal.open-confirm }
+   ]
+  ) }
+ ]
+)
+; to scope.confirm-session-data-dir (
+ -- Permanently binds the active session to a computer folder (or confirms Default when null/empty)
+ ; to { data-dir } $argv
+ !scope.ensure-session
+ ; to res !setSessionDataDir $data $window $scope.session-id [ object { dataDir $data-dir } ]
+ [ match
+  { $res.ok (
+   !scope.apply-session-state $res.session
+   !refresh-after-session-change $res.dirChanged
+   !sync-session-ui
+  ) }
+ ]
+ $res
+)
+; to scope.prompt-new-session (
+ -- Opens the computer directory picker modal in Create Session mode
+ ; to { tab-only } $argv
+ !dir-modal.open-create [ object { tab-only [ ternary $tab-only true false ] } ]
+)
 ; to scope.new-session (
  -- Creates a new session (browser + tab by default), switches to it, and navigates to its lanes
- ; to { name } $argv
- ; to opts [ object { name $name } { tabOnly false } ]
+ ; to { name data-dir confirmed } $argv
+ ; to opts [ object { name $name } { tabOnly false } { dataDir $data-dir } { dataDirConfirmed $confirmed } ]
  ; to sess !createNewSession $data $window $opts
  !scope.apply-session-state $sess
  !refresh-after-session-change true
+ [ match
+  { [ propertyIs false scope.session-data-dir-confirmed ] : !dir-modal.open-confirm }
+ ]
  $sess
 )
 ; to scope.switch-session (
  -- Switches active session (browser + tab), redirecting browser URL to that session's open lanes
  ; to { id } $argv
+ ; to prev !capture-previous-confirmed $id
  ; to sess !switchBrowserSession $data $window $id
  !scope.apply-session-state $sess
  !refresh-after-session-change true
+ !maybe-prompt-confirm $prev
  $sess
 )
 ; to scope.new-tab-session (
  -- Creates a new tab-only session in sessionStorage without altering the localStorage browser session
- ; to { name } $argv
- ; to sess !createNewTabSession $data $window $name
+ ; to { name data-dir confirmed } $argv
+ ; to opts [ object { name $name } { dataDir $data-dir } { dataDirConfirmed $confirmed } ]
+ ; to sess !createNewTabSession $data $window $opts
  !scope.apply-session-state $sess
  !refresh-after-session-change true
+ [ match
+  { [ propertyIs false scope.session-data-dir-confirmed ] : !dir-modal.open-confirm }
+ ]
  $sess
 )
 ; to scope.switch-tab-session (
  -- Switches the active tab session in sessionStorage only and navigates to its lanes
  ; to { id } $argv
+ ; to prev !capture-previous-confirmed $id
  ; to sess !switchTabSession $data $window $id
  !scope.apply-session-state $sess
  !refresh-after-session-change true
+ !maybe-prompt-confirm $prev
  $sess
 )
 ; to scope.return-to-browser-session (
  -- Clears the tab override, returns sessionStorage to the saved localStorage browser session, and navigates to its lanes
+ ; to prev !capture-previous-confirmed $scope.browser-session-id
  ; to sess !returnToBrowserSession $data $window
  !scope.apply-session-state $sess
  !refresh-after-session-change true
+ !maybe-prompt-confirm $prev
  $sess
 )
 ; to scope.promote-tab-session (
@@ -278,9 +387,11 @@
 ; to scope.switch-browser-session (
  -- Switches both the persistent localStorage browser session and active sessionStorage tab session and navigates to its lanes
  ; to { id } $argv
+ ; to prev !capture-previous-confirmed $id
  ; to sess !switchBrowserSession $data $window $id
  !scope.apply-session-state $sess
  !refresh-after-session-change true
+ !maybe-prompt-confirm $prev
  $sess
 )
 ; to scope.save-session-draft (
@@ -483,6 +594,9 @@
    ; to sess-id-el !document.createElement div
    ; assign $sess-id-el { className workspace-session-id } { textContent '' }
 
+   ; to sess-dir-btn !document.createElement button
+   ; assign $sess-dir-btn { type button } { className workspace-session-dir } { textContent Default } { title 'Permanent session data directory' }
+
    ; to draft-box !document.createElement div
    ; assign $draft-box { className workspace-session-draft } { hidden true }
    ; to draft-lbl !document.createElement div
@@ -515,6 +629,7 @@
 
    !sess-sec.appendChild $sess-hdr
    !sess-sec.appendChild $sess-id-el
+   !sess-sec.appendChild $sess-dir-btn
    !sess-sec.appendChild $draft-box
    !sess-sec.appendChild $quick-row
 
@@ -539,6 +654,12 @@
    !host-el.appendChild $panel
 
    !sess-name-btn.addEventListener click : !session-modal.open-switch-session
+   !sess-dir-btn.addEventListener click (
+    [ match
+     { [ propertyIs false scope.session-data-dir-confirmed ] : !dir-modal.open-confirm }
+     { true : !session-modal.open-switch-session }
+    ]
+   )
    !draft-save-btn.addEventListener click : !scope.save-session-draft
    !draft-fork-btn.addEventListener click : !scope.fork-session
    !draft-abandon-btn.addEventListener click : !scope.abandon-session-draft
@@ -554,6 +675,7 @@
     { sess-name-btn $sess-name-btn }
     { sess-ver $sess-ver }
     { sess-id-el $sess-id-el }
+    { sess-dir-btn $sess-dir-btn }
     { draft-box $draft-box }
     { draft-save-btn $draft-save-btn }
     { draft-fork-btn $draft-fork-btn }
@@ -608,6 +730,15 @@
    ]
    ; set $meta-line summary.sess-id-el.textContent
    ; set [ match { $sid : $sid } { true : '' } ] summary.sess-id-el.title
+   ; to dir-confirmed [ propertyIs true scope.session-data-dir-confirmed ]
+   ; to dir-label !scope.format-data-dir-label $scope.session-data-dir $dir-confirmed
+   ; to dir-title [ match
+    { $dir-confirmed : ; add 'Permanent data directory: ' $dir-label }
+    { true : 'Data directory not yet confirmed — click to choose or confirm Default' }
+   ]
+   ; set $dir-label summary.sess-dir-btn.textContent
+   ; set $dir-title summary.sess-dir-btn.title
+   ; set [ ternary $dir-confirmed workspace-session-dir 'workspace-session-dir workspace-session-dir--unconfirmed' ] summary.sess-dir-btn.className
    ; set [ ternary $scope.session-dirty false true ] summary.draft-box.hidden
 
    ; while { propertyIsGreaterThan 0 summary.pkg-els.length } (
@@ -1056,20 +1187,167 @@
  ; to { opts } $argv
  !import-modal.open $opts
 )
+; to scope.pick-export (
+ -- Opens the Export to Lane target picker modal
+ ; to { opts } $argv
+ !export-modal.open $opts
+)
+; to scope.open-export-deploy (
+ -- Opens the Deploy Exported Changes modal for connected Export-to-Lane target lanes
+ ; to { opts } $argv
+ !export-deploy-modal.open $opts
+)
 ; to scope.pick-lane (
  -- Opens the full-screen lane picker modal for selecting a lane ID
  ; to { opts } $argv
  !lane-modal.open-picker $opts
 )
 ; to scope.refresh-import-labels (
- -- Updates import picker button labels across all open lanes after a lane rename
+ -- Updates import and export picker button labels across all open lanes after a lane rename
  ; to { id } $argv
  ; each $scope.lanes (
   ; to { lane } $argv
   [ match
    { $lane.notebook.refresh-import-labels : !lane.notebook.refresh-import-labels $id }
   ]
+  [ match
+   { $lane.notebook.refresh-export-labels : !lane.notebook.refresh-export-labels $id }
+  ]
  )
+)
+; to scope.refresh-export-statuses (
+ -- Refreshes live deploy status bars across open lanes that target the given lane ID
+ ; to { target-id } $argv
+ ; each $scope.lanes (
+  ; to { lane } $argv
+  [ match
+   { $lane.notebook.refresh-export-statuses : !lane.notebook.refresh-export-statuses $target-id }
+  ]
+ )
+)
+; to scope.set-lane-line (
+ -- Writes evaluated text to a target lane line if changed, updates any mounted target lane UI, and returns deploy status
+ ; to { target-lane-id target-line-id content caller-lane-id visited } $argv
+ ; to clean-lane [ match { $target-lane-id : ; add '' $target-lane-id } { true : '' } ]
+ ; to clean-line [ match { $target-line-id : ; add '' $target-line-id } { true : '' } ]
+ ; to next-str [ match
+  { [ propertyIs null content ] : '' }
+  { [ propertyIs undefined content ] : '' }
+  { true : ; add '' $content }
+ ]
+ [ match
+  { [ propertyIs '' clean-lane ] : ; object { ok false } { changed false } { laneId '' } { lineId $clean-line } { error 'Target lane ID is required' } }
+  { [ propertyIs '' clean-line ] : ; object { ok false } { changed false } { laneId $clean-lane } { lineId '' } { error 'Target line ID is required' } }
+  { [ propertyIs $clean-lane caller-lane-id ] : ; object { ok false } { changed false } { laneId $clean-lane } { lineId $clean-line } { error 'Cannot export to the same lane' } }
+  { true (
+   !scope.ensure-session
+   ; to access !checkLaneAccess $data $scope.open-package-ids $clean-lane
+   [ match
+    { [ propertyIs false access.allowed ] : ; object { ok false } { changed false } { laneId $clean-lane } { lineId $clean-line } { error 'Access denied: lane belongs to a locked package' } }
+    { true (
+     ; to write-res [ match
+      { $setTargetLaneLine : !setTargetLaneLine $data $clean-lane $clean-line $next-str $window }
+      { true : ; object { ok false } { changed false } { error 'setTargetLaneLine helper is not available' } }
+     ]
+     [ match
+      { [ and { propertyIs true write-res.ok } { propertyIs true write-res.changed } ] (
+       ; to open-target [ get scope.by-id $clean-lane ]
+       ; to next-visited ; object
+       [ match { $visited : ; assign $next-visited $visited } ]
+       [ match { $caller-lane-id : ; to next-visited $caller-lane-id true } ]
+       ; to already-vis [ get next-visited $clean-lane ]
+       [ match
+        { $already-vis : null }
+        { $open-target.notebook.apply-external-line-update (
+         ; to next-visited $clean-lane true
+         !open-target.notebook.apply-external-line-update $clean-line $write-res.text $write-res.updatedAt $next-visited
+        ) }
+       ]
+      ) }
+     ]
+     ; to lane-title !scope.get-lane-title $clean-lane
+     ; to deploy-status [ match
+      { $getLaneDeployStatus : !getLaneDeployStatus $data $data $clean-lane }
+      { true : null }
+     ]
+     ; to out ; object
+     ; assign $out $write-res [ object
+      { laneId $clean-lane }
+      { lineId $clean-line }
+      { laneTitle $lane-title }
+      { deployStatus $deploy-status }
+     ]
+     $out
+    ) }
+   ]
+  ) }
+ ]
+)
+; to scope.export-lane-line (
+ -- Updates one or more { laneId lineId } targets with evaluated content and summarizes per-lane deploy status
+ ; to { caller-lane-id first-arg second-arg third-arg visited } $argv
+ ; to is-list [ match { $first-arg.map : true } { true : false } ]
+ ; to raw-targets [ match
+  { $is-list : $first-arg }
+  { true : { { $first-arg $second-arg } } }
+ ]
+ ; to raw-content [ match
+  { $is-list : $second-arg }
+  { true : $third-arg }
+ ]
+ ; to content-str [ match
+  { [ propertyIs null raw-content ] : '' }
+  { [ propertyIs undefined raw-content ] : '' }
+  { true : ; add '' $raw-content }
+ ]
+ ; to norm-targets {}
+ ; each $raw-targets (
+  ; to { entry } $argv
+  ; to lid [ match { $entry.laneId : $entry.laneId } { $entry.0 : $entry.0 } { true : '' } ]
+  ; to lnid [ match { $entry.lineId : $entry.lineId } { $entry.1 : $entry.1 } { true : '' } ]
+  [ match
+   { $lid (
+    [ match
+     { $lnid : !norm-targets.push [ object { laneId $lid } { lineId $lnid } ] }
+    ]
+   ) }
+  ]
+ )
+ ; to results {}
+ ; to lane-statuses {}
+ ; to seen-lanes ; object
+ ; to changed-count ; object { n 0 }
+ ; to needs-deploy-count ; object { n 0 }
+ ; each $norm-targets (
+  ; to { t } $argv
+  ; to res !scope.set-lane-line $t.laneId $t.lineId $content-str $caller-lane-id $visited
+  !results.push $res
+  ; condition { propertyIs true res.changed } : ; set [ ; add $changed-count.n 1 ] changed-count.n
+  ; to already-lane [ get seen-lanes $res.laneId ]
+  [ match
+   { $already-lane : null }
+   { true (
+    ; to seen-lanes $res.laneId true
+    ; to ds $res.deployStatus
+    ; to has-changes [ match { $ds.hasChanges : true } { true : false } ]
+    ; condition { propertyIs true has-changes } : ; set [ ; add $needs-deploy-count.n 1 ] needs-deploy-count.n
+    !lane-statuses.push [ object
+     { laneId $res.laneId }
+     { laneTitle $res.laneTitle }
+     { deployed [ match { $ds.deployed : true } { true : false } ] }
+     { hasChanges $has-changes }
+     { status [ match { $ds.status : $ds.status } { true : 'not-deployed' } ] }
+     { deployStatus $ds }
+    ]
+   ) }
+  ]
+ )
+ ; object
+  { content $content-str }
+  { targets $results }
+  { laneStatuses $lane-statuses }
+  { changedCount $changed-count.n }
+  { needsDeployCount $needs-deploy-count.n }
 )
 ; to scope.refresh-lane-labels (
  -- Updates Data table lane cell display labels across all open lanes after a lane rename or reload
@@ -1100,6 +1378,9 @@
   { Math $window.Math }
   { JSON $window.JSON }
   { Date $window.Date }
+  { respond [ match { $createResponseHelper : !createResponseHelper } { true : null } ] }
+  { exportLaneLine ( ; object { ok true } { readonly true } { targets {} } { laneStatuses {} } { changedCount 0 } { needsDeployCount 0 } ) }
+  { setLaneLine ( ; object { ok true } { readonly true } { targets {} } { laneStatuses {} } { changedCount 0 } { needsDeployCount 0 } ) }
   { importLane (
    ; to { nested-id ...nested-path } $argv
    [ match
@@ -1200,6 +1481,7 @@
      ; condition { propertyIs $source-id scope.preferences-lane-id } : !scope.apply-preferences
     ) }
    ]
+   !scope.refresh-export-statuses $source-id
    ; each $scope.lanes (
     ; to { lane } $argv
     ; to is-other [ ternary [ propertyIs $source-id lane.id ] false true ]
@@ -1310,6 +1592,46 @@
  [ match
   { [ propertyIs true lane.is-locked ] : null }
   { $lane : !config-modal.open $lane }
+ ]
+)
+; to scope.set-features (
+ -- Updates a lane's feature flags in live state, lane KV storage, and notebook UI
+ ; to { id raw-features } $argv
+ ; to lane [ get scope.by-id $id ]
+ ; to normalized [ match
+  { $normalizeLaneFeatures : !normalizeLaneFeatures $raw-features }
+  { $raw-features : $raw-features }
+  { true : ; object { httpServer false } }
+ ]
+ [ match
+  { $lane (
+   ; set $normalized lane.features
+   ; to serialized !window.JSON.stringify $normalized
+   [ match
+    { $lane.data.set : !lane.data.set features $serialized }
+   ]
+   [ match
+    { $lane.notebook.set-features : !lane.notebook.set-features $normalized }
+   ]
+  ) }
+ ]
+ $normalized
+)
+; to scope.refresh-deploy-servers (
+ -- Refreshes the target SSH servers dropdown across all open lanes with Server tabs
+ ; each $scope.lanes (
+  ; to { lane } $argv
+  [ match
+   { $lane.notebook.server-view.refresh-servers : !lane.notebook.server-view.refresh-servers }
+  ]
+ )
+)
+; to scope.collect-lane-bundle (
+ -- Collects a lane (and optionally transitively imported lanes) for syncing to civil-memory KV
+ ; to { lane-id include-imports } $argv
+ [ match
+  { $collectLaneSyncBundle : !collectLaneSyncBundle $data $lane-id [ object { includeImports $include-imports } { openPackageIds $scope.open-package-ids } { win $window } ] }
+  { true : null }
  ]
 )
 ; to scope.mount-locked (
@@ -1430,12 +1752,26 @@
 )
 ; to scope.mount (
  -- Mounts a lane DOM header, gear config button, minimize buttons, reload button, close button, resize handles, notebook body, and registers it on scope
- ; to { id title lane-data initial-tab initial-subroute initial-width initial-minimized insert-index initial-path package-id } $argv
+ ; to { id title lane-data initial-tab initial-subroute initial-width initial-minimized insert-index initial-path package-id initial-features } $argv
  ; to resolved-pkg [ match
   { $package-id : $package-id }
   { true : default }
  ]
- ; to tab !normalizeLaneTab $initial-tab
+ ; to features [ match
+  { $normalizeLaneFeatures : !normalizeLaneFeatures $initial-features }
+  { $initial-features : $initial-features }
+  { true : ; object { httpServer false } }
+ ]
+ ; to raw-tab !normalizeLaneTab $initial-tab
+ ; to tab [ match
+  { [ propertyIs server raw-tab ] (
+   [ match
+    { $features.httpServer : server }
+    { true : source }
+   ]
+  ) }
+  { true : $raw-tab }
+ ]
  ; to subroute [ match
   { $initial-subroute : $initial-subroute }
   { true : '' }
@@ -1508,6 +1844,7 @@
  ; to lane [ object
   { id $id }
   { package-id $resolved-pkg }
+  { features $features }
   { is-locked false }
   { tab $tab }
   { subroute $subroute }
@@ -1619,6 +1956,22 @@
      ; to stored-path-raw !lane.data.get path
      ; to stored-path !normalizeLanePath $stored-path-raw
      ; set $stored-path lane.path
+     ; to stored-features-raw !lane.data.get features
+     ; to next-features [ match
+      { $parseLaneFeatures : !parseLaneFeatures $stored-features-raw }
+      { true : ; object { httpServer false } }
+     ]
+     ; set $next-features lane.features
+     ; to current-tab [ match
+      { [ propertyIs server current-tab ] (
+       [ match
+        { $next-features.httpServer : server }
+        { true : source }
+       ]
+      ) }
+      { true : $current-tab }
+     ]
+     ; set $current-tab lane.tab
      ; to next-min !normalizeLaneMinimizeSide $stored-minimized
      [ match
       { $stored-title (
@@ -2045,6 +2398,11 @@
      ; to stored-minimized !lane-data.get minimized
      ; to stored-path-raw !lane-data.get path
      ; to stored-path !normalizeLanePath $stored-path-raw
+     ; to stored-features-raw !lane-data.get features
+     ; to parsed-features [ match
+      { $parseLaneFeatures : !parseLaneFeatures $stored-features-raw }
+      { true : ; object { httpServer false } }
+     ]
      ; to parsed-stored-path !parseLanePath $stored-path
      ; to has-explicit-tab [ match
       { [ propertyIs undefined tab ] : false }
@@ -2077,7 +2435,7 @@
       ) }
      ]
      !scope.register $id $title $access.packageId
-     ; to lane !scope.mount $id $title $lane-data $normalized-tab $resolved-subroute $stored-width $stored-minimized $insert-index $stored-path $access.packageId
+     ; to lane !scope.mount $id $title $lane-data $normalized-tab $resolved-subroute $stored-width $stored-minimized $insert-index $stored-path $access.packageId $parsed-features
      !scope.recompute-session-dirty
      $lane
     ) }
@@ -2336,6 +2694,9 @@
   { $rails.sync-preferences-menu : !rails.sync-preferences-menu }
  ]
  !scope.apply-preferences
+ [ match
+  { [ propertyIs false scope.session-data-dir-confirmed ] : !dir-modal.open-confirm }
+ ]
 )
 !console.log $scope
 $scope

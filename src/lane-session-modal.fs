@@ -40,6 +40,14 @@
  ; assign $active-label { className lane-config-label } { textContent 'Current Session' }
  ; to active-id-box !document.createElement div
  ; set lane-session-id-box active-id-box.className
+ ; to active-dir-row !document.createElement div
+ ; set lane-session-dir-row active-dir-row.className
+ ; to active-dir-box !document.createElement div
+ ; assign $active-dir-box { className lane-session-id-box } { textContent Default }
+ ; to active-dir-btn !document.createElement button
+ ; assign $active-dir-btn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent 'Choose / Confirm…' } { hidden true }
+ !active-dir-row.appendChild $active-dir-box
+ !active-dir-row.appendChild $active-dir-btn
  ; to rename-row !document.createElement div
  ; set lane-config-input-row rename-row.className
  ; to rename-input !document.createElement input
@@ -50,6 +58,7 @@
  !rename-row.appendChild $rename-btn
  !active-field.appendChild $active-label
  !active-field.appendChild $active-id-box
+ !active-field.appendChild $active-dir-row
  !active-field.appendChild $rename-row
 
  ; to draft-field !document.createElement div
@@ -190,6 +199,8 @@
   { close-btn $close-btn }
   { session-body $session-body }
   { active-id-box $active-id-box }
+  { active-dir-box $active-dir-box }
+  { active-dir-btn $active-dir-btn }
   { rename-input $rename-input }
   { rename-btn $rename-btn }
   { draft-field $draft-field }
@@ -282,6 +293,20 @@
   ]
   ; to id-txt ; add $cur-id ; add ' · ' $ver
   ; set [ match { $overridden : ; add $id-txt ' (tab override)' } { true : $id-txt } ] active-id-box.textContent
+  ; to dir-confirmed [ propertyIs true lane-control.session-data-dir-confirmed ]
+  ; to dir-label [ match
+   { $lane-control.format-data-dir-label : !lane-control.format-data-dir-label $lane-control.session-data-dir $dir-confirmed }
+   { $lane-control.session-data-dir : $lane-control.session-data-dir }
+   { [ propertyIs true dir-confirmed ] : Default }
+   { true : 'Default (unconfirmed)' }
+  ]
+  ; to dir-display [ match
+   { $dir-confirmed : ; add 'Data Directory (permanent): ' $dir-label }
+   { true : ; add 'Data Directory: ' $dir-label }
+  ]
+  ; set $dir-display active-dir-box.textContent
+  ; set $dir-label active-dir-box.title
+  ; set $dir-confirmed active-dir-btn.hidden
   ; set $cur-name rename-input.value
   ; set [ ternary $dirty false true ] draft-field.hidden
   ; set $browser-id browser-id-box.textContent
@@ -304,8 +329,17 @@
    ; assign $nm { className lane-modal-item-title } { textContent $rec-name }
    ; to id-sub !document.createElement div
    ; assign $id-sub { className lane-modal-item-id } { textContent $rec.id }
+   ; to rec-dir [ match
+    { $lane-control.format-data-dir-label : !lane-control.format-data-dir-label $rec.dataDir $rec.dataDirConfirmed }
+    { $rec.dataDir : $rec.dataDir }
+    { [ propertyIs true rec.dataDirConfirmed ] : Default }
+    { true : 'Default (unconfirmed)' }
+   ]
+   ; to dir-sub !document.createElement div
+   ; assign $dir-sub { className lane-session-item-dir } { textContent [ ; add 'Dir: ' $rec-dir ] } { title $rec-dir }
    !info.appendChild $nm
    !info.appendChild $id-sub
+   !info.appendChild $dir-sub
 
    ; to acts !document.createElement div
    ; set lane-modal-item-actions acts.className
@@ -360,7 +394,11 @@
   ; to matches {}
   ; each $entries (
    ; to { item } $argv
-   ; to hay-raw ; add $item.sessionName ; add ' ' $item.sessionId
+   ; to dir-str [ match
+    { $item.dataDir : $item.dataDir }
+    { true : Default }
+   ]
+   ; to hay-raw ; add $item.sessionName ; add ' ' ; add $item.sessionId ; add ' ' $dir-str
    ; to hay !hay-raw.toLowerCase
    ; to hit [ match
     { [ propertyIs '' q ] : true }
@@ -399,11 +437,20 @@
      ]
      ; to time-el !document.createElement div
      ; assign $time-el { className lane-history-time } { textContent $time-txt }
+     ; to dir-lbl [ match
+      { $lane-control.format-data-dir-label : !lane-control.format-data-dir-label $entry.dataDir $entry.dataDirConfirmed }
+      { $entry.dataDir : $entry.dataDir }
+      { [ propertyIs true entry.dataDirConfirmed ] : Default }
+      { true : 'Default (unconfirmed)' }
+     ]
+     ; to dir-el !document.createElement div
+     ; assign $dir-el { className lane-history-dir } { textContent [ ; add 'Dir: ' $dir-lbl ] } { title $dir-lbl }
      ; to sub-el !document.createElement div
      ; to sub-txt ; add $entry.sessionId ; add ' · ' ; add $entry.laneCount ' lanes'
      ; assign $sub-el { className lane-modal-item-id } { textContent $sub-txt }
      !info.appendChild $nm
      !info.appendChild $time-el
+     !info.appendChild $dir-el
      !info.appendChild $sub-el
 
      ; to acts !document.createElement div
@@ -455,6 +502,12 @@
   $modal
  )
 
+ !active-dir-btn.addEventListener click (
+  !modal.close
+  [ match
+   { $lane-control.dir-modal.open-confirm : !lane-control.dir-modal.open-confirm }
+  ]
+ )
  !rename-btn.addEventListener click (
   ; to next-name !rename-input.value.trim
   ; condition { propertyIsGreaterThan 0 next-name.length } (
@@ -488,8 +541,11 @@
  )
  !new-sess-btn.addEventListener click (
   !set-error ''
-  !lane-control.new-session
   !modal.close
+  [ match
+   { $lane-control.prompt-new-session : !lane-control.prompt-new-session false }
+   { true : !lane-control.new-session }
+  ]
  )
  !fork-sess-btn.addEventListener click (
   !set-error ''
@@ -527,8 +583,14 @@
  )
  !new-tab-btn.addEventListener click (
   !set-error ''
-  !lane-control.new-tab-session
-  !modal.render-session
+  !modal.close
+  [ match
+   { $lane-control.prompt-new-session : !lane-control.prompt-new-session true }
+   { true : (
+    !lane-control.new-tab-session
+    !modal.render-session
+   ) }
+  ]
  )
 
  !hist-search.addEventListener input (
@@ -536,8 +598,11 @@
   !modal.render-history-page
  )
  !hist-new-btn.addEventListener click (
-  !lane-control.new-session
   !modal.close
+  [ match
+   { $lane-control.prompt-new-session : !lane-control.prompt-new-session false }
+   { true : !lane-control.new-session }
+  ]
  )
  !hist-fork-btn.addEventListener click (
   !lane-control.fork-session

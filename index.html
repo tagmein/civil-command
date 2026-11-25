@@ -1047,7 +1047,8 @@
 
    .lane-line-remove,
    .lane-add-line,
-   .lane-add-import {
+   .lane-add-import,
+   .lane-add-export {
     background: transparent;
     border: 1px solid #ffffff1c;
     border-radius: 4px;
@@ -1156,13 +1157,16 @@
    .lane-add-line:hover,
    .lane-add-line:focus,
    .lane-add-import:hover,
-   .lane-add-import:focus {
+   .lane-add-import:focus,
+   .lane-add-export:hover,
+   .lane-add-export:focus {
     background: #ffffff14;
     border-color: #ffffff38;
     color: white;
    }
 
-   .lane-add-import {
+   .lane-add-import,
+   .lane-add-export {
     border-color: #9ce5ff33;
     color: #9ce5ffcc;
     font-size: 11px;
@@ -1170,7 +1174,9 @@
    }
 
    .lane-add-import:hover,
-   .lane-add-import:focus {
+   .lane-add-import:focus,
+   .lane-add-export:hover,
+   .lane-add-export:focus {
     background: #9ce5ff1a;
     border-color: #9ce5ff66;
     color: #d6f5ff;
@@ -1245,6 +1251,313 @@
     background: #9ce5ff16;
     border-color: #9ce5ff44;
     color: #d6f5ff;
+   }
+
+   .lane-export-control {
+    align-items: center;
+    background: #38d39f0a;
+    border: 1px solid #38d39f2c;
+    border-radius: 4px;
+    box-sizing: border-box;
+    display: flex;
+    gap: 0.35em;
+    min-width: 0;
+    padding: 0.15em 0.3em;
+    white-space: nowrap;
+   }
+
+   .lane-export-expr {
+    background: #ffffff0a;
+    border: 1px solid #ffffff1a;
+    border-radius: 3px;
+    box-sizing: border-box;
+    color: white;
+    flex: 1 1 8em;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    min-width: 4em;
+    outline: none;
+    padding: 0.15em 0.35em;
+    white-space: pre;
+   }
+
+   .lane-export-expr:focus {
+    background: #ffffff14;
+    border-color: #38d39f66;
+   }
+
+   .lane-export-arrow {
+    color: #38d39f99;
+    flex-shrink: 0;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    user-select: none;
+   }
+
+   .lane-export-pick-btn {
+    background: #ffffff0c;
+    border: 1px solid #ffffff20;
+    border-radius: 3px;
+    color: #ffffffaa;
+    cursor: pointer;
+    flex: 0 1 11em;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    min-width: 5em;
+    overflow: hidden;
+    padding: 0.2em 0.45em;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+   }
+
+   .lane-export-pick-btn:hover,
+   .lane-export-pick-btn:focus {
+    background: #38d39f1c;
+    border-color: #38d39f55;
+    color: white;
+   }
+
+   .lane-export-pick-btn--set {
+    background: #38d39f16;
+    border-color: #38d39f44;
+    color: #a9fbe0;
+   }
+
+   .lane-export-deploy-bar {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35em;
+    grid-column: 2 / -1;
+    justify-content: space-between;
+    padding-top: 0.15em;
+   }
+
+   .lane-export-deploy-bar[hidden],
+   .lane-export-deploy-btn[hidden] {
+    display: none;
+   }
+
+   .lane-export-deploy-pills {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3em;
+   }
+
+   .lane-export-status-pill {
+    background: #ffffff10;
+    border: 1px solid #ffffff22;
+    border-radius: 4px;
+    color: #ffffffbb;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+    padding: 0.1em 0.45em;
+    white-space: nowrap;
+   }
+
+   .lane-export-status-pill--ok {
+    background: #27c93f1f;
+    border-color: #27c93f55;
+    color: #8df59d;
+   }
+
+   .lane-export-status-pill--warn {
+    background: #ffbd2e1f;
+    border-color: #ffbd2e55;
+    color: #ffe08a;
+   }
+
+   .lane-export-deploy-btn {
+    background: #38d39f24;
+    border: 1px solid #38d39f66;
+    border-radius: 4px;
+    color: #b4fde4;
+    cursor: pointer;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    font-weight: bold;
+    padding: 0.15em 0.55em;
+    white-space: nowrap;
+   }
+
+   .lane-export-deploy-btn:hover,
+   .lane-export-deploy-btn:focus {
+    background: #38d39f3a;
+    border-color: #38d39faa;
+    color: white;
+   }
+
+   .lane-export-lines {
+    background: #00000033;
+    border: 1px solid #ffffff16;
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25em;
+    max-height: 15em;
+    overflow: auto;
+    padding: 0.45em;
+   }
+
+   .lane-export-line-row {
+    align-items: center;
+    background: #ffffff06;
+    border: 1px solid #ffffff14;
+    border-radius: 4px;
+    cursor: pointer;
+    display: grid;
+    gap: 0.5em;
+    grid-template-columns: 2.5em minmax(0, 1fr) auto;
+    padding: 0.3em 0.45em;
+   }
+
+   .lane-export-line-row:hover {
+    background: #ffffff10;
+    border-color: #ffffff2a;
+   }
+
+   .lane-export-line-row--selected {
+    background: #38d39f18;
+    border-color: #38d39f55;
+   }
+
+   .lane-export-line-num {
+    color: #ffffff80;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+   }
+
+   .lane-export-line-text {
+    color: #ffffffea;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+   }
+
+   .lane-export-line-toggle {
+    background: #ffffff12;
+    border: 1px solid #ffffff24;
+    border-radius: 4px;
+    color: #ffffffcc;
+    cursor: pointer;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    padding: 0.15em 0.5em;
+   }
+
+   .lane-export-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35em;
+   }
+
+   .lane-export-chip {
+    align-items: center;
+    background: #38d39f1c;
+    border: 1px solid #38d39f44;
+    border-radius: 4px;
+    color: #c8ffec;
+    display: inline-flex;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    gap: 0.35em;
+    padding: 0.15em 0.45em;
+   }
+
+   .lane-export-chip-remove {
+    background: transparent;
+    border: none;
+    color: #ffffffaa;
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 0;
+   }
+
+   .lane-export-chip-remove:hover {
+    color: white;
+   }
+
+   .lane-export-deploy-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.65em;
+    max-height: 55dvh;
+    overflow: auto;
+    white-space: normal;
+   }
+
+   .lane-export-deploy-card {
+    background: #ffffff06;
+    border: 1px solid #ffffff1a;
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45em;
+    padding: 0.65em;
+   }
+
+   .lane-export-deploy-card-hdr {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5em;
+    justify-content: space-between;
+   }
+
+   .lane-export-deploy-check-wrap {
+    align-items: center;
+    cursor: pointer;
+    display: inline-flex;
+    gap: 0.45em;
+   }
+
+   .lane-export-deploy-title {
+    color: white;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 13px;
+    font-weight: bold;
+   }
+
+   .lane-export-deploy-actions {
+    align-items: center;
+    display: inline-flex;
+    gap: 0.45em;
+   }
+
+   .lane-export-diff-box {
+    background: #00000044;
+    border: 1px solid #ffffff14;
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2em;
+    max-height: 12em;
+    overflow: auto;
+    padding: 0.45em;
+   }
+
+   .lane-export-diff-line {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-word;
+   }
+
+   .lane-export-diff-del {
+    color: #ff9c9c;
+   }
+
+   .lane-export-diff-add {
+    color: #8df59d;
+   }
+
+   .lane-export-deploy-term[hidden] {
+    display: none;
    }
 
    .lane-modal-backdrop {
@@ -3879,6 +4192,391 @@
     outline: none;
    }
 
+   .workspace-session-dir {
+    background: #ffffff08;
+    border: 1px solid #ffffff16;
+    border-radius: 5px;
+    color: #9ce5ffdd;
+    cursor: pointer;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+    overflow: hidden;
+    padding: 3px 6px;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    width: 100%;
+   }
+
+   .workspace-session-dir:hover,
+   .workspace-session-dir:focus {
+    background: #ffffff14;
+    border-color: #9ce5ff55;
+    outline: none;
+   }
+
+   .workspace-session-dir--unconfirmed {
+    background: #ffb86c18;
+    border-color: #ffb86c55;
+    color: #ffd59e;
+   }
+
+   .workspace-session-dir--unconfirmed:hover,
+   .workspace-session-dir--unconfirmed:focus {
+    background: #ffb86c26;
+    border-color: #ffb86c88;
+   }
+
+   .top-rail-menu-dir {
+    background: #ffffff06;
+    border: 1px solid #ffffff14;
+    border-radius: 4px;
+    color: #9ce5ffcc;
+    cursor: pointer;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+    margin: 0 4px 4px;
+    max-width: 252px;
+    overflow: hidden;
+    padding: 3px 7px;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+   }
+
+   .top-rail-menu-dir:hover,
+   .top-rail-menu-dir:focus {
+    background: #ffffff12;
+    border-color: #9ce5ff55;
+    outline: none;
+   }
+
+   .top-rail-menu-dir--unconfirmed {
+    background: #ffb86c16;
+    border-color: #ffb86c48;
+    color: #ffd59e;
+   }
+
+   .top-rail-menu-session-item {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+   }
+
+   .top-rail-menu-session-name {
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+   }
+
+   .top-rail-menu-session-dir {
+    color: #9ce5ffa8;
+    font-size: 10px;
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+   }
+
+   .lane-session-dir-row {
+    align-items: center;
+    display: flex;
+    gap: 0.5em;
+    white-space: normal;
+   }
+
+   .lane-session-dir-row .lane-session-id-box {
+    flex: 1;
+    min-width: 0;
+   }
+
+   .lane-session-item-dir,
+   .lane-history-dir {
+    color: #9ce5ffcc;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    margin-top: 0.15em;
+    overflow-wrap: anywhere;
+   }
+
+   .lane-dir-backdrop {
+    align-items: center;
+    z-index: 1050;
+   }
+
+   .lane-dir-modal {
+    height: auto;
+    max-height: 86vh;
+    max-width: 56em;
+   }
+
+   .lane-dir-notice {
+    background: #ffb86c14;
+    border: 1px solid #ffb86c48;
+    border-radius: 6px;
+    color: #ffd59e;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    padding: 0.55em 0.75em;
+    white-space: normal;
+   }
+
+   .lane-dir-notice[hidden],
+   .lane-dir-warning[hidden],
+   .lane-dir-newfolder[hidden] {
+    display: none;
+   }
+
+   .lane-dir-warning {
+    background: #ffb86c16;
+    border: 1px solid #ffb86c55;
+    border-radius: 6px;
+    color: #ffd59e;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    padding: 0.45em 0.7em;
+    white-space: normal;
+   }
+
+   .lane-dir-layout {
+    display: grid;
+    flex: 1;
+    gap: 0.85em;
+    grid-template-columns: 14em minmax(0, 1fr);
+    min-height: 18em;
+    overflow: hidden;
+   }
+
+   .lane-dir-sidebar {
+    background: #00000033;
+    border: 1px solid #ffffff16;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45em;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0.65em;
+   }
+
+   .lane-dir-roots {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 0.3em;
+    overflow-y: auto;
+   }
+
+   .lane-dir-disk-btn {
+    align-items: center;
+    background: #ffffff08;
+    border: 1px solid #ffffff14;
+    border-radius: 6px;
+    color: #ffffffd8;
+    cursor: pointer;
+    display: flex;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    gap: 0.4em;
+    justify-content: space-between;
+    padding: 0.4em 0.55em;
+    text-align: left;
+    width: 100%;
+   }
+
+   .lane-dir-disk-btn:hover,
+   .lane-dir-disk-btn:focus {
+    background: #ffffff14;
+    border-color: #ffffff34;
+    outline: none;
+   }
+
+   .lane-dir-disk-btn--active {
+    background: #9ce5ff1a;
+    border-color: #9ce5ff55;
+    color: #d6f5ff;
+   }
+
+   .lane-dir-disk-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+   }
+
+   .lane-dir-main {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+   }
+
+   .lane-dir-pathbar,
+   .lane-dir-toolbar,
+   .lane-dir-newfolder {
+    align-items: center;
+    display: flex;
+    gap: 0.4em;
+    margin: 0;
+   }
+
+   .lane-dir-path-input,
+   .lane-dir-filter,
+   .lane-dir-newfolder .lane-config-input {
+    flex: 1;
+    min-width: 0;
+   }
+
+   .lane-dir-breadcrumbs {
+    align-items: center;
+    background: #00000038;
+    border: 1px solid #ffffff14;
+    border-radius: 6px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.15em;
+    padding: 0.25em 0.5em;
+    white-space: normal;
+   }
+
+   .lane-dir-crumb {
+    background: transparent;
+    border: 0;
+    border-radius: 4px;
+    color: #9ce5ff;
+    cursor: pointer;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    padding: 0.15em 0.35em;
+   }
+
+   .lane-dir-crumb:hover,
+   .lane-dir-crumb:focus {
+    background: #9ce5ff1e;
+    color: #d6f5ff;
+    outline: none;
+   }
+
+   .lane-dir-crumb-sep {
+    color: #ffffff48;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+   }
+
+   .lane-dir-hidden-btn--active {
+    background: #9ce5ff1c;
+    border-color: #9ce5ff55;
+    color: #d6f5ff;
+   }
+
+   .lane-dir-list {
+    background: #00000038;
+    border: 1px solid #ffffff16;
+    border-radius: 8px;
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 0.25em;
+    max-height: 22em;
+    min-height: 11em;
+    overflow-y: auto;
+    padding: 0.45em;
+   }
+
+   .lane-dir-row {
+    align-items: center;
+    background: #ffffff07;
+    border: 1px solid #ffffff12;
+    border-radius: 6px;
+    color: #ffffffe6;
+    cursor: pointer;
+    display: flex;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    gap: 0.5em;
+    padding: 0.42em 0.65em;
+    text-align: left;
+    width: 100%;
+   }
+
+   .lane-dir-row:hover,
+   .lane-dir-row:focus {
+    background: #ffffff14;
+    border-color: #9ce5ff55;
+    color: white;
+    outline: none;
+   }
+
+   .lane-dir-row--parent {
+    color: #9ce5ff;
+   }
+
+   .lane-dir-row-icon {
+    color: #9ce5ffaa;
+    flex-shrink: 0;
+   }
+
+   .lane-dir-row-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+   }
+
+   .lane-dir-tag {
+    background: #ffffff12;
+    border: 1px solid #ffffff20;
+    border-radius: 4px;
+    color: #ffffff88;
+    flex-shrink: 0;
+    font-size: 10px;
+    padding: 0.05em 0.35em;
+   }
+
+   .lane-dir-empty {
+    color: #ffffff66;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    padding: 1.25em 0.75em;
+    text-align: center;
+   }
+
+   .lane-dir-footer {
+    align-items: center;
+    border-top: 1px solid #ffffff16;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75em;
+    justify-content: space-between;
+    padding-top: 0.65em;
+   }
+
+   .lane-dir-selected {
+    color: #9ce5ff;
+    flex: 1;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    min-width: 12em;
+    overflow-wrap: anywhere;
+   }
+
+   .lane-dir-footer-actions {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5em;
+   }
+
+   @media (max-width: 680px) {
+    .lane-dir-layout {
+     grid-template-columns: 1fr;
+    }
+   }
+
    .side-rail {
     align-items: center;
     background-color: #383838;
@@ -4075,6 +4773,373 @@
     white-space: nowrap;
     writing-mode: vertical-rl;
    }
+
+   .lane-config-features {
+    border-top: 1px solid #ffffff16;
+    padding-top: 0.6em;
+   }
+
+   .lane-config-feature-desc {
+    color: #ffffff78;
+    font-size: 11px;
+    line-height: 1.35;
+   }
+
+   .cc-checkbox-field {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+   }
+
+   .cc-checkbox-label {
+    align-items: center;
+    color: #ffffffdc;
+    cursor: pointer;
+    display: inline-flex;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    gap: 0.45em;
+    white-space: normal;
+   }
+
+   .cc-server-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0.65em;
+    white-space: normal;
+   }
+
+   .cc-card {
+    background: #ffffff05;
+    border: 1px solid #ffffff18;
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+    padding: 0.6em;
+   }
+
+   .cc-subcard {
+    background: #00000028;
+    border: 1px solid #ffffff14;
+    border-radius: 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4em;
+    padding: 0.55em;
+   }
+
+   .cc-card-header {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4em;
+    justify-content: space-between;
+   }
+
+   .cc-card-title,
+   .cc-section-title {
+    color: #ffffffea;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    font-weight: bold;
+   }
+
+   .cc-subcard-title {
+    color: #ffffffd6;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    font-weight: bold;
+   }
+
+   .cc-badge {
+    background: #ffffff12;
+    border: 1px solid #ffffff22;
+    border-radius: 4px;
+    color: #ffffffcc;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+    padding: 0.15em 0.45em;
+    white-space: nowrap;
+   }
+
+   .cc-badge--ok {
+    background: #27c93f22;
+    border-color: #27c93f66;
+    color: #8df59d;
+   }
+
+   .cc-badge--warn {
+    background: #ffbd2e22;
+    border-color: #ffbd2e66;
+    color: #ffe08a;
+   }
+
+   .cc-badge--err {
+    background: #ff555524;
+    border-color: #ff555566;
+    color: #ff9c9c;
+   }
+
+   .cc-mode-switch,
+   .cc-req-row,
+   .cc-btn-row,
+   .cc-servers-tabs,
+   .cc-item-title-row,
+   .cc-resp-meta,
+   .cc-term-toolbar-group {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35em;
+   }
+
+   .cc-method-select {
+    flex: 0 0 auto;
+    min-width: 5.5em;
+    width: auto;
+   }
+
+   .cc-path-input {
+    flex: 1 1 10em;
+    min-width: 6em;
+   }
+
+   .cc-textarea {
+    background: #00000040;
+    border: 1px solid #ffffff1c;
+    border-radius: 4px;
+    box-sizing: border-box;
+    color: white;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    padding: 0.35em 0.5em;
+    resize: vertical;
+    width: 100%;
+   }
+
+   .cc-extra-box {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35em;
+   }
+
+   .cc-resp-box {
+    background: #00000044;
+    border: 1px solid #ffffff1a;
+    border-radius: 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35em;
+    padding: 0.5em;
+   }
+
+   .cc-resp-pre,
+   .cc-resp-details {
+    background: #00000040;
+    border: 1px solid #ffffff12;
+    border-radius: 4px;
+    color: #d6f5ff;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    margin: 0;
+    max-height: 18em;
+    overflow: auto;
+    padding: 0.45em;
+    white-space: pre;
+   }
+
+   .cc-muted-meta {
+    color: #ffffff80;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+   }
+
+   .cc-public-url {
+    background: #9ce5ff12;
+    border: 1px solid #9ce5ff30;
+    border-radius: 4px;
+    color: #d6f5ff;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    padding: 0.35em 0.5em;
+    word-break: break-all;
+   }
+
+   .cc-status-banner {
+    background: #27c93f1a;
+    border: 1px solid #27c93f55;
+    border-radius: 5px;
+    color: #9bf7a8;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    padding: 0.45em 0.65em;
+   }
+
+   .cc-servers-modal {
+    max-height: 90dvh;
+    max-width: 960px;
+    width: 92vw;
+   }
+
+   .cc-servers-tabs {
+    border-bottom: 1px solid #ffffff16;
+    padding: 0 0 0.45em;
+   }
+
+   .cc-servers-page {
+    display: flex;
+    flex-direction: column;
+    gap: 0.65em;
+    min-height: 0;
+    overflow: auto;
+   }
+
+   .cc-server-form {
+    background: #ffffff06;
+    border: 1px solid #ffffff1c;
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6em;
+    padding: 0.75em;
+   }
+
+   .cc-form-grid {
+    display: grid;
+    gap: 0.55em 0.75em;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+   }
+
+   .cc-term-modal {
+    max-height: 90dvh;
+    max-width: 960px;
+    width: 92vw;
+   }
+
+   .cc-term-header-right {
+    align-items: center;
+    display: flex;
+    gap: 0.5em;
+   }
+
+   .cc-term-status {
+    background: #ffffff14;
+    border: 1px solid #ffffff28;
+    border-radius: 4px;
+    color: #ffffffcc;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    padding: 0.15em 0.5em;
+    white-space: nowrap;
+   }
+
+   .cc-term-status--live {
+    background: #9ce5ff1f;
+    border-color: #9ce5ff66;
+    color: #d6f5ff;
+   }
+
+   .cc-term-status--ok {
+    background: #27c93f22;
+    border-color: #27c93f66;
+    color: #8df59d;
+   }
+
+   .cc-term-status--err {
+    background: #ff555524;
+    border-color: #ff555566;
+    color: #ff9c9c;
+   }
+
+   .cc-term-notice {
+    color: #ffffff8c;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+   }
+
+   .cc-term-notice--warn {
+    color: #ffe08a;
+   }
+
+   .cc-term-host {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 280px;
+   }
+
+   .cc-term-screen {
+    background: #0c0c0c;
+    border: 1px solid #ffffff24;
+    border-radius: 6px;
+    box-sizing: border-box;
+    color: #e6e6e6;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    line-height: 1.35;
+    max-height: 60dvh;
+    min-height: 280px;
+    outline: none;
+    overflow: auto;
+    padding: 0.65em 0.75em;
+    white-space: pre;
+    width: 100%;
+   }
+
+   .cc-term-screen:focus {
+    border-color: #9ce5ff88;
+   }
+
+   .cc-term-line {
+    min-height: 1.35em;
+    white-space: pre;
+   }
+
+   .cc-term-toolbar {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5em;
+    justify-content: space-between;
+    padding-top: 0.25em;
+   }
+
+   .cc-ansi-bold { font-weight: bold; }
+   .cc-ansi-dim { opacity: 0.65; }
+   .cc-ansi-underline { text-decoration: underline; }
+   .cc-ansi-inverse { filter: invert(1); }
+   .cc-ansi-fg-black { color: #1a1a1a; }
+   .cc-ansi-fg-red { color: #ff6b6b; }
+   .cc-ansi-fg-green { color: #6ee787; }
+   .cc-ansi-fg-yellow { color: #ffd866; }
+   .cc-ansi-fg-blue { color: #79b8ff; }
+   .cc-ansi-fg-magenta { color: #d2a8ff; }
+   .cc-ansi-fg-cyan { color: #7ce8ff; }
+   .cc-ansi-fg-white { color: #e6e6e6; }
+   .cc-ansi-fg-bright-black { color: #7a7a7a; }
+   .cc-ansi-fg-bright-red { color: #ff8e8e; }
+   .cc-ansi-fg-bright-green { color: #95f5a9; }
+   .cc-ansi-fg-bright-yellow { color: #ffe799; }
+   .cc-ansi-fg-bright-blue { color: #a5d2ff; }
+   .cc-ansi-fg-bright-magenta { color: #e5caff; }
+   .cc-ansi-fg-bright-cyan { color: #aef2ff; }
+   .cc-ansi-fg-bright-white { color: #ffffff; }
+   .cc-ansi-bg-black { background-color: #1a1a1a; }
+   .cc-ansi-bg-red { background-color: #5c1d1d; }
+   .cc-ansi-bg-green { background-color: #1c4d28; }
+   .cc-ansi-bg-yellow { background-color: #524315; }
+   .cc-ansi-bg-blue { background-color: #1a3a5c; }
+   .cc-ansi-bg-magenta { background-color: #442861; }
+   .cc-ansi-bg-cyan { background-color: #194b56; }
+   .cc-ansi-bg-white { background-color: #d0d0d0; color: #111111; }
+   .cc-ansi-bg-bright-black { background-color: #3a3a3a; }
+   .cc-ansi-bg-bright-red { background-color: #7d2828; }
+   .cc-ansi-bg-bright-green { background-color: #276e38; }
+   .cc-ansi-bg-bright-yellow { background-color: #735c1c; }
+   .cc-ansi-bg-bright-blue { background-color: #255280; }
+   .cc-ansi-bg-bright-magenta { background-color: #5f3885; }
+   .cc-ansi-bg-bright-cyan { background-color: #246a7a; }
+   .cc-ansi-bg-bright-white { background-color: #ffffff; color: #111111; }
   </style>
   <script type="module" src="/field.mjs"></script>
  </head>
@@ -4085,6 +5150,7 @@
     DATA_CONSTRAINT_TYPES,
     DEFAULT_ROW_PICKER_PAGE_SIZE,
     DEFAULT_SCROLLBAR_COLOR,
+    LANE_FEATURES,
     PRIMITIVE_TYPES,
     buildTablesScope,
     checkColumnChangeImpact,
@@ -4100,6 +5166,7 @@
     findWorkflowDefaultColumns,
     formatCellInputValue,
     formatColumnType,
+    formatExportLine,
     formatHashOptions,
     formatImportLine,
     formatLanePath,
@@ -4112,6 +5179,7 @@
     normalizeColumnWidth,
     normalizeDataColumnType,
     normalizeFixedDecimals,
+    normalizeLaneFeatures,
     normalizeLaneMinimizeSide,
     normalizeLanePath,
     normalizeLaneTab,
@@ -4119,8 +5187,10 @@
     normalizePrimitiveType,
     parseCellValue,
     parseColumnType,
+    parseExportLine,
     parseHashOptions,
     parseImportLine,
+    parseLaneFeatures,
     parseLanePath,
     parseLaneRoutes,
     parseStoredTables,
@@ -4136,39 +5206,68 @@
     seedPreferencesScrollbarRecords,
     seedPreferencesScrollbarSource
    } from '/field.mjs'
-   import { data } from '/data.mjs'
+   import {
+    createFsDir,
+    data,
+    fetchFsList,
+    fetchFsRoots,
+    formatDataDirLabel,
+    killDeployTerminalSession,
+    normalizeDataDir,
+    proxyDeployRequest,
+    startDeployTerminalSession,
+    syncLaneToRemoteCivilMemory,
+    testRemoteCivilMemory
+   } from '/data.mjs'
    import {
     DEFAULT_PACKAGE_ID,
     DEFAULT_PACKAGE_NAME,
     addLaneTable,
     addTableRow,
+    allocateNextPort,
+    buildPublicEndpointUrl,
     checkLaneAccess,
     clearTableRows,
     closePackageInSession,
+    collectLaneSyncBundle,
     createNewSession,
     createNewTabSession,
     createPackage,
+    deleteDeployServer,
+    deleteLaneDeployment,
     deleteLaneTable,
     deleteTableRow,
+    diffLaneScripts,
     forkSession,
     formatLineTimestamp,
     formatSessionDuration,
     generateLineId,
+    getLaneDeployStatus,
     getLanePackageId,
     getPackageMeta,
     initSessionState,
     listPackageLanes,
     listPackageSessions,
+    loadDeployServers,
+    loadDeployments,
+    loadDeployedLaneScript,
+    loadLaneDeployment,
     loadLaneScript,
     loadLaneTables,
     loadSessionCatalog,
     moveLaneToPackage,
+    normalizeDomainName,
+    normalizeServiceSlug,
+    normalizeSubpath,
     openPackageInSession,
     promoteTabToBrowserSession,
     readSessionHistory,
     registerLaneInPackage,
     renameSession,
     returnToBrowserSession,
+    saveDeployServer,
+    saveDeployedLaneScript,
+    saveLaneDeployment,
     saveLaneScript,
     saveLaneTables,
     saveScriptLine,
@@ -4178,26 +5277,43 @@
     saveTableSchema,
     saveTableSchemaAndRows,
     setActivePackageInSession,
+    setSessionDataDir,
+    setTargetLaneLine,
     switchBrowserSession,
-    switchTabSession
+    switchTabSession,
+    writeLaneSyncBundleToKv
    } from '/storage.mjs'
+   import {
+    createResponseHelper,
+    detectLaneHandlers,
+    simulateLaneRequest
+   } from '/lane-http.mjs'
+   import {
+    mountTerminalView
+   } from '/terminal-ui.mjs'
    const main = globalThis.main = field({
     DEFAULT_PACKAGE_ID,
     DEFAULT_PACKAGE_NAME,
+    LANE_FEATURES,
     addLaneTable,
     addTableRow,
+    allocateNextPort,
+    buildPublicEndpointUrl,
     buildTablesScope,
     checkColumnChangeImpact,
     checkLaneAccess,
     clearTableRows,
     closePackageInSession,
     coerceDataValue,
+    collectLaneSyncBundle,
     computeLaneScrollLeft,
     console,
+    createFsDir,
     createIdleTracker,
     createNewSession,
     createNewTabSession,
     createPackage,
+    createResponseHelper,
     data,
     dataColumnTypes: DATA_COLUMN_TYPES,
     dataConstraintTypes: DATA_CONSTRAINT_TYPES,
@@ -4206,15 +5322,23 @@
     defaultRowPickerPageSize: DEFAULT_ROW_PICKER_PAGE_SIZE,
     defaultScrollbarColor: DEFAULT_SCROLLBAR_COLOR,
     defaultValueForType,
+    deleteDeployServer,
+    deleteLaneDeployment,
     deleteLaneTable,
     deleteTableRow,
+    detectLaneHandlers,
+    diffLaneScripts,
     document,
+    fetchFsList,
+    fetchFsRoots,
     fetchRowOptionsPage,
     filterRowOptions,
     findWorkflowDefaultColumns,
     forkSession,
     formatCellInputValue,
     formatColumnType,
+    formatDataDirLabel,
+    formatExportLine,
     formatHashOptions,
     formatImportLine,
     formatLanePath,
@@ -4222,38 +5346,53 @@
     formatLineTimestamp,
     formatSessionDuration,
     generateLineId,
+    getLaneDeployStatus,
     getLaneInitial,
     getLanePackageId,
     getPackageMeta,
     getWorkflowCellState,
     hasImportCycle,
     initSessionState,
+    killDeployTerminalSession,
     listPackageLanes,
     listPackageSessions,
+    loadDeployServers,
+    loadDeployments,
+    loadDeployedLaneScript,
+    loadLaneDeployment,
     loadLaneScript,
     loadLaneTables,
     loadSessionCatalog,
     lookupRowDisplay,
+    mountTerminalView,
     moveLaneToPackage,
     normalizeColumnConstraint,
     normalizeColumnWidth,
     normalizeDataColumnType,
+    normalizeDataDir,
+    normalizeDomainName,
     normalizeFixedDecimals,
+    normalizeLaneFeatures,
     normalizeLaneMinimizeSide,
     normalizeLanePath,
     normalizeLaneTab,
     normalizeLaneWidth,
     normalizePrimitiveType,
+    normalizeServiceSlug,
+    normalizeSubpath,
     openPackageInSession,
     parseCellValue,
     parseColumnType,
+    parseExportLine,
     parseHashOptions,
     parseImportLine,
+    parseLaneFeatures,
     parseLanePath,
     parseLaneRoutes,
     parseStoredTables,
     primitiveTypes: PRIMITIVE_TYPES,
     promoteTabToBrowserSession,
+    proxyDeployRequest,
     readSessionHistory,
     registerLaneInPackage,
     renameSession,
@@ -4267,6 +5406,9 @@
     returnToBrowserSession,
     runLines,
     runTransportedScripts,
+    saveDeployServer,
+    saveDeployedLaneScript,
+    saveLaneDeployment,
     saveLaneScript,
     saveLaneTables,
     saveScriptLine,
@@ -4278,8 +5420,15 @@
     seedPreferencesScrollbarRecords,
     seedPreferencesScrollbarSource,
     setActivePackageInSession,
+    setSessionDataDir,
+    setTargetLaneLine,
+    simulateLaneRequest,
+    startDeployTerminalSession,
     switchBrowserSession,
-    switchTabSession
+    switchTabSession,
+    syncLaneToRemoteCivilMemory,
+    testRemoteCivilMemory,
+    writeLaneSyncBundleToKv
    })
    if ('serviceWorker' in navigator) {
     const registerServiceWorker = () => {

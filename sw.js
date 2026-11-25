@@ -15,11 +15,16 @@ const APP_SHELL = [
  '/field.mjs',
  '/data.mjs',
  '/storage.mjs',
+ '/lane-http.mjs',
+ '/terminal-ui.mjs',
  '/src/main.fs',
  '/src/confirm-modal.fs',
  '/src/lane-config-modal.fs',
  '/src/lane-control.fs',
  '/src/lane-data.fs',
+ '/src/lane-dir-modal.fs',
+ '/src/lane-export-deploy-modal.fs',
+ '/src/lane-export-modal.fs',
  '/src/lane-import-modal.fs',
  '/src/lane-inputs.fs',
  '/src/lane-line-info-modal.fs',
@@ -30,7 +35,10 @@ const APP_SHELL = [
  '/src/lane-rails.fs',
  '/src/lane-row-picker-modal.fs',
  '/src/lane-scope.fs',
+ '/src/lane-server.fs',
+ '/src/lane-servers-modal.fs',
  '/src/lane-session-modal.fs',
+ '/src/lane-terminal-modal.fs',
 ]
 
 self.addEventListener('install', event => {

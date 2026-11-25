@@ -8,6 +8,7 @@
  ; to search-svg '<svg class="top-rail-icon-svg top-rail-icon-svg--search" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4.25" cy="4.25" r="2.5"></circle><path d="M6.05 6.05L8.6 8.6"></path></svg>'
  ; to session-svg '<svg class="top-rail-icon-svg top-rail-icon-svg--session" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="2.75" cy="2.5" r="1.25"></circle><circle cx="7.25" cy="2.5" r="1.25"></circle><circle cx="2.75" cy="7.5" r="1.25"></circle><path d="M2.75 3.75V6.25M7.25 3.75C7.25 5.3 5.5 5.5 2.75 5.5"></path></svg>'
  ; to packages-svg '<svg class="top-rail-icon-svg top-rail-icon-svg--packages" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 1.4L8.5 3.2L5 5L1.5 3.2Z"></path><path d="M1.5 5L5 6.8L8.5 5"></path><path d="M1.5 6.8L5 8.6L8.5 6.8"></path></svg>'
+ ; to servers-svg '<svg class="top-rail-icon-svg top-rail-icon-svg--servers" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.5" y="1.5" width="7" height="2.6" rx="0.6"></rect><rect x="1.5" y="5.9" width="7" height="2.6" rx="0.6"></rect><circle cx="3" cy="2.8" r="0.45" fill="currentColor" stroke="none"></circle><circle cx="3" cy="7.2" r="0.45" fill="currentColor" stroke="none"></circle></svg>'
  ; to wrench-svg '<svg class="top-rail-icon-svg top-rail-icon-svg--preferences" viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"><path d="M8.6 3.3A2.1 2.1 0 0 1 5.7 5.5L2.5 8.7A0.85 0.85 0 0 1 1.3 7.5L4.5 4.3A2.1 2.1 0 0 1 6.7 1.4L5.6 2.5L7.5 4.4Z"></path></svg>'
 
  ; to top-rail !document.createElement aside
@@ -34,6 +35,10 @@
  !packages-btn.setAttribute aria-haspopup menu
  !packages-btn.setAttribute aria-expanded 'false'
 
+ ; to servers-btn !document.createElement button
+ ; assign $servers-btn { type button } { className 'top-rail-icon top-rail-icon--servers' } { textContent '' } { title 'Servers & Deployments' } { innerHTML $servers-svg }
+ !servers-btn.setAttribute aria-label 'Servers & Deployments'
+
  ; to preferences-btn !document.createElement button
  ; assign $preferences-btn { type button } { className 'top-rail-icon top-rail-icon--preferences' } { textContent '' } { title Preferences } { innerHTML $wrench-svg }
  !preferences-btn.setAttribute aria-label Preferences
@@ -44,6 +49,7 @@
  !top-rail.appendChild $search-btn
  !top-rail.appendChild $session-btn
  !top-rail.appendChild $packages-btn
+ !top-rail.appendChild $servers-btn
  !top-rail.appendChild $preferences-btn
 
  ; to session-menu !document.createElement div
@@ -53,6 +59,9 @@
 
  ; to session-status-el !document.createElement div
  ; assign $session-status-el { className top-rail-menu-status } { textContent 'Session' }
+
+ ; to session-dir-el !document.createElement button
+ ; assign $session-dir-el { type button } { className top-rail-menu-dir } { textContent Default }
 
  ; to session-draft-row !document.createElement div
  ; assign $session-draft-row { className top-rail-menu-draft-row } { hidden true }
@@ -92,6 +101,7 @@
  ; set top-rail-menu-pkgs session-recent-el.className
 
  !session-menu.appendChild $session-status-el
+ !session-menu.appendChild $session-dir-el
  !session-menu.appendChild $session-draft-row
  !session-menu.appendChild $session-new-btn
  !session-menu.appendChild $session-fork-btn
@@ -203,6 +213,7 @@
   { session-btn $session-btn }
   { session-menu $session-menu }
   { session-status-el $session-status-el }
+  { session-dir-el $session-dir-el }
   { session-draft-row $session-draft-row }
   { session-save-btn $session-save-btn }
   { session-draft-fork-btn $session-draft-fork-btn }
@@ -224,6 +235,7 @@
   { pkg-els {} }
   { pkg-items {} }
   { is-packages-open false }
+  { servers-btn $servers-btn }
   { preferences-btn $preferences-btn }
   { preferences-menu $pref-menu }
   { preferences-status-el $pref-status-el }
@@ -584,6 +596,20 @@
   ]
   ; set $status-txt session-status-el.textContent
   ; set $status-ttl session-status-el.title
+  ; to dir-confirmed [ propertyIs true lane-control.session-data-dir-confirmed ]
+  ; to dir-label [ match
+   { $lane-control.format-data-dir-label : !lane-control.format-data-dir-label $lane-control.session-data-dir $dir-confirmed }
+   { $lane-control.session-data-dir : $lane-control.session-data-dir }
+   { [ propertyIs true dir-confirmed ] : Default }
+   { true : 'Default (unconfirmed)' }
+  ]
+  ; to dir-ttl [ match
+   { $dir-confirmed : ; add 'Permanent data directory: ' $dir-label }
+   { true : 'Data directory not confirmed — click to select or confirm Default' }
+  ]
+  ; set $dir-label session-dir-el.textContent
+  ; set $dir-ttl session-dir-el.title
+  ; set [ ternary $dir-confirmed top-rail-menu-dir 'top-rail-menu-dir top-rail-menu-dir--unconfirmed' ] session-dir-el.className
   ; set [ ternary $dirty false true ] session-draft-row.hidden
   !sync-session-btn-class
 
@@ -605,8 +631,20 @@
     ; condition { propertyIsLessThan 5 shown.count } (
      ; set [ ; add $shown.count 1 ] shown.count
      ; to rec-name [ match { $rec.name : $rec.name } { true : $rec.id } ]
+     ; to rec-dir [ match
+      { $lane-control.format-data-dir-label : !lane-control.format-data-dir-label $rec.dataDir $rec.dataDirConfirmed }
+      { $rec.dataDir : $rec.dataDir }
+      { [ propertyIs true rec.dataDirConfirmed ] : Default }
+      { true : 'Default (unconfirmed)' }
+     ]
      ; to rbtn !document.createElement button
-     ; assign $rbtn { type button } { className top-rail-menu-item } { textContent $rec-name } { title [ ; add 'Switch to ' $rec.id ] }
+     ; assign $rbtn { type button } { className 'top-rail-menu-item top-rail-menu-session-item' } { title [ ; add 'Switch to ' ; add $rec.id ; add ' (' ; add $rec-dir ')' ] }
+     ; to rname !document.createElement span
+     ; assign $rname { className top-rail-menu-session-name } { textContent $rec-name }
+     ; to rdir !document.createElement span
+     ; assign $rdir { className top-rail-menu-session-dir } { textContent $rec-dir }
+     !rbtn.appendChild $rname
+     !rbtn.appendChild $rdir
      !rbtn.setAttribute role menuitem
      !rbtn.addEventListener click (
       !rails.close-session-menu
@@ -616,7 +654,7 @@
      )
      !session-recent-el.appendChild $rbtn
      !rails.session-recent-els.push $rbtn
-     !rails.session-recent-items.push ; object { rec $rec } { btn $rbtn }
+     !rails.session-recent-items.push ; object { rec $rec } { btn $rbtn } { name-el $rname } { dir-el $rdir }
     )
    )
   )
@@ -869,9 +907,21 @@
    { $lane-control.abandon-session-draft : !lane-control.abandon-session-draft }
   ]
  )
+ !session-dir-el.addEventListener click (
+  !rails.close-session-menu
+  [ match
+   { [ propertyIs false lane-control.session-data-dir-confirmed ] (
+    [ match
+     { $lane-control.dir-modal.open-confirm : !lane-control.dir-modal.open-confirm }
+    ]
+   ) }
+   { $lane-control.session-modal.open-switch-session : !lane-control.session-modal.open-switch-session }
+  ]
+ )
  !session-new-btn.addEventListener click (
   !rails.close-session-menu
   [ match
+   { $lane-control.prompt-new-session : !lane-control.prompt-new-session false }
    { $lane-control.new-session : !lane-control.new-session }
   ]
  )
@@ -916,6 +966,14 @@
   !rails.close-packages-menu
   [ match
    { $lane-control.package-modal.open-packages : !lane-control.package-modal.open-packages }
+  ]
+ )
+ !servers-btn.addEventListener click (
+  !rails.close-preferences-menu
+  !rails.close-session-menu
+  !rails.close-packages-menu
+  [ match
+   { $lane-control.servers-modal.open : !lane-control.servers-modal.open servers }
   ]
  )
  !preferences-btn.addEventListener click (

@@ -57,6 +57,22 @@
  ; to pkg-select !document.createElement select
  ; set 'lane-input-type lane-config-input lane-config-select' pkg-select.className
 
+ ; to feat-field-wrap !document.createElement div
+ ; set 'lane-config-field lane-config-features' feat-field-wrap.className
+ ; to feat-label !document.createElement div
+ ; assign $feat-label { className lane-config-label } { textContent Features }
+ ; to http-feat-row !document.createElement label
+ ; set cc-checkbox-label http-feat-row.className
+ ; to http-server-check !document.createElement input
+ ; assign $http-server-check { type checkbox }
+ !http-server-check.setAttribute data-feature httpServer
+ ; to http-feat-txt !document.createElement span
+ ; assign $http-feat-txt { textContent 'HTTP Server' }
+ !http-feat-row.appendChild $http-server-check
+ !http-feat-row.appendChild $http-feat-txt
+ ; to http-feat-desc !document.createElement div
+ ; assign $http-feat-desc { className lane-config-feature-desc } { textContent 'Enable the Server tab to simulate HTTP requests and deploy this lane as a backend API' }
+
  ; to footer !document.createElement div
  ; set lane-config-footer footer.className
  ; to cancel-btn !document.createElement button
@@ -80,12 +96,16 @@
  !path-field-wrap.appendChild $path-row
  !pkg-field-wrap.appendChild $pkg-label
  !pkg-field-wrap.appendChild $pkg-select
+ !feat-field-wrap.appendChild $feat-label
+ !feat-field-wrap.appendChild $http-feat-row
+ !feat-field-wrap.appendChild $http-feat-desc
  !footer.appendChild $cancel-btn
  !footer.appendChild $save-btn
  !form.appendChild $field-wrap
  !form.appendChild $width-field-wrap
  !form.appendChild $path-field-wrap
  !form.appendChild $pkg-field-wrap
+ !form.appendChild $feat-field-wrap
  !form.appendChild $footer
  !panel.appendChild $header
  !panel.appendChild $form
@@ -103,6 +123,7 @@
   { path-reset-btn $path-reset-btn }
   { pkg-select $pkg-select }
   { pkg-option-els {} }
+  { http-server-check $http-server-check }
   { close-btn $close-btn }
   { cancel-btn $cancel-btn }
   { save-btn $save-btn }
@@ -184,6 +205,18 @@
      { [ propertyIs $cur-pkg next-pkg ] : null }
      { $lane-control.move-lane-package : !lane-control.move-lane-package $lane.id $next-pkg }
     ]
+    ; to cur-http [ match
+     { [ propertyIs true lane.features.httpServer ] : true }
+     { true : false }
+    ]
+    ; to next-http [ match
+     { [ propertyIs true http-server-check.checked ] : true }
+     { true : false }
+    ]
+    [ match
+     { [ propertyIs $cur-http next-http ] : null }
+     { $lane-control.set-features : !lane-control.set-features $lane.id [ object { httpServer $next-http } ] }
+    ]
     !modal.close
    ) }
   ]
@@ -240,6 +273,11 @@
      ) }
     ]
     ; set $cur-pkg pkg-select.value
+    ; to cur-http [ match
+     { [ propertyIs true lane.features.httpServer ] : true }
+     { true : false }
+    ]
+    ; set $cur-http http-server-check.checked
     !sync-reset-buttons
     ; condition { propertyIs false modal.is-open } (
      ; set true modal.is-open

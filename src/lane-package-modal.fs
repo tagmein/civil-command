@@ -354,8 +354,14 @@
        ; set lane-modal-item-info info.className
        ; to nm !document.createElement div
        ; assign $nm { className lane-modal-item-title } { textContent $s.name }
+       ; to s-dir [ match
+        { $lane-control.format-data-dir-label : !lane-control.format-data-dir-label $s.dataDir $s.dataDirConfirmed }
+        { $s.dataDir : $s.dataDir }
+        { [ propertyIs true s.dataDirConfirmed ] : Default }
+        { true : 'Default (unconfirmed)' }
+       ]
        ; to sub !document.createElement div
-       ; to sub-txt ; add $s.id ; add ' · ' ; add $s.laneCount ' lanes'
+       ; to sub-txt ; add $s-dir ; add ' · ' ; add $s.id ; add ' · ' ; add $s.laneCount ' lanes'
        ; assign $sub { className lane-modal-item-id } { textContent $sub-txt }
        !info.appendChild $nm
        !info.appendChild $sub

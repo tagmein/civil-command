@@ -1,9 +1,83 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { spawn, spawnSync } from 'node:child_process'
+import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
+import http from 'node:http'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { httpKV } from './data.mjs'
+import { EventEmitter } from 'node:events'
+import {
+ buildDataUrl,
+ formatDataDirLabel,
+ httpKV,
+ killDeployTerminalSession,
+ normalizeDataDir,
+ proxyDeployRequest,
+ startDeployTerminalSession,
+ syncLaneToRemoteCivilMemory,
+ testRemoteCivilMemory,
+} from './data.mjs'
+import {
+ createResponseHelper,
+ detectLaneHandlers,
+ extractLastLaneValue,
+ buildRequestObject,
+ normalizeHttpResult,
+ executeLaneHttpRequest,
+ simulateLaneRequest,
+} from './lane-http.mjs'
+import {
+ createLaneHttpServer,
+ normalizeCivilMemoryBaseUrl,
+} from './lane-server.mjs'
+import {
+ WS_MAGIC_GUID,
+ acceptWebSocket,
+ computeWebSocketAccept,
+ createTerminalManager,
+ encodeWsFrame,
+ parseWsFrames,
+ spawnPty,
+} from './pty-terminal.mjs'
+import {
+ buildSshBaseArgs,
+ generateCivilMemoryServerScript,
+ generateCivilMemorySystemdUnit,
+ generateDeployScript,
+ generateInstallCivilMemoryScript,
+ generateLocalControlMasterRunner,
+ generateNginxDomainVhost,
+ generateNginxRootConfig,
+ generateNginxSharedRootFallbackConfig,
+ generateNginxSubpathConfig,
+ generateRemoteKvSyncScript,
+ generateRemoteKvTestScript,
+ generateServiceActionScript,
+ generateSystemdUnit,
+ generateUndeployScript,
+ handleDeployApiRequest,
+ handleDeployUpgrade,
+ isAllowedLocalOrigin,
+ shellQuote,
+ validateSshTarget,
+} from './deploy-api.mjs'
+import {
+ createTerminalBuffer,
+ encodeKeyEventToVt,
+ extractSentinelEvents,
+ mountTerminalView,
+} from './terminal-ui.mjs'
+import {
+ buildBreadcrumbs,
+ createDirectory,
+ handleFsApiRequest,
+ listDirectories,
+ listDisks,
+ parseProcMounts,
+ unescapeMountPath,
+} from './fs-api.mjs'
 import {
  DEFAULT_PACKAGE_ID,
  DEFAULT_PACKAGE_NAME,
@@ -13,21 +87,30 @@ import {
  SESSION_STORAGE_KEY,
  addLaneTable,
  addTableRow,
+ allocateNextPort,
+ buildPublicEndpointUrl,
  checkLaneAccess,
  clearTableRows,
  closePackageInSession,
+ collectLaneSyncBundle,
  createNewSession,
  createNewTabSession,
  createPackage,
+ deleteDeployServer,
+ deleteLaneDeployment,
  deleteLaneTable,
  deletePagedIds,
  deleteTableRow,
+ deployedScriptKey,
+ deploymentKey,
+ diffLaneScripts,
  encodeKeySegment,
  ensureDefaultPackage,
  forkSession,
  formatLineTimestamp,
  formatSessionDuration,
  generateLineId,
+ getLaneDeployStatus,
  getLanePackageId,
  getPackageMeta,
  hashPassphrase,
@@ -40,11 +123,18 @@ import {
  laneTablesBase,
  listPackageLanes,
  listPackageSessions,
+ loadDeployServers,
+ loadDeployments,
+ loadDeployedLaneScript,
+ loadLaneDeployment,
  loadLaneScript,
  loadLaneTables,
  loadSessionCatalog,
  migrateLegacyCatalog,
  moveLaneToPackage,
+ normalizeDomainName,
+ normalizeServiceSlug,
+ normalizeSubpath,
  openPackageInSession,
  packageLaneKey,
  packageLanesBase,
@@ -56,6 +146,9 @@ import {
  registerLaneInPackage,
  renameSession,
  returnToBrowserSession,
+ saveDeployServer,
+ saveDeployedLaneScript,
+ saveLaneDeployment,
  saveLaneScript,
  saveLaneTables,
  saveScriptLine,
@@ -68,6 +161,8 @@ import {
  sessionMetaKey,
  sessionPackagesBase,
  setActivePackageInSession,
+ setSessionDataDir,
+ setTargetLaneLine,
  splitUtf8Chunks,
  switchBrowserSession,
  switchTabSession,
@@ -75,6 +170,7 @@ import {
  tableRowsBase,
  tableSchemaKey,
  utf8ByteLength,
+ writeLaneSyncBundleToKv,
  writePagedIds,
 } from './storage.mjs'
 import {
@@ -84,6 +180,7 @@ import {
  DEFAULT_LANE_TAB,
  DEFAULT_ROW_PICKER_PAGE_SIZE,
  DEFAULT_SCROLLBAR_COLOR,
+ LANE_FEATURES,
  LANE_MINIMIZE_SIDES,
  LANE_TABS,
  MIN_LANE_WIDTH,
@@ -107,6 +204,7 @@ import {
  findWorkflowDefaultColumns,
  formatCellInputValue,
  formatColumnType,
+ formatExportLine,
  formatHashOptions,
  formatImportLine,
  formatLanePath,
@@ -124,6 +222,7 @@ import {
  normalizeColumnWidth,
  normalizeDataColumnType,
  normalizeFixedDecimals,
+ normalizeLaneFeatures,
  normalizeLaneMinimizeSide,
  normalizeLanePath,
  normalizeLaneTab,
@@ -132,8 +231,10 @@ import {
  parse,
  parseCellValue,
  parseColumnType,
+ parseExportLine,
  parseHashOptions,
  parseImportLine,
+ parseLaneFeatures,
  parseLanePath,
  parseLaneRouteSegment,
  parseLaneRoutes,
@@ -154,72 +255,104 @@ import {
 } from './field.mjs'
 
 const lineInfoModalSource = await fs.readFile(new URL('./src/lane-line-info-modal.fs', import.meta.url), 'utf8')
+const exportModalSource = await fs.readFile(new URL('./src/lane-export-modal.fs', import.meta.url), 'utf8')
+const exportDeployModalSource = await fs.readFile(new URL('./src/lane-export-deploy-modal.fs', import.meta.url), 'utf8')
 const sessionModalSource = await fs.readFile(new URL('./src/lane-session-modal.fs', import.meta.url), 'utf8')
 const packageModalSource = await fs.readFile(new URL('./src/lane-package-modal.fs', import.meta.url), 'utf8')
+const dirModalSource = await fs.readFile(new URL('./src/lane-dir-modal.fs', import.meta.url), 'utf8')
+const laneServerSource = await fs.readFile(new URL('./src/lane-server.fs', import.meta.url), 'utf8')
+const laneServersModalSource = await fs.readFile(new URL('./src/lane-servers-modal.fs', import.meta.url), 'utf8')
+const laneTerminalModalSource = await fs.readFile(new URL('./src/lane-terminal-modal.fs', import.meta.url), 'utf8')
 
 const DATA_RUNTIME_ENV = {
  DEFAULT_PACKAGE_ID,
  DEFAULT_PACKAGE_NAME,
+ LANE_FEATURES,
  addLaneTable,
  addTableRow,
+ allocateNextPort,
+ buildPublicEndpointUrl,
  buildTablesScope,
  checkColumnChangeImpact,
  checkLaneAccess,
  clearTableRows,
  closePackageInSession,
  coerceDataValue,
+ collectLaneSyncBundle,
  computeLaneScrollLeft,
  createNewSession,
  createNewTabSession,
  createPackage,
+ createResponseHelper,
  dataColumnTypes: DATA_COLUMN_TYPES,
  dataConstraintTypes: DATA_CONSTRAINT_TYPES,
  dataValuesEqual,
  defaultDataValue,
  defaultRowPickerPageSize: DEFAULT_ROW_PICKER_PAGE_SIZE,
  defaultScrollbarColor: DEFAULT_SCROLLBAR_COLOR,
+ deleteDeployServer,
+ deleteLaneDeployment,
  deleteLaneTable,
  deleteTableRow,
+ detectLaneHandlers,
+ diffLaneScripts,
  fetchRowOptionsPage,
  filterRowOptions,
  findWorkflowDefaultColumns,
  forkSession,
  formatCellInputValue,
  formatColumnType,
+ formatDataDirLabel,
+ formatExportLine,
  formatHashOptions,
  formatLanePath,
  formatLaneRoutes,
  formatLineTimestamp,
  formatSessionDuration,
  generateLineId,
+ getLaneDeployStatus,
  getLaneInitial,
  getLanePackageId,
  getPackageMeta,
  getWorkflowCellState,
  initSessionState,
+ killDeployTerminalSession,
  listPackageLanes,
  listPackageSessions,
+ loadDeployServers,
+ loadDeployments,
+ loadDeployedLaneScript,
+ loadLaneDeployment,
  loadLaneScript,
  loadLaneTables,
  loadSessionCatalog,
  lookupRowDisplay,
+ mountTerminalView,
  moveLaneToPackage,
  normalizeColumnConstraint,
  normalizeColumnWidth,
  normalizeDataColumnType,
+ normalizeDataDir,
+ normalizeDomainName,
  normalizeFixedDecimals,
+ normalizeLaneFeatures,
  normalizeLaneMinimizeSide,
  normalizeLanePath,
  normalizeLaneTab,
  normalizeLaneWidth,
+ normalizeServiceSlug,
+ normalizeSubpath,
  openPackageInSession,
  parseCellValue,
  parseColumnType,
+ parseExportLine,
  parseHashOptions,
+ parseLaneFeatures,
  parseLanePath,
  parseLaneRoutes,
  parseStoredTables,
  promoteTabToBrowserSession,
+ proxyDeployRequest,
  readSessionHistory,
  registerLaneInPackage,
  renameSession,
@@ -229,6 +362,9 @@ const DATA_RUNTIME_ENV = {
  resolveScrollbarColor,
  resolveWorkflowTarget,
  returnToBrowserSession,
+ saveDeployServer,
+ saveDeployedLaneScript,
+ saveLaneDeployment,
  saveLaneScript,
  saveLaneTables,
  saveScriptLine,
@@ -240,8 +376,15 @@ const DATA_RUNTIME_ENV = {
  seedPreferencesScrollbarRecords,
  seedPreferencesScrollbarSource,
  setActivePackageInSession,
+ setSessionDataDir,
+ setTargetLaneLine,
+ simulateLaneRequest,
+ startDeployTerminalSession,
  switchBrowserSession,
  switchTabSession,
+ syncLaneToRemoteCivilMemory,
+ testRemoteCivilMemory,
+ writeLaneSyncBundleToKv,
 }
 
 async function runScript(script, initialState = {}) {
@@ -1217,8 +1360,14 @@ test('lane-control.fs mounts, opens concurrently, adds, and syncs lanes', async 
    return { text: async () => railsSource }
   }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -1438,8 +1587,14 @@ test('main.fs bootstraps app with persistent lane notebooks that edit, add, remo
    return { text: async () => railsSource }
   }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -1736,8 +1891,14 @@ test('lane-notebook.fs handles multi-line paste synchronously and inserts needed
    return { text: async () => outputSource }
   }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -2028,8 +2189,14 @@ test('lane-notebook.fs tabs: Source (default), Input (primitive args, no Source 
    return { text: async () => outputSource }
   }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -2495,8 +2662,14 @@ test('cross-lane import line shows picker instead of raw input, awaits idle lane
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -2945,8 +3118,14 @@ test('Lane Output mini-browser below each lane collects sent scripts, enforces n
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -3220,8 +3399,14 @@ test('whole-lane import without picking a scope value powers a reactive Profile 
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -3674,8 +3859,14 @@ test('Data tab supports tables, typed & multiple columns, editable rows, destruc
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -4090,8 +4281,14 @@ test('Data tab Fixed column edits as xxx.xx, stores scaled integer xxxxx, config
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -4280,10 +4477,11 @@ test('Data tab Fixed column edits as xxx.xx, stores scaled integer xxxxx, config
 })
 
 test('Lane tab route helpers parse and format ;tab segments including encoded %3B and home Source', () => {
- assert.deepEqual(LANE_TABS, ['source', 'input', 'scope', 'data', 'view'])
+ assert.deepEqual(LANE_TABS, ['source', 'input', 'scope', 'data', 'view', 'server'])
  assert.equal(DEFAULT_LANE_TAB, 'source')
  assert.equal(normalizeLaneTab('data'), 'data')
  assert.equal(normalizeLaneTab('VIEW'), 'view')
+ assert.equal(normalizeLaneTab('SERVER'), 'server')
  assert.equal(normalizeLaneTab('unknown'), 'source')
  assert.equal(normalizeLaneTab(undefined), 'source')
 
@@ -4291,6 +4489,7 @@ test('Lane tab route helpers parse and format ;tab segments including encoded %3
  assert.equal(formatLaneRouteSegment(id, 'source'), id)
  assert.equal(formatLaneRouteSegment(id, 'data'), `${id};data`)
  assert.equal(formatLaneRouteSegment(id, 'view'), `${id};view`)
+ assert.equal(formatLaneRouteSegment(id, 'server'), `${id};server`)
  assert.equal(formatLaneRouteSegment(id, 'input'), `${id};input`)
  assert.equal(formatLaneRouteSegment(id, 'scope'), `${id};scope`)
  assert.equal(formatLaneRouteSegment('lane;1', 'data'), 'lane%3B1;data')
@@ -4299,6 +4498,7 @@ test('Lane tab route helpers parse and format ;tab segments including encoded %3
  assert.deepEqual(parseLaneRouteSegment(id), { id, tab: 'source' })
  assert.deepEqual(parseLaneRouteSegment(`${id};data`), { id, tab: 'data' })
  assert.deepEqual(parseLaneRouteSegment(`${id};view`), { id, tab: 'view' })
+ assert.deepEqual(parseLaneRouteSegment(`${id};server`), { id, tab: 'server' })
  assert.deepEqual(parseLaneRouteSegment(`${id};source`), { id, tab: 'source' })
  assert.deepEqual(parseLaneRouteSegment(`${id};DATA`), { id, tab: 'data' })
  assert.deepEqual(parseLaneRouteSegment(`${id};bogus`), { id, tab: 'source' })
@@ -4451,8 +4651,14 @@ test('Lane tab routing syncs URL on tab click, supports direct URL and popstate,
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -4686,8 +4892,14 @@ test('Data tables right-align only integer and fixed cells, resize columns horiz
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -4902,8 +5114,14 @@ test('Lane header reload button reloads entire lane from server KV while keeping
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -5266,8 +5484,14 @@ test('Data tab row type: stacked schema config, joined table display, and on-dem
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -5658,8 +5882,14 @@ test('main.fs persists horizontal scroll in location.hash via replaceState and r
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -5967,8 +6197,14 @@ test('data|tablename sub-routing parses, formats, selects known tables, falls ba
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -6368,8 +6604,14 @@ test('Lane Source individual line editor supports multiline single-line storage,
   if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
   if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -6685,8 +6927,14 @@ test('Lane resizing: Width setting in gear modal, 100px min render clamp, no max
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -7162,8 +7410,14 @@ test('Data tab workflow constraint: + constraint on text only, auto from/to, tra
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -7494,8 +7748,14 @@ test('Fixed left and right side rails: styles, chevron minimize buttons, 26px in
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -7882,8 +8142,14 @@ test('Data tab lane type: custom-named lane column, Open-Lane-style picker, live
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -8274,8 +8540,14 @@ test('Fixed 16px top rail: styles, centered 12px icon buttons, root html fullscr
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -8361,30 +8633,35 @@ test('Fixed 16px top rail: styles, centered 12px icon buttons, root html fullscr
   const rails = laneControl.rails
   const modal = laneControl['lane-modal']
 
-  // Top rail is mounted on body with 5 centered icon buttons in order: fullscreen, search, session, packages, preferences
+  // Top rail is mounted on body with 6 centered icon buttons in order: fullscreen, search, session, packages, servers, preferences
   const topRail = rails['top-rail']
   assert.equal(topRail.tag, 'aside')
   assert.equal(topRail.className, 'top-rail')
   assert.equal(topRail.attributes.role, 'region')
   assert.ok(mockBody.children.includes(topRail))
-  assert.equal(topRail.children.length, 5)
+  assert.equal(topRail.children.length, 6)
 
   const fsBtn = rails['fullscreen-btn']
   const searchBtn = rails['search-btn']
   const sessionBtn = rails['session-btn']
   const packagesBtn = rails['packages-btn']
+  const serversBtn = rails['servers-btn']
   const prefBtn = rails['preferences-btn']
   assert.equal(topRail.children[0], fsBtn)
   assert.equal(topRail.children[1], searchBtn)
   assert.equal(topRail.children[2], sessionBtn)
   assert.equal(topRail.children[3], packagesBtn)
-  assert.equal(topRail.children[4], prefBtn)
+  assert.equal(topRail.children[4], serversBtn)
+  assert.equal(topRail.children[5], prefBtn)
   assert.equal(sessionBtn.className, 'top-rail-icon top-rail-icon--session')
   assert.equal(sessionBtn.textContent, '')
   assert.match(sessionBtn.innerHTML, /class="top-rail-icon-svg top-rail-icon-svg--session"/)
   assert.equal(packagesBtn.className, 'top-rail-icon top-rail-icon--packages')
   assert.equal(packagesBtn.textContent, '')
   assert.match(packagesBtn.innerHTML, /class="top-rail-icon-svg top-rail-icon-svg--packages"/)
+  assert.equal(serversBtn.className, 'top-rail-icon top-rail-icon--servers')
+  assert.equal(serversBtn.textContent, '')
+  assert.match(serversBtn.innerHTML, /class="top-rail-icon-svg top-rail-icon-svg--servers"/)
   assert.equal(prefBtn.className, 'top-rail-icon top-rail-icon--preferences')
   assert.equal(prefBtn.textContent, '')
   assert.match(prefBtn.innerHTML, /class="top-rail-icon-svg top-rail-icon-svg--preferences"/)
@@ -8584,8 +8861,14 @@ test('Top-rail wrench preferences dropdown: create seeded lane, pick existing la
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -8927,8 +9210,14 @@ test('Lanes remember last navigated path across close/reopen, show Path and Widt
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -9316,8 +9605,14 @@ test('Lane scroll landing clears right margin across add/open/restore without cl
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -9889,8 +10184,14 @@ test('Tables split storage: instant legacy migration, single-row & single-schema
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -10068,8 +10369,14 @@ test('Per-line scripts: instant legacy migration, Unknown/ISO timestamps, hover 
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -10252,8 +10559,14 @@ test('Two-level Sessions (localStorage + sessionStorage) and Packages access con
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -10623,8 +10936,14 @@ test('Default #383838 scrollbar styling, live interface.scrollbarColor preferenc
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -10861,8 +11180,14 @@ test('Session & Package UI rework: split top-rail menus, workspace summary, draf
   if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
   if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
   if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
   if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
   if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
@@ -11028,6 +11353,2608 @@ test('Session & Package UI rework: split top-rail menus, workspace summary, draf
   assert.equal(laneControl['session-id'], forkSessId)
   assert.equal(mockWindow.location.pathname, `/${laneA.id};data|Orders/${laneC.id}`)
   assert.equal(laneControl['by-id'][laneA.id].notebook['data-view']['get-active-table']().name, 'Orders')
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('fs-api.mjs: parseProcMounts, listDisks, listDirectories (including hidden & symlinks), createDirectory, and HTTP /api/fs/* routes', async () => {
+ assert.equal(unescapeMountPath('/mnt/My\\040Drive\\011Two'), '/mnt/My Drive\tTwo')
+
+ const mountsText = [
+  'proc /proc proc rw,nosuid 0 0',
+  'sysfs /sys sysfs rw 0 0',
+  'tmpfs /run tmpfs rw 0 0',
+  'overlay /var/lib/docker/overlay2/abc overlay rw 0 0',
+  '/dev/nvme0n1p2 / ext4 rw,relatime 0 0',
+  '/dev/nvme0n1p1 /boot/efi vfat rw 0 0',
+  '/dev/sdb1 /mnt/External\\040Disk exfat rw 0 0',
+  'nas.local:/export/media /media/user/NAS nfs4 rw 0 0',
+ ].join('\n')
+ const parsedMounts = parseProcMounts(mountsText)
+ assert.deepEqual(parsedMounts, [
+  { device: '/dev/nvme0n1p2', mount: '/', fsType: 'ext4' },
+  { device: '/dev/sdb1', mount: '/mnt/External Disk', fsType: 'exfat' },
+  { device: 'nas.local:/export/media', mount: '/media/user/NAS', fsType: 'nfs4' },
+ ])
+
+ const posixCrumbs = buildBreadcrumbs('/var/data/work', 'linux')
+ assert.deepEqual(posixCrumbs, [
+  { name: '/', path: '/' },
+  { name: 'var', path: '/var' },
+  { name: 'data', path: '/var/data' },
+  { name: 'work', path: '/var/data/work' },
+ ])
+ const winCrumbs = buildBreadcrumbs('D:\\Projects\\Civil', 'win32')
+ assert.deepEqual(winCrumbs, [
+  { name: 'D:\\', path: 'D:\\' },
+  { name: 'Projects', path: 'D:\\Projects' },
+  { name: 'Civil', path: 'D:\\Projects\\Civil' },
+ ])
+
+ const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-fs-api-'))
+ try {
+  const homeDir = path.join(tempRoot, 'home')
+  const mountParent = path.join(tempRoot, 'mounts')
+  const extDisk = path.join(mountParent, 'SSD_One')
+  const alphaDir = path.join(homeDir, 'Alpha')
+  const betaDir = path.join(homeDir, 'beta')
+  const dotTmi = path.join(homeDir, '.tmi')
+  const plainFile = path.join(homeDir, 'notes.txt')
+  const linkToExt = path.join(homeDir, 'ext-link')
+  const linkToFile = path.join(homeDir, 'file-link')
+
+  await fs.mkdir(alphaDir, { recursive: true })
+  await fs.mkdir(betaDir, { recursive: true })
+  await fs.mkdir(dotTmi, { recursive: true })
+  await fs.mkdir(extDisk, { recursive: true })
+  await fs.writeFile(plainFile, 'hello', 'utf8')
+  await fs.symlink(extDisk, linkToExt)
+  await fs.symlink(plainFile, linkToFile)
+
+  const disksRes = await listDisks({
+   platform: 'linux',
+   homedir: homeDir,
+   mountsText: '/dev/nvme0n1p2 / ext4 rw 0 0\n',
+   extraMountParents: [mountParent],
+  })
+  assert.equal(disksRes.home, path.resolve(homeDir))
+  assert.ok(disksRes.roots.some(r => r.kind === 'home' && r.path === path.resolve(homeDir)))
+  assert.ok(disksRes.roots.some(r => r.kind === 'root' && r.path === '/'))
+  assert.ok(disksRes.roots.some(r => r.kind === 'disk' && r.path === path.resolve(extDisk) && r.name === 'SSD_One'))
+
+  // Empty path defaults to home; ~ expands to home; hidden dotfolders + directory symlinks included, files excluded
+  const listedHome = await listDirectories('~', { platform: 'linux', homedir: homeDir })
+  assert.equal(listedHome.ok, true)
+  assert.equal(listedHome.status, 200)
+  assert.equal(listedHome.path, path.resolve(homeDir))
+  assert.equal(listedHome.writable, true)
+  assert.deepEqual(
+   listedHome.directories.map(d => ({ name: d.name, hidden: d.hidden, symlink: d.symlink })),
+   [
+    { name: 'Alpha', hidden: false, symlink: false },
+    { name: 'beta', hidden: false, symlink: false },
+    { name: 'ext-link', hidden: false, symlink: true },
+    { name: '.tmi', hidden: true, symlink: false },
+   ]
+  )
+
+  const listedSub = await listDirectories('~/.tmi', { platform: 'linux', homedir: homeDir })
+  assert.equal(listedSub.ok, true)
+  assert.equal(listedSub.path, path.resolve(dotTmi))
+  assert.equal(listedSub.parent, path.resolve(homeDir))
+
+  const missingRes = await listDirectories(path.join(homeDir, 'does-not-exist'), { platform: 'linux', homedir: homeDir })
+  assert.equal(missingRes.ok, false)
+  assert.equal(missingRes.status, 404)
+
+  const fileRes = await listDirectories(plainFile, { platform: 'linux', homedir: homeDir })
+  assert.equal(fileRes.ok, false)
+  assert.equal(fileRes.status, 400)
+
+  const createdRes = await createDirectory(homeDir, 'NewWorkspace', { platform: 'linux', homedir: homeDir })
+  assert.equal(createdRes.ok, true)
+  assert.equal(createdRes.status, 201)
+  assert.equal(createdRes.path, path.join(path.resolve(homeDir), 'NewWorkspace'))
+
+  const dupRes = await createDirectory(homeDir, 'NewWorkspace', { platform: 'linux', homedir: homeDir })
+  assert.equal(dupRes.ok, false)
+  assert.equal(dupRes.status, 409)
+
+  const badNameRes = await createDirectory(homeDir, '../escape', { platform: 'linux', homedir: homeDir })
+  assert.equal(badNameRes.ok, false)
+  assert.equal(badNameRes.status, 400)
+
+  // HTTP handler round-trip for /api/fs/roots, /api/fs/list, /api/fs/mkdir, 404, 405
+  async function invokeFsApi(method, urlPath, jsonBody = null) {
+   const req = new EventEmitter()
+   req.method = method
+   req.url = urlPath
+   let statusCode = 0
+   let headers = {}
+   let rawBody = ''
+   const res = {
+    writeHead(code, hdrs) {
+     statusCode = code
+     headers = hdrs || {}
+    },
+    end(chunk) {
+     rawBody += chunk ? String(chunk) : ''
+    },
+   }
+   const promise = handleFsApiRequest(req, res, {
+    platform: 'linux',
+    homedir: homeDir,
+    mountsText: '/dev/nvme0n1p2 / ext4 rw 0 0\n',
+    extraMountParents: [mountParent],
+   })
+   if (jsonBody !== null) {
+    queueMicrotask(() => {
+     req.emit('data', Buffer.from(JSON.stringify(jsonBody), 'utf8'))
+     req.emit('end')
+    })
+   }
+   else {
+    queueMicrotask(() => req.emit('end'))
+   }
+   await promise
+   return { status: statusCode, headers, body: JSON.parse(rawBody) }
+  }
+
+  const httpRoots = await invokeFsApi('GET', '/api/fs/roots')
+  assert.equal(httpRoots.status, 200)
+  assert.equal(httpRoots.headers['Cache-Control'], 'no-store')
+  assert.ok(httpRoots.body.roots.some(r => r.path === path.resolve(extDisk)))
+
+  const httpList = await invokeFsApi('GET', `/api/fs/list?path=${encodeURIComponent(homeDir)}`)
+  assert.equal(httpList.status, 200)
+  assert.ok(httpList.body.directories.some(d => d.name === 'NewWorkspace'))
+  assert.ok(httpList.body.directories.some(d => d.name === '.tmi' && d.hidden))
+
+  const httpMkdir = await invokeFsApi('POST', '/api/fs/mkdir', { parent: dotTmi, name: 'civil-data' })
+  assert.equal(httpMkdir.status, 201)
+  assert.equal(httpMkdir.body.ok, true)
+  assert.equal(httpMkdir.body.path, path.join(path.resolve(dotTmi), 'civil-data'))
+
+  const httpNotFound = await invokeFsApi('GET', '/api/fs/unknown')
+  assert.equal(httpNotFound.status, 404)
+
+  const httpMethodErr = await invokeFsApi('POST', '/api/fs/roots', {})
+  assert.equal(httpMethodErr.status, 405)
+ }
+ finally {
+  await fs.rm(tempRoot, { recursive: true, force: true })
+ }
+})
+
+test('data.mjs & storage.mjs: modeOptions.disk.basePath URL building, switchable httpKV routing, pinned namespaces, and isolated caches', async () => {
+ assert.equal(normalizeDataDir(null), null)
+ assert.equal(normalizeDataDir('   '), null)
+ assert.equal(normalizeDataDir('/'), '/')
+ assert.equal(normalizeDataDir('/tmp/custom/'), '/tmp/custom')
+ assert.equal(normalizeDataDir('D:\\data\\'), 'D:\\data')
+ assert.equal(normalizeDataDir('D:\\'), 'D:\\')
+
+ assert.equal(formatDataDirLabel(null, false), 'Default (unconfirmed)')
+ assert.equal(formatDataDirLabel(null, true), 'Default')
+ assert.equal(formatDataDirLabel('/tmp/custom/.tmi/', true), '/tmp/custom/.tmi')
+
+ const base = 'http://localhost:8080/api/data?mode=disk'
+ assert.equal(buildDataUrl(base, null), 'http://localhost:8080/api/data?mode=disk')
+ assert.equal(
+  buildDataUrl(base, '/tmp/user/.tmi/'),
+  'http://localhost:8080/api/data?mode=disk&modeOptions.disk.basePath=%2Ftmp%2Fuser%2F.tmi'
+ )
+
+ const requests = []
+ const backingByDir = new Map()
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async (url, init = {}) => {
+  const parsed = new URL(url)
+  const basePath = parsed.searchParams.get('modeOptions.disk.basePath') || '__default__'
+  const key = parsed.searchParams.get('key')
+  const method = (init.method || 'GET').toUpperCase()
+  requests.push({ method, basePath, key, url })
+  let store = backingByDir.get(basePath)
+  if (!store) {
+   store = new Map()
+   backingByDir.set(basePath, store)
+  }
+  if (method === 'GET') {
+   if (!store.has(key)) {
+    return { status: 404, ok: false, statusText: 'Not Found', text: async () => '' }
+   }
+   return { status: 200, ok: true, statusText: 'OK', text: async () => store.get(key) }
+  }
+  if (method === 'POST') {
+   store.set(key, String(init.body || ''))
+   return { status: 200, ok: true, statusText: 'OK', text: async () => '' }
+  }
+  if (method === 'DELETE') {
+   store.delete(key)
+   return { status: 200, ok: true, statusText: 'OK', text: async () => '' }
+  }
+  throw new Error(`Unexpected method ${method}`)
+ }
+
+ try {
+  const router = httpKV({ baseUrl: base, switchable: true })
+  assert.equal(router.basePath, null)
+  assert.equal(router.defaultRoot.basePath, null)
+  assert.strictEqual(router.withBasePath('/tmp/dir-a'), router.withBasePath('/tmp/dir-a/'))
+  assert.strictEqual(router.withBasePath(null), router.defaultRoot)
+
+  // Write via defaultRoot & active router (Default), then switch to dir-a and capture lane-scoped client
+  await router.set('ping', 'default-val')
+  assert.equal(requests.at(-1).basePath, '__default__')
+
+  router.setBasePath('/tmp/dir-a')
+  assert.equal(router.basePath, '/tmp/dir-a')
+  assert.equal(router.defaultRoot.basePath, null)
+  const laneInDirA = router.namespace('lane-shared')
+
+  // Write identical key under dir-a and dir-b; verify WeakMap caches & pinned namespace stay isolated
+  await saveLaneScript(router, laneInDirA, 'lane-shared', ['-- from dir A'], {})
+  router.setBasePath('/tmp/dir-b')
+  const laneInDirB = router.namespace('lane-shared')
+  await saveLaneScript(router, laneInDirB, 'lane-shared', ['-- from dir B'], {})
+
+  // Even while router points to dir-b, laneInDirA still reads/writes dir-a and defaultRoot stays Default
+  assert.equal(await router.defaultRoot.get('ping'), 'default-val')
+  const loadedA = await loadLaneScript(null, laneInDirA, 'lane-shared', {})
+  const loadedB = await loadLaneScript(router, laneInDirB, 'lane-shared', {})
+  assert.deepEqual(loadedA.records.map(r => r.text), ['-- from dir A'])
+  assert.deepEqual(loadedB.records.map(r => r.text), ['-- from dir B'])
+  assert.equal(backingByDir.get('__default__').has('lanes#lane-shared/script-index'), false)
+  assert.equal(backingByDir.get('/tmp/dir-a').has('lanes#lane-shared/script-index'), true)
+  assert.equal(backingByDir.get('/tmp/dir-b').has('lanes#lane-shared/script-index'), true)
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('Per-session permanent data directories: mandatory confirm, computer directory picker, isolated storage, cancel on switch, and full UI visibility', async () => {
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-session-dirs-'))
+ const homeDir = path.join(tempRoot, 'home')
+ const dotTmiDir = path.join(homeDir, '.tmi')
+ const mountParent = path.join(tempRoot, 'disks')
+ const externalDisk = path.join(mountParent, 'ProjectDrive')
+ await fs.mkdir(dotTmiDir, { recursive: true })
+ await fs.mkdir(externalDisk, { recursive: true })
+
+ function createMockElement(tag) {
+  const styleProps = {}
+  return {
+   tag,
+   nodeType: 1,
+   style: {
+    setProperty(name, value) { styleProps[name] = value; this[name] = value },
+    removeProperty(name) { delete styleProps[name]; delete this[name] },
+    getPropertyValue(name) { return styleProps[name] || '' },
+   },
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   removed: false,
+   focused: false,
+   setAttribute(name, value) { this.attributes[name] = value },
+   contains(target) {
+    if (target === this) { return true }
+    return this.children.some(child => typeof child.contains === 'function' && child.contains(target))
+   },
+   appendChild(child) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    this.children.push(child)
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) { this.children.push(child) }
+    else { this.children.splice(idx, 0, child) }
+    return child
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) { this.parentNode.children.splice(idx, 1) }
+     this.parentNode = null
+    }
+   },
+  }
+ }
+
+ const dirStores = new Map()
+ const clientsByPath = new Map()
+ function createRoutedKV() {
+  const makeClient = (basePath = null, defaultRootRef = null) => {
+   const norm = normalizeDataDir(basePath)
+   const cacheKey = norm === null ? '__default__' : norm
+   if (clientsByPath.has(cacheKey)) {
+    return clientsByPath.get(cacheKey)
+   }
+   let store = dirStores.get(cacheKey)
+   if (!store) {
+    store = new Map()
+    dirStores.set(cacheKey, store)
+   }
+   const makeNs = (namespace = '', rootRef = null) => {
+    const isHash = namespace.includes('#')
+    const qualify = k => (isHash ? (namespace.endsWith('#') ? `${namespace}${k}` : `${namespace}/${k}`) : (namespace ? `${namespace}.${k}` : k))
+    const client = {
+     prefix: namespace,
+     basePath: norm,
+     root: rootRef || null,
+     defaultRoot: defaultRootRef || null,
+     getActiveClient() { return client },
+     withBasePath(nextPath) { return getClient(nextPath) },
+     namespace(name) {
+      const nextNs = isHash ? qualify(encodeKeySegment(name)) : qualify(name)
+      return makeNs(nextNs, client.root)
+     },
+     hashNamespace(name) {
+      return makeNs(`${encodeKeySegment(name)}#`, client.root)
+     },
+     async get(key) { const q = qualify(key); return store.has(q) ? store.get(q) : null },
+     async set(key, value) { store.set(qualify(key), String(value)) },
+     async delete(key) { store.delete(qualify(key)) },
+    }
+    if (!client.root) { client.root = client }
+    if (!client.defaultRoot) { client.defaultRoot = norm === null ? client : getClient(null) }
+    return client
+   }
+   const rootClient = makeNs('', null)
+   clientsByPath.set(cacheKey, rootClient)
+   return rootClient
+  }
+  const getClient = targetPath => {
+   const norm = normalizeDataDir(targetPath)
+   const def = norm === null ? null : makeClient(null, null)
+   return makeClient(norm, def)
+  }
+  const defaultClient = getClient(null)
+  let activeClient = defaultClient
+  return {
+   get prefix() { return activeClient.prefix },
+   get basePath() { return activeClient.basePath },
+   get root() { return activeClient },
+   defaultRoot: defaultClient,
+   getActiveClient() { return activeClient },
+   withBasePath(nextPath) { return getClient(nextPath) },
+   setBasePath(nextPath) { activeClient = getClient(nextPath); return activeClient },
+   namespace(name) { return activeClient.namespace(name) },
+   hashNamespace(name) { return activeClient.hashNamespace(name) },
+   get(key) { return activeClient.get(key) },
+   set(key, value) { return activeClient.set(key, value) },
+   delete(key) { return activeClient.delete(key) },
+  }
+ }
+
+ const routedKV = createRoutedKV()
+ // Seed an unconfirmed legacy session in Default registry KV
+ const legacySessId = 'legacy-unconfirmed-sess'
+ await routedKV.defaultRoot.set(sessionMetaKey(legacySessId), JSON.stringify({
+  id: legacySessId,
+  name: 'Legacy Workspace',
+  activePackageId: DEFAULT_PACKAGE_ID,
+  laneIds: [],
+  pathname: '/',
+  version: 1,
+  forkedFrom: null,
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+ }))
+
+ const makeStore = () => {
+  const map = new Map()
+  return {
+   getItem(k) { return map.has(k) ? map.get(k) : null },
+   setItem(k, v) { map.set(k, String(v)) },
+   removeItem(k) { map.delete(k) },
+  }
+ }
+ const localStore = makeStore()
+ const sessionStore = makeStore()
+ let uuid = 0
+ const windowListeners = {}
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  JSON,
+  Math,
+  Object,
+  Reflect,
+  decodeURIComponent,
+  localStorage: localStore,
+  sessionStorage: sessionStore,
+  crypto: { randomUUID: () => `dir-uuid-${++uuid}` },
+  history: { pushState(_s, _t, url) { mockWindow.location.pathname = url } },
+  location: { pathname: '/' },
+  addEventListener(event, handler) {
+   windowListeners[event] ||= []
+   windowListeners[event].push(handler)
+  },
+  removeEventListener() {},
+ }
+ const dispatchWindowEvent = async (event, ev) => {
+  for (const handler of windowListeners[event] || []) {
+   await handler(ev)
+  }
+ }
+ const mockDocument = { body: createMockElement('body'), defaultView: mockWindow, createElement: createMockElement }
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createFsDir: (parentDir, name) => createDirectory(parentDir, name, { platform: 'linux', homedir: homeDir }),
+   createIdleTracker,
+   data: routedKV,
+   defaultValueForType,
+   document: mockDocument,
+   fetchFsList: dirPath => listDirectories(dirPath, { platform: 'linux', homedir: homeDir }),
+   fetchFsRoots: () => listDisks({
+    platform: 'linux',
+    homedir: homeDir,
+    mountsText: '/dev/nvme0n1p2 / ext4 rw 0 0\n',
+    extraMountParents: [mountParent],
+   }),
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  await f.run(parse(mainSource, '/src/main.fs'))
+  const laneControl = f.state['lane-control']
+  const rails = laneControl.rails
+  const dirModal = laneControl['dir-modal']
+  const sessionModal = laneControl['session-modal']
+  const packageModal = laneControl['package-modal']
+  const summary = laneControl['workspace-summary']
+
+  // 1. On initial boot with unconfirmed session, dir-modal opens in mandatory confirm mode (no cancel/close)
+  const defaultSessId = laneControl['session-id']
+  assert.equal(dirModal['is-open'], true)
+  assert.equal(dirModal.mode, 'confirm')
+  assert.equal(dirModal['cancel-btn'].hidden, true)
+  assert.equal(dirModal['close-btn'].hidden, true)
+  assert.equal(laneControl['session-data-dir'], null)
+  assert.equal(laneControl['session-data-dir-confirmed'], false)
+  assert.equal(summary['sess-dir-btn'].textContent, 'Default (unconfirmed)')
+  assert.match(summary['sess-dir-btn'].className, /workspace-session-dir--unconfirmed/)
+  assert.equal(rails['session-dir-el'].textContent, 'Default (unconfirmed)')
+
+  // Escape and backdrop click do not dismiss mandatory confirm
+  await dispatchWindowEvent('keydown', { key: 'Escape' })
+  await dirModal.backdrop.listeners.click({ target: dirModal.backdrop })
+  assert.equal(dirModal['is-open'], true)
+
+  // Confirm Default -> locks Default, closes modal, updates all session UI panes
+  await dirModal['default-btn'].listeners.click()
+  assert.equal(dirModal['is-open'], false)
+  assert.equal(laneControl['session-data-dir'], null)
+  assert.equal(laneControl['session-data-dir-confirmed'], true)
+  assert.equal(summary['sess-dir-btn'].textContent, 'Default')
+  assert.doesNotMatch(summary['sess-dir-btn'].className, /workspace-session-dir--unconfirmed/)
+  assert.equal(rails['session-dir-el'].textContent, 'Default')
+
+  // Create a lane + custom preferences lane in Default so we verify cross-directory isolation
+  await laneControl['rename-session']('Default Home')
+  const defaultLane = await laneControl.add()
+  await laneControl.rename(defaultLane.id, 'Default Lane')
+  const defaultPrefLane = await laneControl['create-preferences-lane']()
+  defaultPrefLane.notebook.rows[1]['input-el'].value = '; to interface.backgroundColor #112233'
+  await defaultPrefLane.notebook.rows[1]['input-el'].listeners.input()
+  await laneControl['apply-preferences']()
+  assert.equal(mockDocument.body.style.backgroundColor, '#112233')
+  await laneControl['save-session-draft']()
+
+  // 2. Click "+ New session" from top-rail menu -> opens computer directory picker in create mode
+  await rails['session-new-btn'].listeners.click()
+  assert.equal(dirModal['is-open'], true)
+  assert.equal(dirModal.mode, 'create')
+  assert.equal(dirModal['cancel-btn'].hidden, false)
+  assert.equal(dirModal['close-btn'].hidden, false)
+  assert.ok(dirModal['root-items'].some(it => it.root.path === path.resolve(externalDisk)))
+
+  // Toggle Show hidden in home directory to verify .tmi dotfolder appears
+  assert.equal(dirModal['dir-items'].some(it => it.dir.name === '.tmi'), false)
+  await dirModal['hidden-btn'].listeners.click()
+  assert.equal(dirModal['dir-items'].some(it => it.dir.name === '.tmi'), true)
+
+  // Click externalDisk in sidebar, create a new subfolder via + New Folder, enter session name, and Create Here
+  const diskBtn = dirModal['root-items'].find(it => it.root.path === path.resolve(externalDisk)).el
+  await diskBtn.listeners.click()
+  assert.equal(dirModal['current-path'], path.resolve(externalDisk))
+  await dirModal['new-folder-btn'].listeners.click()
+  dirModal['new-folder-input'].value = 'my-workspace'
+  await dirModal['new-folder-row'].listeners.submit({ preventDefault() {} })
+  const customWorkspaceDir = path.join(path.resolve(externalDisk), 'my-workspace')
+  assert.equal(dirModal['current-path'], customWorkspaceDir)
+
+  dirModal['name-input'].value = 'Project Disk'
+  await dirModal['select-btn'].listeners.click()
+  assert.equal(dirModal['is-open'], false)
+
+  const projectSessId = laneControl['session-id']
+  assert.notEqual(projectSessId, defaultSessId)
+  assert.equal(laneControl['session-meta'].name, 'Project Disk')
+  assert.equal(laneControl['session-data-dir'], customWorkspaceDir)
+  assert.equal(laneControl['session-data-dir-confirmed'], true)
+  assert.equal(routedKV.basePath, customWorkspaceDir)
+  assert.equal(mockDocument.body.style.backgroundColor, '#202020')
+  assert.equal(laneControl.lanes.length, 0)
+
+  // Add a lane in Project Disk -> writes strictly to customWorkspaceDir store, never __default__
+  const customPkg = await laneControl['create-package']('CustomPkg', '')
+  const customLane = await laneControl.add()
+  await laneControl.rename(customLane.id, 'Disk Lane')
+  await laneControl['save-session-draft']()
+  assert.ok(dirStores.get(customWorkspaceDir).has(`${customLane.id}.title`))
+  assert.equal(dirStores.get('__default__').has(`${customLane.id}.title`), false)
+  assert.equal(dirStores.get(customWorkspaceDir).has(`${defaultLane.id}.title`), false)
+
+  // 3. Verify chosen directory is displayed in all session info panes, switchers, history, and package page
+  assert.equal(summary['sess-dir-btn'].textContent, customWorkspaceDir)
+  await rails['sync-session-menu']()
+  assert.equal(rails['session-dir-el'].textContent, customWorkspaceDir)
+  const recentDefaultInMenu = rails['session-recent-items'].find(it => it.rec.id === defaultSessId)
+  assert.ok(recentDefaultInMenu)
+  assert.equal(recentDefaultInMenu['dir-el'].textContent, 'Default')
+
+  await sessionModal['open-switch-session']()
+  assert.equal(sessionModal['active-dir-box'].textContent, `Data Directory (permanent): ${customWorkspaceDir}`)
+  assert.equal(sessionModal['active-dir-btn'].hidden, true)
+  const recentDefaultRow = sessionModal['recent-items'].find(it => it.rec.id === defaultSessId)
+  assert.ok(recentDefaultRow)
+  assert.ok(recentDefaultRow.el.children[0].children.some(el => el.className === 'lane-session-item-dir' && el.textContent === 'Dir: Default'))
+  await sessionModal.close()
+
+  await sessionModal['open-history']()
+  const projHist = sessionModal['hist-items'].find(it => it.entry.sessionId === projectSessId)
+  assert.ok(projHist)
+  assert.ok(projHist.el.children[0].children.some(el => el.className === 'lane-history-dir' && el.textContent === `Dir: ${customWorkspaceDir}`))
+  sessionModal['hist-search'].value = 'my-workspace'
+  await sessionModal['hist-search'].listeners.input()
+  assert.equal(sessionModal['hist-items'].length, 1)
+  assert.equal(sessionModal['hist-items'][0].entry.sessionId, projectSessId)
+  await sessionModal.close()
+
+  await packageModal['open-packages'](customPkg.pkg.id)
+  const pkgSessItem = packageModal['pkg-session-items'].find(it => it.session.id === projectSessId)
+  assert.ok(pkgSessItem)
+  assert.ok(pkgSessItem.el.children[0].children.some(el => el.textContent.includes(customWorkspaceDir)))
+  await packageModal.close()
+
+  // 4. Switching back to confirmed Default session swaps basePath, lanes, and preferences without prompting
+  await laneControl['switch-session'](defaultSessId)
+  assert.equal(dirModal['is-open'], false)
+  assert.equal(routedKV.basePath, null)
+  assert.equal(mockDocument.body.style.backgroundColor, '#112233')
+  assert.ok(laneControl['by-id'][defaultLane.id])
+  assert.equal(laneControl['by-id'][customLane.id], undefined)
+
+  // Switch back to Project Disk
+  await laneControl['switch-session'](projectSessId)
+  assert.equal(dirModal['is-open'], false)
+  assert.equal(routedKV.basePath, customWorkspaceDir)
+  assert.equal(mockDocument.body.style.backgroundColor, '#202020')
+  assert.ok(laneControl['by-id'][customLane.id])
+
+  // 5. Switch to unconfirmed legacy session -> prompts with Cancel button; Cancel returns to Project Disk
+  await laneControl['switch-session'](legacySessId)
+  assert.equal(dirModal['is-open'], true)
+  assert.equal(dirModal.mode, 'confirm')
+  assert.equal(dirModal['previous-session-id'], projectSessId)
+  assert.equal(dirModal['cancel-btn'].hidden, false)
+  await dirModal['cancel-btn'].listeners.click()
+  assert.equal(dirModal['is-open'], false)
+  assert.equal(laneControl['session-id'], projectSessId)
+  assert.equal(routedKV.basePath, customWorkspaceDir)
+
+  // Switch to legacy session again and permanently bind it to ~/.tmi via path bar
+  await laneControl['switch-session'](legacySessId)
+  assert.equal(dirModal['is-open'], true)
+  dirModal['path-input'].value = '~/.tmi'
+  await dirModal.pathbar.listeners.submit({ preventDefault() {} })
+  assert.equal(dirModal['current-path'], path.resolve(dotTmiDir))
+  await dirModal['select-btn'].listeners.click()
+  assert.equal(dirModal['is-open'], false)
+  assert.equal(laneControl['session-id'], legacySessId)
+  assert.equal(laneControl['session-data-dir'], path.resolve(dotTmiDir))
+  assert.equal(laneControl['session-data-dir-confirmed'], true)
+  assert.equal(routedKV.basePath, path.resolve(dotTmiDir))
+
+  // 6. Permanence check: attempting to alter a confirmed session's directory fails
+  const rebindAttempt = await setSessionDataDir(routedKV, mockWindow, projectSessId, { dataDir: path.resolve(dotTmiDir) })
+  assert.equal(rebindAttempt.ok, false)
+  assert.match(rebindAttempt.error, /permanently set/)
+ }
+ finally {
+  globalThis.fetch = origFetch
+  await fs.rm(tempRoot, { recursive: true, force: true })
+ }
+})
+
+test('lane-http.mjs: request parsing, handler detection, hybrid expression fallback, respond envelope vs plain JSON, and mock simulator', async () => {
+ const req = buildRequestObject({
+  method: 'post',
+  url: '/api/calc/users/Alice%20Smith?tag=a&tag=b&page=2',
+  basePath: '/api/calc',
+  headers: { 'Content-Type': 'application/json', 'X-Test': '1' },
+  rawBody: '{"x":10}',
+ })
+ assert.equal(req.method, 'POST')
+ assert.equal(req.originalPath, '/api/calc/users/Alice%20Smith')
+ assert.equal(req.pathname, '/users/Alice%20Smith')
+ assert.equal(req.path, '/users/Alice%20Smith')
+ assert.deepEqual(req.segments, ['users', 'Alice Smith'])
+ assert.deepEqual(req.query, { tag: ['a', 'b'], page: '2' })
+ assert.equal(req.headers['x-test'], '1')
+ assert.deepEqual(req.body, { x: 10 })
+ assert.equal(typeof req.respond, 'function')
+
+ // Normal plain object with a `status` key MUST NOT be mistaken for an HTTP response envelope
+ const plainObj = normalizeHttpResult({ status: 'ok', count: 3 }, { cors: true, method: 'GET' })
+ assert.equal(plainObj.status, 200)
+ assert.deepEqual(JSON.parse(plainObj.bodyText), { status: 'ok', count: 3 })
+ assert.equal(plainObj.headers['Access-Control-Allow-Origin'], '*')
+
+ // Explicit respond helper sets status and custom headers
+ const helper = createResponseHelper()
+ const customRes = normalizeHttpResult(helper(201, { created: true }, { 'X-Custom': 'yes' }), { cors: true, method: 'POST' })
+ assert.equal(customRes.status, 201)
+ assert.equal(customRes.headers['X-Custom'], 'yes')
+ assert.deepEqual(JSON.parse(customRes.bodyText), { created: true })
+
+ // Mock simulator: handler lane with console logging, 405 + Allow, and OPTIONS preflight
+ const handlerLines = [
+  '; to get (\n ; to { r } $argv\n !console.log \'GET\' $r.path\n ; object { route $r.path } { q $r.query.q }\n)',
+  '; to post (\n ; to { r } $argv\n !respond 201 [ object { received $r.body } ] [ object { X-Mode post } ]\n)',
+ ]
+ const getSim = await simulateLaneRequest({
+  lines: handlerLines,
+  req: { method: 'GET', path: '/items/7?q=abc' },
+  forceFresh: true,
+ })
+ assert.equal(getSim.status, 200)
+ assert.equal(getSim.mode, 'handler')
+ assert.equal(getSim.handlerName, 'get')
+ assert.deepEqual(getSim.detectedHandlers, ['GET', 'POST'])
+ assert.deepEqual(JSON.parse(getSim.bodyText), { route: '/items/7', q: 'abc' })
+ assert.equal(getSim.logs.some(l => l.message.includes('GET /items/7')), true)
+
+ const postSim = await simulateLaneRequest({
+  lines: handlerLines,
+  req: { method: 'POST', path: '/items', rawBody: '{"n":5}' },
+  forceFresh: true,
+ })
+ assert.equal(postSim.status, 201)
+ assert.equal(postSim.headers['X-Mode'], 'post')
+ assert.deepEqual(JSON.parse(postSim.bodyText), { received: { n: 5 } })
+
+ const delSim = await simulateLaneRequest({
+  lines: handlerLines,
+  req: { method: 'DELETE', path: '/items/7' },
+ })
+ assert.equal(delSim.status, 405)
+ assert.match(delSim.headers.Allow, /GET/)
+ assert.match(delSim.headers.Allow, /POST/)
+
+ const optSim = await simulateLaneRequest({
+  lines: handlerLines,
+  req: { method: 'OPTIONS', path: '/items' },
+ })
+ assert.equal(optSim.status, 204)
+
+ // Mock simulator: hybrid expression-only lane returns last value as JSON (e.g. a number)
+ const exprLines = [
+  '-- pure calculation lane',
+  '; to base 20',
+  '; add $base 22',
+ ]
+ const exprGet = await simulateLaneRequest({
+  lines: exprLines,
+  req: { method: 'GET', path: '/' },
+ })
+ assert.equal(exprGet.status, 200)
+ assert.equal(exprGet.mode, 'expression')
+ assert.equal(JSON.parse(exprGet.bodyText), 42)
+
+ const exprPost = await simulateLaneRequest({
+  lines: exprLines,
+  req: { method: 'POST', path: '/' },
+ })
+ assert.equal(exprPost.status, 405)
+})
+
+test('storage.mjs: server CRUD, deployment CRUD, allocateNextPort, collectLaneSyncBundle, and writeLaneSyncBundleToKv', async () => {
+ assert.equal(normalizeServiceSlug('My Cool API!!'), 'my-cool-api')
+ assert.equal(normalizeDomainName('API.Example.COM.'), 'api.example.com')
+ assert.equal(normalizeDomainName('bad domain!'), '')
+ assert.equal(normalizeSubpath('v1/calc/'), '/v1/calc')
+ assert.equal(normalizeSubpath('/../etc'), '')
+ assert.equal(buildPublicEndpointUrl({ routeMode: 'subpath', domain: 'api.example.com', subpath: '/calc', https: true }), 'https://api.example.com/calc')
+ assert.equal(buildPublicEndpointUrl({ routeMode: 'domain', domain: 'calc.example.com', https: false }), 'http://calc.example.com')
+
+ const mem = new Map()
+ const makeStoreKv = (ns = '') => {
+  const isHash = ns.includes('#')
+  const qual = k => (isHash ? (ns.endsWith('#') ? `${ns}${k}` : `${ns}/${k}`) : (ns ? `${ns}.${k}` : k))
+  const c = {
+   namespace: name => makeStoreKv(isHash ? qual(encodeKeySegment(name)) : qual(name)),
+   hashNamespace: name => makeStoreKv(`${encodeKeySegment(name)}#`),
+   async get(k) { const q = qual(k); return mem.has(q) ? mem.get(q) : null },
+   async set(k, v) { const s = String(v); assert.ok(utf8ByteLength(s) <= MAX_KV_VALUE_BYTES); mem.set(qual(k), s) },
+   async delete(k) { mem.delete(qual(k)) },
+  }
+  return c
+ }
+ const srcKv = makeStoreKv()
+
+ const srv1 = await saveDeployServer(srcKv, {
+  name: 'Prod Box',
+  host: 'prod.example.com',
+  user: 'deploy',
+  sshPort: 2222,
+  defaultDomain: 'api.example.com',
+  civilMemoryMode: 'local',
+  civilMemoryPort: 3333,
+ })
+ const srv2 = await saveDeployServer(srcKv, {
+  name: 'Staging Box',
+  host: 'staging.example.com',
+  civilMemoryMode: 'external',
+  civilMemoryUrl: 'https://kv.staging.example.com',
+ })
+ const servers = await loadDeployServers(srcKv)
+ assert.equal(servers.length, 2)
+ assert.equal(servers[0].host, 'prod.example.com')
+ await deleteDeployServer(srcKv, srv2.id)
+ assert.equal((await loadDeployServers(srcKv)).length, 1)
+
+ const d1 = await saveLaneDeployment(srcKv, {
+  laneId: 'lane-a',
+  title: 'Lane A',
+  serverId: srv1.id,
+  slug: 'lane-a',
+  port: 4100,
+  routeMode: 'subpath',
+  domain: 'api.example.com',
+  subpath: '/lane-a',
+  civilMemoryUrl: 'http://127.0.0.1:3333',
+  dataBasePath: '/opt/civil-command/lane-a/data',
+  kvReady: true,
+ })
+ assert.equal((await loadLaneDeployment(srcKv, 'lane-a')).port, 4100)
+ assert.equal(allocateNextPort(await loadDeployments(srcKv), srv1.id, 4100), 4101)
+
+ // Seed two lanes where main-lane imports helper-lane, plus a Data table and Input defaults
+ const helperId = 'helper-lane-1'
+ const mainId = 'main-lane-1'
+ await srcKv.namespace(helperId).set('title', 'Helper')
+ await saveLaneScript(srcKv, srcKv.namespace(helperId), helperId, ['; to factor 10'], null)
+ await srcKv.namespace(mainId).set('title', 'Main API')
+ await srcKv.namespace(mainId).set('inputs', JSON.stringify([{ name: 'offset', type: 'number' }]))
+ await saveLaneScript(srcKv, srcKv.namespace(mainId), mainId, [
+  `; to dep !importLane ${helperId} factor`,
+  '; add $dep 32',
+ ], null)
+ await saveLaneTables(srcKv, srcKv.namespace(mainId), mainId, [{
+  id: 'tbl-1',
+  name: 'items',
+  columns: [{ id: 'col-1', name: 'name', type: 'text', multiple: false }],
+  rows: [{ id: 'row-1', values: { 'col-1': 'alpha' } }],
+ }])
+
+ const bundleNoImports = await collectLaneSyncBundle(srcKv, mainId, { includeImports: false })
+ assert.deepEqual(bundleNoImports.lanes.map(l => l.id), [mainId])
+
+ const bundleWithImports = await collectLaneSyncBundle(srcKv, mainId, { includeImports: true })
+ assert.deepEqual(bundleWithImports.lanes.map(l => l.id), [mainId, helperId])
+
+ const dstMem = new Map()
+ const makeDstKv = (ns = '') => {
+  const isHash = ns.includes('#')
+  const qual = k => (isHash ? (ns.endsWith('#') ? `${ns}${k}` : `${ns}/${k}`) : (ns ? `${ns}.${k}` : k))
+  return {
+   namespace: name => makeDstKv(isHash ? qual(encodeKeySegment(name)) : qual(name)),
+   hashNamespace: name => makeDstKv(`${encodeKeySegment(name)}#`),
+   async get(k) { const q = qual(k); return dstMem.has(q) ? dstMem.get(q) : null },
+   async set(k, v) { dstMem.set(qual(k), String(v)) },
+   async delete(k) { dstMem.delete(qual(k)) },
+  }
+ }
+ const dstKv = makeDstKv()
+ const syncRes = await writeLaneSyncBundleToKv(dstKv, bundleWithImports, null)
+ assert.equal(syncRes.ok, true)
+ assert.equal(syncRes.laneCount, 2)
+ assert.equal(await dstKv.namespace(mainId).get('title'), 'Main API')
+ assert.equal((await loadLaneTables(dstKv, dstKv.namespace(mainId), mainId))[0].rows[0].values['col-1'], 'alpha')
+ await deleteLaneDeployment(srcKv, d1.laneId)
+ assert.equal(await loadLaneDeployment(srcKv, 'lane-a'), null)
+})
+
+test('lane-server.mjs: end-to-end HTTP microservice backed by loopback civil-memory with handlers, expression return, Data tables, KV, and optional imports', async () => {
+ const kvByBase = new Map()
+ const getBucket = base => {
+  const k = base || '__default__'
+  let m = kvByBase.get(k)
+  if (!m) {
+   m = new Map()
+   kvByBase.set(k, m)
+  }
+  return m
+ }
+
+ const cmServer = http.createServer(async (req, res) => {
+  const url = new URL(req.url || '/', 'http://127.0.0.1')
+  if (url.pathname === '/health' && req.method === 'GET') {
+   res.writeHead(200, { 'Content-Type': 'application/json' })
+   res.end(JSON.stringify({ ok: true }))
+   return
+  }
+  const key = url.searchParams.get('key')
+  const basePath = url.searchParams.get('modeOptions.disk.basePath') || ''
+  const bucket = getBucket(basePath)
+  if (req.method === 'GET') {
+   if (!bucket.has(key)) {
+    res.writeHead(404)
+    res.end('Not found')
+    return
+   }
+   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' })
+   res.end(bucket.get(key))
+   return
+  }
+  if (req.method === 'POST') {
+   const chunks = []
+   for await (const ch of req) { chunks.push(ch) }
+   bucket.set(key, Buffer.concat(chunks).toString('utf8'))
+   res.writeHead(200)
+   res.end('ok')
+   return
+  }
+  if (req.method === 'DELETE') {
+   bucket.delete(key)
+   res.writeHead(200)
+   res.end('ok')
+   return
+  }
+  res.writeHead(405)
+  res.end('Method not allowed')
+ })
+ await new Promise(resolve => cmServer.listen(0, '127.0.0.1', resolve))
+ const cmPort = cmServer.address().port
+ const cmUrl = `http://127.0.0.1:${cmPort}`
+ const basePath = '/opt/civil-command/calc-api/data'
+ const remoteKv = httpKV({ baseUrl: normalizeCivilMemoryBaseUrl(cmUrl), basePath, switchable: false })
+
+ const depId = 'dep-lane-e2e'
+ const apiId = 'api-lane-e2e'
+ const exprId = 'expr-lane-e2e'
+
+ try {
+  // Seed helper lane + API handler lane + pure expression lane into civil-memory under basePath
+  await writeLaneSyncBundleToKv(remoteKv, {
+   mainLaneId: apiId,
+   includeImports: true,
+   lanes: [
+    {
+     id: apiId,
+     title: 'API Lane',
+     inputsRaw: JSON.stringify([{ name: 'bonus', type: 'number' }]),
+     records: [
+      { id: 'l1', text: `; to dep !importLane ${depId} val`, updatedAt: null },
+      {
+       id: 'l2',
+       text: '; to get (\n ; to { req } $argv\n ; to hits [ !data.get hits ]\n ; to next ; add [ match { $hits : !JSON.parse $hits } { true : 0 } ] 1\n !data.set hits [ ; add \'\' $next ]\n ; object { path $req.path } { role $req.query.role } { dep $dep } { bonus $bonus } { hits $next } { firstItem $items.0.label }\n)',
+       updatedAt: null,
+      },
+      {
+       id: 'l3',
+       text: '; to post (\n ; to { req } $argv\n !respond 201 [ object { echoed $req.body } ] [ object { X-Lane api } ]\n)',
+       updatedAt: null,
+      },
+     ],
+     tables: [{
+      id: 't1',
+      name: 'items',
+      columns: [{ id: 'c1', name: 'label', type: 'text', multiple: false }],
+      rows: [{ id: 'r1', values: { c1: 'widget' } }],
+     }],
+    },
+    {
+     id: depId,
+     title: 'Dep Lane',
+     inputsRaw: null,
+     records: [{ id: 'd1', text: '; to val 99', updatedAt: null }],
+     tables: [],
+    },
+    {
+     id: exprId,
+     title: 'Expr Lane',
+     inputsRaw: null,
+     records: [
+      { id: 'e1', text: '; to x 20', updatedAt: null },
+      { id: 'e2', text: '; add $x 22', updatedAt: null },
+     ],
+     tables: [],
+    },
+   ],
+  })
+
+  // 1. Start API server with includeImports=false -> importLane returns undefined without breaking
+  const apiNoImp = createLaneHttpServer({
+   slug: 'api-no-imp',
+   laneId: apiId,
+   civilMemoryUrl: cmUrl,
+   dataBasePath: basePath,
+   includeImports: false,
+   basePath: '/api',
+  })
+  await apiNoImp.reload()
+  const addr1 = await apiNoImp.listen(0, '127.0.0.1')
+
+  try {
+   const healthRes = await fetch(`http://127.0.0.1:${addr1.port}/_cc/health`).then(r => r.json())
+   assert.equal(healthRes.ok, true)
+   assert.equal(healthRes.mode, 'handler')
+   assert.deepEqual(healthRes.handlers, ['GET', 'POST'])
+
+   const g1 = await fetch(`http://127.0.0.1:${addr1.port}/api/users/7?role=admin`)
+   assert.equal(g1.status, 200)
+   const g1Body = await g1.json()
+   assert.equal(g1Body.path, '/users/7')
+   assert.equal(g1Body.role, 'admin')
+   assert.equal(g1Body.dep, undefined)
+   assert.equal(g1Body.bonus, 0)
+   assert.equal(g1Body.hits, 1)
+   assert.equal(g1Body.firstItem, 'widget')
+
+   const p1 = await fetch(`http://127.0.0.1:${addr1.port}/api/items`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'bolt' }),
+   })
+   assert.equal(p1.status, 201)
+   assert.equal(p1.headers.get('x-lane'), 'api')
+   assert.deepEqual(await p1.json(), { echoed: { name: 'bolt' } })
+
+   const d1 = await fetch(`http://127.0.0.1:${addr1.port}/api/items`, { method: 'DELETE' })
+   assert.equal(d1.status, 405)
+
+   // Verify KV state persisted on disk bucket for that exact basePath
+   assert.equal(getBucket(basePath).get(`${apiId}.hits`), '1')
+  }
+  finally {
+   await apiNoImp.close()
+  }
+
+  // 2. Start with includeImports=true -> importLane resolves dep=99; test /_cc/reload
+  const apiWithImp = createLaneHttpServer({
+   slug: 'api-with-imp',
+   laneId: apiId,
+   civilMemoryUrl: cmUrl,
+   dataBasePath: basePath,
+   includeImports: true,
+  })
+  await apiWithImp.reload()
+  const addr2 = await apiWithImp.listen(0, '127.0.0.1')
+  try {
+   const g2 = await fetch(`http://127.0.0.1:${addr2.port}/status`).then(r => r.json())
+   assert.equal(g2.dep, 99)
+   assert.equal(g2.hits, 2)
+
+   // Mutate dep lane in KV and call /_cc/reload
+   await saveLaneScript(remoteKv, remoteKv.namespace(depId), depId, ['; to val 123'], null)
+   const reloadRes = await fetch(`http://127.0.0.1:${addr2.port}/_cc/reload`, { method: 'POST' }).then(r => r.json())
+   assert.equal(reloadRes.ok, true)
+   const g3 = await fetch(`http://127.0.0.1:${addr2.port}/status`).then(r => r.json())
+   assert.equal(g3.dep, 123)
+  }
+  finally {
+   await apiWithImp.close()
+  }
+
+  // 3. Pure expression lane -> GET / returns 42 as JSON
+  const exprServer = createLaneHttpServer({
+   slug: 'expr-calc',
+   laneId: exprId,
+   civilMemoryUrl: cmUrl,
+   dataBasePath: basePath,
+   includeImports: false,
+  })
+  await exprServer.reload()
+  const addr3 = await exprServer.listen(0, '127.0.0.1')
+  try {
+   const h = await fetch(`http://127.0.0.1:${addr3.port}/_cc/health`).then(r => r.json())
+   assert.equal(h.mode, 'expression')
+   const valResp = await fetch(`http://127.0.0.1:${addr3.port}/`)
+   assert.equal(valResp.status, 200)
+   assert.match(valResp.headers.get('content-type'), /application\/json/)
+   assert.equal(await valResp.json(), 42)
+   const postResp = await fetch(`http://127.0.0.1:${addr3.port}/`, { method: 'POST' })
+   assert.equal(postResp.status, 405)
+  }
+  finally {
+   await exprServer.close()
+  }
+ }
+ finally {
+  if (typeof cmServer.closeAllConnections === 'function') {
+   cmServer.closeAllConnections()
+  }
+  await new Promise(resolve => cmServer.close(resolve))
+ }
+})
+
+test('pty-terminal.mjs: WebSocket RFC 6455 framing and live Python PTY session over loopback WebSocket', async () => {
+ assert.equal(computeWebSocketAccept('dGhlIHNhbXBsZSBub25jZQ=='), 's3pPLMBiTxaQ9kYGzzhZRbK+xOo=')
+ const frame = encodeWsFrame(0x1, 'hello ws')
+ const parsed = parseWsFrames(frame)
+ assert.equal(parsed.frames.length, 1)
+ assert.equal(parsed.frames[0].opcode, 0x1)
+ assert.equal(parsed.frames[0].payload.toString('utf8'), 'hello ws')
+ assert.equal(parsed.remainder.length, 0)
+
+ // Masked client frame helper
+ function encodeMaskedTextFrame(text) {
+  const payload = Buffer.from(text, 'utf8')
+  const mask = crypto.randomBytes(4)
+  const len = payload.length
+  const header = len < 126
+   ? Buffer.from([0x81, 0x80 | len])
+   : Buffer.from([0x81, 0x80 | 126, (len >> 8) & 0xff, len & 0xff])
+  const masked = Buffer.allocUnsafe(len)
+  for (let i = 0; i < len; i++) {
+   masked[i] = payload[i] ^ mask[i & 3]
+  }
+  return Buffer.concat([header, mask, masked])
+ }
+
+ const termMgr = createTerminalManager()
+ const server = http.createServer((_req, res) => {
+  res.writeHead(404)
+  res.end()
+ })
+ server.on('upgrade', (req, socket, head) => {
+  const u = new URL(req.url || '/', 'http://127.0.0.1')
+  termMgr.attachWebSocket(u.searchParams.get('id'), req, socket, head)
+ })
+ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+ const port = server.address().port
+
+ // Spawn an interactive Python readline prompt inside a real PTY
+ const pyCode = 'import sys; sys.stdout.write("PROMPT:"); sys.stdout.flush(); line = sys.stdin.readline().strip(); print("GOT:" + line)'
+ const session = termMgr.createSession({
+  title: 'PTY Test',
+  command: 'python3',
+  args: ['-u', '-c', pyCode],
+  cols: 80,
+  rows: 24,
+ })
+
+ try {
+  const messages = await new Promise((resolve, reject) => {
+   const client = net.connect(port, '127.0.0.1')
+   const key = crypto.randomBytes(16).toString('base64')
+   const expectedAccept = computeWebSocketAccept(key)
+   const received = []
+   let handshakeDone = false
+   let buf = Buffer.alloc(0)
+   let sentInput = false
+
+   const timer = setTimeout(() => {
+    client.destroy()
+    reject(new Error(`PTY WebSocket test timed out. Received: ${JSON.stringify(received)}`))
+   }, 8000)
+
+   client.on('error', err => {
+    clearTimeout(timer)
+    reject(err)
+   })
+
+   client.on('connect', () => {
+    client.write(
+     `GET /api/deploy/terminal/ws?id=${encodeURIComponent(session.id)} HTTP/1.1\r\n` +
+     `Host: 127.0.0.1:${port}\r\n` +
+     'Upgrade: websocket\r\n' +
+     'Connection: Upgrade\r\n' +
+     `Sec-WebSocket-Key: ${key}\r\n` +
+     'Sec-WebSocket-Version: 13\r\n\r\n'
+    )
+   })
+
+   client.on('data', chunk => {
+    buf = Buffer.concat([buf, chunk])
+    if (!handshakeDone) {
+     const endIdx = buf.indexOf('\r\n\r\n')
+     if (endIdx === -1) {
+      return
+     }
+     const hdr = buf.subarray(0, endIdx).toString('utf8')
+     assert.match(hdr, /101 Switching Protocols/)
+     assert.ok(hdr.includes(expectedAccept))
+     handshakeDone = true
+     buf = buf.subarray(endIdx + 4)
+    }
+    if (buf.length > 0) {
+     const res = parseWsFrames(buf)
+     buf = res.remainder
+     for (const fr of res.frames) {
+      if (fr.opcode === 0x1) {
+       const msg = JSON.parse(fr.payload.toString('utf8'))
+       received.push(msg)
+       if (!sentInput && msg.type === 'output' && msg.data.includes('PROMPT:')) {
+        sentInput = true
+        client.write(encodeMaskedTextFrame(JSON.stringify({ type: 'resize', cols: 110, rows: 32 })))
+        client.write(encodeMaskedTextFrame(JSON.stringify({ type: 'input', data: 'secret123\r' })))
+       }
+       if (msg.type === 'status' && msg.status === 'exited') {
+        clearTimeout(timer)
+        client.end()
+        resolve(received)
+       }
+      }
+     }
+    }
+   })
+  })
+
+  assert.equal(messages[0].type, 'init')
+  const combinedOut = messages.filter(m => m.type === 'output').map(m => m.data).join('')
+  assert.match(combinedOut, /PROMPT:/)
+  assert.match(combinedOut, /GOT:secret123/)
+  const exitMsg = messages.find(m => m.type === 'status' && m.status === 'exited')
+  assert.equal(exitMsg.exitCode, 0)
+ }
+ finally {
+  termMgr.killAll()
+  if (typeof server.closeAllConnections === 'function') {
+   server.closeAllConnections()
+  }
+  await new Promise(resolve => server.close(resolve))
+ }
+})
+
+test('deploy-api.mjs: validation, bash -n checked script generation, Nginx/systemd templates, and HTTP routes', async () => {
+ assert.equal(shellQuote("a'b"), "'a'\\''b'")
+ assert.throws(() => validateSshTarget({ host: '-oProxyCommand=evil', user: 'root' }))
+ assert.throws(() => validateSshTarget({ host: 'example.com;rm -rf /', user: 'root' }))
+ assert.throws(() => validateSshTarget({ host: 'example.com', user: 'root id' }))
+ assert.throws(() => validateSshTarget({ host: 'example.com', user: 'root', sshPort: 70000 }))
+ assert.deepEqual(buildSshBaseArgs({ host: 'example.com', user: 'deploy', sshPort: 2222, identityFile: '/tmp/key' }), ['-p', '2222', '-i', '/tmp/key'])
+
+ const unit = generateSystemdUnit({ slug: 'calc-api', title: 'Calc API' })
+ assert.match(unit, /WorkingDirectory=\/opt\/civil-command\/calc-api/)
+ assert.match(unit, /ExecStart=.*\/opt\/civil-command\/calc-api\/lane-server\.mjs --config \/opt\/civil-command\/calc-api\/config\.json/)
+
+ const subNginx = generateNginxSubpathConfig({ slug: 'calc-api', port: 4100, subpath: '/calc' })
+ assert.match(subNginx, /location = \/calc \{/)
+ assert.match(subNginx, /proxy_pass http:\/\/127\.0\.0\.1:4100\/;/)
+ assert.match(subNginx, /X-Forwarded-Prefix \/calc;/)
+
+ const rootNginx = generateNginxRootConfig({ slug: 'calc-api', port: 4100 })
+ assert.match(rootNginx, /proxy_pass http:\/\/127\.0\.0\.1:4100;/)
+
+ const vhost = generateNginxDomainVhost({ domain: 'api.example.com' })
+ assert.match(vhost, /server_name api\.example\.com;/)
+ assert.match(vhost, /include \/etc\/nginx\/civil-command\/api\.example\.com\.d\/\*\.conf;/)
+
+ const sharedFallback = generateNginxSharedRootFallbackConfig({ domain: 'data.nateferrero.com' })
+ assert.match(sharedFallback, /location \/ \{/)
+ assert.match(sharedFallback, /default_type application\/json;/)
+ assert.match(sharedFallback, /return 404 '/)
+ assert.match(sharedFallback, /data\.nateferrero\.com/)
+
+ const runtimeFiles = {
+  'field.mjs': 'export const ok = 1',
+  'data.mjs': 'export const ok = 2',
+  'storage.mjs': 'export const ok = 3',
+  'lane-http.mjs': 'export const ok = 4',
+  'lane-server.mjs': 'export const ok = 5',
+ }
+
+ const cmInstallScript = generateInstallCivilMemoryScript({
+  port: 3333,
+  exposeDomain: 'kv.example.com',
+  enableLetsEncrypt: true,
+  letsEncryptEmail: 'admin@example.com',
+ })
+ assert.match(cmInstallScript, /https:\/\/github\.com\/tagmein\/civil-memory\.git/)
+ assert.match(cmInstallScript, /__CC_CIVIL_MEMORY_READY__/)
+
+ const deployScript = generateDeployScript({
+  slug: 'calc-api',
+  laneId: 'lane-1',
+  title: 'Calc API',
+  port: 4100,
+  routeMode: 'subpath',
+  domain: 'api.example.com',
+  subpath: '/calc',
+  enableLetsEncrypt: true,
+  letsEncryptEmail: 'ops@example.com',
+  civilMemoryUrl: 'http://127.0.0.1:3333',
+  dataBasePath: '/opt/civil-command/calc-api/data',
+  includeImports: false,
+  runtimeFiles,
+  syncBundle: { mainLaneId: 'lane-1', includeImports: false, lanes: [{ id: 'lane-1', title: 'Calc', records: [], tables: [] }] },
+ })
+ assert.match(deployScript, /apt-get install -y nginx/)
+ assert.match(deployScript, /dnf install -y nginx/)
+ assert.match(deployScript, /yum install -y nginx/)
+ assert.match(deployScript, /sites-available/)
+ assert.match(deployScript, /conf\.d/)
+ assert.match(deployScript, /Initializing shared Nginx vhost/)
+ assert.match(deployScript, /sudo mkdir -p "\$\(dirname "\$CC_AVAIL"\)"/)
+ assert.match(deployScript, /zz-shared-root\.conf/)
+ assert.match(deployScript, /CC_IS_MANAGED_VHOST/)
+ assert.match(deployScript, /CC_CREATED_NEW_VHOST/)
+ assert.match(deployScript, /systemctl is-active --quiet nginx/)
+ assert.match(deployScript, /apt-get install -y certbot python3-certbot-nginx/)
+ assert.match(deployScript, /ssl_certificate/)
+ assert.match(deployScript, /cc-bak/)
+ assert.match(deployScript, /certbot/)
+ assert.match(deployScript, /__CC_DEPLOY_OK__/)
+
+ const deployRootScript = generateDeployScript({
+  slug: 'root-api',
+  laneId: 'lane-2',
+  title: 'Root API',
+  port: 4101,
+  routeMode: 'domain',
+  domain: 'api.example.com',
+  enableLetsEncrypt: false,
+  civilMemoryUrl: 'http://127.0.0.1:3333',
+  runtimeFiles,
+ })
+ assert.match(deployRootScript, /rm -f "\/etc\/nginx\/civil-command\/api\.example\.com\.d\/zz-shared-root\.conf"/)
+ assert.match(deployRootScript, /00-root-root-api\.conf/)
+
+ const undeployScript = generateUndeployScript({ slug: 'calc-api', domain: 'api.example.com', routeMode: 'subpath' })
+ assert.match(undeployScript, /__CC_UNDEPLOY_OK__/)
+ const undeployRootScript = generateUndeployScript({ slug: 'root-api', domain: 'api.example.com', routeMode: 'domain' })
+ assert.match(undeployRootScript, /zz-shared-root\.conf/)
+ assert.match(undeployRootScript, /systemctl is-active --quiet nginx/)
+
+ const testKvScript = generateRemoteKvTestScript({ url: 'http://127.0.0.1:3333', basePath: '/opt/civil-command/data' })
+ const syncKvScript = generateRemoteKvSyncScript({ url: 'http://127.0.0.1:3333', basePath: '/opt/civil-command/data', bundle: { lanes: [] }, runtimeFiles })
+ const svcScript = generateServiceActionScript({ slug: 'calc-api', action: 'restart', port: 4100 })
+ const runnerScript = generateLocalControlMasterRunner({ target: { host: 'example.com', user: 'deploy', sshPort: 22 }, localScriptPath: '/tmp/x.sh', sessionId: 'abc12345' })
+ assert.match(runnerScript, /"\$SSH_DEST" "bash/)
+
+ // Validate every generated bash script with `bash -n`
+ for (const [label, scriptText] of [
+  ['cmInstall', cmInstallScript],
+  ['deploySubpath', deployScript],
+  ['deployDomain', deployRootScript],
+  ['undeploySubpath', undeployScript],
+  ['undeployDomain', undeployRootScript],
+  ['testKv', testKvScript],
+  ['syncKv', syncKvScript],
+  ['svc', svcScript],
+  ['runner', runnerScript],
+ ]) {
+  const chk = spawnSync('bash', ['-n'], { input: scriptText, encoding: 'utf8' })
+  assert.equal(chk.status, 0, `${label} script failed bash -n: ${chk.stderr}`)
+ }
+
+ // Verify generated Python Nginx vhost scanner handles boundaries, comments, and skips dotfiles/backups
+ const pyMatch = deployScript.match(/<<'PYEOF'\n([\s\S]*?)\nPYEOF/)
+ assert.ok(pyMatch, 'Expected Python vhost scanner in deploy script')
+ const scannerDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-ngx-scan-'))
+ try {
+  await fs.writeFile(path.join(scannerDir, '.hidden.conf'), 'server { server_name data.nateferrero.com; }')
+  await fs.writeFile(path.join(scannerDir, 'other.conf.cc-bak.123'), 'server { server_name data.nateferrero.com; }')
+  await fs.writeFile(path.join(scannerDir, '01-commented.conf'), '# server_name data.nateferrero.com;\nserver { server_name sub.data.nateferrero.com; }\n')
+  const missScan = spawnSync('python3', ['-', 'data.nateferrero.com', scannerDir], { input: pyMatch[1], encoding: 'utf8' })
+  assert.equal(missScan.status, 0)
+  assert.equal(missScan.stdout.trim(), '')
+
+  const matchFile = path.join(scannerDir, '02-shared.conf')
+  await fs.writeFile(matchFile, 'server {\n server_name a.com data.nateferrero.com;\n}\n')
+  const hitScan = spawnSync('python3', ['-', 'data.nateferrero.com', scannerDir], { input: pyMatch[1], encoding: 'utf8' })
+  assert.equal(hitScan.status, 0)
+  assert.equal(hitScan.stdout.trim(), await fs.realpath(matchFile))
+ }
+ finally {
+  await fs.rm(scannerDir, { recursive: true, force: true })
+ }
+
+ // HTTP API tests for /api/deploy/kv/test, /api/deploy/kv/sync, /api/deploy/proxy, and cross-origin 403
+ const kvStore = new Map()
+ const cmMock = http.createServer(async (req, res) => {
+  const u = new URL(req.url || '/', 'http://127.0.0.1')
+  const key = u.searchParams.get('key')
+  const base = u.searchParams.get('modeOptions.disk.basePath') || ''
+  const q = `${base}::${key}`
+  if (req.method === 'GET') {
+   if (!kvStore.has(q)) { res.writeHead(404); res.end(); return }
+   res.writeHead(200)
+   res.end(kvStore.get(q))
+   return
+  }
+  if (req.method === 'POST') {
+   const chunks = []
+   for await (const c of req) { chunks.push(c) }
+   kvStore.set(q, Buffer.concat(chunks).toString('utf8'))
+   res.writeHead(200)
+   res.end('ok')
+   return
+  }
+  if (req.method === 'DELETE') {
+   kvStore.delete(q)
+   res.writeHead(200)
+   res.end('ok')
+   return
+  }
+  res.writeHead(404)
+  res.end()
+ })
+ const echoMock = http.createServer(async (req, res) => {
+  const chunks = []
+  for await (const c of req) { chunks.push(c) }
+  res.writeHead(200, { 'Content-Type': 'application/json', 'X-Echo': '1' })
+  res.end(JSON.stringify({ method: req.method, path: req.url, body: Buffer.concat(chunks).toString('utf8') }))
+ })
+ await Promise.all([
+  new Promise(r => cmMock.listen(0, '127.0.0.1', r)),
+  new Promise(r => echoMock.listen(0, '127.0.0.1', r)),
+ ])
+ const apiServer = http.createServer((req, res) => {
+  handleDeployApiRequest(req, res)
+ })
+ await new Promise(r => apiServer.listen(0, '127.0.0.1', r))
+ const apiPort = apiServer.address().port
+ const cmBase = `http://127.0.0.1:${cmMock.address().port}`
+ const echoBase = `http://127.0.0.1:${echoMock.address().port}`
+
+ try {
+  assert.equal(isAllowedLocalOrigin({ headers: { origin: 'https://evil.example', host: 'localhost:8080' } }), false)
+  assert.equal(isAllowedLocalOrigin({ headers: { origin: 'http://localhost:8080', host: 'localhost:8080' } }), true)
+
+  const evilRes = await fetch(`http://127.0.0.1:${apiPort}/api/deploy/kv/test`, {
+   method: 'POST',
+   headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' },
+   body: JSON.stringify({ url: cmBase }),
+  })
+  assert.equal(evilRes.status, 403)
+
+  const kvTestOk = await fetch(`http://127.0.0.1:${apiPort}/api/deploy/kv/test`, {
+   method: 'POST',
+   headers: { 'Content-Type': 'application/json' },
+   body: JSON.stringify({ url: cmBase, basePath: '/opt/test/data' }),
+  }).then(r => r.json())
+  assert.equal(kvTestOk.ok, true)
+
+  const kvSyncOk = await fetch(`http://127.0.0.1:${apiPort}/api/deploy/kv/sync`, {
+   method: 'POST',
+   headers: { 'Content-Type': 'application/json' },
+   body: JSON.stringify({
+    url: cmBase,
+    basePath: '/opt/test/data',
+    bundle: { mainLaneId: 'lane-z', includeImports: false, lanes: [{ id: 'lane-z', title: 'Z', inputsRaw: null, records: [{ id: 'z1', text: '42', updatedAt: null }], tables: [] }] },
+   }),
+  }).then(r => r.json())
+  assert.equal(kvSyncOk.ok, true)
+  assert.equal(kvStore.get('/opt/test/data::lane-z.title'), 'Z')
+
+  const proxyRes = await fetch(`http://127.0.0.1:${apiPort}/api/deploy/proxy`, {
+   method: 'POST',
+   headers: { 'Content-Type': 'application/json' },
+   body: JSON.stringify({ url: `${echoBase}/hello?a=1`, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"v":7}' }),
+  }).then(r => r.json())
+  assert.equal(proxyRes.ok, true)
+  assert.equal(proxyRes.status, 200)
+  assert.equal(proxyRes.headers['x-echo'], '1')
+  assert.deepEqual(JSON.parse(proxyRes.bodyText), { method: 'POST', path: '/hello?a=1', body: '{"v":7}' })
+ }
+ finally {
+  if (typeof apiServer.closeAllConnections === 'function') { apiServer.closeAllConnections() }
+  if (typeof cmMock.closeAllConnections === 'function') { cmMock.closeAllConnections() }
+  if (typeof echoMock.closeAllConnections === 'function') { echoMock.closeAllConnections() }
+  await Promise.all([
+   new Promise(r => apiServer.close(r)),
+   new Promise(r => cmMock.close(r)),
+   new Promise(r => echoMock.close(r)),
+  ])
+ }
+})
+
+test('deploy-api.mjs cc-server.mjs: runs cleanly on @tagmein/civil-memory@0.1.5 CommonJS layout and civilMemoryKV ESM layout', async () => {
+ async function getFreePort() {
+  return new Promise((resolve, reject) => {
+   const srv = net.createServer()
+   srv.unref()
+   srv.on('error', reject)
+   srv.listen(0, '127.0.0.1', () => {
+    const { port } = srv.address()
+    srv.close(() => resolve(port))
+   })
+  })
+ }
+
+ async function startAndWaitHealth(workDir, defaultBasePath, port) {
+  let logs = ''
+  const child = spawn(process.execPath, [path.join(workDir, 'cc-server.mjs')], {
+   cwd: workDir,
+   env: {
+    ...process.env,
+    HOST: '127.0.0.1',
+    PORT: String(port),
+    DEFAULT_BASE_PATH: defaultBasePath,
+   },
+   stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  child.stdout.on('data', d => { logs += d.toString('utf8') })
+  child.stderr.on('data', d => { logs += d.toString('utf8') })
+
+  let exited = null
+  const exitPromise = new Promise(resolve => {
+   child.once('exit', (code, signal) => {
+    exited = { code, signal }
+    resolve(exited)
+   })
+  })
+
+  const deadline = Date.now() + 8000
+  while (Date.now() < deadline) {
+   if (exited) {
+    throw new Error(`cc-server.mjs exited early (${JSON.stringify(exited)}): ${logs}`)
+   }
+   try {
+    const resp = await fetch(`http://127.0.0.1:${port}/health`)
+    if (resp.ok) {
+     return { child, exitPromise, health: await resp.json(), getLogs: () => logs }
+    }
+   }
+   catch {
+    // still starting
+   }
+   await new Promise(r => setTimeout(r, 30))
+  }
+  child.kill('SIGKILL')
+  await exitPromise
+  throw new Error(`Timed out waiting for cc-server.mjs /health: ${logs}`)
+ }
+
+ // Layout A: exact @tagmein/civil-memory@0.1.5 CommonJS build (dist/kv/diskKV.js requiring fsPromises + path, NO dist/index.js)
+ const tmpA = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-cm-a-'))
+ try {
+  const defaultDataA = path.join(tmpA, 'default-data')
+  const customBaseA = path.join(tmpA, 'lane-a-data')
+  await fs.mkdir(path.join(tmpA, 'dist', 'kv'), { recursive: true })
+  await fs.writeFile(path.join(tmpA, 'package.json'), JSON.stringify({
+   name: '@tagmein/civil-memory',
+   version: '0.1.5',
+   main: 'dist/index.js',
+  }))
+  await fs.writeFile(path.join(tmpA, 'dist', 'kv', 'diskKV.js'), [
+   'exports.diskKV = function diskKV({ rootDir, fsPromises, path }) {',
+   ' if (!rootDir || !fsPromises || typeof fsPromises.readFile !== "function" || typeof fsPromises.writeFile !== "function" || !path || typeof path.join !== "function") {',
+   '  throw new Error("diskKV requires rootDir, fsPromises, and path")',
+   ' }',
+   ' async function resolveKey(fullKey) {',
+   '  const parts = fullKey.includes("#") ? fullKey.split("#") : ["main", fullKey]',
+   '  const ns = parts.shift() || "main"',
+   '  const k = parts.join("#") || "index"',
+   '  const segs = [encodeURIComponent(ns.split("/").map(encodeURIComponent).join("/")), ...k.split("/").map(encodeURIComponent)]',
+   '  const leaf = segs.pop()',
+   '  if (segs.length > 0) await fsPromises.mkdir(path.join(rootDir, ...segs), { recursive: true })',
+   '  return path.join(rootDir, ...segs, leaf)',
+   ' }',
+   ' return {',
+   '  async get(k) { try { return (await fsPromises.readFile(await resolveKey(k))).toString("utf8") } catch { return null } },',
+   '  async set(k, v) { await fsPromises.writeFile(await resolveKey(k), String(v), "utf8") },',
+   '  async delete(k) { try { await fsPromises.unlink(await resolveKey(k)) } catch {} },',
+   ' }',
+   '}',
+  ].join('\n'))
+  await fs.writeFile(path.join(tmpA, 'dist', 'kv', 'volatileKV.js'), [
+   'exports.volatileKV = function volatileKV() {',
+   ' const map = new Map()',
+   ' return {',
+   '  async get(k) { return map.has(k) ? map.get(k) : undefined },',
+   '  async set(k, v) { map.set(k, v) },',
+   '  async delete(k) { map.delete(k) },',
+   ' }',
+   '}',
+  ].join('\n'))
+  await fs.writeFile(path.join(tmpA, 'cc-server.mjs'), generateCivilMemoryServerScript())
+
+  const portA = await getFreePort()
+  const srvA = await startAndWaitHealth(tmpA, defaultDataA, portA)
+  try {
+   assert.equal(srvA.health.ok, true)
+   assert.equal(srvA.health.factory, 'diskKV')
+
+   const keyUrl = `http://127.0.0.1:${portA}/?mode=disk&modeOptions.disk.basePath=${encodeURIComponent(customBaseA)}&key=${encodeURIComponent('lanes#abc/script/l1')}`
+   const postRes = await fetch(keyUrl, { method: 'POST', body: '; to val 42' })
+   assert.equal(postRes.status, 200)
+   const getRes = await fetch(keyUrl)
+   assert.equal(getRes.status, 200)
+   assert.equal(await getRes.text(), '; to val 42')
+
+   // Verify file lives inside customBaseA and not defaultDataA
+   const customEntries = await fs.readdir(customBaseA)
+   assert.ok(customEntries.length > 0)
+
+   const delRes = await fetch(keyUrl, { method: 'DELETE' })
+   assert.equal(delRes.status, 200)
+   const missingRes = await fetch(keyUrl)
+   assert.equal(missingRes.status, 404)
+
+   const bareUrl = `http://127.0.0.1:${portA}/?mode=disk&key=lane-1.title`
+   await fetch(bareUrl, { method: 'POST', body: 'Hello Lane' })
+   assert.equal(await fetch(bareUrl).then(r => r.text()), 'Hello Lane')
+
+   const volUrl = `http://127.0.0.1:${portA}/?mode=volatile&key=temp-1`
+   assert.equal((await fetch(volUrl)).status, 404)
+   await fetch(volUrl, { method: 'POST', body: 'ephemeral' })
+   assert.equal(await fetch(volUrl).then(r => r.text()), 'ephemeral')
+  }
+  finally {
+   srvA.child.kill('SIGTERM')
+   await srvA.exitPromise
+  }
+ }
+ finally {
+  await fs.rm(tmpA, { recursive: true, force: true })
+ }
+
+ // Layout B: ESM "type": "module" with civilMemoryKV factory in dist/civilMemoryKV.js (no dist/index.js or top-level diskKV)
+ const tmpB = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-cm-b-'))
+ try {
+  const defaultDataB = path.join(tmpB, 'default-data')
+  await fs.mkdir(path.join(tmpB, 'dist'), { recursive: true })
+  await fs.writeFile(path.join(tmpB, 'package.json'), JSON.stringify({
+   name: 'custom-civil-memory-esm',
+   type: 'module',
+  }))
+  await fs.writeFile(path.join(tmpB, 'dist', 'civilMemoryKV.js'), [
+   'import fs from "node:fs"',
+   'import path from "node:path"',
+   'const vol = new Map()',
+   'export function civilMemoryKV(opts = {}) {',
+   ' if (opts.mode === "volatile") {',
+   '  return {',
+   '   async get(k) { return vol.has(k) ? vol.get(k) : null },',
+   '   async set(k, v) { vol.set(k, v) },',
+   '   async delete(k) { vol.delete(k) },',
+   '  }',
+   ' }',
+   ' const root = (opts.modeOptions && opts.modeOptions.disk && (opts.modeOptions.disk.basePath || opts.modeOptions.disk.rootDir)) || "."',
+   ' fs.mkdirSync(root, { recursive: true })',
+   ' const fp = k => path.join(root, encodeURIComponent(k))',
+   ' return {',
+   '  async get(k) { return fs.existsSync(fp(k)) ? fs.readFileSync(fp(k), "utf8") : null },',
+   '  async set(k, v) { fs.writeFileSync(fp(k), String(v), "utf8") },',
+   '  async delete(k) { try { fs.unlinkSync(fp(k)) } catch {} },',
+   ' }',
+   '}',
+  ].join('\n'))
+  await fs.writeFile(path.join(tmpB, 'cc-server.mjs'), generateCivilMemoryServerScript())
+
+  const portB = await getFreePort()
+  const srvB = await startAndWaitHealth(tmpB, defaultDataB, portB)
+  try {
+   assert.equal(srvB.health.ok, true)
+   assert.equal(srvB.health.factory, 'civilMemoryKV')
+   const subDir = path.join(tmpB, 'bucket-b')
+   const u = `http://127.0.0.1:${portB}/?mode=disk&modeOptions.disk.basePath=${encodeURIComponent(subDir)}&key=k1`
+   await fetch(u, { method: 'POST', body: 'esm-ok' })
+   assert.equal(await fetch(u).then(r => r.text()), 'esm-ok')
+   const vu = `http://127.0.0.1:${portB}/?mode=volatile&key=vk`
+   await fetch(vu, { method: 'POST', body: 'vol-esm' })
+   assert.equal(await fetch(vu).then(r => r.text()), 'vol-esm')
+  }
+  finally {
+   srvB.child.kill('SIGTERM')
+   await srvB.exitPromise
+  }
+ }
+ finally {
+  await fs.rm(tmpB, { recursive: true, force: true })
+ }
+})
+
+test('terminal-ui.mjs: ANSI/VT buffer parsing, key encoding, sentinel extraction, and mountTerminalView', () => {
+ const buf = createTerminalBuffer({ cols: 40, rows: 10 })
+ buf.write('\x1b[32mHello\x1b[0m World\r\nprogress 10%\rprogress 100%\r\nfoo\b\bbar')
+ assert.equal(buf.plainText(), 'Hello World\nprogress 100%\nfbar')
+
+ // Split ANSI sequence across chunks + erase line
+ buf.clear()
+ buf.write('line1\x1b[31m red')
+ buf.write('\x1b[0m\r\x1b[2Kreplaced')
+ assert.equal(buf.plainText(), 'replaced')
+
+ // SGR span classes
+ buf.clear()
+ buf.write('\x1b[1;36mCyanBold\x1b[0m')
+ const spans = buf.getRenderLines()[0]
+ assert.equal(spans[0].text, 'CyanBold')
+ assert.equal(spans[0].style.fg, 'cyan')
+ assert.equal(spans[0].style.bold, true)
+
+ // Key encoding
+ assert.equal(encodeKeyEventToVt({ key: 'Enter' }), '\r')
+ assert.equal(encodeKeyEventToVt({ key: 'Backspace' }), '\x7f')
+ assert.equal(encodeKeyEventToVt({ key: 'ArrowUp' }), '\x1b[A')
+ assert.equal(encodeKeyEventToVt({ key: 'c', ctrlKey: true }), '\x03')
+ assert.equal(encodeKeyEventToVt({ key: 'C', ctrlKey: true, shiftKey: true }), '')
+ assert.equal(encodeKeyEventToVt({ key: 'a' }), 'a')
+
+ // Sentinel extraction (including ANSI wrapping)
+ const events = extractSentinelEvents(
+  'normal line\r\n' +
+  '\x1b[32m__CC_KV_READY__ {"ok":true,"url":"http://127.0.0.1:3333"}\x1b[0m\r\n' +
+  '__CC_DEPLOY_OK__ {"ok":true,"slug":"calc","port":4100,"publicUrl":"https://api.example.com/calc"}\r\n'
+ )
+ assert.equal(events.length, 2)
+ assert.equal(events[0].type, '__CC_KV_READY__')
+ assert.equal(events[0].data.ok, true)
+ assert.equal(events[1].type, '__CC_DEPLOY_OK__')
+ assert.equal(events[1].data.port, 4100)
+
+ // PTY line-wrapped sentinel extraction
+ const wrappedOutput =
+  'Syncing lane bundle to connected civil-memory KV store...\r\n' +
+  '__CC_SYNC_OK__ {"ok":true,"laneCount":1,"laneIds":["aa4db0be-3c5e-49fe-8147-640fd654e1a8\r\n' +
+  '"],"syncedAt":"2026-11-25T18:30:45.982Z"}\r\n' +
+  'Waiting for service health check on 127.0.0.1:4100/_cc/health...\r\n' +
+  '__CC_DEPLOY_OK__ {"ok":true,"slug":"beacon","laneId":"aa4db0be-3c5e-49fe-8147-640fd654e1\r\n' +
+  'a8","port":4100,"publicUrl":"https://data.nateferrero.com/beacon","deployedAt":"2026-11-\r\n' +
+  '25T18:30:42.889Z"}\r\n' +
+  'Shared connection to data.nateferrero.com closed.\r\n'
+ const wrappedEvents = extractSentinelEvents(wrappedOutput)
+ assert.equal(wrappedEvents.length, 2)
+ assert.equal(wrappedEvents[0].type, '__CC_SYNC_OK__')
+ assert.deepEqual(wrappedEvents[0].data.laneIds, ['aa4db0be-3c5e-49fe-8147-640fd654e1a8'])
+ assert.equal(wrappedEvents[1].type, '__CC_DEPLOY_OK__')
+ assert.equal(wrappedEvents[1].data.laneId, 'aa4db0be-3c5e-49fe-8147-640fd654e1a8')
+ assert.equal(wrappedEvents[1].data.deployedAt, '2026-11-25T18:30:42.889Z')
+
+ // Chunked WebSocket streaming across PTY wrap boundaries emits each sentinel once
+ const makeMockEl = () => ({
+  style: {},
+  attributes: {},
+  children: [],
+  listeners: {},
+  textContent: '',
+  tabIndex: 0,
+  setAttribute(k, v) { this.attributes[k] = v },
+  appendChild(c) { this.children.push(c); return c },
+  replaceChildren() { this.children = [] },
+  addEventListener(t, fn) { (this.listeners[t] ||= []).push(fn) },
+ })
+ const mockDoc = { createElement: makeMockEl }
+ class StreamWs {
+  constructor() { this.readyState = 1; this.listeners = {} }
+  addEventListener(t, fn) { (this.listeners[t] ||= []).push(fn) }
+  send() {}
+  close() {}
+  emit(t, payload) { for (const fn of this.listeners[t] || []) { fn(payload) } }
+ }
+ let streamWs = null
+ const TrackedWs = class extends StreamWs { constructor() { super(); streamWs = this } }
+ const streamedSentinels = []
+ const term = mountTerminalView(makeMockEl(), {
+  wsUrl: '/api/deploy/terminal/ws?id=test',
+  document: mockDoc,
+  window: { location: { protocol: 'http:', host: 'localhost:8080' } },
+  WebSocketCtor: TrackedWs,
+  onSentinel: evt => streamedSentinels.push(evt),
+ })
+ streamWs.emit('open', {})
+ const chunks = [
+  '__CC_SYNC_OK__ {"ok":true,"laneCount":1,"laneIds":["aa4db0be-3c5e-49fe-8147-640fd654e1a8\r\n',
+  '"],"syncedAt":"2026-11-25T18:30:45.982Z"}\r\n__CC_DEPLOY_OK__ {"ok":true,"slug":"beacon","laneId":"aa4db0be-3c5e-49fe-8147-640fd654e1\r',
+  '\na8","port":4100,"publicUrl":"https://data.nateferrero.com/beacon","deployedAt":"2026-11-\r\n',
+  '25T18:30:42.889Z"}',
+ ]
+ for (const chunk of chunks) {
+  streamWs.emit('message', { data: JSON.stringify({ type: 'output', data: chunk }) })
+ }
+ streamWs.emit('message', { data: JSON.stringify({ type: 'status', status: 'exited', exitCode: 0 }) })
+ term.disconnect()
+ assert.equal(streamedSentinels.length, 2)
+ assert.equal(streamedSentinels[0].type, '__CC_SYNC_OK__')
+ assert.equal(streamedSentinels[1].type, '__CC_DEPLOY_OK__')
+ assert.equal(streamedSentinels[1].data.laneId, 'aa4db0be-3c5e-49fe-8147-640fd654e1a8')
+ assert.equal(streamedSentinels[1].data.deployedAt, '2026-11-25T18:30:42.889Z')
+})
+
+test('UI integration: Configure Lane HTTP Server feature, Server tab mock tester, mandatory civil-memory gate, Servers modal, and SSH terminal modal', async () => {
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  const styleProps = {}
+  return {
+   tag,
+   nodeType: 1,
+   style: {
+    setProperty(name, value) { styleProps[name] = value; this[name] = value },
+    removeProperty(name) { delete styleProps[name]; delete this[name] },
+    getPropertyValue(name) { return styleProps[name] || '' },
+   },
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   checked: false,
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   removed: false,
+   focused: false,
+   setAttribute(name, value) { this.attributes[name] = value },
+   contains(target) {
+    if (target === this) { return true }
+    return this.children.some(child => typeof child.contains === 'function' && child.contains(target))
+   },
+   appendChild(child) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    this.children.push(child)
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) { this.children.push(child) }
+    else { this.children.splice(idx, 0, child) }
+    return child
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) { this.parentNode.children.splice(idx, 1) }
+     this.parentNode = null
+    }
+   },
+  }
+ }
+
+ const store = new Map()
+ const makeKv = (ns = '') => {
+  const isHash = ns.includes('#')
+  const qual = k => (isHash ? (ns.endsWith('#') ? `${ns}${k}` : `${ns}/${k}`) : (ns ? `${ns}.${k}` : k))
+  const c = {
+   prefix: ns,
+   basePath: null,
+   root: null,
+   defaultRoot: null,
+   getActiveClient() { return c },
+   withBasePath() { return c },
+   setBasePath() { return c },
+   namespace: name => makeKv(isHash ? qual(encodeKeySegment(name)) : qual(name)),
+   hashNamespace: name => makeKv(`${encodeKeySegment(name)}#`),
+   async get(k) { const q = qual(k); return store.has(q) ? store.get(q) : null },
+   async set(k, v) {
+    const q = qual(k)
+    for (const existing of store.keys()) {
+     if (existing.startsWith(`${q}/`) || q.startsWith(`${existing}/`)) {
+      throw new Error(`diskKV file/dir collision between "${existing}" and "${q}"`)
+     }
+    }
+    store.set(q, String(v))
+   },
+   async delete(k) { store.delete(qual(k)) },
+  }
+  c.root = c
+  c.defaultRoot = c
+  return c
+ }
+ const kv = makeKv()
+ assert.equal(deployedScriptKey('lane-a').startsWith(`${deploymentKey('lane-a')}/`), false)
+
+ const makeStorage = () => {
+  const m = new Map()
+  return {
+   getItem(k) { return m.has(k) ? m.get(k) : null },
+   setItem(k, v) { m.set(k, String(v)) },
+   removeItem(k) { m.delete(k) },
+  }
+ }
+ let uuid = 0
+ let lastWs = null
+ class MockWebSocket {
+  constructor(url) {
+   this.url = url
+   this.readyState = 1
+   this.sent = []
+   this.listeners = {}
+   lastWs = this
+  }
+  addEventListener(type, fn) {
+   this.listeners[type] = this.listeners[type] || []
+   this.listeners[type].push(fn)
+  }
+  send(data) { this.sent.push(JSON.parse(data)) }
+  close() {
+   this.readyState = 3
+   for (const fn of this.listeners.close || []) { fn({}) }
+  }
+  emitOpen() {
+   for (const fn of this.listeners.open || []) { fn({}) }
+  }
+  emitMessage(obj) {
+   const ev = { data: JSON.stringify(obj) }
+   for (const fn of this.listeners.message || []) { fn(ev) }
+  }
+ }
+
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  JSON,
+  Math,
+  Number,
+  Object,
+  Reflect,
+  WebSocket: MockWebSocket,
+  decodeURIComponent,
+  localStorage: makeStorage(),
+  sessionStorage: makeStorage(),
+  crypto: { randomUUID: () => `srv-uuid-${++uuid}` },
+  history: { pushState(_s, _t, url) { mockWindow.location.pathname = url } },
+  location: { pathname: '/', host: 'localhost:8080', protocol: 'http:' },
+  addEventListener() {},
+  removeEventListener() {},
+ }
+ const mockDocument = { body: createMockElement('body'), defaultView: mockWindow, createElement: createMockElement }
+
+ const syncedPayloads = []
+ const termPayloads = []
+
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createFsDir: async () => ({ ok: true }),
+   createIdleTracker,
+   data: kv,
+   defaultValueForType,
+   document: mockDocument,
+   fetchFsList: async () => ({ ok: true, path: '/', directories: [], breadcrumbs: [] }),
+   fetchFsRoots: async () => ({ home: '/', platform: 'linux', sep: '/', roots: [] }),
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+   testRemoteCivilMemory: async ({ url, basePath }) => ({ ok: true, url, basePath, latencyMs: 3 }),
+   syncLaneToRemoteCivilMemory: async payload => {
+    syncedPayloads.push(payload)
+    return { ok: true, laneCount: payload.bundle.lanes.length, laneIds: payload.bundle.lanes.map(l => l.id), syncedAt: '2026-11-25T12:00:00Z' }
+   },
+   startDeployTerminalSession: async payload => {
+    termPayloads.push(payload)
+    return { ok: true, sessionId: 'term-sess-1', wsPath: '/api/deploy/terminal/ws?id=term-sess-1', title: `Deploy ${payload.deployment ? payload.deployment.slug : ''}` }
+   },
+   killDeployTerminalSession: async () => ({ ok: true }),
+  })
+  await f.run(parse(mainSource, '/src/main.fs'))
+  const laneControl = f.state['lane-control']
+  const dirModal = laneControl['dir-modal']
+  await dirModal['default-btn'].listeners.click()
+
+  // 1. Add a lane and an imported helper lane; verify Server tab is hidden by default
+  const helper = await laneControl.add()
+  await laneControl.rename(helper.id, 'Helper')
+  helper.notebook.rows[0]['input-el'].value = '; to secret 77'
+  await helper.notebook.rows[0]['input-el'].listeners.input()
+
+  const apiLane = await laneControl.add()
+  await laneControl.rename(apiLane.id, 'Calc API')
+  assert.equal(apiLane.notebook.tabs.server.hidden, true)
+
+  // 2. Open Configure Lane modal -> enable Features > HTTP Server -> Server tab appears & persists
+  await laneControl.configure(apiLane.id)
+  const cfgModal = laneControl['config-modal']
+  assert.equal(cfgModal['http-server-check'].checked, false)
+  cfgModal['http-server-check'].checked = true
+  await cfgModal.form.listeners.submit({ preventDefault() {} })
+  assert.equal(apiLane.notebook.tabs.server.hidden, false)
+  assert.equal(apiLane.features.httpServer, true)
+  assert.deepEqual(JSON.parse(await apiLane.data.get('features')), { httpServer: true })
+
+  // 3. Test Mock Request Tester on an expression-only lane (returns 42)
+  await apiLane.notebook['insert-line'](0, `; to dep !importLane ${helper.id} secret`)
+  await apiLane.notebook['insert-line'](1, '; to x 10')
+  apiLane.notebook.rows[2]['input-el'].value = '; add $x 32'
+  await apiLane.notebook.rows[2]['input-el'].listeners.input()
+  await apiLane.notebook.tabs.server.listeners.click()
+  assert.equal(apiLane.notebook['active-tab'], 'server')
+
+  const sv = apiLane.notebook['server-view']
+  assert.equal(sv['handlers-badge'].textContent, 'Expression mode (GET / → JSON)')
+  await sv['send-btn'].listeners.click()
+  assert.equal(sv['resp-status'].textContent, '200')
+  assert.equal(JSON.parse(sv['resp-pre'].textContent), 42)
+
+  // 4. Test Mock Request Tester on a handler lane (; to get ( ... ))
+  apiLane.notebook.rows[1]['input-el'].value = ''
+  await apiLane.notebook.rows[1]['input-el'].listeners.input()
+  apiLane.notebook.rows[2]['input-el'].value = '; to get (\n ; to { r } $argv\n ; object { path $r.path } { q $r.query.q }\n)'
+  await apiLane.notebook.rows[2]['input-el'].listeners.input()
+  assert.equal(sv['handlers-badge'].textContent, 'Handlers: GET')
+  sv['path-input'].value = '/ping?q=pong'
+  await sv['send-btn'].listeners.click()
+  assert.equal(sv['resp-status'].textContent, '200')
+  assert.deepEqual(JSON.parse(sv['resp-pre'].textContent), { path: '/ping', q: 'pong' })
+
+  // 5. Open Top-Rail Servers modal -> add an external civil-memory SSH server
+  await laneControl.rails['servers-btn'].listeners.click()
+  const srvModal = laneControl['servers-modal']
+  assert.equal(srvModal['is-open'], true)
+  srvModal.fields.name.value = 'External KV Server'
+  srvModal.fields.host.value = 'api.example.com'
+  srvModal.fields.user.value = 'deploy'
+  srvModal.fields.defaultDomain.value = 'api.example.com'
+  srvModal.fields.civilMemoryMode.value = 'external'
+  srvModal.fields.civilMemoryUrl.value = 'https://kv.example.com'
+  await srvModal['srv-form'].listeners.submit({ preventDefault() {} })
+  assert.equal(srvModal.servers.length, 1)
+  const savedSrv = srvModal.servers[0]
+  await srvModal.close()
+
+  // Select server in lane's Server tab -> Sync & Deploy remain BLOCKED until Verify KV passes
+  sv['srv-select'].value = savedSrv.id
+  await sv['srv-select'].listeners.change()
+  assert.equal(sv['kv-url-input'].value, 'https://kv.example.com')
+  assert.equal(sv['domain-input'].value, 'api.example.com')
+  assert.equal(sv['sync-kv-btn'].disabled, true)
+  assert.equal(sv['deploy-btn'].disabled, true)
+
+  // Verify KV -> unlocks Sync & Deploy
+  await sv['verify-kv-btn'].listeners.click()
+  assert.equal(sv['kv-badge'].textContent, 'KV Ready ✓')
+  assert.equal(sv['sync-kv-btn'].disabled, false)
+  assert.equal(sv['deploy-btn'].disabled, false)
+
+  // Sync without includeImports -> only main lane synced; with includeImports -> helper included
+  await sv['sync-kv-btn'].listeners.click()
+  assert.equal(syncedPayloads.length, 1)
+  assert.deepEqual(syncedPayloads[0].bundle.lanes.map(l => l.id), [apiLane.id])
+
+  sv['imports-check'].checked = true
+  await sv['sync-kv-btn'].listeners.click()
+  assert.equal(syncedPayloads.length, 2)
+  assert.deepEqual(syncedPayloads[1].bundle.lanes.map(l => l.id), [apiLane.id, helper.id])
+
+  // Deploy -> opens terminal-modal, connects WebSocket, handles __CC_DEPLOY_OK__ sentinel
+  await sv['deploy-btn'].listeners.click()
+  assert.equal(termPayloads.length, 1)
+  assert.equal(termPayloads[0].action, 'deploy-lane')
+  assert.equal(laneControl['terminal-modal']['is-open'], true)
+  lastWs.emitOpen()
+  lastWs.emitMessage({ type: 'init', status: 'running', title: 'Deploy calc-api' })
+  lastWs.emitMessage({ type: 'output', data: '__CC_DEPLOY_OK__ {"ok":true,"slug":"calc-api","port":4100,"publicUrl":"https://api.example.com/calc-api","deployedAt":"2026-11-25T12:05:00Z"}\r\n' })
+  lastWs.emitMessage({ type: 'status', status: 'exited', exitCode: 0 })
+  await new Promise(r => setTimeout(r, 20))
+  assert.equal(sv['deploy-err'].textContent, '')
+  assert.match(sv['deploy-status'].textContent, /https:\/\/api\.example\.com\/calc-api/)
+  await laneControl['terminal-modal'].close(true)
+
+  // 6. Disabling HTTP Server while Server tab is active falls back cleanly to Source and hides Server tab
+  await laneControl.configure(apiLane.id)
+  cfgModal['http-server-check'].checked = false
+  await cfgModal.form.listeners.submit({ preventDefault() {} })
+  assert.equal(apiLane.notebook.tabs.server.hidden, true)
+  assert.equal(apiLane.notebook['active-tab'], 'source')
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('formatExportLine and parseExportLine round-trip multi-target, single-target, alias, and autoblock expressions', () => {
+ const cases = [
+  { targets: [], contentExpr: '' },
+  { targets: [{ laneId: 'lane-1', lineId: 'ln-1' }], contentExpr: "; add '!console log  ' $message" },
+  {
+   targets: [
+    { laneId: 'lane-1', lineId: 'ln-1' },
+    { laneId: 'lane-2', lineId: 'ln-2' },
+   ],
+   contentExpr: '!fn 1 2',
+  },
+  { targets: [{ laneId: 'lane-1', lineId: 'ln-1' }], contentExpr: '$message' },
+  { targets: [{ laneId: 'lane-1', lineId: 'ln-1' }], contentExpr: "'hello world'" },
+ ]
+ for (const spec of cases) {
+  const formatted = formatExportLine(spec)
+  const parsed = parseExportLine(formatted)
+  assert.ok(parsed, `Expected parseExportLine to parse: ${formatted}`)
+  assert.deepEqual(parsed.targets, spec.targets)
+  assert.equal(parsed.contentExpr, spec.contentExpr)
+ }
+
+ const withAlias = formatExportLine({
+  alias: 'res',
+  targets: [{ laneId: 'lane-1', lineId: 'ln-1' }],
+  contentExpr: "; add 'x=' $x",
+ })
+ const parsedAlias = parseExportLine(withAlias)
+ assert.equal(parsedAlias.alias, 'res')
+ assert.deepEqual(parsedAlias.targets, [{ laneId: 'lane-1', lineId: 'ln-1' }])
+ assert.equal(parsedAlias.contentExpr, "; add 'x=' $x")
+
+ const singleShorthand = parseExportLine("!setLaneLine laneA lnA [ ; add 'y=' $y ]")
+ assert.equal(singleShorthand.fnName, 'setLaneLine')
+ assert.deepEqual(singleShorthand.targets, [{ laneId: 'laneA', lineId: 'lnA' }])
+ assert.equal(singleShorthand.contentExpr, "; add 'y=' $y")
+
+ assert.equal(parseExportLine('; to x 42'), null)
+ assert.equal(parseExportLine('!importLane lane-1 foo'), null)
+})
+
+test('storage.mjs: deployed script caching, diffLaneScripts, getLaneDeployStatus, and setTargetLaneLine', async () => {
+ const store = new Map()
+ const makeKv = (ns = '') => {
+  const isHash = ns.includes('#')
+  const qual = k => (isHash ? (ns.endsWith('#') ? `${ns}${k}` : `${ns}/${k}`) : (ns ? `${ns}.${k}` : k))
+  const c = {
+   prefix: ns,
+   basePath: null,
+   root: null,
+   defaultRoot: null,
+   getActiveClient() { return c },
+   withBasePath() { return c },
+   setBasePath() { return c },
+   namespace: name => makeKv(isHash ? qual(encodeKeySegment(name)) : qual(name)),
+   hashNamespace: name => makeKv(`${encodeKeySegment(name)}#`),
+   async get(k) { const q = qual(k); return store.has(q) ? store.get(q) : null },
+   async set(k, v) {
+    const q = qual(k)
+    for (const existing of store.keys()) {
+     if (existing.startsWith(`${q}/`) || q.startsWith(`${existing}/`)) {
+      throw new Error(`diskKV file/dir collision between "${existing}" and "${q}"`)
+     }
+    }
+    store.set(q, String(v))
+   },
+   async delete(k) { store.delete(qual(k)) },
+  }
+  c.root = c
+  c.defaultRoot = c
+  return c
+ }
+ const kv = makeKv()
+ assert.equal(deployedScriptKey('lane-a').startsWith(`${deploymentKey('lane-a')}/`), false)
+
+ const initialRecs = [
+  { id: 'ln-1', text: '; to message "init"', updatedAt: '2026-11-25T10:00:00.000Z' },
+  { id: 'ln-2', text: '$message', updatedAt: '2026-11-25T10:00:00.000Z' },
+ ]
+ await saveLaneScript(kv, kv.namespace('lane-a'), 'lane-a', initialRecs, null, '2026-11-25T10:00:00.000Z')
+
+ // Undeployed lane status
+ const undeployed = await getLaneDeployStatus(kv, kv, 'lane-a')
+ assert.equal(undeployed.deployed, false)
+ assert.equal(undeployed.status, 'not-deployed')
+ assert.equal(undeployed.hasChanges, false)
+
+ // Idempotent setTargetLaneLine does not rewrite or mark changed
+ const noOp = await setTargetLaneLine(kv, 'lane-a', 'ln-1', '; to message "init"', null)
+ assert.equal(noOp.ok, true)
+ assert.equal(noOp.changed, false)
+ assert.equal(noOp.updatedAt, '2026-11-25T10:00:00.000Z')
+
+ // Deployed record without cached baseline -> unverified-baseline
+ await saveLaneDeployment(kv, {
+  laneId: 'lane-a',
+  title: 'Lane A',
+  serverId: 'srv-1',
+  slug: 'lane-a',
+  port: 4100,
+  routeMode: 'subpath',
+  domain: 'api.example.com',
+  subpath: '/lane-a',
+  civilMemoryUrl: 'http://127.0.0.1:3333',
+  lastDeployedAt: '2026-11-25T10:05:00.000Z',
+ })
+ const noBaseline = await getLaneDeployStatus(kv, kv, 'lane-a')
+ assert.equal(noBaseline.status, 'unverified-baseline')
+ assert.equal(noBaseline.hasChanges, true)
+
+ // Save baseline -> up-to-date
+ await saveDeployedLaneScript(kv, 'lane-a', initialRecs, '2026-11-25T10:05:00.000Z')
+ const loadedSnap = await loadDeployedLaneScript(kv, 'lane-a')
+ assert.equal(loadedSnap.records.length, 2)
+ const clean = await getLaneDeployStatus(kv, kv, 'lane-a')
+ assert.equal(clean.status, 'up-to-date')
+ assert.equal(clean.hasChanges, false)
+ assert.equal(clean.diff.changedLines.length, 0)
+
+ // Modify line -> needs-deploy with diff
+ const changedRes = await setTargetLaneLine(kv, 'lane-a', 'ln-1', "!console log 'hello world'", null)
+ assert.equal(changedRes.ok, true)
+ assert.equal(changedRes.changed, true)
+ const dirty = await getLaneDeployStatus(kv, kv, 'lane-a')
+ assert.equal(dirty.status, 'needs-deploy')
+ assert.equal(dirty.hasChanges, true)
+ assert.equal(dirty.diff.changedLines.length, 1)
+ assert.equal(dirty.diff.changedLines[0].type, 'modified')
+ assert.equal(dirty.diff.changedLines[0].lineNumber, 1)
+ assert.equal(dirty.diff.changedLines[0].before, '; to message "init"')
+ assert.equal(dirty.diff.changedLines[0].after, "!console log 'hello world'")
+
+ // Missing line returns ok:false
+ const missing = await setTargetLaneLine(kv, 'lane-a', 'ln-missing', 'x', null)
+ assert.equal(missing.ok, false)
+
+ // Delete deployment cleans up cached deployed script
+ await deleteLaneDeployment(kv, 'lane-a')
+ assert.equal(await loadDeployedLaneScript(kv, 'lane-a'), null)
+})
+
+test('Export to Lane: scope APIs, multi-target overwrite, live deploy status pills, and Deploy Changes modal', async () => {
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  return {
+   tag,
+   style: {},
+   attributes: {},
+   children: [],
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   checked: false,
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   removed: false,
+   focused: false,
+   setAttribute(name, value) { this.attributes[name] = value },
+   contains(target) {
+    if (target === this) { return true }
+    return this.children.some(child => typeof child.contains === 'function' && child.contains(target))
+   },
+   appendChild(child) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    this.children.push(child)
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) { this.children.push(child) }
+    else { this.children.splice(idx, 0, child) }
+    return child
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) { this.parentNode.children.splice(idx, 1) }
+     this.parentNode = null
+    }
+   },
+  }
+ }
+
+ const store = new Map()
+ const makeKv = (ns = '') => {
+  const isHash = ns.includes('#')
+  const qual = k => (isHash ? (ns.endsWith('#') ? `${ns}${k}` : `${ns}/${k}`) : (ns ? `${ns}.${k}` : k))
+  const c = {
+   prefix: ns,
+   basePath: null,
+   root: null,
+   defaultRoot: null,
+   getActiveClient() { return c },
+   withBasePath() { return c },
+   setBasePath() { return c },
+   namespace: name => makeKv(isHash ? qual(encodeKeySegment(name)) : qual(name)),
+   hashNamespace: name => makeKv(`${encodeKeySegment(name)}#`),
+   async get(k) { const q = qual(k); return store.has(q) ? store.get(q) : null },
+   async set(k, v) {
+    const q = qual(k)
+    for (const existing of store.keys()) {
+     if (existing.startsWith(`${q}/`) || q.startsWith(`${existing}/`)) {
+      throw new Error(`diskKV file/dir collision between "${existing}" and "${q}"`)
+     }
+    }
+    store.set(q, String(v))
+   },
+   async delete(k) { store.delete(qual(k)) },
+  }
+  c.root = c
+  c.defaultRoot = c
+  return c
+ }
+ const kv = makeKv()
+ assert.equal(deployedScriptKey('lane-a').startsWith(`${deploymentKey('lane-a')}/`), false)
+
+ const makeStorage = () => {
+  const m = new Map()
+  return {
+   getItem(k) { return m.has(k) ? m.get(k) : null },
+   setItem(k, v) { m.set(k, String(v)) },
+   removeItem(k) { m.delete(k) },
+  }
+ }
+ let uuid = 0
+ let lastWs = null
+ class MockWebSocket {
+  constructor(url) {
+   this.url = url
+   this.readyState = 1
+   this.sent = []
+   this.listeners = {}
+   lastWs = this
+  }
+  addEventListener(type, fn) {
+   this.listeners[type] = this.listeners[type] || []
+   this.listeners[type].push(fn)
+  }
+  send(data) { this.sent.push(JSON.parse(data)) }
+  close() {
+   this.readyState = 3
+   for (const fn of this.listeners.close || []) { fn({}) }
+  }
+  emitOpen() {
+   for (const fn of this.listeners.open || []) { fn({}) }
+  }
+  emitMessage(obj) {
+   const ev = { data: JSON.stringify(obj) }
+   for (const fn of this.listeners.message || []) { fn(ev) }
+  }
+ }
+
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  JSON,
+  Math,
+  Number,
+  Object,
+  Reflect,
+  WebSocket: MockWebSocket,
+  decodeURIComponent,
+  localStorage: makeStorage(),
+  sessionStorage: makeStorage(),
+  crypto: { randomUUID: () => `exp-uuid-${++uuid}` },
+  history: { pushState(_s, _t, url) { mockWindow.location.pathname = url } },
+  location: { pathname: '/', protocol: 'http:', host: 'localhost:8080' },
+  addEventListener() {},
+  removeEventListener() {},
+ }
+ const mockDocument = { body: createMockElement('body'), defaultView: mockWindow, createElement: createMockElement }
+ const termPayloads = []
+
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createFsDir: async () => ({ ok: true }),
+   createIdleTracker,
+   data: kv,
+   defaultValueForType,
+   document: mockDocument,
+   fetchFsList: async () => ({ ok: true, path: '/', directories: [], breadcrumbs: [] }),
+   fetchFsRoots: async () => ({ home: '/', platform: 'linux', sep: '/', roots: [] }),
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+   testRemoteCivilMemory: async ({ url, basePath }) => ({ ok: true, url, basePath, latencyMs: 3 }),
+   syncLaneToRemoteCivilMemory: async payload => ({ ok: true, laneCount: payload.bundle.lanes.length, laneIds: payload.bundle.lanes.map(l => l.id), syncedAt: '2026-11-25T13:00:00Z' }),
+   startDeployTerminalSession: async payload => {
+    termPayloads.push(payload)
+    return { ok: true, sessionId: `term-exp-${termPayloads.length}`, wsPath: `/api/deploy/terminal/ws?id=term-exp-${termPayloads.length}`, title: `Deploy ${payload.deployment ? payload.deployment.slug : ''}` }
+   },
+   killDeployTerminalSession: async () => ({ ok: true }),
+  })
+  await f.run(parse(mainSource, '/src/main.fs'))
+  const laneControl = f.state['lane-control']
+  await laneControl['dir-modal']['default-btn'].listeners.click()
+
+  // Create Target A (deployed) and Target B (not deployed)
+  const targetA = await laneControl.add()
+  await laneControl.rename(targetA.id, 'Target A')
+  targetA.notebook.rows[0]['input-el'].value = "!console log  initial"
+  await targetA.notebook.rows[0]['input-el'].listeners.input()
+
+  const targetB = await laneControl.add()
+  await laneControl.rename(targetB.id, 'Target B')
+  targetB.notebook.rows[0]['input-el'].value = "!console log  initial"
+  await targetB.notebook.rows[0]['input-el'].listeners.input()
+
+  // Configure SSH server and deploy Target A
+  await saveDeployServer(kv, {
+   id: 'srv-exp-1',
+   name: 'Prod Server',
+   host: 'api.example.com',
+   user: 'root',
+   defaultDomain: 'api.example.com',
+   civilMemoryMode: 'external',
+   civilMemoryUrl: 'https://kv.example.com',
+   civilMemoryVerified: true,
+  })
+  await laneControl.configure(targetA.id)
+  laneControl['config-modal']['http-server-check'].checked = true
+  await laneControl['config-modal'].form.listeners.submit({ preventDefault() {} })
+  await targetA.notebook.tabs.server.listeners.click()
+  const svA = targetA.notebook['server-view']
+  await svA['refresh-servers']()
+  svA['srv-select'].value = 'srv-exp-1'
+  await svA['srv-select'].listeners.change()
+  await svA['verify-kv-btn'].listeners.click()
+  await svA['deploy-btn'].listeners.click()
+  lastWs.emitOpen()
+  lastWs.emitMessage({ type: 'init', status: 'running' })
+  lastWs.emitMessage({ type: 'output', data: `__CC_DEPLOY_OK__ {"ok":true,"slug":"target-a","port":4100,"publicUrl":"https://api.example.com/target-a","deployedAt":"2026-11-25T13:05:00Z"}\r\n` })
+  lastWs.emitMessage({ type: 'status', status: 'exited', exitCode: 0 })
+  await new Promise(r => setTimeout(r, 20))
+  await laneControl['terminal-modal'].close(true)
+
+  // Verify Target A baseline was cached on deploy
+  const snapA = await loadDeployedLaneScript(kv, targetA.id)
+  assert.ok(snapA)
+  assert.equal(snapA.records[0].text, '!console log  initial')
+
+  // Create Source lane and verify exportLaneLine / setLaneLine appear in Scope
+  const sourceLane = await laneControl.add()
+  await laneControl.rename(sourceLane.id, 'Source')
+  sourceLane.notebook.rows[0]['input-el'].value = "; to message 'hello world'"
+  await sourceLane.notebook.rows[0]['input-el'].listeners.input()
+
+  const rootScopeKeys = listScopeEntries(sourceLane.notebook.state, { isRoot: true }).map(e => e.key)
+  assert.ok(rootScopeKeys.includes('exportLaneLine'))
+  assert.ok(rootScopeKeys.includes('setLaneLine'))
+
+  // Click + Export to add an Export-to-Lane row and select both Target A L1 and Target B L1
+  await sourceLane.notebook['add-export-btn'].listeners.click()
+  const expModal = laneControl['export-modal']
+  assert.equal(expModal['is-open'], true)
+  await expModal['select-lane'](targetA.id)
+  await expModal['line-els'][0]['toggle-btn'].listeners.click()
+  await expModal['select-lane'](targetB.id)
+  await expModal['line-els'][0]['toggle-btn'].listeners.click()
+  expModal['expr-input'].value = "; add '!console log  ' $message"
+  await expModal.form.listeners.submit({ preventDefault() {} })
+  await new Promise(r => setTimeout(r, 20))
+
+  const expRow = sourceLane.notebook.rows[1]
+  assert.equal(expRow.kind, 'export')
+  assert.equal(targetA.notebook.lines[0], '!console log  hello world')
+  assert.equal(targetB.notebook.lines[0], '!console log  hello world')
+
+  // Export row deploy bar displays pills and Deploy button because Target A changed since last deploy
+  assert.equal(expRow['deploy-bar-el'].hidden, false)
+  assert.equal(expRow['deploy-btn'].hidden, false)
+  const pillTexts = expRow['pills-el'].children.map(el => el.textContent)
+  assert.deepEqual(pillTexts, ['Target A: Changes pending', 'Target B: Not deployed'])
+
+  // Update prior line -> live updates both targets again
+  sourceLane.notebook.rows[0]['input-el'].value = "; to message 'updated world'"
+  await sourceLane.notebook.rows[0]['input-el'].listeners.input()
+  await new Promise(r => setTimeout(r, 20))
+  assert.equal(targetA.notebook.lines[0], '!console log  updated world')
+  assert.equal(targetB.notebook.lines[0], '!console log  updated world')
+
+  // Click Deploy button on Export row -> opens Deploy Changes modal with diff preview
+  await expRow['deploy-btn'].listeners.click()
+  const depModal = laneControl['export-deploy-modal']
+  assert.equal(depModal['is-open'], true)
+  assert.equal(depModal.items.length, 2)
+  assert.equal(depModal.items[0].checkbox.checked, true)
+  assert.equal(depModal.items[0].checkbox.disabled, false)
+  assert.equal(depModal.items[1].checkbox.checked, false)
+  assert.equal(depModal.items[1].checkbox.disabled, true)
+  const diffTexts = depModal.items[0]['diff-el'].children.map(el => el.textContent)
+  assert.ok(diffTexts.some(t => t.includes('- L1: !console log  initial')))
+  assert.ok(diffTexts.some(t => t.includes('+ L1: !console log  updated world')))
+
+  // Click Deploy Selected -> streams inline terminal, updates baseline, and clears Deploy button
+  const deployRunPromise = depModal['deploy-btn'].listeners.click()
+  await new Promise(r => setTimeout(r, 15))
+  lastWs.emitOpen()
+  lastWs.emitMessage({ type: 'init', status: 'running' })
+  lastWs.emitMessage({ type: 'output', data: `__CC_DEPLOY_OK__ {"ok":true,"slug":"target-a","port":4100,"publicUrl":"https://api.example.com/target-a","deployedAt":"2026-11-25T13:10:00Z"}\r\n` })
+  lastWs.emitMessage({ type: 'status', status: 'exited', exitCode: 0 })
+  await deployRunPromise
+  await new Promise(r => setTimeout(r, 20))
+
+  assert.equal(depModal.items[0]['badge-el'].textContent, 'Deployed ✓')
+  const updatedPills = expRow['pills-el'].children.map(el => el.textContent)
+  assert.deepEqual(updatedPills, ['Target A: Up to date', 'Target B: Not deployed'])
+  assert.equal(expRow['deploy-btn'].hidden, true)
+  await depModal.close()
  }
  finally {
   globalThis.fetch = origFetch
