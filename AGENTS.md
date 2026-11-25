@@ -47,9 +47,10 @@ This repository uses **FieldScript** (`*.fs`), a small custom S-expression-like 
 - **No absolute filesystem paths in committed files**: never write machine-specific paths (e.g., `/home/...`, `file:///...`) in `AGENTS.md`, docs, code, or tests — always use repo-relative paths (`.well-known/` is excluded from git for local machine-specific files).
 - JavaScript (`.mjs`): 1-space indentation, no semicolons, native ESM.
 - FieldScript (`.fs`): 1-space indentation for nested blocks; keep spaces inside delimiters (`{ a }`, `[ cmd ]`, `( ... )`) for readability.
-- Run tests with:
+- Run tests with a 512 MB V8 heap cap:
   ```bash
-  node --test field.test.mjs
+  ./test
+  # or: node --max-old-space-size=512 --test field.test.mjs
   ```
 
 ---

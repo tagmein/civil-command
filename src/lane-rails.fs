@@ -10,6 +10,8 @@
  ; to packages-svg '<svg class="top-rail-icon-svg top-rail-icon-svg--packages" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 1.4L8.5 3.2L5 5L1.5 3.2Z"></path><path d="M1.5 5L5 6.8L8.5 5"></path><path d="M1.5 6.8L5 8.6L8.5 6.8"></path></svg>'
  ; to servers-svg '<svg class="top-rail-icon-svg top-rail-icon-svg--servers" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.5" y="1.5" width="7" height="2.6" rx="0.6"></rect><rect x="1.5" y="5.9" width="7" height="2.6" rx="0.6"></rect><circle cx="3" cy="2.8" r="0.45" fill="currentColor" stroke="none"></circle><circle cx="3" cy="7.2" r="0.45" fill="currentColor" stroke="none"></circle></svg>'
  ; to wrench-svg '<svg class="top-rail-icon-svg top-rail-icon-svg--preferences" viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"><path d="M8.6 3.3A2.1 2.1 0 0 1 5.7 5.5L2.5 8.7A0.85 0.85 0 0 1 1.3 7.5L4.5 4.3A2.1 2.1 0 0 1 6.7 1.4L5.6 2.5L7.5 4.4Z"></path></svg>'
+ ; to prev-arrow-svg '<svg class="side-rail-nav-arrow" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 2.5L4 6L7.5 9.5"></path></svg>'
+ ; to next-arrow-svg '<svg class="side-rail-nav-arrow" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 2.5L8 6L4.5 9.5"></path></svg>'
 
  ; to top-rail !document.createElement aside
  ; set top-rail top-rail.className
@@ -174,10 +176,64 @@
  !left-rail.setAttribute role region
  !left-rail.setAttribute aria-label 'Left minimized lanes rail'
 
+ ; to prev-nav !document.createElement div
+ ; assign $prev-nav { className 'side-rail-nav side-rail-nav--left' } { hidden true }
+ ; to prev-nav-tab !document.createElement button
+ ; assign $prev-nav-tab { type button } { className side-rail-nav-tab } { title 'Previous sessions' }
+ !prev-nav-tab.setAttribute aria-label 'Previous sessions'
+ !prev-nav-tab.setAttribute aria-haspopup menu
+ !prev-nav-tab.setAttribute aria-expanded 'false'
+ ; to prev-nav-icon !document.createElement span
+ ; assign $prev-nav-icon { innerHTML $prev-arrow-svg }
+ ; to prev-nav-count !document.createElement span
+ ; assign $prev-nav-count { className side-rail-nav-count } { textContent '' } { hidden true }
+ !prev-nav-tab.appendChild $prev-nav-icon
+ !prev-nav-tab.appendChild $prev-nav-count
+ ; to prev-nav-menu !document.createElement div
+ ; assign $prev-nav-menu { className 'side-rail-nav-menu side-rail-nav-menu--left' } { hidden true }
+ !prev-nav-menu.setAttribute role menu
+ !prev-nav-menu.setAttribute aria-label 'Previous sessions'
+ ; to prev-nav-title !document.createElement div
+ ; assign $prev-nav-title { className side-rail-nav-title } { textContent Previous }
+ ; to prev-nav-list !document.createElement div
+ ; set side-rail-nav-list prev-nav-list.className
+ !prev-nav-menu.appendChild $prev-nav-title
+ !prev-nav-menu.appendChild $prev-nav-list
+ !prev-nav.appendChild $prev-nav-tab
+ !prev-nav.appendChild $prev-nav-menu
+ !left-rail.appendChild $prev-nav
+
  ; to right-rail !document.createElement aside
  ; set 'side-rail side-rail--right' right-rail.className
  !right-rail.setAttribute role region
  !right-rail.setAttribute aria-label 'Right minimized lanes rail'
+
+ ; to next-nav !document.createElement div
+ ; assign $next-nav { className 'side-rail-nav side-rail-nav--right' } { hidden true }
+ ; to next-nav-tab !document.createElement button
+ ; assign $next-nav-tab { type button } { className side-rail-nav-tab } { title 'Next sessions' }
+ !next-nav-tab.setAttribute aria-label 'Next sessions'
+ !next-nav-tab.setAttribute aria-haspopup menu
+ !next-nav-tab.setAttribute aria-expanded 'false'
+ ; to next-nav-icon !document.createElement span
+ ; assign $next-nav-icon { innerHTML $next-arrow-svg }
+ ; to next-nav-count !document.createElement span
+ ; assign $next-nav-count { className side-rail-nav-count } { textContent '' } { hidden true }
+ !next-nav-tab.appendChild $next-nav-icon
+ !next-nav-tab.appendChild $next-nav-count
+ ; to next-nav-menu !document.createElement div
+ ; assign $next-nav-menu { className 'side-rail-nav-menu side-rail-nav-menu--right' } { hidden true }
+ !next-nav-menu.setAttribute role menu
+ !next-nav-menu.setAttribute aria-label 'Next sessions'
+ ; to next-nav-title !document.createElement div
+ ; assign $next-nav-title { className side-rail-nav-title } { textContent Next }
+ ; to next-nav-list !document.createElement div
+ ; set side-rail-nav-list next-nav-list.className
+ !next-nav-menu.appendChild $next-nav-title
+ !next-nav-menu.appendChild $next-nav-list
+ !next-nav.appendChild $next-nav-tab
+ !next-nav.appendChild $next-nav-menu
+ !right-rail.appendChild $next-nav
 
  ; to preview-el !document.createElement div
  ; set side-rail-preview preview-el.className
@@ -246,6 +302,24 @@
   { is-preferences-open false }
   { left-rail $left-rail }
   { right-rail $right-rail }
+  { prev-nav $prev-nav }
+  { prev-nav-tab $prev-nav-tab }
+  { prev-nav-count $prev-nav-count }
+  { prev-nav-menu $prev-nav-menu }
+  { prev-nav-list $prev-nav-list }
+  { prev-nav-els {} }
+  { prev-nav-items {} }
+  { is-prev-nav-open false }
+  { prev-nav-hover false }
+  { next-nav $next-nav }
+  { next-nav-tab $next-nav-tab }
+  { next-nav-count $next-nav-count }
+  { next-nav-menu $next-nav-menu }
+  { next-nav-list $next-nav-list }
+  { next-nav-els {} }
+  { next-nav-items {} }
+  { is-next-nav-open false }
+  { next-nav-hover false }
   { preview-el $preview-el }
   { preview-frame $preview-frame }
   { preview-header $preview-header }
@@ -477,8 +551,9 @@
         )
         !icon-el.addEventListener click : !lane-control.restore $lane.id
         ; to target-rail [ ternary [ propertyIs left side ] $left-rail $right-rail ]
+        ; to target-nav [ ternary [ propertyIs left side ] $prev-nav $next-nav ]
         ; to target-list [ ternary [ propertyIs left side ] $rails.left-items $rails.right-items ]
-        !target-rail.appendChild $icon-el
+        !restore-node $target-rail $icon-el $target-nav
         ; to item [ object { lane $lane } { side $side } { icon-el $icon-el } ]
         !target-list.push $item
         ; to rails.by-id $lane.id $item
@@ -868,6 +943,129 @@
   ]
  )
 
+ ; to rails.close-prev-nav (
+  -- Collapses the left-rail Previous sessions flyout menu
+  ; set true prev-nav-menu.hidden
+  ; set false rails.is-prev-nav-open
+  ; set false rails.prev-nav-hover
+  ; set side-rail-nav-tab prev-nav-tab.className
+  !prev-nav-tab.setAttribute aria-expanded 'false'
+ )
+
+ ; to rails.open-prev-nav (
+  -- Expands the left-rail Previous sessions flyout menu when destinations are available
+  ; to { from-hover } $argv
+  ; condition { propertyIsGreaterThan 0 rails.prev-nav-items.length } (
+   !rails.close-next-nav
+   !rails.hide-preview
+   ; set false prev-nav-menu.hidden
+   ; set true rails.is-prev-nav-open
+   ; set [ ternary $from-hover true false ] rails.prev-nav-hover
+   ; set 'side-rail-nav-tab side-rail-nav-tab--open' prev-nav-tab.className
+   !prev-nav-tab.setAttribute aria-expanded 'true'
+  )
+ )
+
+ ; to rails.close-next-nav (
+  -- Collapses the right-rail Next sessions flyout menu
+  ; set true next-nav-menu.hidden
+  ; set false rails.is-next-nav-open
+  ; set false rails.next-nav-hover
+  ; set side-rail-nav-tab next-nav-tab.className
+  !next-nav-tab.setAttribute aria-expanded 'false'
+ )
+
+ ; to rails.open-next-nav (
+  -- Expands the right-rail Next sessions flyout menu when destinations are available
+  ; to { from-hover } $argv
+  ; condition { propertyIsGreaterThan 0 rails.next-nav-items.length } (
+   !rails.close-prev-nav
+   !rails.hide-preview
+   ; set false next-nav-menu.hidden
+   ; set true rails.is-next-nav-open
+   ; set [ ternary $from-hover true false ] rails.next-nav-hover
+   ; set 'side-rail-nav-tab side-rail-nav-tab--open' next-nav-tab.className
+   !next-nav-tab.setAttribute aria-expanded 'true'
+  )
+ )
+
+ ; to rails.close-session-nav (
+  -- Collapses both left-rail Previous and right-rail Next session navigation flyouts
+  !rails.close-prev-nav
+  !rails.close-next-nav
+ )
+
+ ; to render-nav-side (
+  -- Syncs one side rail's centered session arrow tab and flyout list with currently available destinations
+  ; to { side sessions nav-el tab-el count-el list-el els-store items-store close-fn } $argv
+  ; while { propertyIsGreaterThan 0 els-store.length } (
+   ; to old-el !els-store.pop
+   !old-el.remove
+  )
+  ; set 0 items-store.length
+
+  ; to list [ match { $sessions : $sessions } { true : {} } ]
+  ; to count $list.length
+  [ match
+   { [ propertyIs 0 count ] (
+    !close-fn
+    ; set true nav-el.hidden
+    ; set '' count-el.textContent
+    ; set true count-el.hidden
+   ) }
+   { true (
+    ; set false nav-el.hidden
+    ; to label-prefix [ ternary [ propertyIs left side ] 'Previous sessions' 'Next sessions' ]
+    ; to label-txt ; add $label-prefix ; add ' (' ; add $count ')'
+    ; set $label-txt tab-el.title
+    !tab-el.setAttribute aria-label $label-txt
+    ; to show-count [ propertyIsGreaterThan 1 count ]
+    ; set [ ternary $show-count [ ; add '' $count ] '' ] count-el.textContent
+    ; set [ ternary $show-count false true ] count-el.hidden
+
+    ; each $list (
+     ; to { item } $argv
+     ; to display-name [ match { $item.name : $item.name } { true : $item.id } ]
+     ; to dir-lbl [ match
+      { $lane-control.format-data-dir-label : !lane-control.format-data-dir-label $item.dataDir $item.dataDirConfirmed }
+      { $item.dataDir : $item.dataDir }
+      { [ propertyIs true item.dataDirConfirmed ] : Default }
+      { true : '' }
+     ]
+     ; to btn !document.createElement button
+     ; assign $btn { type button } { className side-rail-nav-item } { title [ ; add 'Switch to ' ; add $display-name ; add ' (' ; add $item.id ')' ] }
+     !btn.setAttribute role menuitem
+     !btn.setAttribute data-session-id $item.id
+     ; to name-el !document.createElement span
+     ; assign $name-el { className side-rail-nav-item-name } { textContent $display-name }
+     !btn.appendChild $name-el
+     ; to meta-txt [ match
+      { [ propertyIs '' dir-lbl ] : $item.id }
+      { true : $dir-lbl }
+     ]
+     ; to meta-el !document.createElement span
+     ; assign $meta-el { className side-rail-nav-item-meta } { textContent $meta-txt }
+     !btn.appendChild $meta-el
+     !btn.addEventListener click (
+      !rails.close-session-nav
+      [ match
+       { $lane-control.switch-session : !lane-control.switch-session $item.id }
+      ]
+     )
+     !list-el.appendChild $btn
+     !els-store.push $btn
+     !items-store.push ; object { session $item } { btn $btn } { name-el $name-el } { meta-el $meta-el }
+    )
+   ) }
+  ]
+ )
+
+ ; to rails.sync-session-nav (
+  -- Updates the left (Previous) and right (Next) centered rail arrow tabs from available linked sessions
+  !render-nav-side left $lane-control.available-previous-sessions $prev-nav $prev-nav-tab $prev-nav-count $prev-nav-list $rails.prev-nav-els $rails.prev-nav-items $rails.close-prev-nav
+  !render-nav-side right $lane-control.available-next-sessions $next-nav $next-nav-tab $next-nav-count $next-nav-list $rails.next-nav-els $rails.next-nav-items $rails.close-next-nav
+ )
+
  !fullscreen-btn.addEventListener click (
   !rails.close-preferences-menu
   !rails.close-session-menu
@@ -1013,6 +1211,36 @@
    { $lane-control.create-preferences-lane : !lane-control.create-preferences-lane }
   ]
  )
+ !prev-nav.addEventListener mouseenter (
+  ; condition { propertyIs false rails.is-prev-nav-open } : !rails.open-prev-nav true
+ )
+ !prev-nav.addEventListener mouseleave : !rails.close-prev-nav
+ !prev-nav-tab.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  [ match
+   { [ propertyIs false rails.is-prev-nav-open ] : !rails.open-prev-nav false }
+   { [ propertyIs true rails.prev-nav-hover ] : ; set false rails.prev-nav-hover }
+   { true : !rails.close-prev-nav }
+  ]
+ )
+ !next-nav.addEventListener mouseenter (
+  ; condition { propertyIs false rails.is-next-nav-open } : !rails.open-next-nav true
+ )
+ !next-nav.addEventListener mouseleave : !rails.close-next-nav
+ !next-nav-tab.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  [ match
+   { [ propertyIs false rails.is-next-nav-open ] : !rails.open-next-nav false }
+   { [ propertyIs true rails.next-nav-hover ] : ; set false rails.next-nav-hover }
+   { true : !rails.close-next-nav }
+  ]
+ )
  [ match
   { $document.addEventListener (
    !document.addEventListener fullscreenchange $rails.sync-fullscreen
@@ -1062,6 +1290,20 @@
       ; condition { propertyIs false in-pbtn } : !rails.close-packages-menu
      )
     )
+    ; condition { propertyIs true rails.is-prev-nav-open } (
+     ; to in-prev-nav [ match
+      { $target : !is-node-inside $prev-nav $target }
+      { true : false }
+     ]
+     ; condition { propertyIs false in-prev-nav } : !rails.close-prev-nav
+    )
+    ; condition { propertyIs true rails.is-next-nav-open } (
+     ; to in-next-nav [ match
+      { $target : !is-node-inside $next-nav $target }
+      { true : false }
+     ]
+     ; condition { propertyIs false in-next-nav } : !rails.close-next-nav
+    )
    )
   ) }
  ]
@@ -1073,6 +1315,8 @@
      ; condition { propertyIs true rails.is-preferences-open } : !rails.close-preferences-menu
      ; condition { propertyIs true rails.is-session-open } : !rails.close-session-menu
      ; condition { propertyIs true rails.is-packages-open } : !rails.close-packages-menu
+     ; condition { propertyIs true rails.is-prev-nav-open } : !rails.close-prev-nav
+     ; condition { propertyIs true rails.is-next-nav-open } : !rails.close-next-nav
     )
    )
   ) }
@@ -1081,6 +1325,7 @@
  !rails.sync-session-menu
  !rails.sync-packages-menu
  !rails.sync-preferences-menu
+ !rails.sync-session-nav
 
  $rails
 )

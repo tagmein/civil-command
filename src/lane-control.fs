@@ -45,6 +45,12 @@
  { session-dirty false }
  { recent-sessions {} }
  { session-history {} }
+ { previous-session-ids {} }
+ { next-session-ids {} }
+ { resolved-previous-sessions {} }
+ { resolved-next-sessions {} }
+ { available-previous-sessions {} }
+ { available-next-sessions {} }
  { workspace-summary null }
 ]
 ; to config-modal !lane-config-modal.create $scope
@@ -107,13 +113,49 @@
   { true : false }
  ]
 )
+; to filter-available-sessions (
+ -- Returns only resolved session link entries that are currently available
+ ; to { entries } $argv
+ ; to out {}
+ [ match
+  { $entries (
+   ; each $entries (
+    ; to { item } $argv
+    ; condition { propertyIs true item.available } : !out.push $item
+   )
+  ) }
+ ]
+ $out
+)
+; to scope.refresh-session-links (
+ -- Resolves availability and live names of Previous and Next linked sessions and syncs the side-rail navigation tabs
+ ; to prev-resolved [ match
+  { $resolveSessionLinks : !resolveSessionLinks $data $window $scope.previous-session-ids $scope.session-id }
+  { true : {} }
+ ]
+ ; to next-resolved [ match
+  { $resolveSessionLinks : !resolveSessionLinks $data $window $scope.next-session-ids $scope.session-id }
+  { true : {} }
+ ]
+ ; set $prev-resolved scope.resolved-previous-sessions
+ ; set $next-resolved scope.resolved-next-sessions
+ ; set [ !filter-available-sessions $prev-resolved ] scope.available-previous-sessions
+ ; set [ !filter-available-sessions $next-resolved ] scope.available-next-sessions
+ [ match
+  { $rails.sync-session-nav : !rails.sync-session-nav }
+ ]
+ ; object { previous $scope.available-previous-sessions } { next $scope.available-next-sessions }
+)
 ; to sync-session-ui (
- -- Refreshes top-rail session/packages menus and the left workspace summary panel
+ -- Refreshes top-rail session/packages menus, side-rail session nav tabs, and the left workspace summary panel
  [ match
   { $rails.sync-session-menu : !rails.sync-session-menu }
  ]
  [ match
   { $rails.sync-packages-menu : !rails.sync-packages-menu }
+ ]
+ [ match
+  { $scope.refresh-session-links : !scope.refresh-session-links }
  ]
  [ match
   { $scope.sync-workspace-summary : !scope.sync-workspace-summary }
@@ -221,6 +263,18 @@
    ; set $base-path scope.saved-pathname
    ; set $base-pkgs scope.saved-package-ids
    ; set $sess.activePackageId scope.saved-active-package-id
+   ; to prev-ids [ match
+    { $sess.previousSessionIds : !copy-id-list $sess.previousSessionIds }
+    { $sess.meta.previousSessionIds : !copy-id-list $sess.meta.previousSessionIds }
+    { true : {} }
+   ]
+   ; to next-ids [ match
+    { $sess.nextSessionIds : !copy-id-list $sess.nextSessionIds }
+    { $sess.meta.nextSessionIds : !copy-id-list $sess.meta.nextSessionIds }
+    { true : {} }
+   ]
+   ; set $prev-ids scope.previous-session-ids
+   ; set $next-ids scope.next-session-ids
    ; set false scope.session-dirty
    !scope.apply-session-packages $sess
   ) }
@@ -485,6 +539,70 @@
  ]
  !sync-session-ui
  $res
+)
+; to scope.set-session-links (
+ -- Saves Previous and Next navigation session IDs for the active session and refreshes availability and side rails
+ ; to { prev-ids next-ids } $argv
+ !scope.ensure-session
+ ; to opts [ object { previousSessionIds $prev-ids } { nextSessionIds $next-ids } ]
+ ; to res !setSessionLinks $data $window $scope.session-id $opts
+ [ match
+  { $res.ok (
+   ; set $res.meta scope.session-meta
+   ; set [ !copy-id-list $res.previousSessionIds ] scope.previous-session-ids
+   ; set [ !copy-id-list $res.nextSessionIds ] scope.next-session-ids
+  ) }
+ ]
+ !sync-session-ui
+ $res
+)
+; to scope.add-previous-session (
+ -- Adds a target session ID to the active session's Previous destinations
+ ; to { target-id } $argv
+ !scope.ensure-session
+ ; to next-prev !copy-id-list $scope.previous-session-ids
+ !next-prev.push $target-id
+ !scope.set-session-links $next-prev $scope.next-session-ids
+)
+; to scope.remove-previous-session (
+ -- Removes a target session ID from the active session's Previous destinations
+ ; to { target-id } $argv
+ !scope.ensure-session
+ ; to filtered {}
+ ; each $scope.previous-session-ids (
+  ; to { id } $argv
+  ; to is-same [ propertyIs $target-id id ]
+  ; condition { propertyIs false is-same } : !filtered.push $id
+ )
+ !scope.set-session-links $filtered $scope.next-session-ids
+)
+; to scope.add-next-session (
+ -- Adds a target session ID to the active session's Next destinations
+ ; to { target-id } $argv
+ !scope.ensure-session
+ ; to next-list !copy-id-list $scope.next-session-ids
+ !next-list.push $target-id
+ !scope.set-session-links $scope.previous-session-ids $next-list
+)
+; to scope.remove-next-session (
+ -- Removes a target session ID from the active session's Next destinations
+ ; to { target-id } $argv
+ !scope.ensure-session
+ ; to filtered {}
+ ; each $scope.next-session-ids (
+  ; to { id } $argv
+  ; to is-same [ propertyIs $target-id id ]
+  ; condition { propertyIs false is-same } : !filtered.push $id
+ )
+ !scope.set-session-links $scope.previous-session-ids $filtered
+)
+; to scope.list-available-sessions (
+ -- Returns all currently available sessions (excluding the active session) for navigation pickers
+ !scope.ensure-session
+ [ match
+  { $listAvailableSessions : !listAvailableSessions $data $window $scope.session-id }
+  { true : {} }
+ ]
 )
 ; to scope.create-package (
  -- Creates a new optionally passphrase-protected package and opens it in the active session (marking draft dirty)

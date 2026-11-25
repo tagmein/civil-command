@@ -79,6 +79,68 @@
  !draft-field.appendChild $draft-text
  !draft-field.appendChild $draft-btns
 
+ ; to links-field !document.createElement div
+ ; set lane-config-field links-field.className
+ ; to links-label !document.createElement div
+ ; assign $links-label { className lane-config-label } { textContent 'Session Navigation (Previous / Next)' }
+ ; to links-grid !document.createElement div
+ ; set lane-session-links-grid links-grid.className
+
+ ; to prev-group !document.createElement div
+ ; set lane-session-links-group prev-group.className
+ ; to prev-hdr !document.createElement div
+ ; set lane-session-links-header prev-hdr.className
+ ; to prev-title !document.createElement span
+ ; assign $prev-title { className lane-session-links-title } { textContent Previous }
+ ; to prev-hint !document.createElement span
+ ; assign $prev-hint { className lane-session-links-hint } { textContent 'Left rail' }
+ !prev-hdr.appendChild $prev-title
+ !prev-hdr.appendChild $prev-hint
+ ; to prev-links-list !document.createElement div
+ ; set lane-session-links-list prev-links-list.className
+ ; to prev-add-row !document.createElement div
+ ; set lane-config-input-row prev-add-row.className
+ ; to prev-select !document.createElement select
+ ; assign $prev-select { className lane-session-link-select }
+ !prev-select.setAttribute aria-label 'Add previous session'
+ ; to prev-add-btn !document.createElement button
+ ; assign $prev-add-btn { type button } { className lane-modal-action } { textContent '+ Add' }
+ !prev-add-row.appendChild $prev-select
+ !prev-add-row.appendChild $prev-add-btn
+ !prev-group.appendChild $prev-hdr
+ !prev-group.appendChild $prev-links-list
+ !prev-group.appendChild $prev-add-row
+
+ ; to next-group !document.createElement div
+ ; set lane-session-links-group next-group.className
+ ; to next-hdr !document.createElement div
+ ; set lane-session-links-header next-hdr.className
+ ; to next-title !document.createElement span
+ ; assign $next-title { className lane-session-links-title } { textContent Next }
+ ; to next-hint !document.createElement span
+ ; assign $next-hint { className lane-session-links-hint } { textContent 'Right rail' }
+ !next-hdr.appendChild $next-title
+ !next-hdr.appendChild $next-hint
+ ; to next-links-list !document.createElement div
+ ; set lane-session-links-list next-links-list.className
+ ; to next-add-row !document.createElement div
+ ; set lane-config-input-row next-add-row.className
+ ; to next-select !document.createElement select
+ ; assign $next-select { className lane-session-link-select }
+ !next-select.setAttribute aria-label 'Add next session'
+ ; to next-add-btn !document.createElement button
+ ; assign $next-add-btn { type button } { className lane-modal-action } { textContent '+ Add' }
+ !next-add-row.appendChild $next-select
+ !next-add-row.appendChild $next-add-btn
+ !next-group.appendChild $next-hdr
+ !next-group.appendChild $next-links-list
+ !next-group.appendChild $next-add-row
+
+ !links-grid.appendChild $prev-group
+ !links-grid.appendChild $next-group
+ !links-field.appendChild $links-label
+ !links-field.appendChild $links-grid
+
  ; to switch-field !document.createElement div
  ; set lane-config-field switch-field.className
  ; to switch-label !document.createElement label
@@ -157,6 +219,7 @@
 
  !session-body.appendChild $active-field
  !session-body.appendChild $draft-field
+ !session-body.appendChild $links-field
  !session-body.appendChild $switch-field
  !session-body.appendChild $recent-field
  !session-body.appendChild $adv-wrap
@@ -207,6 +270,19 @@
   { draft-save-btn $draft-save-btn }
   { draft-fork-btn $draft-fork-btn }
   { draft-abandon-btn $draft-abandon-btn }
+  { links-field $links-field }
+  { prev-links-list $prev-links-list }
+  { prev-select $prev-select }
+  { prev-add-btn $prev-add-btn }
+  { prev-link-els {} }
+  { prev-link-items {} }
+  { prev-opt-els {} }
+  { next-links-list $next-links-list }
+  { next-select $next-select }
+  { next-add-btn $next-add-btn }
+  { next-link-els {} }
+  { next-link-items {} }
+  { next-opt-els {} }
   { switch-input $switch-input }
   { switch-go-btn $switch-go-btn }
   { new-sess-btn $new-sess-btn }
@@ -276,9 +352,123 @@
   )
  )
 
+ ; to render-link-group (
+  -- Renders a Previous or Next destination list and its available-session selector
+  ; to { direction resolved-list linked-ids available-sessions list-el select-el add-btn els-store items-store opt-els-store } $argv
+  ; while { propertyIsGreaterThan 0 els-store.length } (
+   ; to old !els-store.pop
+   !old.remove
+  )
+  ; set 0 items-store.length
+
+  ; to items [ match { $resolved-list : $resolved-list } { true : {} } ]
+  [ match
+   { [ propertyIs 0 items.length ] (
+    ; to empty-el !document.createElement div
+    ; to empty-msg [ ternary [ propertyIs previous direction ] 'No previous sessions linked.' 'No next sessions linked.' ]
+    ; assign $empty-el { className lane-session-links-empty } { textContent $empty-msg }
+    !list-el.appendChild $empty-el
+    !els-store.push $empty-el
+   ) }
+   { true (
+    ; each $items (
+     ; to { item } $argv
+     ; to is-avail [ propertyIs true item.available ]
+     ; to row !document.createElement div
+     ; set [ ternary $is-avail lane-session-link-row 'lane-session-link-row lane-session-link-row--unavailable' ] row.className
+     ; to go-btn !document.createElement button
+     ; to display-name [ match { $item.name : $item.name } { true : $item.id } ]
+     ; to go-title [ match
+      { $is-avail : ; add 'Switch to ' ; add $display-name ; add ' (' ; add $item.id ')' }
+      { true : ; add 'Session ' ; add $item.id ' is no longer available' }
+     ]
+     ; assign $go-btn { type button } { className lane-session-link-go } { textContent $display-name } { title $go-title } { disabled [ ternary $is-avail false true ] }
+     [ match
+      { $is-avail (
+       !go-btn.addEventListener click (
+        !lane-control.switch-session $item.id
+        !modal.close
+       )
+      ) }
+     ]
+     !row.appendChild $go-btn
+     [ match
+      { [ propertyIs false is-avail ] (
+       ; to badge !document.createElement span
+       ; assign $badge { className lane-session-link-badge } { textContent Unavailable }
+       !row.appendChild $badge
+      ) }
+     ]
+     ; to rem-btn !document.createElement button
+     ; assign $rem-btn { type button } { className lane-session-link-remove } { textContent '×' } { title [ ; add 'Remove ' $display-name ] }
+     !rem-btn.setAttribute aria-label [ ; add 'Remove ' $display-name ]
+     !rem-btn.addEventListener click (
+      [ match
+       { [ propertyIs previous direction ] : !lane-control.remove-previous-session $item.id }
+       { true : !lane-control.remove-next-session $item.id }
+      ]
+      !modal.render-session
+     )
+     !row.appendChild $rem-btn
+     !list-el.appendChild $row
+     !els-store.push $row
+     !items-store.push ; object { item $item } { el $row } { go-btn $go-btn } { remove-btn $rem-btn }
+    )
+   ) }
+  ]
+
+  ; while { propertyIsGreaterThan 0 opt-els-store.length } (
+   ; to old-opt !opt-els-store.pop
+   !old-opt.remove
+  )
+  ; to existing-ids [ match { $linked-ids : $linked-ids } { true : {} } ]
+  ; to candidates {}
+  ; each $available-sessions (
+   ; to { cand } $argv
+   ; to already [ !existing-ids.includes $cand.id ]
+   ; condition { propertyIs false already } : !candidates.push $cand
+  )
+  [ match
+   { [ propertyIs 0 candidates.length ] (
+    ; to placeholder !document.createElement option
+    ; assign $placeholder { value '' } { textContent 'No other available sessions' } { disabled true }
+    !select-el.appendChild $placeholder
+    !opt-els-store.push $placeholder
+    ; set '' select-el.value
+    ; set true select-el.disabled
+    ; set true add-btn.disabled
+   ) }
+   { true (
+    ; to first-val ; object { id '' }
+    ; each $candidates (
+     ; to { cand idx } $argv
+     ; to opt !document.createElement option
+     ; to cand-name [ match { $cand.name : $cand.name } { true : $cand.id } ]
+     ; to opt-label ; add $cand-name ; add ' (' ; add $cand.id ')'
+     ; assign $opt { value $cand.id } { textContent $opt-label }
+     !select-el.appendChild $opt
+     !opt-els-store.push $opt
+     ; condition { propertyIs 0 idx } : ; set $cand.id first-val.id
+    )
+    ; set $first-val.id select-el.value
+    ; set false select-el.disabled
+    ; set false add-btn.disabled
+   ) }
+  ]
+ )
+
  ; to modal.render-session (
   -- Renders streamlined Session Switcher & Manager with collapsible Advanced tab/browser controls
   !lane-control.ensure-session
+  [ match
+   { $lane-control.refresh-session-links : !lane-control.refresh-session-links }
+  ]
+  ; to available-sessions [ match
+   { $lane-control.list-available-sessions : !lane-control.list-available-sessions }
+   { true : {} }
+  ]
+  !render-link-group previous $lane-control.resolved-previous-sessions $lane-control.previous-session-ids $available-sessions $prev-links-list $prev-select $prev-add-btn $modal.prev-link-els $modal.prev-link-items $modal.prev-opt-els
+  !render-link-group next $lane-control.resolved-next-sessions $lane-control.next-session-ids $available-sessions $next-links-list $next-select $next-add-btn $modal.next-link-els $modal.next-link-items $modal.next-opt-els
   ; to cur-id $lane-control.session-id
   ; to browser-id $lane-control.browser-session-id
   ; to overridden [ propertyIs true lane-control.session-overridden ]
@@ -526,6 +716,20 @@
  !draft-abandon-btn.addEventListener click (
   !lane-control.abandon-session-draft
   !modal.render-session
+ )
+ !prev-add-btn.addEventListener click (
+  ; to chosen !prev-select.value.trim
+  ; condition { propertyIsGreaterThan 0 chosen.length } (
+   !lane-control.add-previous-session $chosen
+   !modal.render-session
+  )
+ )
+ !next-add-btn.addEventListener click (
+  ; to chosen !next-select.value.trim
+  ; condition { propertyIsGreaterThan 0 chosen.length } (
+   !lane-control.add-next-session $chosen
+   !modal.render-session
+  )
  )
  !switch-go-btn.addEventListener click (
   ; to target-id !switch-input.value.trim

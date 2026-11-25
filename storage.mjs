@@ -1428,6 +1428,22 @@ async function removeSessionFromPackageIndex(rootKv, packageId, sessionId) {
  }
 }
 
+export function normalizeSessionLinkIds(rawIds, selfSessionId = '') {
+ const exclude = String(selfSessionId || '').trim()
+ const list = Array.isArray(rawIds) ? rawIds : []
+ const out = []
+ const seen = new Set()
+ for (const item of list) {
+  const clean = item === null || item === undefined ? '' : String(item).trim()
+  if (!clean || clean === exclude || seen.has(clean)) {
+   continue
+  }
+  seen.add(clean)
+  out.push(clean)
+ }
+ return out
+}
+
 function normalizeSessionPathname(rawPathname, fallbackLaneIds = []) {
  if (typeof rawPathname === 'string' && rawPathname.trim().length > 0) {
   const trimmed = rawPathname.trim()
@@ -1746,6 +1762,8 @@ async function loadOrCreateSessionRecord(rootKv, sessionId, defaultName = '', op
    forkedFrom: null,
    dataDir,
    dataDirConfirmed,
+   previousSessionIds: normalizeSessionLinkIds(opts && opts.previousSessionIds, cleanId),
+   nextSessionIds: normalizeSessionLinkIds(opts && opts.nextSessionIds, cleanId),
    createdAt: now,
    updatedAt: now,
   }
@@ -1786,6 +1804,8 @@ async function loadOrCreateSessionRecord(rootKv, sessionId, defaultName = '', op
  const pathname = normalizeSessionPathname(meta.pathname, laneIds)
  const version = Number.isInteger(meta.version) && meta.version > 0 ? meta.version : 1
  const forkedFrom = typeof meta.forkedFrom === 'string' && meta.forkedFrom.trim() ? meta.forkedFrom.trim() : null
+ const previousSessionIds = normalizeSessionLinkIds(meta.previousSessionIds, cleanId)
+ const nextSessionIds = normalizeSessionLinkIds(meta.nextSessionIds, cleanId)
 
  let activePackageId = typeof meta.activePackageId === 'string' && validIds.includes(meta.activePackageId)
   ? meta.activePackageId
@@ -1795,6 +1815,8 @@ async function loadOrCreateSessionRecord(rootKv, sessionId, defaultName = '', op
   meta.activePackageId = activePackageId
   meta.dataDir = dataDir
   meta.dataDirConfirmed = dataDirConfirmed
+  meta.previousSessionIds = previousSessionIds
+  meta.nextSessionIds = nextSessionIds
   meta.updatedAt = now
   await writeSessionMeta(registryKv, sessionKv, cleanId, meta)
  }
@@ -1813,11 +1835,15 @@ async function loadOrCreateSessionRecord(rootKv, sessionId, defaultName = '', op
    forkedFrom,
    dataDir,
    dataDirConfirmed,
+   previousSessionIds,
+   nextSessionIds,
    createdAt: meta.createdAt || now,
    updatedAt: meta.updatedAt || now,
   },
   laneIds,
   pathname,
+  previousSessionIds,
+  nextSessionIds,
   openPackageIds: validIds,
   openPackages,
   activePackageId,
@@ -1858,6 +1884,8 @@ async function buildSessionState(rootKv, win, browserSessionId, activeSessionId,
   meta: loaded.meta,
   laneIds: loaded.laneIds,
   pathname: loaded.pathname,
+  previousSessionIds: loaded.previousSessionIds,
+  nextSessionIds: loaded.nextSessionIds,
   openPackageIds: loaded.openPackageIds,
   openPackages: loaded.openPackages,
   activePackageId: loaded.activePackageId,
@@ -1972,6 +2000,123 @@ export async function renameSession(rootKv, win, sessionId, nextName) {
   loaded.meta.dataDirConfirmed,
  )
  return { meta: nextMeta, recentSessions, sessionHistory }
+}
+
+export async function setSessionLinks(rootKv, win, sessionId, opts = {}) {
+ const cleanId = String(sessionId || '').trim()
+ if (!cleanId) {
+  return { ok: false, error: 'Session ID is required', meta: null, previousSessionIds: [], nextSessionIds: [] }
+ }
+ const registryKv = resolveRegistryKv(rootKv)
+ const loaded = await loadOrCreateSessionRecord(rootKv, cleanId)
+ const sessionKv = resolveSessionKv(rootKv, loaded.meta.dataDir)
+ const previousSessionIds = opts && opts.previousSessionIds !== undefined
+  ? normalizeSessionLinkIds(opts.previousSessionIds, cleanId)
+  : loaded.previousSessionIds
+ const nextSessionIds = opts && opts.nextSessionIds !== undefined
+  ? normalizeSessionLinkIds(opts.nextSessionIds, cleanId)
+  : loaded.nextSessionIds
+ const now = new Date().toISOString()
+ const nextMeta = {
+  ...loaded.meta,
+  previousSessionIds,
+  nextSessionIds,
+  updatedAt: now,
+ }
+ await writeSessionMeta(registryKv, sessionKv, cleanId, nextMeta)
+ return {
+  ok: true,
+  meta: nextMeta,
+  previousSessionIds,
+  nextSessionIds,
+ }
+}
+
+export async function resolveSessionLinks(rootKv, win, sessionIds, excludeSessionId = '') {
+ const cleanIds = normalizeSessionLinkIds(sessionIds, excludeSessionId)
+ if (cleanIds.length === 0) {
+  return []
+ }
+ const registryKv = resolveRegistryKv(rootKv)
+ const { local } = getWebStoragePair(win)
+ const recentById = new Map()
+ for (const item of readRecentSessions(local)) {
+  recentById.set(item.id, item)
+ }
+ for (const entry of readSessionHistoryFromStorage(local)) {
+  if (!recentById.has(entry.sessionId)) {
+   recentById.set(entry.sessionId, {
+    id: entry.sessionId,
+    name: entry.sessionName,
+    dataDir: entry.dataDir,
+    dataDirConfirmed: entry.dataDirConfirmed,
+   })
+  }
+ }
+ if (!registryKv) {
+  return cleanIds.map(id => {
+   const fallback = recentById.get(id)
+   return {
+    id,
+    name: (fallback && fallback.name) || id,
+    dataDir: fallback ? normalizeDataDir(fallback.dataDir) : null,
+    dataDirConfirmed: fallback ? Boolean(fallback.dataDirConfirmed) : false,
+    available: false,
+   }
+  })
+ }
+ const rawMetas = await mapConcurrent(cleanIds, CONCURRENCY_LIMIT, id => kvGetChunked(registryKv, sessionMetaKey(id)))
+ return cleanIds.map((id, idx) => {
+  const raw = rawMetas[idx]
+  const fallback = recentById.get(id)
+  if (!isMissingValue(raw)) {
+   try {
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object') {
+     const dataDir = normalizeDataDir(parsed.dataDir)
+     const dataDirConfirmed = parsed.dataDirConfirmed === true || Boolean(dataDir)
+     const name = parsed.name && String(parsed.name).trim()
+      ? String(parsed.name).trim()
+      : ((fallback && fallback.name) || `Session ${id.slice(0, 8)}`)
+     return {
+      id: String(parsed.id || id),
+      name,
+      dataDir,
+      dataDirConfirmed,
+      available: true,
+     }
+    }
+   }
+   catch {
+    // treat malformed meta as unavailable
+   }
+  }
+  return {
+   id,
+   name: (fallback && fallback.name) || id,
+   dataDir: fallback ? normalizeDataDir(fallback.dataDir) : null,
+   dataDirConfirmed: fallback ? Boolean(fallback.dataDirConfirmed) : false,
+   available: false,
+  }
+ })
+}
+
+export async function listAvailableSessions(rootKv, win, excludeSessionId = '', extraIds = []) {
+ const { local } = getWebStoragePair(win)
+ const candidateIds = []
+ for (const item of readRecentSessions(local)) {
+  candidateIds.push(item.id)
+ }
+ for (const entry of readSessionHistoryFromStorage(local)) {
+  candidateIds.push(entry.sessionId)
+ }
+ if (Array.isArray(extraIds)) {
+  for (const id of extraIds) {
+   candidateIds.push(id)
+  }
+ }
+ const resolved = await resolveSessionLinks(rootKv, win, candidateIds, excludeSessionId)
+ return resolved.filter(item => item.available)
 }
 
 export async function saveSessionVersion(rootKv, win, sessionId, opts = {}) {
@@ -2115,6 +2260,18 @@ export async function forkSession(rootKv, win, sourceSessionId, opts = {}) {
   forkedFrom: srcId || null,
   dataDir: forkDataDir,
   dataDirConfirmed: forkDataDirConfirmed,
+  previousSessionIds: normalizeSessionLinkIds(
+   opts && opts.previousSessionIds !== undefined
+    ? opts.previousSessionIds
+    : (srcLoaded ? srcLoaded.previousSessionIds : []),
+   nextId,
+  ),
+  nextSessionIds: normalizeSessionLinkIds(
+   opts && opts.nextSessionIds !== undefined
+    ? opts.nextSessionIds
+    : (srcLoaded ? srcLoaded.nextSessionIds : []),
+   nextId,
+  ),
   createdAt: now,
   updatedAt: now,
  }

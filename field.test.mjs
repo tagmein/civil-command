@@ -7,7 +7,24 @@ import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import util from 'node:util'
 import { EventEmitter } from 'node:events'
+
+// Keep assertion diffs bounded so cyclic/DAG mock DOM trees cannot trigger runaway memory allocation
+util.inspect.defaultOptions.depth = 4
+util.inspect.defaultOptions.maxArrayLength = 50
+util.inspect.defaultOptions.maxStringLength = 4096
+
+// Watchdog guard: abort if test process exceeds 512 MB heap or 768 MB RSS
+const MAX_TEST_HEAP_BYTES = 512 * 1024 * 1024
+const MAX_TEST_RSS_BYTES = 768 * 1024 * 1024
+setInterval(() => {
+ const { heapUsed, rss } = process.memoryUsage()
+ if (heapUsed > MAX_TEST_HEAP_BYTES || rss > MAX_TEST_RSS_BYTES) {
+  process.stderr.write(`Test memory limit exceeded (heapUsed=${Math.round(heapUsed / 1048576)}MB, rss=${Math.round(rss / 1048576)}MB)\n`)
+  process.exit(137)
+ }
+}, 250).unref()
 import {
  buildDataUrl,
  formatDataDirLabel,
@@ -121,6 +138,7 @@ import {
  lanePackageKey,
  laneScriptBase,
  laneTablesBase,
+ listAvailableSessions,
  listPackageLanes,
  listPackageSessions,
  loadDeployServers,
@@ -134,6 +152,7 @@ import {
  moveLaneToPackage,
  normalizeDomainName,
  normalizeServiceSlug,
+ normalizeSessionLinkIds,
  normalizeSubpath,
  openPackageInSession,
  packageLaneKey,
@@ -145,6 +164,7 @@ import {
  readSessionHistory,
  registerLaneInPackage,
  renameSession,
+ resolveSessionLinks,
  returnToBrowserSession,
  saveDeployServer,
  saveDeployedLaneScript,
@@ -162,6 +182,7 @@ import {
  sessionPackagesBase,
  setActivePackageInSession,
  setSessionDataDir,
+ setSessionLinks,
  setTargetLaneLine,
  splitUtf8Chunks,
  switchBrowserSession,
@@ -317,6 +338,7 @@ const DATA_RUNTIME_ENV = {
  getWorkflowCellState,
  initSessionState,
  killDeployTerminalSession,
+ listAvailableSessions,
  listPackageLanes,
  listPackageSessions,
  loadDeployServers,
@@ -341,6 +363,7 @@ const DATA_RUNTIME_ENV = {
  normalizeLaneTab,
  normalizeLaneWidth,
  normalizeServiceSlug,
+ normalizeSessionLinkIds,
  normalizeSubpath,
  openPackageInSession,
  parseCellValue,
@@ -360,6 +383,7 @@ const DATA_RUNTIME_ENV = {
  resolveRowTarget,
  resolveRowValueSpec,
  resolveScrollbarColor,
+ resolveSessionLinks,
  resolveWorkflowTarget,
  returnToBrowserSession,
  saveDeployServer,
@@ -377,6 +401,7 @@ const DATA_RUNTIME_ENV = {
  seedPreferencesScrollbarSource,
  setActivePackageInSession,
  setSessionDataDir,
+ setSessionLinks,
  setTargetLaneLine,
  simulateLaneRequest,
  startDeployTerminalSession,
@@ -13955,6 +13980,371 @@ test('Export to Lane: scope APIs, multi-target overwrite, live deploy status pil
   assert.deepEqual(updatedPills, ['Target A: Up to date', 'Target B: Not deployed'])
   assert.equal(expRow['deploy-btn'].hidden, true)
   await depModal.close()
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('storage.mjs: normalizeSessionLinkIds, setSessionLinks, resolveSessionLinks, and listAvailableSessions', async () => {
+ assert.deepEqual(
+  normalizeSessionLinkIds(['  s-b ', 's-a', 's-b', '', null, undefined, 's-self', 's-c'], 's-self'),
+  ['s-b', 's-a', 's-c'],
+ )
+
+ const store = new Map()
+ const kv = {
+  async get(key) { return store.has(key) ? store.get(key) : null },
+  async set(key, value) { store.set(key, value) },
+  async delete(key) { store.delete(key) },
+ }
+ const makeStorage = () => {
+  const m = new Map()
+  return {
+   getItem(k) { return m.has(k) ? m.get(k) : null },
+   setItem(k, v) { m.set(k, String(v)) },
+   removeItem(k) { m.delete(k) },
+  }
+ }
+ const win = { localStorage: makeStorage(), sessionStorage: makeStorage() }
+
+ const sA = await initSessionState(kv, win)
+ await renameSession(kv, win, sA.sessionId, 'Session A')
+ const sB = await createNewSession(kv, win, { name: 'Session B', dataDir: null, dataDirConfirmed: true })
+ const sC = await createNewSession(kv, win, { name: 'Session C', dataDir: null, dataDirConfirmed: true })
+ const sD = await createNewSession(kv, win, { name: 'Session D', dataDir: null, dataDirConfirmed: true })
+
+ // Link Session B with multiple Previous (A, C) and multiple Next (C, D) plus self/duplicates
+ const res = await setSessionLinks(kv, win, sB.sessionId, {
+  previousSessionIds: [sA.sessionId, sB.sessionId, sC.sessionId, sA.sessionId],
+  nextSessionIds: [sD.sessionId, sC.sessionId],
+ })
+ assert.equal(res.ok, true)
+ assert.deepEqual(res.previousSessionIds, [sA.sessionId, sC.sessionId])
+ assert.deepEqual(res.nextSessionIds, [sD.sessionId, sC.sessionId])
+
+ // Reloading Session B restores links
+ const reloadedB = await switchBrowserSession(kv, win, sB.sessionId)
+ assert.deepEqual(reloadedB.previousSessionIds, [sA.sessionId, sC.sessionId])
+ assert.deepEqual(reloadedB.nextSessionIds, [sD.sessionId, sC.sessionId])
+
+ // Resolving links returns live names and availability
+ const resolvedPrev = await resolveSessionLinks(kv, win, reloadedB.previousSessionIds, sB.sessionId)
+ assert.equal(resolvedPrev.length, 2)
+ assert.equal(resolvedPrev[0].name, 'Session A')
+ assert.equal(resolvedPrev[0].available, true)
+ assert.equal(resolvedPrev[1].name, 'Session C')
+ assert.equal(resolvedPrev[1].available, true)
+
+ // Deleting Session C makes it unavailable while keeping A and D available
+ await kvDeleteChunked(kv, sessionMetaKey(sC.sessionId))
+ const resolvedAfterDelete = await resolveSessionLinks(kv, win, reloadedB.previousSessionIds, sB.sessionId)
+ assert.equal(resolvedAfterDelete[0].available, true)
+ assert.equal(resolvedAfterDelete[1].id, sC.sessionId)
+ assert.equal(resolvedAfterDelete[1].available, false)
+
+ // listAvailableSessions excludes self and deleted sessions
+ const avail = await listAvailableSessions(kv, win, sB.sessionId)
+ const availIds = avail.map(item => item.id)
+ assert.ok(availIds.includes(sA.sessionId))
+ assert.ok(availIds.includes(sD.sessionId))
+ assert.ok(!availIds.includes(sB.sessionId))
+ assert.ok(!availIds.includes(sC.sessionId))
+})
+
+test('Session Previous/Next navigation: Session settings multi-destination config, availability checks, and centered side-rail arrow tabs (hover + mobile tap)', async () => {
+ const html = await fs.readFile(new URL('./index.html', import.meta.url), 'utf8')
+ assert.ok(html.includes('.side-rail-nav {'))
+ assert.ok(html.includes('top: 50%;'))
+ assert.ok(html.includes('transform: translateY(-50%);'))
+ assert.ok(html.includes('.side-rail-nav--left'))
+ assert.ok(html.includes('.side-rail-nav--right'))
+ assert.ok(html.includes('.side-rail-nav-tab'))
+ assert.ok(html.includes('.side-rail-nav-menu'))
+
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  const el = {
+   tag,
+   style: {},
+   attributes: {},
+   children: [],
+   listeners: {},
+   textContent: '',
+   value: '',
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   focused: false,
+   removed: false,
+   setAttribute(name, value) { this.attributes[name] = value },
+   appendChild(child) { this.children.push(child); return child },
+   insertBefore(child, ref) {
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) this.children.push(child)
+    else this.children.splice(idx, 0, child)
+    return child
+   },
+   contains(target) {
+    if (target === this) return true
+    for (const c of this.children) {
+     if (c && typeof c.contains === 'function' && c.contains(target)) return true
+    }
+    return false
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() { this.removed = true },
+  }
+  return el
+ }
+
+ const kv = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { kv.set(qualify(key), value) },
+   async delete(key) { kv.delete(qualify(key)) },
+  }
+ }
+
+ const makeMemStorage = () => {
+  const m = new Map()
+  return {
+   getItem(k) { return m.has(k) ? m.get(k) : null },
+   setItem(k, v) { m.set(k, String(v)) },
+   removeItem(k) { m.delete(k) },
+  }
+ }
+
+ const docListeners = {}
+ const winListeners = {}
+ const body = createMockElement('body')
+ const mockLocation = { pathname: '/', search: '', hash: '' }
+ const mockHistory = {
+  pushState(_s, _t, url) { mockLocation.pathname = String(url).split('?')[0].split('#')[0] },
+  replaceState(_s, _t, url) { mockLocation.pathname = String(url).split('?')[0].split('#')[0] },
+ }
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  JSON,
+  Math,
+  Object,
+  Reflect,
+  decodeURIComponent,
+  localStorage: makeMemStorage(),
+  sessionStorage: makeMemStorage(),
+  location: mockLocation,
+  history: mockHistory,
+  addEventListener(event, handler) {
+   if (!winListeners[event]) winListeners[event] = []
+   winListeners[event].push(handler)
+  },
+  removeEventListener() {},
+ }
+ const mockDocument = {
+  body,
+  defaultView: mockWindow,
+  documentElement: createMockElement('html'),
+  createElement: createMockElement,
+  addEventListener(event, handler) {
+   if (!docListeners[event]) docListeners[event] = []
+   docListeners[event].push(handler)
+  },
+ }
+ const dataKv = createMockKV()
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  const map = {
+   '/src/main.fs': mainSource,
+   '/src/lane-control.fs': laneSource,
+   '/src/lane-notebook.fs': notebookSource,
+   '/src/lane-inputs.fs': inputsSource,
+   '/src/lane-scope.fs': scopeSource,
+   '/src/lane-data.fs': dataSource,
+   '/src/confirm-modal.fs': confirmModalSource,
+   '/src/lane-row-picker-modal.fs': rowPickerModalSource,
+   '/src/lane-output.fs': outputSource,
+   '/src/lane-modal.fs': modalSource,
+   '/src/lane-config-modal.fs': configModalSource,
+   '/src/lane-import-modal.fs': importModalSource,
+   '/src/lane-export-modal.fs': exportModalSource,
+   '/src/lane-export-deploy-modal.fs': exportDeployModalSource,
+   '/src/lane-session-modal.fs': sessionModalSource,
+   '/src/lane-package-modal.fs': packageModalSource,
+   '/src/lane-dir-modal.fs': dirModalSource,
+   '/src/lane-line-info-modal.fs': lineInfoModalSource,
+   '/src/lane-server.fs': laneServerSource,
+   '/src/lane-servers-modal.fs': laneServersModalSource,
+   '/src/lane-terminal-modal.fs': laneTerminalModalSource,
+   '/src/lane-rails.fs': railsSource,
+  }
+  if (map[url]) return { text: async () => map[url] }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: dataKv,
+   defaultValueForType,
+   document: mockDocument,
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  await f.run(parse(mainSource, '/src/main.fs'))
+  const lc = f.state['lane-control']
+  const rails = lc.rails
+  const sm = lc['session-modal']
+
+  // Arrow tabs are mounted inside left-rail and right-rail and hidden initially (no links yet)
+  assert.ok(rails['left-rail'].children.includes(rails['prev-nav']))
+  assert.ok(rails['right-rail'].children.includes(rails['next-nav']))
+  assert.equal(rails['prev-nav'].hidden, true)
+  assert.equal(rails['next-nav'].hidden, true)
+
+  // Confirm initial Session A and create Sessions B, C, D
+  const idA = lc['session-id']
+  await lc['confirm-session-data-dir'](null)
+  await lc['rename-session']('Alpha')
+  const sessB = await lc['new-session']('Beta', null, true)
+  const idB = sessB.sessionId
+  const sessC = await lc['new-session']('Gamma', null, true)
+  const idC = sessC.sessionId
+  const sessD = await lc['new-session']('Delta', null, true)
+  const idD = sessD.sessionId
+
+  // Switch to Beta and open Session settings modal
+  await lc['switch-session'](idB)
+  await sm['open-switch-session']()
+  assert.equal(sm['is-open'], true)
+
+  // Add multiple Previous sessions (Alpha and Gamma) and multiple Next sessions (Gamma and Delta) via Session settings UI
+  sm['prev-select'].value = idA
+  await sm['prev-add-btn'].listeners.click()
+  sm['prev-select'].value = idC
+  await sm['prev-add-btn'].listeners.click()
+  sm['next-select'].value = idC
+  await sm['next-add-btn'].listeners.click()
+  sm['next-select'].value = idD
+  await sm['next-add-btn'].listeners.click()
+
+  assert.equal(sm['prev-link-items'].length, 2)
+  assert.equal(sm['next-link-items'].length, 2)
+  assert.deepEqual(lc['previous-session-ids'], [idA, idC])
+  assert.deepEqual(lc['next-session-ids'], [idC, idD])
+
+  // Both side-rail arrow tabs are now visible with count badges "2"
+  assert.equal(rails['prev-nav'].hidden, false)
+  assert.equal(rails['next-nav'].hidden, false)
+  assert.equal(rails['prev-nav-count'].hidden, false)
+  assert.equal(rails['prev-nav-count'].textContent, '2')
+  assert.equal(rails['next-nav-count'].hidden, false)
+  assert.equal(rails['next-nav-count'].textContent, '2')
+  assert.equal(rails['prev-nav-menu'].hidden, true)
+  assert.equal(rails['next-nav-menu'].hidden, true)
+
+  // Close settings modal
+  await sm.close()
+
+  // Desktop hover flow on Right rail (Next): mouseenter expands menu, 1 click switches to Delta
+  await rails['next-nav'].listeners.mouseenter()
+  assert.equal(rails['is-next-nav-open'], true)
+  assert.equal(rails['next-nav-menu'].hidden, false)
+  assert.equal(rails['next-nav-items'].length, 2)
+  assert.equal(rails['next-nav-items'][0].session.name, 'Gamma')
+  assert.equal(rails['next-nav-items'][1].session.name, 'Delta')
+
+  // Mouseleave collapses menu
+  await rails['next-nav'].listeners.mouseleave()
+  assert.equal(rails['is-next-nav-open'], false)
+  assert.equal(rails['next-nav-menu'].hidden, true)
+
+  // Hover again and 1-click Delta -> switches session to Delta and closes menu
+  await rails['next-nav'].listeners.mouseenter()
+  await rails['next-nav-items'][1].btn.listeners.click()
+  assert.equal(lc['session-id'], idD)
+  assert.equal(rails['is-next-nav-open'], false)
+  // Delta has no configured links yet, so both arrow tabs hide automatically
+  assert.equal(rails['prev-nav'].hidden, true)
+  assert.equal(rails['next-nav'].hidden, true)
+
+  // Link Beta as Previous from Delta so we can navigate back
+  await lc['add-previous-session'](idB)
+  assert.equal(rails['prev-nav'].hidden, false)
+  assert.equal(rails['prev-nav-count'].hidden, true) // single item hides count badge
+  assert.equal(rails['next-nav'].hidden, true)
+
+  // Mobile 2-tap flow (no hover): Tap 1 on arrow tab expands menu, Tap 2 picks Beta
+  await rails['prev-nav-tab'].listeners.click({ stopPropagation() {} })
+  assert.equal(rails['is-prev-nav-open'], true)
+  assert.equal(rails['prev-nav-menu'].hidden, false)
+  assert.equal(rails['prev-nav-items'].length, 1)
+  assert.equal(rails['prev-nav-items'][0].session.name, 'Beta')
+  await rails['prev-nav-items'][0].btn.listeners.click()
+  assert.equal(lc['session-id'], idB)
+  assert.equal(rails['is-prev-nav-open'], false)
+
+  // Mobile emulated mouseenter + click on arrow tab must stay open (not immediately collapse)
+  await rails['prev-nav'].listeners.mouseenter()
+  await rails['prev-nav-tab'].listeners.click({ stopPropagation() {} })
+  assert.equal(rails['is-prev-nav-open'], true)
+  assert.equal(rails['prev-nav-menu'].hidden, false)
+  // Pressing Escape closes the flyout
+  for (const h of winListeners.keydown || []) await h({ key: 'Escape' })
+  assert.equal(rails['is-prev-nav-open'], false)
+  assert.equal(rails['prev-nav-menu'].hidden, true)
+
+  // Availability check: delete Gamma from KV -> Beta's Previous & Next tabs drop Gamma automatically
+  await kvDeleteChunked(dataKv, sessionMetaKey(idC))
+  await lc['refresh-session-links']()
+  assert.equal(rails['prev-nav-items'].length, 1)
+  assert.equal(rails['prev-nav-items'][0].session.id, idA)
+  assert.equal(rails['next-nav-items'].length, 1)
+  assert.equal(rails['next-nav-items'][0].session.id, idD)
+
+  // In Session settings, Gamma is shown as unavailable (disabled go-btn) and can be removed
+  await sm['open-switch-session']()
+  assert.equal(sm['prev-link-items'].length, 2)
+  assert.equal(sm['prev-link-items'][0]['go-btn'].disabled, false)
+  assert.equal(sm['prev-link-items'][1]['go-btn'].disabled, true)
+  await sm['prev-link-items'][1]['remove-btn'].listeners.click()
+  assert.deepEqual(lc['previous-session-ids'], [idA])
+
+  // Deleting Alpha too hides the left arrow tab completely while right arrow tab (Delta) remains visible
+  await kvDeleteChunked(dataKv, sessionMetaKey(idA))
+  await lc['refresh-session-links']()
+  assert.equal(rails['prev-nav'].hidden, true)
+  assert.equal(rails['next-nav'].hidden, false)
+  await sm.close()
  }
  finally {
   globalThis.fetch = origFetch
