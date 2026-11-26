@@ -2,7 +2,18 @@
 ; to scope ; object
 ; to scope.create (
  -- Creates a reusable interactive SSH PTY terminal modal dialog
- ; to { host } $argv
+ ; to { host-or-control maybe-control } $argv
+ ; to lane-control [ match
+  { $maybe-control : $maybe-control }
+  { $host-or-control.by-id : $host-or-control }
+  { $host-or-control.mount-lane-modal : $host-or-control }
+  { true : null }
+ ]
+ ; to host [ match
+  { $host-or-control.by-id : null }
+  { $host-or-control.mount-lane-modal : null }
+  { true : $host-or-control }
+ ]
 
  ; to backdrop !document.createElement div
  ; set 'lane-modal-backdrop lane-config-backdrop cc-term-backdrop' backdrop.className
@@ -49,10 +60,13 @@
  ; assign $ctrlc-btn { type button } { className lane-modal-action } { textContent 'Ctrl+C' } { title 'Send interrupt (SIGINT)' }
  ; to copy-btn !document.createElement button
  ; assign $copy-btn { type button } { className lane-modal-action } { textContent 'Copy Log' }
+ ; to clear-btn !document.createElement button
+ ; assign $clear-btn { type button } { className lane-modal-action } { textContent Clear }
  ; to kill-btn !document.createElement button
  ; assign $kill-btn { type button } { className 'lane-modal-action lane-modal-action--close' } { textContent Kill }
  !toolbar-left.appendChild $ctrlc-btn
  !toolbar-left.appendChild $copy-btn
+ !toolbar-left.appendChild $clear-btn
  !toolbar-left.appendChild $kill-btn
 
  ; to done-btn !document.createElement button
@@ -78,6 +92,7 @@
   { host-el $host-el }
   { ctrlc-btn $ctrlc-btn }
   { copy-btn $copy-btn }
+  { clear-btn $clear-btn }
   { kill-btn $kill-btn }
   { done-btn $done-btn }
   { close-btn $close-btn }
@@ -91,6 +106,7 @@
   { on-exit null }
   { on-close null }
   { host $host }
+  { lane null }
  ]
 
  ; to clear-host (
@@ -181,12 +197,17 @@
      ) }
     ]
     ; condition { propertyIs true modal.is-open } (
+     ; to prev-lane $modal.lane
      ; set false modal.is-open
+     ; set null modal.lane
      ; set '' modal.session-id
      ; set null modal.on-sentinel
      ; set null modal.on-exit
      ; set null modal.on-close
      !backdrop.remove
+     [ match
+      { [ and { $prev-lane } { $lane-control.unmount-lane-modal } ] : !lane-control.unmount-lane-modal $prev-lane $modal }
+     ]
     )
     [ match
      { $close-cb : !$close-cb }
@@ -292,17 +313,39 @@
    ) }
   ]
 
-  ; condition { propertyIs false modal.is-open } (
-   ; set true modal.is-open
-   ; to mount-parent [ match
-    { $document.body : $document.body }
-    { $modal.host : $modal.host }
-    { true : null }
-   ]
+  ; condition { propertyIs true modal.is-open } (
    [ match
-    { $mount-parent.appendChild : !mount-parent.appendChild $backdrop }
+    { [ and { $modal.lane } { $lane-control.unmount-lane-modal } ] : !lane-control.unmount-lane-modal $modal.lane $modal }
    ]
   )
+  ; to target-lane [ match
+   { $opts.lane : $opts.lane }
+   { [ and { $opts.lane-id } { $lane-control.resolve-lane } ] : !lane-control.resolve-lane $opts.lane-id }
+   { $opts.lane-id : [ get lane-control.by-id $opts.lane-id ] }
+   { true : null }
+  ]
+  ; set $target-lane modal.lane
+  ; set true modal.is-open
+  [ match
+   { [ and { $target-lane } { $lane-control.mount-lane-modal } ] : !lane-control.mount-lane-modal $target-lane $modal }
+   { $opts.host.appendChild (
+    !backdrop.setAttribute data-lane-modal 'true'
+    ; set 'lane-modal-backdrop lane-config-backdrop cc-term-backdrop lane-modal-backdrop--lane' backdrop.className
+    !opts.host.appendChild $backdrop
+   ) }
+   { $target-lane.body.appendChild (
+    !backdrop.setAttribute data-lane-modal 'true'
+    ; set 'lane-modal-backdrop lane-config-backdrop cc-term-backdrop lane-modal-backdrop--lane' backdrop.className
+    !target-lane.body.appendChild $backdrop
+   ) }
+   { $modal.host.appendChild (
+    !backdrop.setAttribute data-lane-modal 'true'
+    ; set 'lane-modal-backdrop lane-config-backdrop cc-term-backdrop lane-modal-backdrop--lane' backdrop.className
+    !modal.host.appendChild $backdrop
+   ) }
+   { $lane-control.mount-lane-modal : !lane-control.mount-lane-modal null $modal }
+   { $document.body.appendChild : !document.body.appendChild $backdrop }
+  ]
   [ match
    { $modal.term.focus : !modal.term.focus }
   ]
@@ -328,6 +371,16 @@
     !window.navigator.clipboard.writeText $txt
     ; set 'Copied!' copy-btn.textContent
    ) }
+  ]
+ )
+
+ !clear-btn.addEventListener click (
+  [ match
+   { $modal.term.clear : !modal.term.clear }
+  ]
+  ; set 'Copy Log' copy-btn.textContent
+  [ match
+   { $modal.term.focus : !modal.term.focus }
   ]
  )
 

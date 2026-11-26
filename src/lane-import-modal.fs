@@ -112,6 +112,7 @@
   { cancel-btn $cancel-btn }
   { confirm-btn $confirm-btn }
   { is-open false }
+  { lane null }
   { lane-loaded false }
   { current-lane-id '' }
   { selected-lane-id '' }
@@ -385,9 +386,14 @@
  ; to modal.close (
   -- Closes the Import from Lane picker modal
   ; condition { propertyIs true modal.is-open } (
+   ; to prev-lane $modal.lane
    ; set false modal.is-open
+   ; set null modal.lane
    ; set null modal.on-confirm
    !backdrop.remove
+   [ match
+    { [ and { $prev-lane } { $lane-control.unmount-lane-modal } ] : !lane-control.unmount-lane-modal $prev-lane $modal }
+   ]
   )
  )
 
@@ -470,10 +476,28 @@
   ; set $is-custom modal.custom-alias
   ; set $opts.on-confirm modal.on-confirm
 
-  ; condition { propertyIs false modal.is-open } (
-   ; set true modal.is-open
-   !document.body.appendChild $backdrop
+  ; condition { propertyIs true modal.is-open } (
+   [ match
+    { [ and { $modal.lane } { $lane-control.unmount-lane-modal } ] : !lane-control.unmount-lane-modal $modal.lane $modal }
+   ]
   )
+  ; to target-lane [ match
+   { $opts.lane : $opts.lane }
+   { [ and { $cur-id } { $lane-control.resolve-lane } ] : !lane-control.resolve-lane $cur-id }
+   { $cur-id : [ get lane-control.by-id $cur-id ] }
+   { true : null }
+  ]
+  ; set $target-lane modal.lane
+  ; set true modal.is-open
+  [ match
+   { [ and { $target-lane } { $lane-control.mount-lane-modal } ] : !lane-control.mount-lane-modal $target-lane $modal }
+   { $target-lane.body.appendChild (
+    !backdrop.setAttribute data-lane-modal 'true'
+    ; set 'lane-modal-backdrop lane-import-backdrop lane-modal-backdrop--lane' backdrop.className
+    !target-lane.body.appendChild $backdrop
+   ) }
+   { $document.body.appendChild : !document.body.appendChild $backdrop }
+  ]
 
   ; to candidates !modal.render-lanes
 

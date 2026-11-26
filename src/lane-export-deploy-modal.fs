@@ -58,6 +58,7 @@
   { close-btn $close-btn }
   { close-footer-btn $close-footer-btn }
   { is-open false }
+  { lane null }
   { is-deploying false }
   { items {} }
   { active-terms {} }
@@ -241,6 +242,9 @@
    { $lane-control.servers-modal.refresh : !lane-control.servers-modal.refresh }
   ]
   [ match
+   { $lane-control.refresh-deploy-servers : !lane-control.refresh-deploy-servers }
+  ]
+  [ match
    { $modal.on-deployed : !$modal.on-deployed $item.lane-id }
   ]
  )
@@ -255,7 +259,10 @@
    { [ propertyIs null srv ] : !set-error 'Deployment SSH server profile was not found.' }
    { [ propertyIs false has-term ] : !set-error 'Terminal modal is not available.' }
    { true (
-    ; to bundle !collectLaneSyncBundle $data $item.lane-id [ object { includeImports $dep.includeImports } { openPackageIds $lane-control.open-package-ids } { win $window } ]
+    ; to bundle [ match
+     { $lane-control.collect-lane-bundle : !lane-control.collect-lane-bundle $item.lane-id $dep.includeImports }
+     { true : !collectLaneSyncBundle $data $item.lane-id [ object { includeImports $dep.includeImports } { openPackageIds $lane-control.open-package-ids } { win $window } ] }
+    ]
     ; to payload [ object
      { action deploy-lane }
      { server $srv }
@@ -267,6 +274,7 @@
     [ match
      { [ propertyIs true resp.ok ] (
       !lane-control.terminal-modal.open [ object
+       { lane $modal.lane }
        { title $resp.title }
        { subtitle $payload.subtitle }
        { ws-path $resp.wsPath }
@@ -314,7 +322,10 @@
     ; set 'Deploying...' item.badge-el.textContent
     ; set 'cc-badge cc-badge--warn' item.badge-el.className
     ; set false item.term-wrap.hidden
-    ; to bundle !collectLaneSyncBundle $data $item.lane-id [ object { includeImports $dep.includeImports } { openPackageIds $lane-control.open-package-ids } { win $window } ]
+    ; to bundle [ match
+     { $lane-control.collect-lane-bundle : !lane-control.collect-lane-bundle $item.lane-id $dep.includeImports }
+     { true : !collectLaneSyncBundle $data $item.lane-id [ object { includeImports $dep.includeImports } { openPackageIds $lane-control.open-package-ids } { win $window } ] }
+    ]
     ; to payload [ object
      { action deploy-lane }
      { server $srv }
@@ -431,11 +442,16 @@
 
  ; to modal.close (
   ; condition { propertyIs true modal.is-open } (
+   ; to prev-lane $modal.lane
    ; set false modal.is-open
    ; set false modal.is-deploying
+   ; set null modal.lane
    ; set null modal.on-deployed
    !clear-list
    !backdrop.remove
+   [ match
+    { [ and { $prev-lane } { $lane-control.unmount-lane-modal } ] : !lane-control.unmount-lane-modal $prev-lane $modal }
+   ]
   )
  )
 
@@ -480,10 +496,29 @@
    ; to srv-by-id $s.id $s
   )
 
-  ; condition { propertyIs false modal.is-open } (
-   ; set true modal.is-open
-   !document.body.appendChild $backdrop
+  ; condition { propertyIs true modal.is-open } (
+   [ match
+    { [ and { $modal.lane } { $lane-control.unmount-lane-modal } ] : !lane-control.unmount-lane-modal $modal.lane $modal }
+   ]
   )
+  ; to src-id [ match { $opts.source-lane-id : $opts.source-lane-id } { $opts.current-lane-id : $opts.current-lane-id } { true : '' } ]
+  ; to target-lane [ match
+   { $opts.lane : $opts.lane }
+   { [ and { $src-id } { $lane-control.resolve-lane } ] : !lane-control.resolve-lane $src-id }
+   { $src-id : [ get lane-control.by-id $src-id ] }
+   { true : null }
+  ]
+  ; set $target-lane modal.lane
+  ; set true modal.is-open
+  [ match
+   { [ and { $target-lane } { $lane-control.mount-lane-modal } ] : !lane-control.mount-lane-modal $target-lane $modal }
+   { $target-lane.body.appendChild (
+    !backdrop.setAttribute data-lane-modal 'true'
+    ; set 'lane-modal-backdrop lane-import-backdrop lane-modal-backdrop--lane' backdrop.className
+    !target-lane.body.appendChild $backdrop
+   ) }
+   { $document.body.appendChild : !document.body.appendChild $backdrop }
+  ]
 
   [ match
    { [ propertyIs 0 unique-ids.length ] (

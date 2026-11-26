@@ -66,18 +66,26 @@ export const TRANSPORT_PACKET_TYPE = 'field-transport/script'
 const TRANSPORT_TAG = '__fieldTransport'
 const TRANSPORT_UNSERIALIZABLE = Symbol('transportUnserializable')
 const TRANSPORT_EXCLUDED_BINDINGS = new Set([
+ 'Array',
  'argv',
  'console',
  'data',
  'Date',
+ 'deployLane',
  'document',
  'exportLaneLine',
+ 'fetch',
  'importLane',
  'JSON',
  'Math',
+ 'Number',
  'output',
  'respond',
+ 'resyncLane',
  'setLaneLine',
+ 'syncLaneTable',
+ 'syncTable',
+ 'tableChange',
  'window',
 ])
 
@@ -473,8 +481,14 @@ export function field(initialState={}, options={}) {
   }
   function and(...blocks) {
    let v = true
-   for (const [ b, ...a ] of blocks) {
-    v &= me[b](...a)
+   for (const block of blocks) {
+    if (Array.isArray(block)) {
+     const [ b, ...a ] = block
+     v &= (typeof b === 'string' && typeof me[b] === 'function') ? Boolean(me[b](...a)) : Boolean(b)
+    }
+    else {
+     v &= Boolean(block)
+    }
    }
    return v
   }
@@ -803,7 +817,18 @@ export function field(initialState={}, options={}) {
        return vars[x[1].substr(9)]
       }
      }
-     const mapped = x.map(y => template(y, vars))
+     let changed = false
+     const mapped = new Array(x.length)
+     for (let i = 0; i < x.length; i++) {
+      const next = template(x[i], vars)
+      if (next !== x[i]) {
+       changed = true
+      }
+      mapped[i] = next
+     }
+     if (!changed) {
+      return x
+     }
      const loc = AST_LOC.get(x)
      if (loc) {
       AST_LOC.set(mapped, loc)
@@ -841,10 +866,15 @@ export function field(initialState={}, options={}) {
   function object(...entries) {
    const result = {}
    for (const entry of entries) {
-    if (!Array.isArray(entry) || entry.length !== 2) {
-     throw new TypeError(`object expects { key value } pairs, got: ${JSON.stringify(entry)}`)
+    if (typeof entry === 'string') {
+     result[entry] = get(entry)
     }
-    result[entry[0]] = entry[1]
+    else if (Array.isArray(entry) && entry.length === 2) {
+     result[entry[0]] = entry[1]
+    }
+    else {
+     throw new TypeError('object expects { key value } pairs or shorthand keys')
+    }
    }
    return result
   }
@@ -914,6 +944,170 @@ export function field(initialState={}, options={}) {
  return createScope(rootState, rootArgv)
 }
 
+export const VALID_FIELD_COMMANDS = Object.freeze([
+ 'add',
+ 'subtract',
+ 'multiply',
+ 'divide',
+ 'ternary',
+ 'modulus',
+ 'and',
+ 'assign',
+ 'comment',
+ 'condition',
+ 'each',
+ 'get',
+ 'invoke',
+ 'load',
+ 'match',
+ 'object',
+ 'propertyIs',
+ 'propertyIsLessThan',
+ 'propertyIsGreaterThan',
+ 'propertyIsLessThanOrEqual',
+ 'propertyIsGreaterThanOrEqual',
+ 'send',
+ 'series',
+ 'set',
+ 'tap',
+ 'to',
+ 'try',
+ 'while',
+ 'will',
+ 'willInvoke',
+ 'willSeries',
+ 'compile',
+ 'evalBlock',
+ 'template',
+ 'run',
+])
+
+const VALID_FIELD_COMMAND_SET = new Set(VALID_FIELD_COMMANDS)
+
+const COMMAND_MIN_ARGS = Object.freeze({
+ get: 1,
+ to: 2,
+ set: 2,
+ invoke: 2,
+ tap: 1,
+ assign: 1,
+ condition: 2,
+ each: 2,
+ while: 2,
+ try: 1,
+ ternary: 3,
+ add: 2,
+ subtract: 2,
+ multiply: 2,
+ divide: 2,
+ modulus: 2,
+ send: 1,
+ load: 1,
+ propertyIs: 2,
+ propertyIsLessThan: 2,
+ propertyIsGreaterThan: 2,
+ propertyIsLessThanOrEqual: 2,
+ propertyIsGreaterThanOrEqual: 2,
+})
+
+function makeSyntaxError(message, loc) {
+ const suffix = formatLoc(loc)
+ const err = new SyntaxError(`${message}${suffix}`)
+ if (loc) {
+  err.fieldLocation = loc
+  err[FIELD_ERROR_TAGGED] = true
+ }
+ return err
+}
+
+function isPatternRestToken(val) {
+ if (typeof val !== 'string' || val.length < 3 || val[0] !== '@' || !val.endsWith('+')) {
+  return false
+ }
+ const digits = val.slice(1, -1)
+ const n = parseInt(digits, 10)
+ return Number.isInteger(n) && n >= 0 && String(n) === digits
+}
+
+function validateDestructuringPattern(pattern, loc) {
+ if (!Array.isArray(pattern) || pattern[0] === '@') {
+  return
+ }
+ for (let i = 0; i < pattern.length; i++) {
+  const slot = pattern[i]
+  if (slot === null || slot === undefined) {
+   continue
+  }
+  if (typeof slot === 'string' && slot.startsWith('...')) {
+   if (slot.length <= 3) {
+    throw makeSyntaxError('Rest element requires a binding name in destructuring pattern', loc)
+   }
+   if (i !== pattern.length - 1) {
+    throw makeSyntaxError('Rest element must be last in destructuring pattern', loc)
+   }
+   continue
+  }
+  if (Array.isArray(slot)) {
+   if (slot[0] === '@') {
+    throw makeSyntaxError('Destructuring pattern cannot contain command expressions', AST_LOC.get(slot) || loc)
+   }
+   validateDestructuringPattern(slot, AST_LOC.get(slot) || loc)
+  }
+ }
+}
+
+export function validateFieldScriptAst(node, options = {}) {
+ if (!Array.isArray(node)) {
+  return node
+ }
+ const allowPatternPlaceholders = Boolean(options && options.allowPatternPlaceholders)
+ if (node[0] === '@') {
+  const loc = AST_LOC.get(node)
+  if (node.length < 2) {
+   throw makeSyntaxError('Empty command block', loc)
+  }
+  const cmd = node[1]
+  if (cmd === '@') {
+   return node
+  }
+  if (typeof cmd !== 'string') {
+   throw makeSyntaxError(`${JSON.stringify(cmd)} is not a valid FieldScript command`, loc)
+  }
+  if (!cmd.startsWith('template#') && !VALID_FIELD_COMMAND_SET.has(cmd)) {
+   throw makeSyntaxError(`${JSON.stringify(cmd)} is not a valid FieldScript command`, loc)
+  }
+  const minArgs = COMMAND_MIN_ARGS[cmd]
+  if (minArgs !== undefined) {
+   const argCount = node.length - 2
+   const hasPatternRest = allowPatternPlaceholders && node.slice(2).some(isPatternRestToken)
+   if (!hasPatternRest && argCount < minArgs) {
+    const noun = minArgs === 1 ? 'argument' : 'arguments'
+    throw makeSyntaxError(`"${cmd}" requires at least ${minArgs} ${noun}`, loc)
+   }
+  }
+  if (cmd === 'to' && node.length >= 4) {
+   const targetSlot = node[node.length - 2]
+   if (Array.isArray(targetSlot) && targetSlot[0] !== '@') {
+    validateDestructuringPattern(targetSlot, AST_LOC.get(targetSlot) || loc)
+   }
+  }
+  else if (cmd === 'set' && node.length >= 4) {
+   const targetSlot = node[node.length - 1]
+   if (Array.isArray(targetSlot) && targetSlot[0] !== '@') {
+    validateDestructuringPattern(targetSlot, AST_LOC.get(targetSlot) || loc)
+   }
+  }
+  for (let i = 2; i < node.length; i++) {
+   validateFieldScriptAst(node[i], options)
+  }
+  return node
+ }
+ for (let i = 0; i < node.length; i++) {
+  validateFieldScriptAst(node[i], options)
+ }
+ return node
+}
+
 export function parse(text, filename, startRow = 0) {
  const output = []
  const root = { block: output }
@@ -926,6 +1120,7 @@ export function parse(text, filename, startRow = 0) {
  let pendingWordStartCol = 0
  let inString = false
  let inEscape = false
+ let stringStartLoc = null
  let inPatternDefinition = false
  let pattern = undefined
  let patternScope = undefined
@@ -941,11 +1136,11 @@ export function parse(text, filename, startRow = 0) {
   }
  }
  function flushAutoBlock() {
-  if (!scope.autoBlock) { throw new Error('no autoBlock') }
+  if (!scope.autoBlock) { throw new SyntaxError('no autoBlock') }
   scope.autoBlock = false
   if (scope.isInvoke) {
    if (scope.block.length === 0) {
-    throw new Error(`Empty invoke block (!)${formatLoc(scope.loc)}`)
+    throw makeSyntaxError('Empty invoke block (!)', scope.loc)
    }
    const [ target, ...args ] = scope.block
    const path = typeof target === 'string' ? target.split('.') : [ target ]
@@ -956,7 +1151,13 @@ export function parse(text, filename, startRow = 0) {
   }
   else {
    if (scope.isDeferred) {
+    if (scope.block.length === 0) {
+     throw makeSyntaxError('Empty deferred block (:)', scope.loc)
+    }
     scope.block.unshift('will')
+   }
+   else if (scope.block.length === 0) {
+    throw makeSyntaxError('Empty command block (;)', scope.loc)
    }
    scope.block.unshift('@')
   }
@@ -1086,6 +1287,10 @@ export function parse(text, filename, startRow = 0) {
   }
   const chr = text[i]
   if (inString) {
+   if (chr === '\n') {
+    row++
+    col = -1
+   }
    if (inEscape) {
     pendingWord +=
      chr === 'n' ? '\n' :
@@ -1101,6 +1306,7 @@ export function parse(text, filename, startRow = 0) {
      break
     case "'":
      inString = false
+     stringStartLoc = null
      flushPendingWord(true)
      break
     default:
@@ -1132,6 +1338,9 @@ export function parse(text, filename, startRow = 0) {
     if (pattern.length === 0) {
      pattern = undefined
     }
+    else {
+     validateFieldScriptAst(pattern, { allowPatternPlaceholders: true })
+    }
    }
    const commentNode = [ '@', 'comment', commentText ]
    AST_LOC.set(commentNode, commentLoc)
@@ -1148,6 +1357,7 @@ export function parse(text, filename, startRow = 0) {
     inString = true
     pendingWordStartRow = row
     pendingWordStartCol = col
+    stringStartLoc = makeLoc(row, col)
     break
    case ';':
    case ':':
@@ -1179,6 +1389,9 @@ export function parse(text, filename, startRow = 0) {
       if (pattern.length === 0) {
        pattern = undefined
       }
+      else {
+       validateFieldScriptAst(pattern, { allowPatternPlaceholders: true })
+      }
      }
     }
     else if (pattern) {
@@ -1204,29 +1417,45 @@ export function parse(text, filename, startRow = 0) {
     break
    case '}':
    case ']':
-   case ')':
+   case ')': {
+    const closeLoc = makeLoc(row, col)
     if (stack.length < 2) {
-     throw new Error(`no block is open, you are at output${info()}`)
+     const err = new SyntaxError(`no block is open, you are at output${info()}`)
+     err.fieldLocation = closeLoc
+     throw err
     }
     flushPendingWord()
     while (scope.autoBlock) { flushAutoBlock() }
     if (stack.length < 2) {
-     throw new Error(`no block is open, you are at output${info()}`)
+     const err = new SyntaxError(`no block is open, you are at output${info()}`)
+     err.fieldLocation = closeLoc
+     throw err
     }
 
     const expectedList = chr === '}'
     if (scope.isList ? !expectedList : expectedList) {
-     throw new Error(`Block end mismatch: got ${chr}, expected ${
+     const err = new SyntaxError(`Block end mismatch: got ${chr}, expected ${
       scope.isList ? '{}' : scope.isDeferred ? ')' : ']'
      }${info()}`)
+     err.fieldLocation = closeLoc
+     throw err
     }
     const expectedDeferred = chr === ')'
     if (scope.isDeferred ? !expectedDeferred : expectedDeferred) {
-     throw new Error(`Block end mismatch: got ${chr}, expected ${scope.isDeferred ? ')' : ']'}${info()}`)
+     const err = new SyntaxError(`Block end mismatch: got ${chr}, expected ${scope.isDeferred ? ')' : ']'}${info()}`)
+     err.fieldLocation = closeLoc
+     throw err
     }
 
     if (scope.block[0] === 'list') {
      scope.block.shift()
+    }
+    else if (
+     !scope.isList &&
+     !scope.isDeferred &&
+     scope.block.length === 0
+    ) {
+     throw makeSyntaxError('Empty command block ([])', scope.loc)
     }
     else if (
      !scope.isList &&
@@ -1251,6 +1480,7 @@ export function parse(text, filename, startRow = 0) {
     stack.pop()
     scope = stack[stack.length - 1]
     break
+   }
    default:
     if (pendingWord.length === 0) {
      pendingWordStartRow = row
@@ -1260,33 +1490,208 @@ export function parse(text, filename, startRow = 0) {
     break
   }
  }
+ if (inString) {
+  throw makeSyntaxError("Unterminated string literal (')", stringStartLoc)
+ }
  flushPendingWord()
  while (scope.autoBlock) { flushAutoBlock() }
+ if (stack.length > 1) {
+  const openCh = scope.isList ? '{' : scope.isDeferred ? '(' : '['
+  const closeCh = scope.isList ? '}' : scope.isDeferred ? ')' : ']'
+  throw makeSyntaxError(`Unclosed block '${openCh}', expected '${closeCh}'`, scope.loc)
+ }
  if (inPatternDefinition) {
-  patternScope.block.splice(collectedPatternIndex)
+  const unusedPattern = patternScope.block.splice(collectedPatternIndex)
+  if (unusedPattern.length > 0) {
+   validateFieldScriptAst(unusedPattern, { allowPatternPlaceholders: true })
+  }
  }
  else if (pattern && sinceLastNewline.length > 0) {
   flushPatternLine(pattern, sinceLastNewline)
  }
+ validateFieldScriptAst(output)
  return output
 }
 
-export const PRIMITIVE_TYPES = ['string', 'number', 'boolean', 'null', 'undefined']
+export function validateFieldScriptLine(source, options = {}) {
+ const text = source === null || source === undefined ? '' : String(source)
+ if (text.trim().length === 0) {
+  return { ok: true, ast: [], error: null, location: null }
+ }
+ const filename = options && typeof options.filename === 'string' && options.filename.length > 0
+  ? options.filename
+  : undefined
+ const rawIndex = options && Number.isInteger(options.lineIndex) && options.lineIndex >= 0
+  ? options.lineIndex
+  : 0
+ try {
+  const ast = parse(`${text}\n`, filename, rawIndex)
+  return { ok: true, ast, error: null, location: null }
+ }
+ catch (err) {
+  const message = err instanceof Error ? err.message : String(err)
+  const location = err && typeof err === 'object' && err.fieldLocation ? err.fieldLocation : null
+  return { ok: false, ast: null, error: message, location }
+ }
+}
 
-export const LANE_TABS = ['source', 'input', 'scope', 'data', 'view', 'server']
+export function isParseableFieldScriptLine(source, options = {}) {
+ return validateFieldScriptLine(source, options).ok
+}
+
+export function validateFieldScriptLines(linesOrRecords, options = {}) {
+ const list = Array.from(linesOrRecords || [])
+ const filename = options && typeof options.filename === 'string' && options.filename.length > 0
+  ? options.filename
+  : undefined
+ const errors = []
+ for (let i = 0; i < list.length; i++) {
+  const item = list[i]
+  const isObj = item !== null && typeof item === 'object'
+  const text = isObj
+   ? (item.text === null || item.text === undefined ? '' : String(item.text))
+   : (item === null || item === undefined ? '' : String(item))
+  const lineId = isObj && typeof item.id === 'string' ? item.id : ''
+  const res = validateFieldScriptLine(text, { filename, lineIndex: i })
+  if (!res.ok) {
+   errors.push({
+    index: i,
+    lineNumber: i + 1,
+    lineId,
+    source: text,
+    error: res.error,
+    location: res.location,
+   })
+  }
+ }
+ if (errors.length === 0) {
+  return { ok: true, error: null, errors: [] }
+ }
+ const first = errors[0]
+ return {
+  ok: false,
+  error: `Invalid FieldScript on line ${first.lineNumber}: ${first.error}`,
+  errors,
+ }
+}
+
+export const PRIMITIVE_TYPES = ['string', 'number', 'boolean', 'null', 'undefined', 'secret']
+
+export const SECRET_MASK = '••••••••'
+
+export function createMaskedSecretValue(name = '', secretSet = true) {
+ const obj = {}
+ Object.defineProperties(obj, {
+  __ccSecret: { value: true, enumerable: false },
+  name: { value: String(name || ''), enumerable: false },
+  secretSet: { value: Boolean(secretSet), enumerable: false },
+  toJSON: {
+   value() {
+    return secretSet ? SECRET_MASK : '(unset secret)'
+   },
+   enumerable: false,
+  },
+  toString: {
+   value() {
+    return secretSet ? SECRET_MASK : '(unset secret)'
+   },
+   enumerable: false,
+  },
+ })
+ return Object.freeze(obj)
+}
+
+export function isMaskedSecretValue(value) {
+ return Boolean(value && typeof value === 'object' && value.__ccSecret === true)
+}
+
+export function normalizeSecretValues(secretValues) {
+ if (!Array.isArray(secretValues)) {
+  return []
+ }
+ const unique = new Set()
+ for (const item of secretValues) {
+  if (typeof item === 'string' && item.length > 0) {
+   unique.add(item)
+   const trimmed = item.trim()
+   if (trimmed.length > 0) {
+    unique.add(trimmed)
+   }
+  }
+ }
+ return [...unique].sort((a, b) => b.length - a.length)
+}
+
+export function redactSecretText(text, secretValues) {
+ if (typeof text !== 'string' || text.length === 0) {
+  return text
+ }
+ const list = normalizeSecretValues(secretValues)
+ if (list.length === 0) {
+  return text
+ }
+ let out = text
+ for (const secret of list) {
+  if (out.includes(secret)) {
+   out = out.split(secret).join(SECRET_MASK)
+  }
+  const jsonEscaped = JSON.stringify(secret).slice(1, -1)
+  if (jsonEscaped && jsonEscaped !== secret && out.includes(jsonEscaped)) {
+   out = out.split(jsonEscaped).join(SECRET_MASK)
+  }
+ }
+ return out
+}
+
+export function redactSecretValue(value, secretValues, seen = new WeakMap()) {
+ const list = normalizeSecretValues(secretValues)
+ if (list.length === 0 || value === null || value === undefined) {
+  return value
+ }
+ if (typeof value === 'string') {
+  return redactSecretText(value, list)
+ }
+ if (typeof value !== 'object' || isMaskedSecretValue(value) || isDomElement(value)) {
+  return value
+ }
+ if (seen.has(value)) {
+  return seen.get(value)
+ }
+ if (Array.isArray(value)) {
+  const clone = []
+  seen.set(value, clone)
+  for (let i = 0; i < value.length; i++) {
+   clone.push(redactSecretValue(value[i], list, seen))
+  }
+  return clone
+ }
+ if (isPlainObject(value)) {
+  const clone = {}
+  seen.set(value, clone)
+  for (const key of Object.keys(value)) {
+   clone[key] = redactSecretValue(value[key], list, seen)
+  }
+  return clone
+ }
+ return value
+}
+
+export const LANE_TABS = ['story', 'source', 'input', 'scope', 'data', 'view', 'server']
 export const DEFAULT_LANE_TAB = 'source'
 
-export const LANE_FEATURES = ['httpServer']
+export const LANE_FEATURES = ['httpServer', 'runEvery30Minutes']
+export const LANE_CRON_INTERVAL_MS = 30 * 60 * 1000
 
 export function normalizeLaneFeatures(raw) {
  if (typeof raw === 'string') {
   return parseLaneFeatures(raw)
  }
  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-  return { httpServer: false }
+  return { httpServer: false, runEvery30Minutes: false }
  }
  return {
   httpServer: Boolean(raw.httpServer),
+  runEvery30Minutes: Boolean(raw.runEvery30Minutes || raw.cron30m || raw.runEvery30m),
  }
 }
 
@@ -1295,18 +1700,18 @@ export function parseLaneFeatures(raw) {
   return normalizeLaneFeatures(raw)
  }
  if (typeof raw !== 'string') {
-  return { httpServer: false }
+  return { httpServer: false, runEvery30Minutes: false }
  }
  const trimmed = raw.trim()
  if (!trimmed) {
-  return { httpServer: false }
+  return { httpServer: false, runEvery30Minutes: false }
  }
  try {
   const parsed = JSON.parse(trimmed)
   return normalizeLaneFeatures(parsed)
  }
  catch {
-  return { httpServer: false }
+  return { httpServer: false, runEvery30Minutes: false }
  }
 }
 
@@ -1638,6 +2043,8 @@ export const DATA_CONSTRAINT_TYPES = [
 export const DEFAULT_FIXED_DECIMALS = 2
 export const DEFAULT_ROW_PICKER_PAGE_SIZE = 25
 export const MIN_LANE_WIDTH = 100
+export const MIN_LANE_MODAL_WIDTH = 480
+export const MIN_LANE_MODAL_HEIGHT = 420
 
 export function normalizeLaneWidth(width) {
  if (width === null || width === undefined) {
@@ -1696,6 +2103,8 @@ export function getLaneInitial(title, fallback = '') {
 
 export const LANE_SCROLL_LEFT_MARGIN = 48
 export const LANE_SCROLL_RIGHT_MARGIN = 96
+export const LANE_SCROLL_TOP_MARGIN = 48
+export const LANE_SCROLL_BOTTOM_MARGIN = 64
 
 export function computeLaneScrollLeft(
  currentScrollLeft,
@@ -1736,6 +2145,43 @@ export function computeLaneScrollLeft(
  }
  else {
   target = Math.max(0, Math.round(absLeft - visibleLeft))
+ }
+ return target === Math.round(cur) ? null : target
+}
+
+export function computeLaneScrollTop(
+ currentScrollTop,
+ viewportHeight,
+ targetTop,
+ targetBottom,
+ topMargin = LANE_SCROLL_TOP_MARGIN,
+ bottomMargin = LANE_SCROLL_BOTTOM_MARGIN
+) {
+ if (
+  !Number.isFinite(viewportHeight) ||
+  viewportHeight <= 0 ||
+  !Number.isFinite(targetTop) ||
+  !Number.isFinite(targetBottom) ||
+  targetBottom < targetTop
+ ) {
+  return null
+ }
+ const cur = Number.isFinite(currentScrollTop) ? currentScrollTop : 0
+ const targetHeight = Math.max(0, targetBottom - targetTop)
+ const absTop = cur + targetTop
+ const visibleTop = Math.max(0, Number.isFinite(topMargin) ? topMargin : LANE_SCROLL_TOP_MARGIN)
+ const visibleBottom = viewportHeight - Math.max(0, Number.isFinite(bottomMargin) ? bottomMargin : LANE_SCROLL_BOTTOM_MARGIN)
+ if (visibleBottom > visibleTop && targetTop >= visibleTop && targetBottom <= visibleBottom) {
+  return null
+ }
+ const usableHeight = Math.max(0, visibleBottom - visibleTop)
+ let target
+ if (usableHeight > 0 && targetHeight <= usableHeight) {
+  const centerOffset = visibleTop + Math.floor((usableHeight - targetHeight) / 2)
+  target = Math.max(0, Math.round(absTop - centerOffset))
+ }
+ else {
+  target = Math.max(0, Math.round(absTop - visibleTop))
  }
  return target === Math.round(cur) ? null : target
 }
@@ -1824,7 +2270,7 @@ function objectAstHasKey(node, keyName) {
  }
  for (let i = 2; i < node.length; i++) {
   const pair = node[i]
-  if (Array.isArray(pair) && pair[0] === keyName) {
+  if (pair === keyName || (Array.isArray(pair) && pair[0] === keyName)) {
    return true
   }
  }
@@ -2303,13 +2749,20 @@ export function parseColumnType(spec, multiple, decimals) {
    }
   }
   if (parsed.type === 'row') {
-   return {
+   const rowSpec = {
     type: 'row',
     multiple: resolvedMultiple,
     refTableId: typeof spec.refTableId === 'string' ? spec.refTableId : '',
     refColumnId: typeof spec.refColumnId === 'string' ? spec.refColumnId : '',
     refDisplayColumnId: typeof spec.refDisplayColumnId === 'string' ? spec.refDisplayColumnId : '',
    }
+   if (typeof spec.refFilterColumnId === 'string' && spec.refFilterColumnId.length > 0) {
+    rowSpec.refFilterColumnId = spec.refFilterColumnId
+   }
+   if (typeof spec.filterByColumnId === 'string' && spec.filterByColumnId.length > 0) {
+    rowSpec.filterByColumnId = spec.filterByColumnId
+   }
+   return rowSpec
   }
   if (parsed.type === 'text') {
    const constraint = normalizeColumnConstraint(spec.constraint)
@@ -2406,10 +2859,113 @@ export function resolveRowValueSpec(tables, col, visited = new Set()) {
  return parsed
 }
 
-export function resolveRowTarget(tables, col) {
+function isFilterValueEmpty(value) {
+ if (value === null || value === undefined) {
+  return true
+ }
+ if (typeof value === 'string' && value.trim() === '') {
+  return true
+ }
+ if (Array.isArray(value)) {
+  return value.length === 0 || value.every(item => isFilterValueEmpty(item))
+ }
+ return false
+}
+
+function singleFilterValuesMatch(a, b, colA = null, colB = null, tables = null) {
+ if (isFilterValueEmpty(a) || isFilterValueEmpty(b)) {
+  return false
+ }
+ if (dataValuesEqual(a, b)) {
+  return true
+ }
+ if (
+  Array.isArray(tables) &&
+  colA &&
+  colB &&
+  colA.type === 'row' &&
+  colB.type === 'row' &&
+  typeof colA.refTableId === 'string' &&
+  colA.refTableId.length > 0 &&
+  colA.refTableId === colB.refTableId &&
+  typeof colA.refColumnId === 'string' &&
+  typeof colB.refColumnId === 'string' &&
+  colA.refColumnId.length > 0 &&
+  colB.refColumnId.length > 0 &&
+  colA.refColumnId !== colB.refColumnId
+ ) {
+  const sharedTable = tables.find(t => t && t.id === colA.refTableId)
+  const sharedRows = sharedTable && Array.isArray(sharedTable.rows) ? sharedTable.rows : []
+  for (let i = 0; i < sharedRows.length; i++) {
+   const sRow = sharedRows[i]
+   if (
+    sRow &&
+    sRow.values &&
+    dataValuesEqual(sRow.values[colA.refColumnId], a) &&
+    dataValuesEqual(sRow.values[colB.refColumnId], b)
+   ) {
+    return true
+   }
+  }
+ }
+ if (typeof a !== typeof b && (typeof a === 'string' || typeof b === 'string')) {
+  return String(a).trim() === String(b).trim()
+ }
+ return false
+}
+
+export function rowFilterValuesMatch(targetVal, ownerVal, refFilterCol = null, filterByCol = null, tables = null) {
+ if (isFilterValueEmpty(targetVal) || isFilterValueEmpty(ownerVal)) {
+  return false
+ }
+ const targetArr = Array.isArray(targetVal) ? targetVal : [targetVal]
+ const ownerArr = Array.isArray(ownerVal) ? ownerVal : [ownerVal]
+ for (let i = 0; i < targetArr.length; i++) {
+  for (let j = 0; j < ownerArr.length; j++) {
+   if (singleFilterValuesMatch(targetArr[i], ownerArr[j], refFilterCol, filterByCol, tables)) {
+    return true
+   }
+  }
+ }
+ return false
+}
+
+function resolveOwnerTableForCol(tables, col, ownerTableHint = null) {
+ if (ownerTableHint && typeof ownerTableHint === 'object' && Array.isArray(ownerTableHint.columns)) {
+  return ownerTableHint
+ }
+ if (!Array.isArray(tables)) {
+  return null
+ }
+ if (typeof ownerTableHint === 'string' && ownerTableHint.length > 0) {
+  const byId = tables.find(t => t && t.id === ownerTableHint)
+  if (byId) {
+   return byId
+  }
+ }
+ const colId = col && typeof col.id === 'string' ? col.id : ''
+ if (colId) {
+  const byColId = tables.find(t => t && Array.isArray(t.columns) && t.columns.some(c => c && c.id === colId))
+  if (byColId) {
+   return byColId
+  }
+ }
+ const filterByColumnId = col && typeof col.filterByColumnId === 'string' ? col.filterByColumnId : ''
+ if (filterByColumnId) {
+  const byFilterCol = tables.find(t => t && Array.isArray(t.columns) && t.columns.some(c => c && c.id === filterByColumnId))
+  if (byFilterCol) {
+   return byFilterCol
+  }
+ }
+ return null
+}
+
+export function resolveRowTarget(tables, col, ownerTableHint = null) {
  const refTableId = col && typeof col.refTableId === 'string' ? col.refTableId : ''
  const refColumnId = col && typeof col.refColumnId === 'string' ? col.refColumnId : ''
  const refDisplayColumnId = col && typeof col.refDisplayColumnId === 'string' ? col.refDisplayColumnId : ''
+ const refFilterColumnId = col && typeof col.refFilterColumnId === 'string' ? col.refFilterColumnId : ''
+ const filterByColumnId = col && typeof col.filterByColumnId === 'string' ? col.filterByColumnId : ''
  const configured = Boolean(refTableId && refColumnId)
  const table = Array.isArray(tables) && refTableId
   ? tables.find(t => t && t.id === refTableId) || null
@@ -2424,17 +2980,44 @@ export function resolveRowTarget(tables, col) {
    ? (resolveRowValueSpec(tables, displayCol) || parseColumnType(displayCol, false))
    : parseColumnType(displayCol, false))
   : null
+ const refFilterCol = refFilterColumnId ? cols.find(c => c && c.id === refFilterColumnId) || null : null
+ const ownerTable = resolveOwnerTableForCol(tables, col, ownerTableHint)
+ const ownerCols = ownerTable && Array.isArray(ownerTable.columns) ? ownerTable.columns : []
+ const colId = col && typeof col.id === 'string' ? col.id : ''
+ const rawFilterByCol = filterByColumnId ? ownerCols.find(c => c && c.id === filterByColumnId) || null : null
+ const filterByCol = rawFilterByCol && (!colId || rawFilterByCol.id !== colId) ? rawFilterByCol : null
+ const filterActive = Boolean(refFilterColumnId || filterByColumnId)
+ const filterConfigured = Boolean(refFilterColumnId && filterByColumnId)
+ const filterValid = Boolean(filterConfigured && refFilterCol && filterByCol)
+ const filterOperator = refFilterCol && refFilterCol.multiple ? 'contains' : 'is'
+ const tableName = table ? (String(table.name || '').trim() || table.id) : ''
+ const ownerTableName = ownerTable ? (String(ownerTable.name || '').trim() || ownerTable.id) : ''
+ const refFilterColName = refFilterCol ? (String(refFilterCol.name || '').trim() || refFilterCol.id) : ''
+ const filterByColName = filterByCol ? (String(filterByCol.name || '').trim() || filterByCol.id) : ''
  return {
   configured,
   valid: Boolean(table && linkCol && valueSpec),
   refTableId,
   refColumnId,
   refDisplayColumnId,
+  refFilterColumnId,
+  filterByColumnId,
   table,
   linkCol,
   displayCol,
   valueSpec,
   displaySpec,
+  filterActive,
+  filterConfigured,
+  filterValid,
+  filterOperator,
+  refFilterCol,
+  filterByCol,
+  ownerTable,
+  tableName,
+  ownerTableName,
+  refFilterColName,
+  filterByColName,
  }
 }
 
@@ -2494,9 +3077,10 @@ export function defaultDataValue(type, multiple, decimals) {
  }
 }
 
-export function parseCellValue(raw, type, decimals, tables = null) {
+export function parseCellValue(raw, type, decimals, tables = null, displayOpts = null) {
  const parsed = parseColumnType(type, false, decimals)
  const base = parsed.type
+ const effDisplayOpts = displayOpts || (decimals && typeof decimals === 'object' && !Array.isArray(decimals) ? decimals : null)
  switch (base) {
   case 'integer': {
    if (raw === null || raw === undefined) {
@@ -2583,6 +3167,9 @@ export function parseCellValue(raw, type, decimals, tables = null) {
    return { ok: true, value: trimmed, error: null }
   }
   case 'datetime': {
+   if (effDisplayOpts && typeof effDisplayOpts === 'object' && (effDisplayOpts.timeZone || effDisplayOpts.hourFormat || effDisplayOpts.intl)) {
+    return parseDatetimeInTimeZone(raw, effDisplayOpts)
+   }
    const trimmed = raw === null || raw === undefined ? '' : String(raw).trim()
    if (trimmed === '') {
     return { ok: true, value: '', error: null }
@@ -2634,12 +3221,12 @@ export function parseCellValue(raw, type, decimals, tables = null) {
    }
   }
   case 'row': {
-   if (raw === null || raw === undefined) {
+   if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) {
     return { ok: true, value: null, error: null }
    }
    const valueSpec = tables ? resolveRowValueSpec(tables, parsed) : null
    if (valueSpec) {
-    return parseCellValue(raw, valueSpec)
+    return parseCellValue(raw, valueSpec, undefined, tables, displayOpts)
    }
    return { ok: true, value: raw, error: null }
   }
@@ -2659,9 +3246,10 @@ export function parseCellValue(raw, type, decimals, tables = null) {
  }
 }
 
-export function formatCellInputValue(value, type, decimals, tables = null) {
+export function formatCellInputValue(value, type, decimals, tables = null, displayOpts = null) {
  const parsed = parseColumnType(type, false, decimals)
  const base = parsed.type
+ const effDisplayOpts = displayOpts || (decimals && typeof decimals === 'object' && !Array.isArray(decimals) ? decimals : null)
  if (base === 'boolean') {
   return Boolean(value)
  }
@@ -2674,7 +3262,7 @@ export function formatCellInputValue(value, type, decimals, tables = null) {
  if (base === 'row') {
   const valueSpec = tables ? resolveRowValueSpec(tables, parsed) : null
   if (valueSpec) {
-   return formatCellInputValue(value, valueSpec)
+   return formatCellInputValue(value, valueSpec, undefined, tables, displayOpts)
   }
   return String(value)
  }
@@ -2686,10 +3274,59 @@ export function formatCellInputValue(value, type, decimals, tables = null) {
    return String(value)
   }
  }
+ if (base === 'datetime') {
+  const str = String(value)
+  if (str.trim() === '') {
+   return ''
+  }
+  if (effDisplayOpts && typeof effDisplayOpts === 'object' && (effDisplayOpts.timeZone || effDisplayOpts.hourFormat || effDisplayOpts.showTimeZone !== undefined || effDisplayOpts.intl)) {
+   const formatted = formatTimestampWithZone(value, effDisplayOpts)
+   return formatted.known ? formatted.display : str
+  }
+  if (typeof value === 'string' && value.length > 19 && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(value)) {
+   return value.slice(0, 19)
+  }
+  return str
+ }
  return String(value)
 }
 
-function formatRowCellText(value, spec) {
+export function isDataCellValueEmpty(value, col) {
+ const parsed = parseColumnType(col)
+ if (parsed.multiple) {
+  if (!Array.isArray(value) || value.length === 0) {
+   return true
+  }
+  const singleSpec = { ...parsed, multiple: false }
+  return value.every(item => isDataCellValueEmpty(item, singleSpec))
+ }
+ if (value === null || value === undefined) {
+  return true
+ }
+ switch (parsed.type) {
+  case 'text':
+   return String(value) === ''
+  case 'date':
+  case 'datetime':
+  case 'url':
+  case 'email':
+  case 'row':
+  case 'lane':
+   return String(value).trim() === ''
+  case 'integer':
+  case 'decimal':
+  case 'fixed':
+   return typeof value === 'number' ? !Number.isFinite(value) : String(value).trim() === ''
+  case 'json':
+   return typeof value === 'string' && value.trim() === ''
+  case 'boolean':
+   return false
+  default:
+   return String(value) === ''
+ }
+}
+
+function formatRowCellText(value, spec, displayOpts = null) {
  if (value === null || value === undefined) {
   return ''
  }
@@ -2697,7 +3334,7 @@ function formatRowCellText(value, spec) {
  if (parsed.type === 'boolean') {
   return value ? 'true' : 'false'
  }
- return String(formatCellInputValue(value, parsed))
+ return String(formatCellInputValue(value, parsed, undefined, null, displayOpts))
 }
 
 function coerceSingleDataValue(value, targetSpec, fromSpec = null, tables = null) {
@@ -2707,14 +3344,11 @@ function coerceSingleDataValue(value, targetSpec, fromSpec = null, tables = null
   : fromSpec
  const base = parsed.type
  if (base === 'row') {
-  if (value === null || value === undefined) {
+  if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) {
    return null
   }
   const resolvedTarget = tables ? resolveRowValueSpec(tables, parsed) : null
   if (resolvedTarget) {
-   if (value === '' && resolvedTarget.type !== 'text') {
-    return null
-   }
    return coerceSingleDataValue(value, resolvedTarget, effectiveFromSpec, tables)
   }
   return cloneDataValue(value)
@@ -2819,6 +3453,25 @@ function coerceSingleDataValue(value, targetSpec, fromSpec = null, tables = null
    if (inputVal === null || inputVal === undefined) {
     return ''
    }
+   if (typeof inputVal === 'number' && Number.isFinite(inputVal)) {
+    if (base === 'datetime') {
+     return new Date(inputVal).toISOString()
+    }
+    if (base === 'date') {
+     return new Date(inputVal).toISOString().slice(0, 10)
+    }
+   }
+   if (typeof inputVal === 'string' && /^\d{10,15}$/.test(inputVal.trim())) {
+    const ms = Number(inputVal.trim())
+    if (Number.isFinite(ms)) {
+     if (base === 'datetime') {
+      return new Date(ms).toISOString()
+     }
+     if (base === 'date') {
+      return new Date(ms).toISOString().slice(0, 10)
+     }
+    }
+   }
    if (typeof inputVal === 'object') {
     try {
      return JSON.stringify(inputVal)
@@ -2892,17 +3545,22 @@ export function checkColumnChangeImpact(table, colId, nextType, nextMultiple, ne
   let changed = 0
   for (const row of table.rows) {
    const cur = row && row.values ? row.values[colId] : undefined
+   if (cur === null || cur === undefined || cur === '' || (Array.isArray(cur) && cur.length === 0)) {
+    continue
+   }
    const nextVal = coerceDataValue(cur, parsed, parsed.multiple, prevParsed, tables)
    if (JSON.stringify(cur) !== JSON.stringify(nextVal)) {
     changed += 1
    }
   }
   if (changed > 0) {
-   const unit = changed === 1 ? 'row has' : 'rows have'
+   const reason = changed === 1
+    ? '1 row has an existing value that will be converted and may lose data.'
+    : `${changed} rows have existing values that will be converted and may lose data.`
    return {
     destructive: true,
     affectedRows: changed,
-    reason: `${changed} ${unit} existing values that will be converted and may lose data.`,
+    reason,
    }
   }
  }
@@ -2972,6 +3630,12 @@ export function parseStoredTables(stored) {
     normalizedCol.refTableId = parsedType.refTableId
     normalizedCol.refColumnId = parsedType.refColumnId
     normalizedCol.refDisplayColumnId = parsedType.refDisplayColumnId
+    if (parsedType.refFilterColumnId) {
+     normalizedCol.refFilterColumnId = parsedType.refFilterColumnId
+    }
+    if (parsedType.filterByColumnId) {
+     normalizedCol.filterByColumnId = parsedType.filterByColumnId
+    }
    }
    else if (parsedType.type === 'text' && parsedType.constraint) {
     normalizedCol.constraint = parsedType.constraint
@@ -2979,6 +3643,9 @@ export function parseStoredTables(stored) {
    const width = normalizeColumnWidth(col.width)
    if (width !== null) {
     normalizedCol.width = width
+   }
+   if (col.required === true) {
+    normalizedCol.required = true
    }
    columns.push(normalizedCol)
   }
@@ -3010,18 +3677,73 @@ export function parseStoredTables(stored) {
  return out
 }
 
-export function lookupRowDisplay(tables, col, value) {
- const target = resolveRowTarget(tables, col)
+function extractRowFilterContext(target, context = null) {
+ if (!context || typeof context !== 'object') {
+  return { hasContext: false, expectedValue: undefined }
+ }
+ if (Object.hasOwn(context, 'filterValue')) {
+  return { hasContext: true, expectedValue: context.filterValue }
+ }
+ const filterByColId = target && target.filterByCol ? target.filterByCol.id : (target && target.filterByColumnId ? target.filterByColumnId : '')
+ if (!filterByColId) {
+  return { hasContext: false, expectedValue: undefined }
+ }
+ if (context.values && typeof context.values === 'object') {
+  return {
+   hasContext: true,
+   expectedValue: Object.hasOwn(context.values, filterByColId) ? context.values[filterByColId] : null,
+  }
+ }
+ if (context.row && typeof context.row === 'object' && context.row.values && typeof context.row.values === 'object') {
+  return {
+   hasContext: true,
+   expectedValue: Object.hasOwn(context.row.values, filterByColId) ? context.row.values[filterByColId] : null,
+  }
+ }
+ if (!Object.hasOwn(context, 'offset') && !Object.hasOwn(context, 'limit') && !Object.hasOwn(context, 'id') && !Object.hasOwn(context, 'columns')) {
+  return {
+   hasContext: true,
+   expectedValue: Object.hasOwn(context, filterByColId) ? context[filterByColId] : null,
+  }
+ }
+ return { hasContext: false, expectedValue: undefined }
+}
+
+function formatFilterCompareValue(val, col, tables, displayOpts = null) {
+ if (isFilterValueEmpty(val)) {
+  return '(empty)'
+ }
+ if (Array.isArray(val)) {
+  return val.map(v => formatFilterCompareValue(v, col, tables, displayOpts)).join(', ')
+ }
+ const spec = col
+  ? (col.type === 'row'
+   ? (resolveRowValueSpec(tables, col) || parseColumnType(col, false))
+   : parseColumnType(col, false))
+  : { type: 'text', multiple: false }
+ return formatRowCellText(val, spec, displayOpts)
+}
+
+export function lookupRowDisplay(tables, col, value, rowContext = null, ownerTableHint = null, displayOpts = null) {
+ const resolvedOwnerHint = ownerTableHint || (rowContext && typeof rowContext === 'object' ? rowContext.ownerTable : null)
+ const target = resolveRowTarget(tables, col, resolvedOwnerHint)
  const tableName = target.table ? (String(target.table.name || '').trim() || target.table.id) : ''
  const linkColName = target.linkCol ? (String(target.linkCol.name || '').trim() || target.linkCol.id) : ''
  const displayColName = target.displayCol ? (String(target.displayCol.name || '').trim() || target.displayCol.id) : ''
- const isEmpty = value === null || value === undefined
+ const isEmpty = value === null || value === undefined || (typeof value === 'string' && value.trim() === '')
  if (isEmpty) {
   return {
    configured: target.configured,
    valid: target.valid,
    isEmpty: true,
    found: false,
+   filterActive: target.filterActive,
+   filterConfigured: target.filterConfigured,
+   filterValid: target.filterValid,
+   filterMatched: true,
+   isValueValid: true,
+   filterError: null,
+   error: null,
    hasSeparateDisplay: Boolean(target.displayCol),
    value: null,
    valueText: '',
@@ -3030,15 +3752,24 @@ export function lookupRowDisplay(tables, col, value) {
    tableName,
    linkColName,
    displayColName,
+   refFilterColName: target.refFilterColName,
+   filterByColName: target.filterByColName,
   }
  }
- const valueText = target.valueSpec ? formatRowCellText(value, target.valueSpec) : String(value)
+ const valueText = target.valueSpec ? formatRowCellText(value, target.valueSpec, displayOpts) : String(value)
  if (!target.valid) {
   return {
    configured: target.configured,
    valid: false,
    isEmpty: false,
    found: false,
+   filterActive: target.filterActive,
+   filterConfigured: target.filterConfigured,
+   filterValid: target.filterValid,
+   filterMatched: true,
+   isValueValid: false,
+   filterError: null,
+   error: null,
    hasSeparateDisplay: false,
    value,
    valueText,
@@ -3047,9 +3778,14 @@ export function lookupRowDisplay(tables, col, value) {
    tableName,
    linkColName,
    displayColName,
+   refFilterColName: target.refFilterColName,
+   filterByColName: target.filterByColName,
   }
  }
+ const filterCtx = extractRowFilterContext(target, rowContext)
+ const shouldCheckFilter = Boolean(target.refFilterCol && (target.filterValid || Object.hasOwn(rowContext || {}, 'filterValue')) && filterCtx.hasContext)
  let matchedRow = null
+ let filterMatchedRow = null
  const rows = Array.isArray(target.table.rows) ? target.table.rows : []
  for (let i = 0; i < rows.length; i++) {
   const row = rows[i]
@@ -3057,15 +3793,54 @@ export function lookupRowDisplay(tables, col, value) {
    continue
   }
   if (dataValuesEqual(row.values[target.linkCol.id], value)) {
-   matchedRow = row
-   break
+   if (!matchedRow) {
+    matchedRow = row
+   }
+   if (shouldCheckFilter) {
+    const candidateFilterVal = row.values[target.refFilterCol.id]
+    if (rowFilterValuesMatch(candidateFilterVal, filterCtx.expectedValue, target.refFilterCol, target.filterByCol, tables)) {
+     filterMatchedRow = row
+     break
+    }
+   }
+   else {
+    break
+   }
   }
  }
+ if (filterMatchedRow) {
+  matchedRow = filterMatchedRow
+ }
  const found = Boolean(matchedRow)
+ let filterMatched = true
+ let filterError = null
+ if (shouldCheckFilter) {
+  if (filterMatchedRow) {
+   filterMatched = true
+  }
+  else {
+   filterMatched = false
+   const lhsLabel = `${tableName}.${target.refFilterColName}`
+   const rhsLabel = target.ownerTableName
+    ? `${target.ownerTableName}.${target.filterByColName || 'filter'}`
+    : (target.filterByColName || 'filter')
+   const expectedText = formatFilterCompareValue(filterCtx.expectedValue, target.filterByCol, tables, displayOpts)
+   if (matchedRow) {
+    const actualVal = matchedRow.values[target.refFilterCol.id]
+    const actualText = formatFilterCompareValue(actualVal, target.refFilterCol, tables, displayOpts)
+    filterError = isFilterValueEmpty(filterCtx.expectedValue)
+     ? `Filter mismatch: ${lhsLabel} is "${actualText}", but ${rhsLabel} is empty`
+     : `Filter mismatch: ${lhsLabel} is "${actualText}", expected "${expectedText}" (${rhsLabel})`
+   }
+   else {
+    filterError = `Filter mismatch: "${valueText}" does not match ${lhsLabel} = ${rhsLabel} (${expectedText})`
+   }
+  }
+ }
  const hasSeparateDisplay = Boolean(target.displayCol)
  let displayText = ''
  if (found && target.displayCol && target.displaySpec && Object.hasOwn(matchedRow.values, target.displayCol.id)) {
-  displayText = formatRowCellText(matchedRow.values[target.displayCol.id], target.displaySpec)
+  displayText = formatRowCellText(matchedRow.values[target.displayCol.id], target.displaySpec, displayOpts)
  }
  const label = hasSeparateDisplay && displayText.length > 0 ? `${displayText} (${valueText})` : valueText
  return {
@@ -3073,6 +3848,13 @@ export function lookupRowDisplay(tables, col, value) {
   valid: true,
   isEmpty: false,
   found,
+  filterActive: target.filterActive,
+  filterConfigured: target.filterConfigured,
+  filterValid: target.filterValid,
+  filterMatched,
+  isValueValid: Boolean(found && filterMatched),
+  filterError,
+  error: filterError,
   hasSeparateDisplay,
   value,
   valueText,
@@ -3081,6 +3863,8 @@ export function lookupRowDisplay(tables, col, value) {
   tableName,
   linkColName,
   displayColName,
+  refFilterColName: target.refFilterColName,
+  filterByColName: target.filterByColName,
  }
 }
 
@@ -3090,7 +3874,7 @@ export async function fetchRowOptionsPage(tables, col, options = {}) {
  const rawLimit = Number(options && options.limit)
  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.trunc(rawOffset) : 0
  const limit = Number.isFinite(rawLimit) && rawLimit >= 1 ? Math.trunc(rawLimit) : DEFAULT_ROW_PICKER_PAGE_SIZE
- const target = resolveRowTarget(tables, col)
+ const target = resolveRowTarget(tables, col, options && options.ownerTable)
  if (!target || !target.valid) {
   return {
    ok: false,
@@ -3104,29 +3888,54 @@ export async function fetchRowOptionsPage(tables, col, options = {}) {
   }
  }
  const rows = Array.isArray(target.table.rows) ? target.table.rows : []
- const total = rows.length
+ const filterCtx = extractRowFilterContext(target, options)
+ const shouldFilter = Boolean(target.refFilterCol && (target.filterValid || Object.hasOwn(options || {}, 'filterValue')) && filterCtx.hasContext)
+ let sourceEntries
+ if (shouldFilter) {
+  sourceEntries = []
+  for (let i = 0; i < rows.length; i++) {
+   const row = rows[i]
+   if (!row || !row.values || !Object.hasOwn(row.values, target.linkCol.id)) {
+    continue
+   }
+   const rawVal = row.values[target.linkCol.id]
+   if (rawVal === null || rawVal === undefined || (typeof rawVal === 'string' && rawVal.trim() === '')) {
+    continue
+   }
+   const filterVal = row.values[target.refFilterCol.id]
+   if (!rowFilterValuesMatch(filterVal, filterCtx.expectedValue, target.refFilterCol, target.filterByCol, tables)) {
+    continue
+   }
+   sourceEntries.push({ row, rowIndex: i })
+  }
+ }
+ else {
+  sourceEntries = rows.map((row, idx) => ({ row, rowIndex: idx }))
+ }
+ const total = sourceEntries.length
  const start = Math.min(offset, total)
  const end = Math.min(total, start + limit)
+ const displayOpts = options && options.displayOpts && typeof options.displayOpts === 'object' ? options.displayOpts : null
  const items = []
  for (let i = start; i < end; i++) {
-  const row = rows[i]
+  const { row, rowIndex } = sourceEntries[i]
   if (!row || !row.values || !Object.hasOwn(row.values, target.linkCol.id)) {
    continue
   }
   const rawVal = row.values[target.linkCol.id]
-  if (rawVal === null || rawVal === undefined) {
+  if (rawVal === null || rawVal === undefined || (typeof rawVal === 'string' && rawVal.trim() === '')) {
    continue
   }
-  const valueText = formatRowCellText(rawVal, target.valueSpec)
+  const valueText = formatRowCellText(rawVal, target.valueSpec, displayOpts)
   let displayText = ''
   if (target.displayCol && target.displaySpec && Object.hasOwn(row.values, target.displayCol.id)) {
-   displayText = formatRowCellText(row.values[target.displayCol.id], target.displaySpec)
+   displayText = formatRowCellText(row.values[target.displayCol.id], target.displaySpec, displayOpts)
   }
   const hasSeparateDisplay = Boolean(target.displayCol && displayText.length > 0)
   const label = hasSeparateDisplay ? `${displayText} (${valueText})` : valueText
   items.push({
    rowId: row.id,
-   rowIndex: i,
+   rowIndex,
    value: cloneDataValue(rawVal),
    valueText,
    displayText,
@@ -3409,7 +4218,285 @@ export function buildTablesScope(tables) {
  return out
 }
 
+let syncFallbackRowSeq = 0
+function makeSyncedRowId() {
+ const c = globalThis.crypto
+ if (c && typeof c.randomUUID === 'function') {
+  return `row-${c.randomUUID()}`
+ }
+ syncFallbackRowSeq += 1
+ return `row-${Date.now()}-${syncFallbackRowSeq}`
+}
+
+export function resolveInboundSubtables(tables, targetTable) {
+ if (!Array.isArray(tables) || !targetTable || typeof targetTable !== 'object' || !targetTable.id) {
+  return []
+ }
+ const targetId = String(targetTable.id)
+ const targetCols = Array.isArray(targetTable.columns) ? targetTable.columns : []
+ const out = []
+ for (let t = 0; t < tables.length; t++) {
+  const srcTable = tables[t]
+  if (!srcTable || typeof srcTable !== 'object' || !srcTable.id || String(srcTable.id) === targetId) {
+   continue
+  }
+  const srcCols = Array.isArray(srcTable.columns) ? srcTable.columns : []
+  const linkMappings = []
+  for (let c = 0; c < srcCols.length; c++) {
+   const col = srcCols[c]
+   if (!col || typeof col !== 'object' || col.type !== 'row') {
+    continue
+   }
+   if (String(col.refTableId || '') !== targetId) {
+    continue
+   }
+   const refColId = typeof col.refColumnId === 'string' ? col.refColumnId : ''
+   if (!refColId) {
+    continue
+   }
+   const targetCol = targetCols.find(tc => tc && tc.id === refColId) || null
+   if (!targetCol) {
+    continue
+   }
+   linkMappings.push({
+    sourceColumn: col,
+    sourceColumnId: col.id,
+    sourceColumnName: typeof col.name === 'string' && col.name.trim() ? col.name.trim() : col.id,
+    targetColumn: targetCol,
+    targetColumnId: targetCol.id,
+    targetColumnName: typeof targetCol.name === 'string' && targetCol.name.trim() ? targetCol.name.trim() : targetCol.id,
+   })
+  }
+  if (linkMappings.length > 0) {
+   const rawName = typeof srcTable.name === 'string' ? srcTable.name.trim() : ''
+   const linkColumnIds = linkMappings.map(m => m.sourceColumnId)
+   const linkColumnIdSet = new Set(linkColumnIds)
+   const displayColumns = srcCols.filter(col => col && typeof col === 'object' && !linkColumnIdSet.has(col.id))
+   out.push({
+    table: srcTable,
+    tableId: String(srcTable.id),
+    tableIndex: t,
+    tableName: rawName || `Table ${t + 1}`,
+    links: linkMappings,
+    linkColumnIds,
+    displayColumns,
+   })
+  }
+ }
+ return out
+}
+
+export function getInboundSubtableRowsForParent(subtableSpec, parentRow, tables = null) {
+ if (!subtableSpec || !subtableSpec.table || !parentRow || !parentRow.values) {
+  return []
+ }
+ const srcTable = subtableSpec.table
+ const srcRows = Array.isArray(srcTable.rows) ? srcTable.rows : []
+ const links = Array.isArray(subtableSpec.links) ? subtableSpec.links : []
+ if (srcRows.length === 0 || links.length === 0) {
+  return []
+ }
+ const matched = []
+ for (let r = 0; r < srcRows.length; r++) {
+  const sRow = srcRows[r]
+  if (!sRow || !sRow.values) {
+   continue
+  }
+  let isMatch = false
+  for (let l = 0; l < links.length; l++) {
+   const link = links[l]
+   const parentVal = parentRow.values[link.targetColumnId]
+   const childVal = sRow.values[link.sourceColumnId]
+   if (rowFilterValuesMatch(childVal, parentVal, link.sourceColumn, link.targetColumn, tables)) {
+    isMatch = true
+    break
+   }
+  }
+  if (isMatch) {
+   matched.push({
+    row: sRow,
+    rowIndex: r,
+    rowNumber: r + 1,
+   })
+  }
+ }
+ return matched
+}
+
+export function syncTableRowsInMemory(tables, tableNameOrId, rawRecords, keyColumn = '') {
+ const list = Array.isArray(tables) ? tables : []
+ const query = String(tableNameOrId || '').trim()
+ if (!query) {
+  return { ok: false, error: 'Table name or ID is required', count: 0, added: 0, updated: 0, table: null }
+ }
+ const lowerQuery = query.toLowerCase()
+ const table = list.find(t => t && (t.id === query || String(t.name || '').trim().toLowerCase() === lowerQuery)) || null
+ if (!table) {
+  return { ok: false, error: `Table "${query}" not found`, count: 0, added: 0, updated: 0, table: null }
+ }
+ const cols = Array.isArray(table.columns) ? table.columns : []
+ const existingRows = Array.isArray(table.rows) ? table.rows : []
+ const records = Array.isArray(rawRecords) ? rawRecords.filter(r => r && typeof r === 'object') : []
+
+ let keyCol = null
+ const cleanKeyCol = String(keyColumn || '').trim()
+ if (cleanKeyCol) {
+  const lowerKey = cleanKeyCol.toLowerCase()
+  keyCol = cols.find(c => c && (c.id === cleanKeyCol || String(c.name || '').trim().toLowerCase() === lowerKey)) || null
+ }
+ if (!keyCol) {
+  const candidateKeys = ['_id', 'id', 'login', 'full_name', 'code', 'name']
+  for (const cand of candidateKeys) {
+   keyCol = cols.find(c => c && String(c.name || '').trim().toLowerCase() === cand) || null
+   if (keyCol) {
+    break
+   }
+  }
+ }
+
+ const existingById = new Map()
+ for (const row of existingRows) {
+  if (row && typeof row.id === 'string' && row.id.trim() !== '') {
+   existingById.set(row.id.trim(), row)
+  }
+ }
+
+ const existingByKey = new Map()
+ if (keyCol) {
+  for (const row of existingRows) {
+   if (!row || !row.values || typeof row.values !== 'object') {
+    continue
+   }
+   const rawKey = row.values[keyCol.id]
+   if (rawKey !== null && rawKey !== undefined && String(rawKey).trim() !== '') {
+    const normKey = String(rawKey).trim().toLowerCase()
+    if (!existingByKey.has(normKey)) {
+     existingByKey.set(normKey, row)
+    }
+   }
+  }
+ }
+
+ const usedRowIds = new Set()
+ const nextRows = []
+ let added = 0
+ let updated = 0
+
+ const readRecordColValue = (rec, col) => {
+  if (Object.hasOwn(rec, col.name)) {
+   return { found: true, value: rec[col.name] }
+  }
+  if (Object.hasOwn(rec, col.id)) {
+   return { found: true, value: rec[col.id] }
+  }
+  const lowerName = String(col.name || '').trim().toLowerCase()
+  for (const k of Object.keys(rec)) {
+   if (k.trim().toLowerCase() === lowerName) {
+    return { found: true, value: rec[k] }
+   }
+  }
+  return { found: false, value: undefined }
+ }
+
+ const coerceSyncedValue = (rawVal, col) => {
+  const parsedType = parseColumnType(col)
+  if (typeof rawVal === 'string' && (parsedType.type === 'fixed' || parsedType.type === 'integer' || parsedType.type === 'decimal' || parsedType.type === 'boolean')) {
+   const parsed = parseCellValue(rawVal, parsedType, list)
+   if (parsed.ok) {
+    return parsed.value
+   }
+  }
+  return coerceDataValue(rawVal, parsedType, parsedType.multiple, null, list)
+ }
+
+ for (const rec of records) {
+  let matchedRow = null
+  const explicitRowId = typeof rec._rowId === 'string' ? rec._rowId.trim() : ''
+  if (explicitRowId && existingById.has(explicitRowId) && !usedRowIds.has(explicitRowId)) {
+   matchedRow = existingById.get(explicitRowId)
+   usedRowIds.add(matchedRow.id)
+  }
+  if (!matchedRow && keyCol) {
+   const keyLookup = readRecordColValue(rec, keyCol)
+   if (keyLookup.found && keyLookup.value !== null && keyLookup.value !== undefined) {
+    const normKey = String(keyLookup.value).trim().toLowerCase()
+    if (normKey && existingByKey.has(normKey)) {
+     const candidate = existingByKey.get(normKey)
+     if (candidate && !usedRowIds.has(candidate.id)) {
+      matchedRow = candidate
+      usedRowIds.add(candidate.id)
+     }
+    }
+   }
+  }
+
+  const nextValues = matchedRow && matchedRow.values ? { ...matchedRow.values } : {}
+  for (const col of cols) {
+   const lookup = readRecordColValue(rec, col)
+   if (lookup.found) {
+    nextValues[col.id] = coerceSyncedValue(lookup.value, col)
+   }
+   else if (!matchedRow || !Object.hasOwn(nextValues, col.id)) {
+    nextValues[col.id] = defaultDataValue(col, col.multiple)
+   }
+  }
+
+  const rowId = matchedRow ? matchedRow.id : makeSyncedRowId()
+  nextRows.push({ id: rowId, values: nextValues })
+  if (matchedRow) {
+   updated += 1
+  }
+  else {
+   added += 1
+  }
+ }
+
+ const removed = Math.max(0, existingRows.length - usedRowIds.size)
+ let changed = existingRows.length !== nextRows.length || added > 0 || removed > 0
+ if (!changed) {
+  for (let i = 0; i < nextRows.length; i++) {
+   const prevRow = existingRows[i]
+   const nextRow = nextRows[i]
+   if (!prevRow || !nextRow || prevRow.id !== nextRow.id) {
+    changed = true
+    break
+   }
+   const prevVals = prevRow.values && typeof prevRow.values === 'object' ? prevRow.values : {}
+   const nextVals = nextRow.values && typeof nextRow.values === 'object' ? nextRow.values : {}
+   for (const col of cols) {
+    if (!dataValuesEqual(prevVals[col.id], nextVals[col.id], col, col.multiple)) {
+     changed = true
+     break
+    }
+   }
+   if (changed) {
+    break
+   }
+  }
+ }
+
+ if (!Array.isArray(table.rows)) {
+  table.rows = []
+ }
+ table.rows.splice(0, table.rows.length, ...nextRows)
+
+ return {
+  ok: true,
+  table,
+  tableId: table.id,
+  tableName: table.name,
+  count: nextRows.length,
+  added,
+  updated,
+  removed,
+  changed,
+ }
+}
+
 export function isExpandableValue(value) {
+ if (isMaskedSecretValue(value)) {
+  return false
+ }
  return value !== null && (typeof value === 'object' || typeof value === 'function')
 }
 
@@ -3428,6 +4515,15 @@ function truncateText(text, maxLen = 36) {
 }
 
 export function describeValue(value) {
+ if (isMaskedSecretValue(value)) {
+  const detail = value.secretSet ? `${SECRET_MASK} (secret — cannot reveal)` : '(unset secret)'
+  return {
+   type: 'secret',
+   summary: value.secretSet ? SECRET_MASK : '(unset secret)',
+   detail,
+   expandable: false,
+  }
+ }
  if (value === null) {
   return { type: 'null', summary: 'null', detail: 'null', expandable: false }
  }
@@ -4223,17 +5319,27 @@ export function resolveScopePath(state, path = [], options = {}) {
 }
 
 const LANE_EXPORT_EXCLUDED_KEYS = new Set([
+ 'Array',
  'argv',
  'console',
  'data',
  'Date',
+ 'deployLane',
+ 'document',
  'exportLaneLine',
+ 'fetch',
  'importLane',
  'JSON',
  'Math',
+ 'Number',
  'req',
  'respond',
+ 'resyncLane',
  'setLaneLine',
+ 'syncLaneTable',
+ 'syncTable',
+ 'tableChange',
+ 'window',
 ])
 
 export function extractLaneExports(state) {
@@ -4352,6 +5458,9 @@ export function hasImportCycle(activeTargets, fromId, targetId) {
 }
 
 export function formatValue(value) {
+ if (isMaskedSecretValue(value)) {
+  return JSON.stringify(value.secretSet ? SECRET_MASK : '(unset secret)')
+ }
  if (value === undefined) {
   return 'undefined'
  }
@@ -4393,6 +5502,7 @@ export async function runTransportedScripts(packets, options = {}) {
   Math: win && win.Math ? win.Math : Math,
   JSON: win && win.JSON ? win.JSON : JSON,
   Date: win && win.Date ? win.Date : Date,
+  Intl: win && win.Intl ? win.Intl : globalThis.Intl,
   output,
  }
  const browserState = { ...browserGlobals }
@@ -4459,13 +5569,51 @@ export async function runTransportedScripts(packets, options = {}) {
 }
 
 export async function runLines(lines, options = {}) {
- const { initialState = {}, filename = 'lane', transport = createTransport() } = options
- const runner = field(initialState, { transport })
+ const {
+  initialState = {},
+  filename = 'lane',
+  transport = createTransport(),
+  lineContext = null,
+  lineRecords = null,
+ } = options
+ const rawSecretNames = Array.isArray(options.secretNames)
+  ? options.secretNames
+  : (Array.isArray(initialState.__secretNames) ? initialState.__secretNames : [])
+ const rawSecretValues = Array.isArray(options.secretValues)
+  ? options.secretValues
+  : (Array.isArray(initialState.__secretValues) ? initialState.__secretValues : [])
+ const rawSecretSetNames = Array.isArray(options.secretSetNames)
+  ? options.secretSetNames
+  : (Array.isArray(initialState.__secretSetNames) ? initialState.__secretSetNames : [])
+ const secretNames = rawSecretNames.map(n => String(n || '').trim()).filter(Boolean)
+ const secretSetNames = new Set(rawSecretSetNames.map(n => String(n || '').trim()).filter(Boolean))
+ const collectedSecretValues = [...rawSecretValues]
+ for (const name of secretNames) {
+  const v = initialState[name]
+  if (typeof v === 'string' && v.length > 0) {
+   collectedSecretValues.push(v)
+   secretSetNames.add(name)
+  }
+ }
+ const secretValues = normalizeSecretValues(collectedSecretValues)
+ const cleanInitialState = initialState && typeof initialState === 'object' ? initialState : {}
+ delete cleanInitialState.__secretNames
+ delete cleanInitialState.__secretValues
+ delete cleanInitialState.__secretSetNames
+
+ const runner = field(cleanInitialState, { transport, preservePrototype: true })
  const results = []
 
  for (let i = 0; i < lines.length; i++) {
   const source = String(lines[i] ?? '')
   const lineNumber = i + 1
+  const lineRecord = Array.isArray(lineRecords) ? lineRecords[i] : null
+  const lineId = lineRecord && typeof lineRecord.id === 'string' ? lineRecord.id : ''
+  if (lineContext && typeof lineContext === 'object') {
+   lineContext.index = i
+   lineContext.lineNumber = lineNumber
+   lineContext.lineId = lineId
+  }
   if (typeof transport.setLineNumber === 'function') {
    transport.setLineNumber(lineNumber)
   }
@@ -4521,19 +5669,23 @@ export async function runLines(lines, options = {}) {
      value.push(await runner.compile(stmt))
     }
    }
+   const safeValue = secretValues.length > 0 ? redactSecretValue(value, secretValues) : value
+   const rawPreview = formatValue(safeValue)
+   const preview = secretValues.length > 0 ? redactSecretText(rawPreview, secretValues) : rawPreview
    results.push({
     index: i,
     lineNumber,
     source,
-    value,
-    preview: formatValue(value),
+    value: safeValue,
+    preview,
     error: null,
     isEmpty: false,
     isComment: false,
    })
   }
   catch (err) {
-   const message = err instanceof Error ? err.message : String(err)
+   const rawMessage = err instanceof Error ? err.message : String(err)
+   const message = secretValues.length > 0 ? redactSecretText(rawMessage, secretValues) : rawMessage
    results.push({
     index: i,
     lineNumber,
@@ -4546,9 +5698,1058 @@ export async function runLines(lines, options = {}) {
    })
   }
  }
+ if (lineContext && typeof lineContext === 'object') {
+  lineContext.index = null
+  lineContext.lineNumber = null
+  lineContext.lineId = ''
+ }
  if (typeof transport.setLineNumber === 'function') {
   transport.setLineNumber(null)
  }
+ if (secretValues.length > 0) {
+  const seen = new WeakMap()
+  for (const key of Object.keys(runner.state)) {
+   runner.state[key] = redactSecretValue(runner.state[key], secretValues, seen)
+  }
+ }
+ for (const name of secretNames) {
+  runner.state[name] = createMaskedSecretValue(name, secretSetNames.has(name))
+ }
  const sent = typeof transport.packets === 'function' ? transport.packets() : []
+ if (secretValues.length > 0 && Array.isArray(sent)) {
+  const seen = new WeakMap()
+  for (const pkt of sent) {
+   if (pkt && typeof pkt === 'object') {
+    if (Array.isArray(pkt.args)) {
+     pkt.args = redactSecretValue(pkt.args, secretValues, seen)
+    }
+    if (pkt.bindings && typeof pkt.bindings === 'object') {
+     pkt.bindings = redactSecretValue(pkt.bindings, secretValues, seen)
+    }
+   }
+  }
+ }
  return { results, state: runner.state, sent }
+}
+
+export function isValidTimeZone(tz, intlObj = globalThis.Intl) {
+ if (typeof tz !== 'string') {
+  return false
+ }
+ const trimmed = tz.trim()
+ if (!trimmed) {
+  return false
+ }
+ if (!intlObj || typeof intlObj.DateTimeFormat !== 'function') {
+  return trimmed === 'UTC' || trimmed.includes('/')
+ }
+ try {
+  new intlObj.DateTimeFormat('en-US', { timeZone: trimmed })
+  return true
+ }
+ catch {
+  return false
+ }
+}
+
+export function getBrowserTimeZone(intlObj = globalThis.Intl) {
+ if (intlObj && typeof intlObj.DateTimeFormat === 'function') {
+  try {
+   const resolved = new intlObj.DateTimeFormat().resolvedOptions()
+   const tz = resolved && typeof resolved.timeZone === 'string' ? resolved.timeZone.trim() : ''
+   if (tz && isValidTimeZone(tz, intlObj)) {
+    return tz
+   }
+  }
+  catch {
+   // Fall back to UTC below
+  }
+ }
+ return 'UTC'
+}
+
+export function listKnownBrowserTimeZones(intlObj = globalThis.Intl) {
+ const seen = new Set()
+ const out = []
+ const pushTz = candidate => {
+  if (typeof candidate !== 'string') {
+   return
+  }
+  const clean = candidate.trim()
+  if (!clean || seen.has(clean)) {
+   return
+  }
+  if (isValidTimeZone(clean, intlObj)) {
+   seen.add(clean)
+   out.push(clean)
+  }
+ }
+ pushTz('UTC')
+ pushTz(getBrowserTimeZone(intlObj))
+ if (intlObj && typeof intlObj.supportedValuesOf === 'function') {
+  try {
+   const supported = intlObj.supportedValuesOf('timeZone')
+   if (Array.isArray(supported)) {
+    for (const tz of supported) {
+     pushTz(tz)
+    }
+   }
+  }
+  catch {
+   // Ignore unsupported key errors
+  }
+ }
+ const rest = out.filter(tz => tz !== 'UTC').sort((a, b) => a.localeCompare(b))
+ return ['UTC', ...rest]
+}
+
+export function extractTimezoneNames(rawTimezones, intlObj = globalThis.Intl) {
+ const out = []
+ const seen = new Set()
+ const pushCandidate = val => {
+  if (typeof val !== 'string') {
+   return
+  }
+  const clean = val.trim()
+  if (!clean || seen.has(clean)) {
+   return
+  }
+  if (!isValidTimeZone(clean, intlObj)) {
+   return
+  }
+  seen.add(clean)
+  out.push(clean)
+ }
+
+ if (!rawTimezones) {
+  return out
+ }
+
+ if (Array.isArray(rawTimezones)) {
+  for (const entry of rawTimezones) {
+   if (typeof entry === 'string') {
+    pushCandidate(entry)
+   }
+   else if (entry && typeof entry === 'object') {
+    if (typeof entry.name === 'string') {
+     pushCandidate(entry.name)
+    }
+    else if (typeof entry.timezone === 'string') {
+     pushCandidate(entry.timezone)
+    }
+    else if (typeof entry.timeZone === 'string') {
+     pushCandidate(entry.timeZone)
+    }
+    else if (typeof entry.value === 'string') {
+     pushCandidate(entry.value)
+    }
+   }
+  }
+  return out
+ }
+
+ if (typeof rawTimezones === 'object' && Array.isArray(rawTimezones.rows)) {
+  const cols = Array.isArray(rawTimezones.columns) ? rawTimezones.columns : []
+  const nameCol = cols.find(c => c && typeof c.name === 'string' && c.name.trim().toLowerCase() === 'name')
+   || cols.find(c => c && typeof c.name === 'string' && c.name.trim().toLowerCase() === 'timezone')
+   || cols.find(c => c && (!c.type || c.type === 'text'))
+  if (nameCol && nameCol.id) {
+   for (const row of rawTimezones.rows) {
+    const rawVal = row && row.values ? row.values[nameCol.id] : undefined
+    if (typeof rawVal === 'string') {
+     pushCandidate(rawVal)
+    }
+   }
+  }
+ }
+ return out
+}
+
+export function normalizeClockHourFormat(raw, intlObj = globalThis.Intl) {
+ if (raw === 24 || raw === false) {
+  return '24h'
+ }
+ if (raw === 12 || raw === true) {
+  return '12h'
+ }
+ if (typeof raw === 'string') {
+  const clean = raw.trim().toLowerCase()
+  if (clean === '24' || clean === '24h' || clean === '24-hour' || clean === 'h23' || clean === 'h24') {
+   return '24h'
+  }
+  if (clean === '12' || clean === '12h' || clean === '12-hour' || clean === 'h12') {
+   return '12h'
+  }
+ }
+ if (intlObj && typeof intlObj.DateTimeFormat === 'function') {
+  try {
+   const ro = new intlObj.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions()
+   if (ro && ro.hour12 === false) {
+    return '24h'
+   }
+  }
+  catch {
+   // Default to 12h below
+  }
+ }
+ return '12h'
+}
+
+export function normalizeClockShowSeconds(raw) {
+ if (raw === false || raw === 0) {
+  return false
+ }
+ if (typeof raw === 'string') {
+  const clean = raw.trim().toLowerCase()
+  if (clean === 'false' || clean === '0' || clean === 'no' || clean === 'off') {
+   return false
+  }
+ }
+ return true
+}
+
+function formatTimeZoneOffsetAndShort(timeZone, dateObj, intlObj = globalThis.Intl, formatOpts = {}) {
+ const hourFormat = normalizeClockHourFormat(formatOpts.hourFormat, intlObj)
+ const is12 = hourFormat === '12h'
+ const showSeconds = normalizeClockShowSeconds(formatOpts.showSeconds)
+ let offset = timeZone === 'UTC' ? 'UTC+00:00' : ''
+ let shortZone = timeZone === 'UTC' ? 'UTC' : ''
+ let previewTime = ''
+ if (!intlObj || typeof intlObj.DateTimeFormat !== 'function') {
+  const fallbackSlice = showSeconds ? dateObj.toISOString().slice(11, 19) : dateObj.toISOString().slice(11, 16)
+  return { offset: offset || 'UTC', shortZone: shortZone || timeZone, previewTime: fallbackSlice }
+ }
+ try {
+  const offParts = new intlObj.DateTimeFormat('en-US', {
+   timeZone,
+   timeZoneName: 'shortOffset',
+   hour: '2-digit',
+   minute: '2-digit',
+  }).formatToParts(dateObj)
+  const tzPart = offParts.find(p => p.type === 'timeZoneName')
+  if (tzPart && tzPart.value) {
+   const rawOff = tzPart.value.replace(/^GMT/, 'UTC')
+   offset = (rawOff === 'UTC' || rawOff === 'UTC+0' || rawOff === 'UTC-0') ? 'UTC+00:00' : rawOff
+  }
+ }
+ catch {
+  // Fallback if shortOffset is unsupported
+ }
+ try {
+  const shortParts = new intlObj.DateTimeFormat(undefined, {
+   timeZone,
+   hour: '2-digit',
+   minute: '2-digit',
+   timeZoneName: 'short',
+  }).formatToParts(dateObj)
+  const snPart = shortParts.find(p => p.type === 'timeZoneName')
+  if (snPart && snPart.value) {
+   shortZone = snPart.value
+  }
+  const previewSpec = {
+   timeZone,
+   hour: '2-digit',
+   minute: '2-digit',
+   hour12: is12,
+   hourCycle: is12 ? 'h12' : 'h23',
+  }
+  if (showSeconds) {
+   previewSpec.second = '2-digit'
+  }
+  previewTime = new intlObj.DateTimeFormat(undefined, previewSpec).format(dateObj)
+ }
+ catch {
+  previewTime = showSeconds ? dateObj.toISOString().slice(11, 19) : dateObj.toISOString().slice(11, 16)
+ }
+ return {
+  offset: offset || 'UTC',
+  shortZone: shortZone || timeZone,
+  previewTime,
+ }
+}
+
+export function buildTopRailTimezoneOptions(rawTimezones, options = {}) {
+ const intlObj = options.intl || globalThis.Intl
+ const browserTz = options.browserTimeZone && isValidTimeZone(options.browserTimeZone, intlObj)
+  ? options.browserTimeZone.trim()
+  : getBrowserTimeZone(intlObj)
+ const rawNow = options.now !== undefined ? options.now : Date.now()
+ const dt = rawNow instanceof Date ? rawNow : new Date(rawNow)
+ const safeDate = Number.isNaN(dt.getTime()) ? new Date() : dt
+ const configured = extractTimezoneNames(rawTimezones, intlObj)
+ const formatOpts = {
+  hourFormat: options.hourFormat,
+  showSeconds: options.showSeconds !== undefined ? options.showSeconds : false,
+ }
+
+ const browserMeta = formatTimeZoneOffsetAndShort(browserTz, safeDate, intlObj, formatOpts)
+ const utcMeta = formatTimeZoneOffsetAndShort('UTC', safeDate, intlObj, formatOpts)
+
+ const result = [
+  {
+   id: 'browser',
+   value: 'browser',
+   timeZone: browserTz,
+   label: `Browser (${browserTz})`,
+   shortLabel: browserMeta.shortZone,
+   offset: browserMeta.offset,
+   previewTime: browserMeta.previewTime,
+   isBrowser: true,
+   isUtc: false,
+   isConfigured: false,
+  },
+  {
+   id: 'UTC',
+   value: 'UTC',
+   timeZone: 'UTC',
+   label: 'UTC',
+   shortLabel: 'UTC',
+   offset: utcMeta.offset,
+   previewTime: utcMeta.previewTime,
+   isBrowser: false,
+   isUtc: true,
+   isConfigured: configured.includes('UTC'),
+  },
+ ]
+
+ if (configured.length === 0) {
+  return result
+ }
+
+ for (const tz of configured) {
+  if (tz === 'UTC') {
+   continue
+  }
+  const meta = formatTimeZoneOffsetAndShort(tz, safeDate, intlObj, formatOpts)
+  result.push({
+   id: tz,
+   value: tz,
+   timeZone: tz,
+   label: tz,
+   shortLabel: meta.shortZone,
+   offset: meta.offset,
+   previewTime: meta.previewTime,
+   isBrowser: false,
+   isUtc: false,
+   isConfigured: true,
+  })
+ }
+
+ return result
+}
+
+export function resolveActiveClockTimezone(selectedValue, optionsList, intlObj = globalThis.Intl) {
+ const list = Array.isArray(optionsList) && optionsList.length > 0
+  ? optionsList
+  : buildTopRailTimezoneOptions([], { intl: intlObj })
+ const clean = typeof selectedValue === 'string' ? selectedValue.trim() : ''
+ if (!clean || clean.toLowerCase() === 'browser') {
+  return list[0]
+ }
+ const exact = list.find(opt => opt && opt.value === clean)
+ if (exact) {
+  return exact
+ }
+ const lower = clean.toLowerCase()
+ const ci = list.find(opt => opt && typeof opt.value === 'string' && opt.value.toLowerCase() === lower)
+ if (ci) {
+  return ci
+ }
+ return list[0]
+}
+
+export function filterTimezoneOptions(optionsList, query = '') {
+ const list = Array.isArray(optionsList) ? optionsList : []
+ const rawQuery = typeof query === 'string' ? query.trim().toLowerCase() : ''
+ if (!rawQuery) {
+  return [...list]
+ }
+ const tokens = rawQuery.replace(/_/g, ' ').split(/\s+/).filter(Boolean)
+ if (tokens.length === 0) {
+  return [...list]
+ }
+ return list.filter(opt => {
+  if (!opt || typeof opt !== 'object') {
+   return false
+  }
+  const hay = [
+   opt.label || '',
+   opt.timeZone || '',
+   opt.value || '',
+   opt.shortLabel || '',
+   opt.offset || '',
+  ]
+   .join(' ')
+   .toLowerCase()
+   .replace(/_/g, ' ')
+  return tokens.every(tok => hay.includes(tok))
+ })
+}
+
+export function formatTopRailClock(nowInput = Date.now(), activeOptionOrTz = 'UTC', intlOrOpts = globalThis.Intl, maybeOpts = {}) {
+ const isIntlArg = !intlOrOpts || typeof intlOrOpts.DateTimeFormat === 'function'
+ const intlObj = isIntlArg ? (intlOrOpts || globalThis.Intl) : (intlOrOpts.intl || globalThis.Intl)
+ const opts = isIntlArg ? (maybeOpts || {}) : intlOrOpts
+ const hourFormat = normalizeClockHourFormat(opts.hourFormat, intlObj)
+ const is12 = hourFormat === '12h'
+ const showSeconds = normalizeClockShowSeconds(opts.showSeconds)
+
+ const dt = nowInput instanceof Date ? nowInput : new Date(nowInput)
+ const safeDate = Number.isNaN(dt.getTime()) ? new Date() : dt
+ const isObj = activeOptionOrTz && typeof activeOptionOrTz === 'object'
+ const rawTz = isObj
+  ? (activeOptionOrTz.timeZone || activeOptionOrTz.value || 'UTC')
+  : (typeof activeOptionOrTz === 'string' && activeOptionOrTz.trim() ? activeOptionOrTz.trim() : 'UTC')
+ const timeZone = isValidTimeZone(rawTz, intlObj) ? rawTz : getBrowserTimeZone(intlObj)
+ const label = isObj && activeOptionOrTz.label ? activeOptionOrTz.label : timeZone
+ const meta = formatTimeZoneOffsetAndShort(timeZone, safeDate, intlObj, { hourFormat, showSeconds })
+
+ let chipText = ''
+ let fullText = ''
+ const fallbackTime = showSeconds ? safeDate.toISOString().slice(11, 19) : safeDate.toISOString().slice(11, 16)
+ if (intlObj && typeof intlObj.DateTimeFormat === 'function') {
+  try {
+   const chipSpec = {
+    timeZone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: is12,
+    hourCycle: is12 ? 'h12' : 'h23',
+    timeZoneName: 'short',
+   }
+   if (showSeconds) {
+    chipSpec.second = '2-digit'
+   }
+   chipText = new intlObj.DateTimeFormat(undefined, chipSpec).format(safeDate)
+  }
+  catch {
+   chipText = `${fallbackTime} ${meta.shortZone}`
+  }
+  try {
+   const fullSpec = {
+    timeZone,
+    weekday: 'short',
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: is12,
+    hourCycle: is12 ? 'h12' : 'h23',
+    timeZoneName: 'short',
+   }
+   if (showSeconds) {
+    fullSpec.second = '2-digit'
+   }
+   fullText = new intlObj.DateTimeFormat(undefined, fullSpec).format(safeDate)
+  }
+  catch {
+   fullText = chipText
+  }
+ }
+ else {
+  chipText = `${fallbackTime} ${meta.shortZone}`
+  fullText = `${safeDate.toISOString().slice(0, 10)} ${chipText}`
+ }
+
+ return {
+  chipText,
+  fullText,
+  timeZone,
+  label,
+  shortZone: meta.shortZone,
+  offset: meta.offset,
+  hourFormat,
+  showSeconds,
+  iso: safeDate.toISOString(),
+ }
+}
+
+export const TOP_RAIL_DEFAULT_PREFIX_IDS = Object.freeze([
+ 'fullscreen',
+ 'search',
+ 'session',
+ 'packages',
+ 'servers',
+ 'preferences',
+])
+
+export const TOP_RAIL_CLOCK_ID = 'clock'
+
+export const TOP_RAIL_BUILTIN_IDS = Object.freeze([
+ ...TOP_RAIL_DEFAULT_PREFIX_IDS,
+ TOP_RAIL_CLOCK_ID,
+])
+
+export function resolveTopRailElementId(item, index = 0, usedIds = null) {
+ let raw = ''
+ if (item && typeof item === 'object' && typeof item.appendChild !== 'function') {
+  raw = item.railId ?? item.id ?? item.title ?? (item.row && item.row.title) ?? item.label ?? item.text ?? item.url ?? ''
+ }
+ else if (typeof item === 'string') {
+  raw = item
+ }
+ const clean = String(raw ?? '').trim()
+ let baseId
+ if (!clean) {
+  baseId = `chip:${index}`
+ }
+ else if (clean.startsWith('chip:')) {
+  const rest = clean.slice(5).trim()
+  baseId = rest ? `chip:${rest}` : `chip:${index}`
+ }
+ else {
+  baseId = `chip:${clean}`
+ }
+ if (usedIds && typeof usedIds.has === 'function' && typeof usedIds.add === 'function') {
+  let candidate = baseId
+  let suffix = 2
+  while (usedIds.has(candidate)) {
+   candidate = `${baseId}#${suffix}`
+   suffix += 1
+  }
+  usedIds.add(candidate)
+  return candidate
+ }
+ return baseId
+}
+
+export function normalizeTopRailOrder(rawOrder) {
+ if (!Array.isArray(rawOrder)) {
+  return []
+ }
+ const out = []
+ const seen = new Set()
+ for (let i = 0; i < rawOrder.length; i++) {
+  const s = rawOrder[i] === null || rawOrder[i] === undefined ? '' : String(rawOrder[i]).trim()
+  if (s && !seen.has(s)) {
+   seen.add(s)
+   out.push(s)
+  }
+ }
+ return out
+}
+
+export function normalizeTopRailHidden(rawHidden) {
+ if (!rawHidden) {
+  return []
+ }
+ const list = Array.isArray(rawHidden)
+  ? rawHidden
+  : (rawHidden instanceof Set
+   ? [...rawHidden]
+   : (typeof rawHidden === 'object'
+    ? Object.keys(rawHidden).filter(k => Boolean(rawHidden[k]))
+    : []))
+ const out = []
+ const seen = new Set()
+ for (let i = 0; i < list.length; i++) {
+  const s = list[i] === null || list[i] === undefined ? '' : String(list[i]).trim()
+  if (s && !seen.has(s)) {
+   seen.add(s)
+   out.push(s)
+  }
+ }
+ return out
+}
+
+export function resolveTopRailLayout(options = {}) {
+ const rawElements = Array.isArray(options && options.elements) ? options.elements : []
+ const normOrder = normalizeTopRailOrder(options && options.order)
+ const normHidden = normalizeTopRailHidden(options && options.hidden)
+ const usedChipIds = new Set()
+ const elementEntries = rawElements.map((item, index) => ({
+  id: resolveTopRailElementId(item, index, usedChipIds),
+  item,
+  index,
+  hidden: false,
+ }))
+ const elementIds = elementEntries.map(e => e.id)
+ const defaultIds = [...TOP_RAIL_DEFAULT_PREFIX_IDS, ...elementIds, TOP_RAIL_CLOCK_ID]
+ const validSet = new Set(defaultIds)
+
+ let orderedIds
+ if (normOrder.length === 0) {
+  orderedIds = defaultIds
+ }
+ else {
+  orderedIds = normOrder.filter(id => validSet.has(id))
+  const placed = new Set(orderedIds)
+  for (let i = 0; i < TOP_RAIL_DEFAULT_PREFIX_IDS.length; i++) {
+   const pid = TOP_RAIL_DEFAULT_PREFIX_IDS[i]
+   if (!placed.has(pid)) {
+    orderedIds.push(pid)
+    placed.add(pid)
+   }
+  }
+  for (let i = 0; i < elementIds.length; i++) {
+   const cid = elementIds[i]
+   if (!placed.has(cid)) {
+    let lastChipPos = -1
+    for (let j = orderedIds.length - 1; j >= 0; j--) {
+     if (orderedIds[j].startsWith('chip:')) {
+      lastChipPos = j
+      break
+     }
+    }
+    if (lastChipPos >= 0) {
+     orderedIds.splice(lastChipPos + 1, 0, cid)
+    }
+    else {
+     const clockPos = orderedIds.indexOf(TOP_RAIL_CLOCK_ID)
+     if (clockPos >= 0) {
+      orderedIds.splice(clockPos, 0, cid)
+     }
+     else {
+      orderedIds.push(cid)
+     }
+    }
+    placed.add(cid)
+   }
+  }
+  if (!placed.has(TOP_RAIL_CLOCK_ID)) {
+   orderedIds.push(TOP_RAIL_CLOCK_ID)
+   placed.add(TOP_RAIL_CLOCK_ID)
+  }
+ }
+
+ const hiddenSet = new Set(normHidden)
+ for (let i = 0; i < elementEntries.length; i++) {
+  const entry = elementEntries[i]
+  if (entry.item && typeof entry.item === 'object' && entry.item.hidden === true) {
+   hiddenSet.add(entry.id)
+  }
+  entry.hidden = hiddenSet.has(entry.id)
+ }
+
+ return {
+  orderedIds,
+  hiddenIds: [...hiddenSet],
+  elementEntries,
+ }
+}
+
+const DATETIME_MONTH_INDEX = {
+ jan: 1,
+ january: 1,
+ feb: 2,
+ february: 2,
+ mar: 3,
+ march: 3,
+ apr: 4,
+ april: 4,
+ may: 5,
+ jun: 6,
+ june: 6,
+ jul: 7,
+ july: 7,
+ aug: 8,
+ august: 8,
+ sep: 9,
+ sept: 9,
+ september: 9,
+ oct: 10,
+ october: 10,
+ nov: 11,
+ november: 11,
+ dec: 12,
+ december: 12,
+}
+
+export function zonedWallClockToUtcMs(parts, timeZone = 'UTC', intlObj = globalThis.Intl) {
+ if (!parts || typeof parts !== 'object') {
+  return NaN
+ }
+ const year = Number(parts.year)
+ const month = Number(parts.month)
+ const day = Number(parts.day)
+ const hour = parts.hour !== undefined ? Number(parts.hour) : 0
+ const minute = parts.minute !== undefined ? Number(parts.minute) : 0
+ const second = parts.second !== undefined ? Number(parts.second) : 0
+ const millisecond = parts.millisecond !== undefined ? Number(parts.millisecond) : 0
+ if (
+  !Number.isInteger(year) ||
+  !Number.isInteger(month) ||
+  !Number.isInteger(day) ||
+  !Number.isInteger(hour) ||
+  !Number.isInteger(minute) ||
+  !Number.isInteger(second) ||
+  !Number.isInteger(millisecond)
+ ) {
+  return NaN
+ }
+ const targetAsUtc = Date.UTC(year, month - 1, day, hour, minute, second, millisecond)
+ const check = new Date(targetAsUtc)
+ if (
+  check.getUTCFullYear() !== year ||
+  check.getUTCMonth() !== month - 1 ||
+  check.getUTCDate() !== day ||
+  check.getUTCHours() !== hour ||
+  check.getUTCMinutes() !== minute ||
+  check.getUTCSeconds() !== second
+ ) {
+  return NaN
+ }
+ const safeIntl = intlObj && typeof intlObj.DateTimeFormat === 'function' ? intlObj : globalThis.Intl
+ const cleanTz = typeof timeZone === 'string' ? timeZone.trim() : ''
+ if (!cleanTz || cleanTz === 'UTC' || !safeIntl || typeof safeIntl.DateTimeFormat !== 'function') {
+  return targetAsUtc
+ }
+ try {
+  const dtf = new safeIntl.DateTimeFormat('en-US', {
+   timeZone: cleanTz,
+   year: 'numeric',
+   month: '2-digit',
+   day: '2-digit',
+   hour: '2-digit',
+   minute: '2-digit',
+   second: '2-digit',
+   hour12: false,
+   hourCycle: 'h23',
+  })
+  const offsetAt = ms => {
+   const fmtParts = dtf.formatToParts(new Date(ms))
+   const map = {}
+   for (const p of fmtParts) {
+    map[p.type] = p.value
+   }
+   const h = Number(map.hour)
+   const zonedAsUtc = Date.UTC(
+    Number(map.year),
+    Number(map.month) - 1,
+    Number(map.day),
+    h === 24 ? 0 : h,
+    Number(map.minute),
+    Number(map.second),
+    millisecond
+   )
+   return zonedAsUtc - ms
+  }
+  const guess1 = targetAsUtc - offsetAt(targetAsUtc)
+  return targetAsUtc - offsetAt(guess1)
+ }
+ catch {
+  return targetAsUtc
+ }
+}
+
+function resolveDateInstance(rawInput) {
+ if (rawInput instanceof Date) {
+  return Number.isNaN(rawInput.getTime()) ? null : rawInput
+ }
+ let isoInput = rawInput
+ if (typeof isoInput === 'number' && Number.isFinite(isoInput) && isoInput > 0) {
+  isoInput = new Date(isoInput).toISOString()
+ }
+ else if (typeof isoInput === 'string' && /^\d+$/.test(isoInput.trim())) {
+  const num = Number(isoInput.trim())
+  if (Number.isFinite(num) && num > 0) {
+   isoInput = new Date(num).toISOString()
+  }
+ }
+ if (typeof isoInput !== 'string' || isoInput.trim().length === 0) {
+  return null
+ }
+ const dt = new Date(isoInput)
+ return Number.isNaN(dt.getTime()) ? null : dt
+}
+
+function resolveDisplayTimeZone(rawTimeZone, intlObj) {
+ const safeIntl = intlObj && typeof intlObj.DateTimeFormat === 'function' ? intlObj : globalThis.Intl
+ const clean = typeof rawTimeZone === 'string' ? rawTimeZone.trim() : ''
+ if (clean && clean.toLowerCase() !== 'browser' && isValidTimeZone(clean, safeIntl)) {
+  return clean
+ }
+ return getBrowserTimeZone(safeIntl)
+}
+
+export function formatTimestampWithZone(isoOrMs, options = {}) {
+ const opts = options && typeof options === 'object' ? options : {}
+ const dt = resolveDateInstance(isoOrMs)
+ if (!dt) {
+  return { known: false, display: 'Unknown', iso: '', timeZone: '', hourFormat: '12h' }
+ }
+ const intlObj = opts.intl && typeof opts.intl.DateTimeFormat === 'function' ? opts.intl : globalThis.Intl
+ const hasHourFormat = opts.hourFormat !== undefined && opts.hourFormat !== null && String(opts.hourFormat).trim() !== ''
+ const hasHour12 = typeof opts.hour12 === 'boolean'
+ const hourFormat = normalizeClockHourFormat(
+  hasHourFormat ? opts.hourFormat : (hasHour12 ? opts.hour12 : undefined),
+  intlObj
+ )
+ const is12 = hourFormat === '12h'
+ const timeZone = resolveDisplayTimeZone(opts.timeZone, intlObj)
+ const showTimeZone = opts.showTimeZone !== false
+ const locale = typeof opts.locale === 'string' && opts.locale.trim().length > 0 ? opts.locale.trim() : undefined
+ const formatSpec = {
+  timeZone,
+  year: 'numeric',
+  month: 'short',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: is12,
+  hourCycle: is12 ? 'h12' : 'h23',
+ }
+ if (showTimeZone) {
+  formatSpec.timeZoneName = 'short'
+ }
+ let display
+ try {
+  if (intlObj && typeof intlObj.DateTimeFormat === 'function') {
+   display = new intlObj.DateTimeFormat(locale, formatSpec).format(dt).replace(/[\u202f\u00a0]/g, ' ')
+  }
+  else {
+   display = dt.toLocaleString(locale, formatSpec).replace(/[\u202f\u00a0]/g, ' ')
+  }
+ }
+ catch {
+  display = dt.toISOString()
+ }
+ return { known: true, display, iso: dt.toISOString(), timeZone, hourFormat }
+}
+
+export function resolveClockDisplayOptions(rawTimezone = 'browser', configuredTimezones = null, rawHourFormat = undefined, intlObj = globalThis.Intl) {
+ const safeIntl = intlObj && typeof intlObj.DateTimeFormat === 'function' ? intlObj : globalThis.Intl
+ const hourFormat = normalizeClockHourFormat(rawHourFormat, safeIntl)
+ if (Array.isArray(configuredTimezones)) {
+  const tzOptions = buildTopRailTimezoneOptions(configuredTimezones, {
+   intl: safeIntl,
+   hourFormat,
+   showSeconds: true,
+  })
+  const activeOpt = resolveActiveClockTimezone(rawTimezone, tzOptions, safeIntl)
+  return {
+   timeZone: activeOpt.timeZone,
+   shortZone: activeOpt.shortLabel,
+   offset: activeOpt.offset,
+   label: activeOpt.label,
+   selectedValue: activeOpt.value,
+   hourFormat,
+   showTimeZone: true,
+   intl: safeIntl,
+  }
+ }
+ const cleanRaw = typeof rawTimezone === 'string' ? rawTimezone.trim() : ''
+ const isBrowser = !cleanRaw || cleanRaw.toLowerCase() === 'browser'
+ const timeZone = !isBrowser && isValidTimeZone(cleanRaw, safeIntl)
+  ? cleanRaw
+  : getBrowserTimeZone(safeIntl)
+ const meta = formatTimeZoneOffsetAndShort(timeZone, new Date(), safeIntl, { hourFormat, showSeconds: true })
+ return {
+  timeZone,
+  shortZone: timeZone === 'UTC' ? 'UTC' : meta.shortZone,
+  offset: meta.offset,
+  label: isBrowser ? `Browser (${timeZone})` : timeZone,
+  selectedValue: isBrowser ? 'browser' : timeZone,
+  hourFormat,
+  showTimeZone: true,
+  intl: safeIntl,
+ }
+}
+
+export function formatDatetimePlaceholder(displayOpts = {}) {
+ const opts = displayOpts && typeof displayOpts === 'object' ? displayOpts : {}
+ const safeIntl = opts.intl && typeof opts.intl.DateTimeFormat === 'function' ? opts.intl : globalThis.Intl
+ const hourFormat = normalizeClockHourFormat(opts.hourFormat, safeIntl)
+ let shortZone = typeof opts.shortZone === 'string' ? opts.shortZone.trim() : ''
+ if (!shortZone && typeof opts.timeZone === 'string' && opts.timeZone.trim()) {
+  const tz = resolveDisplayTimeZone(opts.timeZone, safeIntl)
+  const meta = formatTimeZoneOffsetAndShort(tz, new Date(), safeIntl, { hourFormat, showSeconds: false })
+  shortZone = tz === 'UTC' ? 'UTC' : (meta.shortZone || '')
+ }
+ const zoneSuffix = shortZone ? ` ${shortZone}` : ''
+ return hourFormat === '24h'
+  ? `YYYY-MM-DD HH:mm${zoneSuffix}`
+  : `YYYY-MM-DD hh:mm AM${zoneSuffix}`
+}
+
+export function formatDatetimeLocalInTimeZone(value, timeZone = 'UTC', intlObj = globalThis.Intl) {
+ const dt = resolveDateInstance(value)
+ if (!dt) {
+  return ''
+ }
+ const safeIntl = intlObj && typeof intlObj.DateTimeFormat === 'function' ? intlObj : globalThis.Intl
+ const tz = resolveDisplayTimeZone(timeZone, safeIntl)
+ if (safeIntl && typeof safeIntl.DateTimeFormat === 'function') {
+  try {
+   const parts = new safeIntl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+    hourCycle: 'h23',
+   }).formatToParts(dt)
+   const map = {}
+   for (const p of parts) {
+    map[p.type] = p.value
+   }
+   const hh = map.hour === '24' ? '00' : map.hour
+   return `${map.year}-${map.month}-${map.day}T${hh}:${map.minute}:${map.second}`
+  }
+  catch {
+   // Fall back to UTC slice below
+  }
+ }
+ return dt.toISOString().slice(0, 19)
+}
+
+function resolveParsedHour24(rawHour, meridiem) {
+ const h = Number(rawHour)
+ if (!Number.isInteger(h)) {
+  return NaN
+ }
+ if (!meridiem) {
+  return h >= 0 && h <= 23 ? h : NaN
+ }
+ if (h < 1 || h > 12) {
+  return NaN
+ }
+ const upper = meridiem.toUpperCase()
+ if (upper === 'AM') {
+  return h === 12 ? 0 : h
+ }
+ if (upper === 'PM') {
+  return h === 12 ? 12 : h + 12
+ }
+ return NaN
+}
+
+const KNOWN_TZ_ABBR_OFFSETS_MIN = {
+ EST: -300,
+ EDT: -240,
+ CDT: -300,
+ MST: -420,
+ MDT: -360,
+ PST: -480,
+ PDT: -420,
+ AKST: -540,
+ AKDT: -480,
+ HST: -600,
+ JST: 540,
+ KST: 540,
+ CET: 60,
+ CEST: 120,
+ EET: 120,
+ EEST: 180,
+}
+
+function applyParsedZoneOrOffset(parts, rawZone, defaultTimeZone, intlObj) {
+ const cleanZone = typeof rawZone === 'string' ? rawZone.trim() : ''
+ if (/^(?:Z|UTC|GMT)$/i.test(cleanZone)) {
+  return zonedWallClockToUtcMs(parts, 'UTC', intlObj)
+ }
+ const offMatch = cleanZone.match(/^(?:GMT|UTC)?([+-])(\d{1,2})(?::?(\d{2}))?$/i)
+ if (offMatch) {
+  const sign = offMatch[1] === '-' ? -1 : 1
+  const oh = Number(offMatch[2])
+  const om = offMatch[3] ? Number(offMatch[3]) : 0
+  if (oh > 23 || om > 59) {
+   return NaN
+  }
+  const baseUtc = zonedWallClockToUtcMs(parts, 'UTC', intlObj)
+  if (Number.isNaN(baseUtc)) {
+   return NaN
+  }
+  return baseUtc - sign * ((oh * 60 + om) * 60000)
+ }
+ const defaultMs = zonedWallClockToUtcMs(parts, defaultTimeZone, intlObj)
+ if (!cleanZone) {
+  return defaultMs
+ }
+ const upperZone = cleanZone.toUpperCase()
+ if (Number.isFinite(defaultMs)) {
+  const meta = formatTimeZoneOffsetAndShort(defaultTimeZone, new Date(defaultMs), intlObj)
+  if (meta.shortZone && meta.shortZone.toUpperCase() === upperZone) {
+   return defaultMs
+  }
+ }
+ if (Object.hasOwn(KNOWN_TZ_ABBR_OFFSETS_MIN, upperZone)) {
+  const baseUtc = zonedWallClockToUtcMs(parts, 'UTC', intlObj)
+  return Number.isNaN(baseUtc) ? NaN : baseUtc - KNOWN_TZ_ABBR_OFFSETS_MIN[upperZone] * 60000
+ }
+ return defaultMs
+}
+
+export function parseDatetimeInTimeZone(raw, options = {}) {
+ if (raw instanceof Date) {
+  return Number.isNaN(raw.getTime())
+   ? { ok: false, value: '', error: 'Expected date & time (e.g. YYYY-MM-DD HH:mm)' }
+   : { ok: true, value: raw.toISOString(), error: null }
+ }
+ const trimmed = raw === null || raw === undefined ? '' : String(raw).replace(/[\u202f\u00a0]/g, ' ').trim()
+ if (trimmed === '') {
+  return { ok: true, value: '', error: null }
+ }
+ const opts = typeof options === 'string' ? { timeZone: options } : (options && typeof options === 'object' ? options : {})
+ const safeIntl = opts.intl && typeof opts.intl.DateTimeFormat === 'function' ? opts.intl : globalThis.Intl
+ const defaultTz = resolveDisplayTimeZone(opts.timeZone, safeIntl)
+
+ const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})[T\s]+(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3})\d*)?)?(?:\s*(AM|PM))?(?:\s*(Z|[+-]\d{2}:?\d{2}|(?:GMT|UTC)(?:[+-]\d{1,2}(?::?\d{2})?)?|[A-Za-z]{2,6}))?$/i)
+ if (isoMatch) {
+  const hour = resolveParsedHour24(isoMatch[4], isoMatch[8])
+  if (!Number.isNaN(hour)) {
+   const ms = applyParsedZoneOrOffset({
+    year: Number(isoMatch[1]),
+    month: Number(isoMatch[2]),
+    day: Number(isoMatch[3]),
+    hour,
+    minute: Number(isoMatch[5]),
+    second: isoMatch[6] ? Number(isoMatch[6]) : 0,
+    millisecond: isoMatch[7] ? Number(isoMatch[7].padEnd(3, '0')) : 0,
+   }, isoMatch[9], defaultTz, safeIntl)
+   if (!Number.isNaN(ms)) {
+    return { ok: true, value: new Date(ms).toISOString(), error: null }
+   }
+  }
+  return { ok: false, value: trimmed, error: 'Expected date & time (e.g. YYYY-MM-DD HH:mm)' }
+ }
+
+ const monFirst = trimmed.match(/^([A-Za-z]+)\.?\s+(\d{1,2}),?\s+(\d{4})(?:,\s*|\s+at\s+|\s+)(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*(AM|PM))?(?:\s*((?:GMT|UTC)(?:[+-]\d{1,2}(?::?\d{2})?)?|[A-Za-z]{2,6}|[+-]\d{2}:?\d{2}))?$/i)
+ if (monFirst) {
+  const month = DATETIME_MONTH_INDEX[monFirst[1].toLowerCase()]
+  const hour = resolveParsedHour24(monFirst[4], monFirst[7])
+  if (month && !Number.isNaN(hour)) {
+   const ms = applyParsedZoneOrOffset({
+    year: Number(monFirst[3]),
+    month,
+    day: Number(monFirst[2]),
+    hour,
+    minute: Number(monFirst[5]),
+    second: monFirst[6] ? Number(monFirst[6]) : 0,
+    millisecond: 0,
+   }, monFirst[8], defaultTz, safeIntl)
+   if (!Number.isNaN(ms)) {
+    return { ok: true, value: new Date(ms).toISOString(), error: null }
+   }
+  }
+  return { ok: false, value: trimmed, error: 'Expected date & time (e.g. YYYY-MM-DD HH:mm)' }
+ }
+
+ const dayFirst = trimmed.match(/^(\d{1,2})\s+([A-Za-z]+)\.?,?\s+(\d{4})(?:,\s*|\s+at\s+|\s+)(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*(AM|PM))?(?:\s*((?:GMT|UTC)(?:[+-]\d{1,2}(?::?\d{2})?)?|[A-Za-z]{2,6}|[+-]\d{2}:?\d{2}))?$/i)
+ if (dayFirst) {
+  const month = DATETIME_MONTH_INDEX[dayFirst[2].toLowerCase()]
+  const hour = resolveParsedHour24(dayFirst[4], dayFirst[7])
+  if (month && !Number.isNaN(hour)) {
+   const ms = applyParsedZoneOrOffset({
+    year: Number(dayFirst[3]),
+    month,
+    day: Number(dayFirst[1]),
+    hour,
+    minute: Number(dayFirst[5]),
+    second: dayFirst[6] ? Number(dayFirst[6]) : 0,
+    millisecond: 0,
+   }, dayFirst[8], defaultTz, safeIntl)
+   if (!Number.isNaN(ms)) {
+    return { ok: true, value: new Date(ms).toISOString(), error: null }
+   }
+  }
+  return { ok: false, value: trimmed, error: 'Expected date & time (e.g. YYYY-MM-DD HH:mm)' }
+ }
+
+ return { ok: false, value: trimmed, error: 'Expected date & time (e.g. YYYY-MM-DD HH:mm)' }
 }

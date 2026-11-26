@@ -215,6 +215,7 @@
    { enableLetsEncrypt $cm-le-input }
   ] }
   { active-tab servers }
+  { lane null }
   { editing-id '' }
   { editing-created-at null }
   { editing-verified false }
@@ -358,6 +359,7 @@
      { [ propertyIs false resp.ok ] : !set-error [ match { $resp.error : $resp.error } { true : 'Failed to launch terminal session' } ] }
      { $lane-control.terminal-modal.open (
       ; to open-opts [ object
+       { lane $modal.lane }
        { title $resp.title }
        { subtitle $payload.subtitle }
        { wsPath $resp.wsPath }
@@ -577,6 +579,7 @@
       [ match
        { $lane-control.confirm-modal.open (
         !lane-control.confirm-modal.open [ object
+         { lane $modal.lane }
          { title 'Delete Server' }
          { message ; add 'Remove saved SSH server "' ; add $srv.name '"? (Remote services on the host are not deleted.)' }
          { confirm-label Delete }
@@ -662,8 +665,16 @@
       !modal.close
       [ match
        { $lane-control.open (
-        !lane-control.open $dep.laneId server
-        !lane-control.update-url
+        [ match
+         { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Loading…' }
+        ]
+        ; try (
+         !lane-control.open $dep.laneId server
+         !lane-control.update-url
+        ) : null
+        [ match
+         { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
+        ]
        ) }
       ]
      )
@@ -677,7 +688,7 @@
          { serviceAction $svc-act }
          { server $srv }
          { deployment $dep }
-         { subtitle ; add $srv.user ; add '@' ; add $srv.host }
+         { subtitle ; add $srv.user ; add '@' $srv.host }
         ]
         !launch-ssh-action $p null null
        ) }
@@ -696,21 +707,23 @@
           { action undeploy-lane }
           { server $srv }
           { deployment $dep }
-          { subtitle ; add $srv.user ; add '@' ; add $srv.host }
+          { subtitle ; add $srv.user ; add '@' $srv.host }
          ]
          !launch-ssh-action $p (
           ; to { evt } $argv
           ; condition { propertyIs __CC_UNDEPLOY_OK__ evt.type } (
            [ match
-            { $deleteLaneDeployment : !deleteLaneDeployment $data $dep.laneId }
+            { $deleteLaneDeployment : !deleteLaneDeployment $data $dep.laneId $dep.id }
            ]
            !modal.refresh
+           !notify-servers-updated
           )
          ) null
         )
         [ match
          { $lane-control.confirm-modal.open (
           !lane-control.confirm-modal.open [ object
+           { lane $modal.lane }
            { title 'Undeploy Lane Service' }
            { message ; add 'Stop and remove remote service "' ; add $dep.slug ; add '" from ' ; add $srv.host '?' }
            { confirm-label Undeploy }
@@ -750,16 +763,21 @@
 
  ; to modal.close (
   ; condition { propertyIs true modal.is-open } (
+   ; to prev-lane $modal.lane
    ; set false modal.is-open
+   ; set null modal.lane
    !set-error ''
    !set-status ''
    !close-form
    !backdrop.remove
+   [ match
+    { [ and { $prev-lane } { $lane-control.unmount-lane-modal } ] : !lane-control.unmount-lane-modal $prev-lane $modal }
+   ]
   )
  )
 
  ; to modal.open (
-  ; to { initial-tab } $argv
+  ; to { initial-tab target-lane } $argv
   !set-error ''
   !set-status ''
   !close-form
@@ -770,10 +788,23 @@
    { true : servers }
   ]
   !modal.set-tab $start-tab
-  ; condition { propertyIs false modal.is-open } (
-   ; set true modal.is-open
-   !document.body.appendChild $backdrop
+  ; condition { propertyIs true modal.is-open } (
+   [ match
+    { [ and { $modal.lane } { $lane-control.unmount-lane-modal } ] : !lane-control.unmount-lane-modal $modal.lane $modal }
+   ]
   )
+  ; to resolved-lane [ match
+   { $target-lane.id : $target-lane }
+   { [ and { $target-lane } { $lane-control.resolve-lane } ] : !lane-control.resolve-lane $target-lane }
+   { true : null }
+  ]
+  ; set $resolved-lane modal.lane
+  ; set true modal.is-open
+  [ match
+   { [ and { $resolved-lane } { $lane-control.mount-lane-modal } ] : !lane-control.mount-lane-modal $resolved-lane $modal }
+   { $lane-control.mount-lane-modal : !lane-control.mount-lane-modal null $modal }
+   { $document.body.appendChild : !document.body.appendChild $backdrop }
+  ]
   $modal
  )
 

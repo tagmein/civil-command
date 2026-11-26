@@ -2,11 +2,14 @@ import { formatDataDirLabel, normalizeDataDir } from './data.mjs'
 import {
  coerceDataValue,
  defaultDataValue,
+ formatTimestampWithZone,
  normalizeColumnWidth,
  parse,
  parseColumnType,
  parseImportLine,
  parseStoredTables,
+ validateFieldScriptLine,
+ validateFieldScriptLines,
 } from './field.mjs'
 
 export { formatDataDirLabel, normalizeDataDir }
@@ -17,11 +20,13 @@ export const DEFAULT_PACKAGE_NAME = 'Default'
 export const SESSION_STORAGE_KEY = 'civil-command.session'
 export const RECENT_SESSIONS_STORAGE_KEY = 'civil-command.recent-sessions'
 export const SESSION_HISTORY_STORAGE_KEY = 'civil-command.session-history'
+export const LANE_SOURCE_DRAFTS_STORAGE_PREFIX = 'civil-command.source-drafts'
 
 const CONCURRENCY_LIMIT = 16
 const MAX_RECENT_SESSIONS = 25
 const MAX_SESSION_HISTORY = 100
 const utf8Encoder = new TextEncoder()
+const utf8Decoder = new TextDecoder()
 
 const writeQueues = new WeakMap()
 const chunkCountCache = new WeakMap()
@@ -479,6 +484,10 @@ export function tableRowKey(laneId, tableId, rowId) {
  return `lanes#${encodeKeySegment(laneId)}/tables/${encodeKeySegment(tableId)}/rows/${encodeKeySegment(rowId)}`
 }
 
+export function tableUpdatesKey(laneId, tableId) {
+ return `lanes#${encodeKeySegment(laneId)}/tables/${encodeKeySegment(tableId)}/updates`
+}
+
 function normalizeSchemaRecord(rawSchema, tableIdFallback) {
  if (!rawSchema || typeof rawSchema !== 'object') {
   return null
@@ -508,6 +517,12 @@ function normalizeSchemaRecord(rawSchema, tableIdFallback) {
    normalizedCol.refTableId = parsedType.refTableId
    normalizedCol.refColumnId = parsedType.refColumnId
    normalizedCol.refDisplayColumnId = parsedType.refDisplayColumnId
+   if (parsedType.refFilterColumnId) {
+    normalizedCol.refFilterColumnId = parsedType.refFilterColumnId
+   }
+   if (parsedType.filterByColumnId) {
+    normalizedCol.filterByColumnId = parsedType.filterByColumnId
+   }
   }
   else if (parsedType.type === 'text' && parsedType.constraint) {
    normalizedCol.constraint = parsedType.constraint
@@ -515,6 +530,9 @@ function normalizeSchemaRecord(rawSchema, tableIdFallback) {
   const width = normalizeColumnWidth(col.width)
   if (width !== null) {
    normalizedCol.width = width
+  }
+  if (col.required === true) {
+   normalizedCol.required = true
   }
   columns.push(normalizedCol)
  }
@@ -542,14 +560,23 @@ async function deleteTableKeys(kv, laneId, tableId, knownRowIds = null) {
  await mapConcurrent(rowIds, CONCURRENCY_LIMIT, rowId => kvDeleteChunked(kv, tableRowKey(laneId, tableId, rowId)))
  await deletePagedIds(kv, tableRowsBase(laneId, tableId))
  await kvDeleteChunked(kv, tableSchemaKey(laneId, tableId))
+ await kvDeleteChunked(kv, tableUpdatesKey(laneId, tableId))
 }
 
 async function writeSingleTableFull(kv, laneId, table) {
  const rows = Array.isArray(table.rows) ? table.rows : []
  const rowIds = rows.map(r => String(r.id))
+ const nextRowIdSet = new Set(rowIds)
+ const prevRowIdx = await readPagedIds(kv, tableRowsBase(laneId, table.id))
  await kvSetChunked(kv, tableSchemaKey(laneId, table.id), serializeTableSchema(table))
  await mapConcurrent(rows, CONCURRENCY_LIMIT, row => kvSetChunked(kv, tableRowKey(laneId, table.id, row.id), serializeTableRow(row)))
  await writePagedIds(kv, tableRowsBase(laneId, table.id), rowIds)
+ if (prevRowIdx.exists && prevRowIdx.ids.length > 0) {
+  const staleRowIds = prevRowIdx.ids.filter(rid => !nextRowIdSet.has(String(rid)))
+  if (staleRowIds.length > 0) {
+   await mapConcurrent(staleRowIds, CONCURRENCY_LIMIT, rid => kvDeleteChunked(kv, tableRowKey(laneId, table.id, rid)))
+  }
+ }
 }
 
 export async function loadLaneTables(rootKv, laneData, laneId) {
@@ -720,8 +747,121 @@ export async function saveTableSchemaAndRows(rootKv, laneData, laneId, table) {
  }
  const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
  const rows = Array.isArray(table.rows) ? table.rows : []
+ const rowIds = rows.map(r => String(r.id))
+ const nextRowIdSet = new Set(rowIds)
+ const prevRowIdx = await readPagedIds(kv, tableRowsBase(laneId, table.id))
  await kvSetChunked(kv, tableSchemaKey(laneId, table.id), serializeTableSchema(table))
  await mapConcurrent(rows, CONCURRENCY_LIMIT, row => kvSetChunked(kv, tableRowKey(laneId, table.id, row.id), serializeTableRow(row)))
+ await writePagedIds(kv, tableRowsBase(laneId, table.id), rowIds)
+ if (prevRowIdx.exists && prevRowIdx.ids.length > 0) {
+  const staleRowIds = prevRowIdx.ids.filter(rid => !nextRowIdSet.has(String(rid)))
+  if (staleRowIds.length > 0) {
+   await mapConcurrent(staleRowIds, CONCURRENCY_LIMIT, rid => kvDeleteChunked(kv, tableRowKey(laneId, table.id, rid)))
+  }
+ }
+}
+
+const MAX_TABLE_UPDATES_HISTORY = 20
+
+function normalizeTableUpdateEntry(raw, tableIdFallback = '') {
+ if (!raw || typeof raw !== 'object') {
+  return null
+ }
+ const id = raw.id ? String(raw.id).trim() : generateId('upd')
+ const tableId = raw.tableId ? String(raw.tableId).trim() : String(tableIdFallback || '').trim()
+ const tableName = raw.tableName === null || raw.tableName === undefined ? '' : String(raw.tableName).trim()
+ const targetLaneId = raw.targetLaneId === null || raw.targetLaneId === undefined ? '' : String(raw.targetLaneId).trim()
+ const targetLaneTitle = raw.targetLaneTitle === null || raw.targetLaneTitle === undefined
+  ? targetLaneId
+  : String(raw.targetLaneTitle).trim()
+ const status = raw.status ? String(raw.status).trim() : 'deployed'
+ const ok = raw.ok !== undefined ? Boolean(raw.ok) : status !== 'error'
+ const slug = raw.slug === null || raw.slug === undefined ? '' : String(raw.slug).trim()
+ const serverName = raw.serverName === null || raw.serverName === undefined ? '' : String(raw.serverName).trim()
+ const publicUrl = raw.publicUrl === null || raw.publicUrl === undefined ? '' : String(raw.publicUrl).trim()
+ const recordCount = Number.isFinite(Number(raw.recordCount)) ? Math.max(0, Math.trunc(Number(raw.recordCount))) : null
+ const trigger = raw.trigger === null || raw.trigger === undefined ? '' : String(raw.trigger).trim()
+ const summary = raw.summary === null || raw.summary === undefined ? '' : String(raw.summary).trim()
+ const nowIso = new Date().toISOString()
+ const triggeredAt = typeof raw.triggeredAt === 'string' && raw.triggeredAt.trim() ? raw.triggeredAt.trim() : nowIso
+ const deployedAt = typeof raw.deployedAt === 'string' && raw.deployedAt.trim() ? raw.deployedAt.trim() : triggeredAt
+ const error = raw.error ? String(raw.error) : null
+ return {
+  id,
+  tableId,
+  tableName,
+  targetLaneId,
+  targetLaneTitle,
+  status,
+  ok,
+  slug,
+  serverName,
+  publicUrl,
+  recordCount,
+  trigger,
+  summary,
+  triggeredAt,
+  deployedAt,
+  error,
+ }
+}
+
+export async function loadTableUpdates(rootKv, laneData, laneId, tableId) {
+ if (!laneId || !tableId) {
+  return []
+ }
+ const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
+ if (!kv) {
+  return []
+ }
+ const raw = await kvGetChunked(kv, tableUpdatesKey(laneId, tableId))
+ if (isMissingValue(raw)) {
+  return []
+ }
+ try {
+  const parsed = JSON.parse(raw)
+  if (!Array.isArray(parsed)) {
+   return []
+  }
+  return parsed.map(item => normalizeTableUpdateEntry(item, tableId)).filter(Boolean)
+ }
+ catch {
+  return []
+ }
+}
+
+export async function saveTableUpdates(rootKv, laneData, laneId, tableId, updates) {
+ if (!laneId || !tableId) {
+  return []
+ }
+ const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
+ const list = (Array.isArray(updates) ? updates : [])
+  .map(item => normalizeTableUpdateEntry(item, tableId))
+  .filter(Boolean)
+  .slice(0, MAX_TABLE_UPDATES_HISTORY)
+ if (!kv) {
+  return list
+ }
+ if (list.length === 0) {
+  await kvDeleteChunked(kv, tableUpdatesKey(laneId, tableId))
+  return []
+ }
+ await kvSetChunked(kv, tableUpdatesKey(laneId, tableId), JSON.stringify(list))
+ return list
+}
+
+export async function recordTableDeploymentUpdate(rootKv, laneData, laneId, tableId, entry) {
+ if (!laneId || !tableId || !entry) {
+  return []
+ }
+ const norm = normalizeTableUpdateEntry(entry, tableId)
+ if (!norm) {
+  return []
+ }
+ const existing = await loadTableUpdates(rootKv, laneData, laneId, tableId)
+ const filtered = existing.filter(item => item && item.id !== norm.id)
+ const next = [norm, ...filtered].slice(0, MAX_TABLE_UPDATES_HISTORY)
+ return saveTableUpdates(rootKv, laneData, laneId, tableId, next)
 }
 
 export async function addLaneTable(rootKv, laneData, laneId, table, allTableIds) {
@@ -796,12 +936,29 @@ export function parseLegacyScript(stored) {
  return str.split('\n')
 }
 
+export function normalizeLineSetBy(raw) {
+ if (!raw || typeof raw !== 'object') {
+  return null
+ }
+ const laneId = raw.laneId === null || raw.laneId === undefined ? '' : String(raw.laneId).trim()
+ const lineId = raw.lineId === null || raw.lineId === undefined ? '' : String(raw.lineId).trim()
+ if (!laneId) {
+  return null
+ }
+ return { laneId, lineId }
+}
+
 function serializeScriptLine(record) {
- return JSON.stringify({
+ const setBy = normalizeLineSetBy(record && record.setBy)
+ const payload = {
   id: String(record.id),
   text: record.text === null || record.text === undefined ? '' : String(record.text),
   updatedAt: typeof record.updatedAt === 'string' && record.updatedAt.length > 0 ? record.updatedAt : null,
- })
+ }
+ if (setBy) {
+  payload.setBy = setBy
+ }
+ return JSON.stringify(payload)
 }
 
 export async function loadLaneScript(rootKv, laneData, laneId, win) {
@@ -845,11 +1002,16 @@ export async function loadLaneScript(rootKv, laneData, laneId, win) {
    try {
     const parsed = JSON.parse(raw)
     if (parsed && typeof parsed === 'object') {
-     records.push({
+     const setBy = normalizeLineSetBy(parsed.setBy)
+     const rec = {
       id: typeof parsed.id === 'string' && parsed.id.length > 0 ? parsed.id : lineId,
       text: parsed.text === null || parsed.text === undefined ? '' : String(parsed.text),
       updatedAt: typeof parsed.updatedAt === 'string' && parsed.updatedAt.length > 0 ? parsed.updatedAt : null,
-     })
+     }
+     if (setBy) {
+      rec.setBy = setBy
+     }
+     records.push(rec)
      continue
     }
    }
@@ -866,10 +1028,178 @@ export async function loadLaneScript(rootKv, laneData, laneId, win) {
  }
 }
 
+function assertParseableScriptLine(text, laneId, lineIndex = 0) {
+ const cleanLane = laneId ? String(laneId).trim() : ''
+ const res = validateFieldScriptLine(text, {
+  filename: cleanLane || undefined,
+  lineIndex,
+ })
+ if (!res.ok) {
+  const err = new SyntaxError(
+   `Cannot save unparseable FieldScript in lane "${cleanLane || 'lane'}" line ${lineIndex + 1}: ${res.error}`
+  )
+  err.syntaxError = true
+  if (res.location) {
+   err.fieldLocation = res.location
+  }
+  throw err
+ }
+}
+
+function assertParseableScriptRecords(linesOrRecords, laneId) {
+ const cleanLane = laneId ? String(laneId).trim() : ''
+ const res = validateFieldScriptLines(linesOrRecords, {
+  filename: cleanLane || undefined,
+ })
+ if (!res.ok) {
+  const err = new SyntaxError(
+   `Cannot save unparseable FieldScript in lane "${cleanLane || 'lane'}": ${res.error}`
+  )
+  err.syntaxError = true
+  err.errors = res.errors
+  if (res.errors[0] && res.errors[0].location) {
+   err.fieldLocation = res.errors[0].location
+  }
+  throw err
+ }
+}
+
+function resolveDraftDataDir(rootKvOrDataDir) {
+ if (typeof rootKvOrDataDir === 'string') {
+  return normalizeDataDir(rootKvOrDataDir)
+ }
+ if (rootKvOrDataDir && typeof rootKvOrDataDir === 'object') {
+  const client = unwrapKv(rootKvOrDataDir)
+  return normalizeDataDir(client && client.basePath)
+ }
+ return null
+}
+
+export function laneSourceDraftsStorageKey(laneId, rootKvOrDataDir = null) {
+ const cleanLane = String(laneId || '').trim()
+ const cleanDir = resolveDraftDataDir(rootKvOrDataDir)
+ return cleanDir
+  ? `${LANE_SOURCE_DRAFTS_STORAGE_PREFIX}:${cleanDir}:${cleanLane}`
+  : `${LANE_SOURCE_DRAFTS_STORAGE_PREFIX}:${cleanLane}`
+}
+
+function normalizeSourceDraftEntry(raw, fallbackLineId = '') {
+ if (!raw || typeof raw !== 'object') {
+  return null
+ }
+ const lineId = String(raw.lineId || fallbackLineId || '').trim()
+ if (!lineId) {
+  return null
+ }
+ const lineIndex = Number.isInteger(raw.lineIndex) && raw.lineIndex >= 0 ? raw.lineIndex : null
+ const text = raw.text === null || raw.text === undefined ? '' : String(raw.text)
+ const savedText = raw.savedText === null || raw.savedText === undefined ? '' : String(raw.savedText)
+ const error = raw.error ? String(raw.error) : 'Syntax error'
+ const rejectedAt = typeof raw.rejectedAt === 'string' && raw.rejectedAt.trim()
+  ? raw.rejectedAt.trim()
+  : new Date().toISOString()
+ const setBy = normalizeLineSetBy(raw.setBy)
+ const out = {
+  lineId,
+  lineIndex,
+  text,
+  savedText,
+  error,
+  rejectedAt,
+ }
+ if (typeof raw.exprText === 'string') {
+  out.exprText = raw.exprText
+ }
+ if (setBy) {
+  out.setBy = setBy
+ }
+ return out
+}
+
+export function loadLaneSourceDrafts(rootKvOrDataDir, win, laneId) {
+ const cleanLane = String(laneId || '').trim()
+ if (!cleanLane) {
+  return {}
+ }
+ const { local } = getWebStoragePair(win)
+ const raw = local.getItem(laneSourceDraftsStorageKey(cleanLane, rootKvOrDataDir))
+ if (isMissingValue(raw)) {
+  return {}
+ }
+ try {
+  const parsed = JSON.parse(raw)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+   return {}
+  }
+  const out = {}
+  for (const [key, item] of Object.entries(parsed)) {
+   const norm = normalizeSourceDraftEntry(item, key)
+   if (norm) {
+    out[norm.lineId] = norm
+   }
+  }
+  return out
+ }
+ catch {
+  return {}
+ }
+}
+
+export function listLaneSourceDrafts(rootKvOrDataDir, win, laneId) {
+ return Object.values(loadLaneSourceDrafts(rootKvOrDataDir, win, laneId))
+}
+
+export function saveLaneSourceDraft(rootKvOrDataDir, win, laneId, draftSpec) {
+ const cleanLane = String(laneId || '').trim()
+ const norm = normalizeSourceDraftEntry(draftSpec)
+ if (!cleanLane || !norm) {
+  return null
+ }
+ const { local } = getWebStoragePair(win)
+ const key = laneSourceDraftsStorageKey(cleanLane, rootKvOrDataDir)
+ const existing = loadLaneSourceDrafts(rootKvOrDataDir, win, cleanLane)
+ existing[norm.lineId] = norm
+ local.setItem(key, JSON.stringify(existing))
+ return norm
+}
+
+export function clearLaneSourceDraft(rootKvOrDataDir, win, laneId, lineId) {
+ const cleanLane = String(laneId || '').trim()
+ const cleanLine = String(lineId || '').trim()
+ if (!cleanLane || !cleanLine) {
+  return false
+ }
+ const { local } = getWebStoragePair(win)
+ const key = laneSourceDraftsStorageKey(cleanLane, rootKvOrDataDir)
+ const existing = loadLaneSourceDrafts(rootKvOrDataDir, win, cleanLane)
+ if (!Object.hasOwn(existing, cleanLine)) {
+  return false
+ }
+ delete existing[cleanLine]
+ if (Object.keys(existing).length === 0) {
+  local.removeItem(key)
+ }
+ else {
+  local.setItem(key, JSON.stringify(existing))
+ }
+ return true
+}
+
+export function clearAllLaneSourceDrafts(rootKvOrDataDir, win, laneId) {
+ const cleanLane = String(laneId || '').trim()
+ if (!cleanLane) {
+  return
+ }
+ const { local } = getWebStoragePair(win)
+ local.removeItem(laneSourceDraftsStorageKey(cleanLane, rootKvOrDataDir))
+}
+
 export async function saveScriptLine(rootKv, laneData, laneId, record, allLineIds, ensureIndex = false, explicitTimestamp = undefined) {
  if (!record || !record.id) {
   return
  }
+ const idx = Array.isArray(allLineIds) ? Math.max(0, allLineIds.indexOf(String(record.id))) : 0
+ assertParseableScriptLine(record.text, laneId, idx)
  const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
  const stamp = explicitTimestamp === undefined ? new Date().toISOString() : explicitTimestamp
  record.updatedAt = stamp
@@ -881,9 +1211,16 @@ export async function saveScriptLine(rootKv, laneData, laneId, record, allLineId
 }
 
 export async function saveScriptLinesAndIndex(rootKv, laneData, laneId, dirtyRecords, allLineIds, removedLineIds = [], explicitTimestamp = undefined) {
+ const dirty = Array.isArray(dirtyRecords) ? dirtyRecords : []
+ for (let i = 0; i < dirty.length; i++) {
+  const rec = dirty[i]
+  if (rec) {
+   const idx = Array.isArray(allLineIds) && rec.id ? Math.max(0, allLineIds.indexOf(String(rec.id))) : i
+   assertParseableScriptLine(rec.text, laneId, idx)
+  }
+ }
  const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
  const stamp = explicitTimestamp === undefined ? new Date().toISOString() : explicitTimestamp
- const dirty = Array.isArray(dirtyRecords) ? dirtyRecords : []
  for (const rec of dirty) {
   if (rec) {
    rec.updatedAt = stamp
@@ -900,16 +1237,22 @@ export async function saveScriptLinesAndIndex(rootKv, laneData, laneId, dirtyRec
 }
 
 export async function saveLaneScript(rootKv, laneData, laneId, linesOrRecords, win, explicitTimestamp = undefined) {
+ assertParseableScriptRecords(linesOrRecords, laneId)
  const { kv, legacyKv } = resolveLaneStorage(rootKv, laneData, laneId)
  const prevIdx = await readPagedIds(kv, laneScriptBase(laneId))
  const stamp = explicitTimestamp === undefined ? new Date().toISOString() : explicitTimestamp
  const records = Array.from(linesOrRecords || []).map(item => {
   if (item && typeof item === 'object') {
-   return {
+   const setBy = normalizeLineSetBy(item.setBy)
+   const rec = {
     id: item.id || generateLineId(win),
     text: item.text === null || item.text === undefined ? '' : String(item.text),
     updatedAt: item.updatedAt === undefined ? stamp : item.updatedAt,
    }
+   if (setBy) {
+    rec.setBy = setBy
+   }
+   return rec
   }
   return {
    id: generateLineId(win),
@@ -936,29 +1279,8 @@ export async function saveLaneScript(rootKv, laneData, laneId, linesOrRecords, w
  return records
 }
 
-export function formatLineTimestamp(isoString) {
- if (typeof isoString !== 'string' || isoString.trim().length === 0) {
-  return { known: false, display: 'Unknown', iso: '' }
- }
- const dt = new Date(isoString)
- if (Number.isNaN(dt.getTime())) {
-  return { known: false, display: 'Unknown', iso: '' }
- }
- let display
- try {
-  display = dt.toLocaleString(undefined, {
-   year: 'numeric',
-   month: 'short',
-   day: '2-digit',
-   hour: '2-digit',
-   minute: '2-digit',
-   second: '2-digit',
-  })
- }
- catch {
-  display = dt.toISOString()
- }
- return { known: true, display, iso: dt.toISOString() }
+export function formatLineTimestamp(isoString, options = {}) {
+ return formatTimestampWithZone(isoString, options)
 }
 
 // ---------- Crypto & Storage Shims for Sessions & Packages ----------
@@ -1039,6 +1361,18 @@ function bytesToHex(uint8) {
  let out = ''
  for (const b of uint8) {
   out += b.toString(16).padStart(2, '0')
+ }
+ return out
+}
+
+function hexToBytes(hex) {
+ const clean = String(hex || '').trim()
+ if (clean.length === 0 || clean.length % 2 !== 0) {
+  return new Uint8Array(0)
+ }
+ const out = new Uint8Array(clean.length / 2)
+ for (let i = 0; i < out.length; i++) {
+  out[i] = Number.parseInt(clean.slice(i * 2, i * 2 + 2), 16) || 0
  }
  return out
 }
@@ -1428,6 +1762,51 @@ async function removeSessionFromPackageIndex(rootKv, packageId, sessionId) {
  }
 }
 
+export function normalizeSessionTableDisplayOptions(raw) {
+ const out = {}
+ if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+  return out
+ }
+ const keys = Object.keys(raw).sort()
+ for (const k of keys) {
+  const cleanKey = String(k || '').trim()
+  if (!cleanKey) {
+   continue
+  }
+  const val = raw[k]
+  let subtableIds = []
+  if (Array.isArray(val)) {
+   subtableIds = val
+  }
+  else if (val && typeof val === 'object' && Array.isArray(val.subtables)) {
+   subtableIds = val.subtables
+  }
+  else if (val && typeof val === 'object') {
+   subtableIds = Object.keys(val).filter(sk => Boolean(val[sk]))
+  }
+  const uniqueIds = []
+  const seen = new Set()
+  for (const sid of subtableIds) {
+   const cleanSid = String(sid || '').trim()
+   if (cleanSid && !seen.has(cleanSid)) {
+    seen.add(cleanSid)
+    uniqueIds.push(cleanSid)
+   }
+  }
+  uniqueIds.sort()
+  if (uniqueIds.length > 0) {
+   out[cleanKey] = uniqueIds
+  }
+ }
+ return out
+}
+
+export function sessionTableDisplayOptionsEqual(a, b) {
+ const normA = normalizeSessionTableDisplayOptions(a)
+ const normB = normalizeSessionTableDisplayOptions(b)
+ return JSON.stringify(normA) === JSON.stringify(normB)
+}
+
 export function normalizeSessionLinkIds(rawIds, selfSessionId = '') {
  const exclude = String(selfSessionId || '').trim()
  const list = Array.isArray(rawIds) ? rawIds : []
@@ -1806,6 +2185,7 @@ async function loadOrCreateSessionRecord(rootKv, sessionId, defaultName = '', op
  const forkedFrom = typeof meta.forkedFrom === 'string' && meta.forkedFrom.trim() ? meta.forkedFrom.trim() : null
  const previousSessionIds = normalizeSessionLinkIds(meta.previousSessionIds, cleanId)
  const nextSessionIds = normalizeSessionLinkIds(meta.nextSessionIds, cleanId)
+ const tableDisplayOptions = normalizeSessionTableDisplayOptions(meta.tableDisplayOptions)
 
  let activePackageId = typeof meta.activePackageId === 'string' && validIds.includes(meta.activePackageId)
   ? meta.activePackageId
@@ -1817,6 +2197,7 @@ async function loadOrCreateSessionRecord(rootKv, sessionId, defaultName = '', op
   meta.dataDirConfirmed = dataDirConfirmed
   meta.previousSessionIds = previousSessionIds
   meta.nextSessionIds = nextSessionIds
+  meta.tableDisplayOptions = tableDisplayOptions
   meta.updatedAt = now
   await writeSessionMeta(registryKv, sessionKv, cleanId, meta)
  }
@@ -1837,6 +2218,7 @@ async function loadOrCreateSessionRecord(rootKv, sessionId, defaultName = '', op
    dataDirConfirmed,
    previousSessionIds,
    nextSessionIds,
+   tableDisplayOptions,
    createdAt: meta.createdAt || now,
    updatedAt: meta.updatedAt || now,
   },
@@ -1844,6 +2226,7 @@ async function loadOrCreateSessionRecord(rootKv, sessionId, defaultName = '', op
   pathname,
   previousSessionIds,
   nextSessionIds,
+  tableDisplayOptions,
   openPackageIds: validIds,
   openPackages,
   activePackageId,
@@ -1886,6 +2269,7 @@ async function buildSessionState(rootKv, win, browserSessionId, activeSessionId,
   pathname: loaded.pathname,
   previousSessionIds: loaded.previousSessionIds,
   nextSessionIds: loaded.nextSessionIds,
+  tableDisplayOptions: loaded.tableDisplayOptions,
   openPackageIds: loaded.openPackageIds,
   openPackages: loaded.openPackages,
   activePackageId: loaded.activePackageId,
@@ -2153,6 +2537,9 @@ export async function saveSessionVersion(rootKv, win, sessionId, opts = {}) {
   : loaded.meta.name
  const shouldIncrement = opts.incrementVersion !== false
  const nextVersion = shouldIncrement ? (loaded.meta.version + 1) : loaded.meta.version
+ const nextTableDisplayOptions = opts.tableDisplayOptions !== undefined
+  ? normalizeSessionTableDisplayOptions(opts.tableDisplayOptions)
+  : loaded.tableDisplayOptions
  const now = new Date().toISOString()
  const nextMeta = {
   ...loaded.meta,
@@ -2160,6 +2547,7 @@ export async function saveSessionVersion(rootKv, win, sessionId, opts = {}) {
   laneIds: nextLaneIds,
   pathname: nextPathname,
   activePackageId: nextActivePkg,
+  tableDisplayOptions: nextTableDisplayOptions,
   version: nextVersion,
   updatedAt: now,
  }
@@ -2272,6 +2660,9 @@ export async function forkSession(rootKv, win, sourceSessionId, opts = {}) {
     : (srcLoaded ? srcLoaded.nextSessionIds : []),
    nextId,
   ),
+  tableDisplayOptions: opts && opts.tableDisplayOptions !== undefined
+   ? normalizeSessionTableDisplayOptions(opts.tableDisplayOptions)
+   : (srcLoaded ? normalizeSessionTableDisplayOptions(srcLoaded.tableDisplayOptions) : {}),
   createdAt: now,
   updatedAt: now,
  }
@@ -2782,11 +3173,33 @@ function normalizeServerRecord(raw, idFallback = '') {
  }
 }
 
+export function buildDeploymentId({
+ laneId = '',
+ serverId = '',
+ slug = '',
+ routeMode = 'subpath',
+ domain = '',
+ subpath = '',
+} = {}) {
+ const cleanLaneId = String(laneId || '').trim()
+ if (!cleanLaneId) {
+  return ''
+ }
+ const cleanServer = String(serverId || '').trim()
+ const cleanSlug = normalizeServiceSlug(slug || cleanLaneId, cleanLaneId)
+ const cleanMode = routeMode === 'domain' ? 'domain' : 'subpath'
+ const cleanDomain = normalizeDomainName(domain || '')
+ const cleanSubpath = cleanMode === 'subpath' ? (normalizeSubpath(subpath || `/${cleanSlug}`) || `/${cleanSlug}`) : ''
+ return `${cleanLaneId}::${cleanServer}::${cleanSlug}::${cleanMode}::${cleanDomain}::${cleanSubpath}`
+}
+
 function normalizeDeploymentRecord(raw, laneIdFallback = '') {
  if (!raw || typeof raw !== 'object') {
   return null
  }
- const laneId = String(raw.laneId || laneIdFallback || '').trim()
+ const fallbackStr = String(laneIdFallback || '').trim()
+ const fallbackLaneId = fallbackStr.includes('::') ? fallbackStr.split('::')[0] : fallbackStr
+ const laneId = String(raw.laneId || fallbackLaneId || '').trim()
  if (!laneId) {
   return null
  }
@@ -2794,6 +3207,7 @@ function normalizeDeploymentRecord(raw, laneIdFallback = '') {
  const slug = normalizeServiceSlug(raw.slug || raw.title || laneId, laneId)
  const domain = normalizeDomainName(raw.domain || '')
  const subpath = routeMode === 'subpath' ? (normalizeSubpath(raw.subpath || `/${slug}`) || `/${slug}`) : ''
+ const serverId = String(raw.serverId || '').trim()
  const parsedPort = Number(raw.port)
  const port = Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535 ? parsedPort : 4100
  const enableLetsEncrypt = Boolean(raw.enableLetsEncrypt)
@@ -2803,10 +3217,20 @@ function normalizeDeploymentRecord(raw, laneIdFallback = '') {
   subpath,
   https: enableLetsEncrypt,
  })).trim()
+ const rawId = String(raw.id || '').trim()
+ const id = rawId || buildDeploymentId({
+  laneId,
+  serverId,
+  slug,
+  routeMode,
+  domain,
+  subpath,
+ })
  return {
+  id,
   laneId,
   title: String(raw.title || laneId).trim(),
-  serverId: String(raw.serverId || '').trim(),
+  serverId,
   slug,
   port,
   routeMode,
@@ -2923,22 +3347,40 @@ export async function loadDeployments(rootKv) {
  return out
 }
 
-export async function loadLaneDeployment(rootKv, laneId) {
+export async function loadLaneDeployments(rootKv, laneId) {
  const kv = resolveRegistryKv(rootKv)
  const cleanId = String(laneId || '').trim()
  if (!kv || !cleanId) {
-  return null
+  return []
+ }
+ const all = await loadDeployments(kv)
+ const matched = all.filter(dep => dep && dep.laneId === cleanId)
+ if (matched.length > 0) {
+  return matched
  }
  const raw = await kvGetChunked(kv, deploymentKey(cleanId))
  if (isMissingValue(raw)) {
-  return null
+  return []
  }
  try {
-  return normalizeDeploymentRecord(JSON.parse(raw), cleanId)
+  const single = normalizeDeploymentRecord(JSON.parse(raw), cleanId)
+  return single ? [single] : []
  }
  catch {
+  return []
+ }
+}
+
+export async function loadLaneDeployment(rootKv, laneId) {
+ const list = await loadLaneDeployments(rootKv, laneId)
+ if (list.length === 0) {
   return null
  }
+ const deployedList = list.filter(d => Boolean(d && d.lastDeployedAt))
+ if (deployedList.length > 0) {
+  return deployedList[deployedList.length - 1]
+ }
+ return list[list.length - 1]
 }
 
 export async function saveLaneDeployment(rootKv, deployment) {
@@ -2956,11 +3398,32 @@ export async function saveLaneDeployment(rootKv, deployment) {
   return norm
  }
  await enqueueWrite(kv, DEPLOYMENTS_BASE, async () => {
-  await kvSetChunked(kv, deploymentKey(norm.laneId), JSON.stringify(norm))
+  await kvSetChunked(kv, deploymentKey(norm.id), JSON.stringify(norm))
   const idx = await readPagedIds(kv, DEPLOYMENTS_BASE)
-  if (!idx.ids.includes(norm.laneId)) {
-   await writePagedIds(kv, DEPLOYMENTS_BASE, [...idx.ids, norm.laneId])
+  let nextIds = idx.ids.slice()
+  if (norm.id !== norm.laneId && nextIds.includes(norm.laneId)) {
+   const legacyRaw = await kvGetChunked(kv, deploymentKey(norm.laneId))
+   let replaceLegacy = isMissingValue(legacyRaw)
+   if (!replaceLegacy) {
+    try {
+     const legacyNorm = normalizeDeploymentRecord(JSON.parse(legacyRaw), norm.laneId)
+     if (legacyNorm && legacyNorm.id === norm.id) {
+      replaceLegacy = true
+     }
+    }
+    catch {
+     replaceLegacy = true
+    }
+   }
+   if (replaceLegacy) {
+    await kvDeleteChunked(kv, deploymentKey(norm.laneId))
+    nextIds = nextIds.filter(id => id !== norm.laneId)
+   }
   }
+  if (!nextIds.includes(norm.id)) {
+   nextIds.push(norm.id)
+  }
+  await writePagedIds(kv, DEPLOYMENTS_BASE, nextIds)
  })
  return norm
 }
@@ -3166,7 +3629,7 @@ export async function getLaneDeployStatus(rootKv, workspaceKv, laneId) {
  }
 }
 
-export async function setTargetLaneLine(rootKv, targetLaneId, targetLineId, nextText, win = null) {
+export async function setTargetLaneLine(rootKv, targetLaneId, targetLineId, nextText, win = null, setBy = null) {
  const kv = unwrapKv(rootKv)
  const cleanLane = String(targetLaneId || '').trim()
  const cleanLine = String(targetLineId || '').trim()
@@ -3174,6 +3637,7 @@ export async function setTargetLaneLine(rootKv, targetLaneId, targetLineId, next
   return {
    ok: false,
    changed: false,
+   setByChanged: false,
    error: 'Target lane and line ID are required',
    laneId: cleanLane,
    lineId: cleanLine,
@@ -3187,6 +3651,7 @@ export async function setTargetLaneLine(rootKv, targetLaneId, targetLineId, next
   return {
    ok: false,
    changed: false,
+   setByChanged: false,
    error: `Target line "${cleanLine}" not found`,
    laneId: cleanLane,
    lineId: cleanLine,
@@ -3194,46 +3659,192 @@ export async function setTargetLaneLine(rootKv, targetLaneId, targetLineId, next
  }
  const rec = records[idx]
  const prevText = rec.text === null || rec.text === undefined ? '' : String(rec.text)
- const nextStr = nextText === null || nextText === undefined ? '' : String(nextText)
- if (prevText === nextStr) {
+ const prevSetBy = normalizeLineSetBy(rec.setBy)
+ const allIds = records.map(r => r.id)
+ const ensureIdx = !(loaded && loaded.initialized)
+
+ if (setBy && typeof setBy === 'object' && setBy.clear === true) {
+  const matchLane = setBy.laneId === null || setBy.laneId === undefined ? '' : String(setBy.laneId).trim()
+  const matchLine = setBy.lineId === null || setBy.lineId === undefined ? '' : String(setBy.lineId).trim()
+  const shouldClear = Boolean(
+   prevSetBy &&
+   (!matchLane || prevSetBy.laneId === matchLane) &&
+   (!matchLine || prevSetBy.lineId === matchLine)
+  )
+  if (shouldClear) {
+   delete rec.setBy
+   await saveScriptLine(kv, laneData, cleanLane, rec, allIds, ensureIdx, rec.updatedAt || null)
+  }
   return {
    ok: true,
    changed: false,
+   setByChanged: shouldClear,
    laneId: cleanLane,
    lineId: cleanLine,
    lineNumber: idx + 1,
    previousText: prevText,
    text: prevText,
    updatedAt: rec.updatedAt || null,
+   setBy: normalizeLineSetBy(rec.setBy),
   }
  }
+
+ const nextStr = nextText === null || nextText === undefined ? '' : String(nextText)
+ const nextSetBy = normalizeLineSetBy(setBy)
+ const check = validateFieldScriptLine(nextStr, { filename: cleanLane, lineIndex: idx })
+ if (!check.ok) {
+  let savedDraft = null
+  if (win) {
+   savedDraft = saveLaneSourceDraft(kv, win, cleanLane, {
+    lineId: cleanLine,
+    lineIndex: idx,
+    text: nextStr,
+    savedText: prevText,
+    error: check.error,
+    setBy: nextSetBy,
+   })
+  }
+  return {
+   ok: false,
+   changed: false,
+   setByChanged: false,
+   syntaxError: true,
+   syntaxErrorDetail: check.error,
+   error: `Cannot save unparseable FieldScript in lane "${cleanLane}" line ${idx + 1}: ${check.error}`,
+   laneId: cleanLane,
+   lineId: cleanLine,
+   lineNumber: idx + 1,
+   previousText: prevText,
+   text: prevText,
+   draft: savedDraft,
+  }
+ }
+ const textChanged = prevText !== nextStr
+ const setByChanged = Boolean(
+  nextSetBy &&
+  (!prevSetBy || prevSetBy.laneId !== nextSetBy.laneId || prevSetBy.lineId !== nextSetBy.lineId)
+ )
+
+ if (!textChanged) {
+  if (win) {
+   clearLaneSourceDraft(kv, win, cleanLane, cleanLine)
+  }
+  if (setByChanged) {
+   rec.setBy = nextSetBy
+   await saveScriptLine(kv, laneData, cleanLane, rec, allIds, ensureIdx, rec.updatedAt || null)
+  }
+  return {
+   ok: true,
+   changed: false,
+   setByChanged,
+   laneId: cleanLane,
+   lineId: cleanLine,
+   lineNumber: idx + 1,
+   previousText: prevText,
+   text: prevText,
+   updatedAt: rec.updatedAt || null,
+   setBy: normalizeLineSetBy(rec.setBy),
+  }
+ }
+
  rec.text = nextStr
- const allIds = records.map(r => r.id)
- await saveScriptLine(kv, laneData, cleanLane, rec, allIds, !(loaded && loaded.initialized))
+ if (nextSetBy) {
+  rec.setBy = nextSetBy
+ }
+ await saveScriptLine(kv, laneData, cleanLane, rec, allIds, ensureIdx)
+ if (win) {
+  clearLaneSourceDraft(kv, win, cleanLane, cleanLine)
+ }
  return {
   ok: true,
   changed: true,
+  setByChanged,
   laneId: cleanLane,
   lineId: cleanLine,
   lineNumber: idx + 1,
   previousText: prevText,
   text: rec.text,
   updatedAt: rec.updatedAt || null,
+  setBy: normalizeLineSetBy(rec.setBy),
  }
 }
 
-export async function deleteLaneDeployment(rootKv, laneId) {
+export async function clearTargetLaneLineSetBy(rootKv, targetLaneId, targetLineId, sourceLaneId = '', sourceLineId = '', win = null) {
+ return setTargetLaneLine(rootKv, targetLaneId, targetLineId, null, win, {
+  clear: true,
+  laneId: sourceLaneId,
+  lineId: sourceLineId,
+ })
+}
+
+export async function deleteLaneDeployment(rootKv, laneIdOrDeploymentId, deploymentId = '') {
  const kv = resolveRegistryKv(rootKv)
- const cleanId = String(laneId || '').trim()
- if (!kv || !cleanId) {
+ const firstArg = String(laneIdOrDeploymentId || '').trim()
+ const secondArg = String(deploymentId || '').trim()
+ if (!kv || (!firstArg && !secondArg)) {
   return
  }
  await enqueueWrite(kv, DEPLOYMENTS_BASE, async () => {
-  await kvDeleteChunked(kv, deploymentKey(cleanId))
-  await kvDeleteChunked(kv, deployedScriptKey(cleanId))
   const idx = await readPagedIds(kv, DEPLOYMENTS_BASE)
-  if (idx.exists && idx.ids.includes(cleanId)) {
-   await writePagedIds(kv, DEPLOYMENTS_BASE, idx.ids.filter(id => id !== cleanId))
+  const curIds = idx.exists ? idx.ids.slice() : []
+  const raws = await mapConcurrent(curIds, CONCURRENCY_LIMIT, id => kvGetChunked(kv, deploymentKey(id)))
+  const recordsById = new Map()
+  for (let i = 0; i < curIds.length; i++) {
+   const raw = raws[i]
+   if (isMissingValue(raw)) {
+    continue
+   }
+   try {
+    const norm = normalizeDeploymentRecord(JSON.parse(raw), curIds[i])
+    if (norm) {
+     recordsById.set(curIds[i], norm)
+    }
+   }
+   catch {
+    // ignore corrupt entry
+   }
+  }
+
+  const specificDepId = secondArg || (curIds.includes(firstArg) && firstArg.includes('::') ? firstArg : '')
+  const toRemove = new Set()
+  const affectedLanes = new Set()
+
+  if (specificDepId) {
+   toRemove.add(specificDepId)
+   const rec = recordsById.get(specificDepId)
+   if (rec && rec.laneId) {
+    affectedLanes.add(rec.laneId)
+   }
+   else if (firstArg && !firstArg.includes('::')) {
+    affectedLanes.add(firstArg)
+   }
+  }
+  else if (firstArg) {
+   toRemove.add(firstArg)
+   affectedLanes.add(firstArg)
+   for (const [id, rec] of recordsById.entries()) {
+    if (id === firstArg || (rec && (rec.id === firstArg || rec.laneId === firstArg))) {
+     toRemove.add(id)
+    }
+   }
+  }
+
+  for (const rmId of toRemove) {
+   await kvDeleteChunked(kv, deploymentKey(rmId))
+  }
+  const nextIds = curIds.filter(id => !toRemove.has(id))
+  if (idx.exists || toRemove.size > 0) {
+   await writePagedIds(kv, DEPLOYMENTS_BASE, nextIds)
+  }
+
+  for (const laneId of affectedLanes) {
+   const stillHas = nextIds.some(id => {
+    const rec = recordsById.get(id)
+    return rec && rec.laneId === laneId
+   })
+   if (!stillHas) {
+    await kvDeleteChunked(kv, deployedScriptKey(laneId))
+   }
   }
  })
 }
@@ -3374,7 +3985,12 @@ export async function writeLaneSyncBundleToKv(targetRootKv, bundle, win = null) 
   else {
    await kvDelete(laneData, 'inputs')
   }
-  await saveLaneScript(kv, laneData, laneId, Array.isArray(item.records) ? item.records : [], win, null)
+  const deployRecords = (Array.isArray(item.records) ? item.records : []).map(r => (
+   r && typeof r === 'object'
+    ? { id: r.id, text: r.text, updatedAt: r.updatedAt }
+    : r
+  ))
+  await saveLaneScript(kv, laneData, laneId, deployRecords, win, null)
   await saveLaneTables(kv, laneData, laneId, Array.isArray(item.tables) ? item.tables : [])
   syncedIds.push(laneId)
  }
@@ -3384,4 +4000,539 @@ export async function writeLaneSyncBundleToKv(targetRootKv, bundle, win = null) 
   laneIds: syncedIds,
   syncedAt: new Date().toISOString(),
  }
+}
+
+export function formatAgentContext(options = {}) {
+ const opts = options && typeof options === 'object' ? options : {}
+ const sessionId = opts.sessionId !== undefined && opts.sessionId !== null ? String(opts.sessionId).trim() : ''
+ const sessionName = opts.sessionName !== undefined && opts.sessionName !== null && String(opts.sessionName).trim()
+  ? String(opts.sessionName).trim()
+  : sessionId
+ const dataDir = normalizeDataDir(opts.dataDir)
+ const dataDirConfirmed = opts.dataDirConfirmed === true || Boolean(dataDir)
+ const dirLabel = formatDataDirLabel(dataDir, dataDirConfirmed)
+ const openPackages = Array.isArray(opts.openPackages) ? opts.openPackages : []
+ const openPackageIds = Array.isArray(opts.openPackageIds)
+  ? opts.openPackageIds.map(String).filter(Boolean)
+  : openPackages.map(p => (p && typeof p === 'object' ? String(p.id || '') : String(p || ''))).filter(Boolean)
+ const activePackageId = opts.activePackageId !== undefined && opts.activePackageId !== null
+  ? String(opts.activePackageId).trim()
+  : ''
+ const laneId = opts.laneId !== undefined && opts.laneId !== null ? String(opts.laneId).trim() : ''
+ const laneTitle = opts.laneTitle !== undefined && opts.laneTitle !== null && String(opts.laneTitle).trim()
+  ? String(opts.laneTitle).trim()
+  : laneId
+ const lanePackageId = opts.lanePackageId !== undefined && opts.lanePackageId !== null && String(opts.lanePackageId).trim()
+  ? String(opts.lanePackageId).trim()
+  : ''
+ const lanePath = opts.lanePath !== undefined && opts.lanePath !== null && String(opts.lanePath).trim()
+  ? String(opts.lanePath).trim()
+  : ''
+ const openLanes = Array.isArray(opts.openLanes) ? opts.openLanes : []
+ const pathname = opts.pathname !== undefined && opts.pathname !== null && String(opts.pathname).trim()
+  ? String(opts.pathname).trim()
+  : ''
+ const lineObj = opts.line && typeof opts.line === 'object' ? opts.line : null
+ const rawLineNum = opts.lineNumber ?? opts['line-number'] ?? (lineObj ? (lineObj.lineNumber ?? lineObj['line-number'] ?? lineObj.number) : undefined)
+ const lineNumberStr = rawLineNum !== undefined && rawLineNum !== null && String(rawLineNum).trim() !== ''
+  ? String(rawLineNum).trim().replace(/^#/, '')
+  : ''
+ const rawLineId = opts.lineId ?? opts['line-id'] ?? (lineObj ? (lineObj.lineId ?? lineObj['line-id'] ?? lineObj.id) : undefined)
+ const lineId = rawLineId !== undefined && rawLineId !== null ? String(rawLineId).trim() : ''
+ const rawLineText = opts.lineText ?? opts['line-text'] ?? opts.lineSource ?? (lineObj ? (lineObj.lineText ?? lineObj['line-text'] ?? lineObj.text ?? lineObj.source) : undefined)
+ const hasLineText = rawLineText !== undefined && rawLineText !== null && String(rawLineText).length > 0
+ const lineText = hasLineText
+  ? String(rawLineText).replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '\\n')
+  : ''
+ const rawLineUpdatedAt = opts.lineUpdatedAt ?? opts['line-updated-at'] ?? opts.updatedAt ?? opts['updated-at'] ?? (lineObj ? (lineObj.lineUpdatedAt ?? lineObj['line-updated-at'] ?? lineObj.updatedAt ?? lineObj['updated-at']) : undefined)
+ const rawSetBy = opts.lineSetBy ?? opts['line-set-by'] ?? opts.setBy ?? opts['set-by'] ?? (lineObj ? (lineObj.lineSetBy ?? lineObj['line-set-by'] ?? lineObj.setBy ?? lineObj['set-by']) : undefined)
+ const rawSetByLabel = opts.lineSetByLabel ?? opts['line-set-by-label'] ?? opts.setByLabel ?? opts['set-by-label'] ?? (lineObj ? (lineObj.lineSetByLabel ?? lineObj['line-set-by-label'] ?? lineObj.setByLabel ?? lineObj['set-by-label']) : undefined)
+ const rawSetByTitle = opts.lineSetByTitle ?? opts['line-set-by-title'] ?? opts.setByTitle ?? opts['set-by-title'] ?? (lineObj ? (lineObj.lineSetByTitle ?? lineObj['line-set-by-title'] ?? lineObj.setByTitle ?? lineObj['set-by-title']) : undefined)
+ const hasLineInfo = Boolean(lineNumberStr || lineId || lineObj)
+
+ const lines = ['Civil Command Agent Context']
+ if (sessionId) {
+  lines.push(`Session: ${sessionName && sessionName !== sessionId ? `${sessionName} (${sessionId})` : sessionId}`)
+ }
+ else if (sessionName) {
+  lines.push(`Session: ${sessionName}`)
+ }
+ lines.push(`Data Directory (basePath): ${dirLabel}`)
+ if (openPackages.length > 0) {
+  const pkgLabels = openPackages
+   .map(pkg => {
+    if (!pkg || typeof pkg !== 'object') {
+     return String(pkg || '').trim()
+    }
+    const pid = String(pkg.id || '').trim()
+    const pname = String(pkg.name || pid).trim()
+    const base = pname && pname !== pid ? `${pname} (${pid})` : (pid || pname)
+    return pid && pid === activePackageId ? `${base} [active]` : base
+   })
+   .filter(Boolean)
+  if (pkgLabels.length > 0) {
+   lines.push(`Open Packages: ${pkgLabels.join(', ')}`)
+  }
+ }
+ else if (openPackageIds.length > 0) {
+  lines.push(`Open Packages: ${openPackageIds.join(', ')}`)
+ }
+ if (laneId) {
+  lines.push(`Lane: ${laneTitle && laneTitle !== laneId ? `${laneTitle} (${laneId})` : laneId}`)
+  if (lanePackageId) {
+   lines.push(`Lane Package: ${lanePackageId}`)
+  }
+  if (lanePath) {
+   lines.push(`Lane Path: ${lanePath}`)
+  }
+ }
+ else if (openLanes.length > 0) {
+  const laneLabels = openLanes
+   .map(lane => {
+    if (!lane || typeof lane !== 'object') {
+     return String(lane || '').trim()
+    }
+    const lid = String(lane.id || '').trim()
+    const ltitle = String(lane.title || lid).trim()
+    return ltitle && ltitle !== lid ? `${ltitle} (${lid})` : (lid || ltitle)
+   })
+   .filter(Boolean)
+  if (laneLabels.length > 0) {
+   lines.push(`Open Lanes (${laneLabels.length}): ${laneLabels.join(', ')}`)
+  }
+ }
+ if (hasLineInfo) {
+  if (lineNumberStr) {
+   lines.push(`Line: #${lineNumberStr}${lineId ? ` (${lineId})` : ''}`)
+  }
+  else if (lineId) {
+   lines.push(`Line: ${lineId}`)
+  }
+  lines.push(`Line ID: ${lineId || '(unsaved)'}`)
+  if (hasLineText) {
+   lines.push(`Line Source: ${lineText}`)
+  }
+  const clockDisplayOptions = opts.clockDisplayOptions && typeof opts.clockDisplayOptions === 'object'
+   ? opts.clockDisplayOptions
+   : (opts['clock-display-options'] && typeof opts['clock-display-options'] === 'object' ? opts['clock-display-options'] : undefined)
+  const ts = formatLineTimestamp(rawLineUpdatedAt === undefined || rawLineUpdatedAt === null ? '' : String(rawLineUpdatedAt), clockDisplayOptions)
+  const modLabel = ts.known
+   ? (ts.display && ts.display !== ts.iso ? `${ts.display} (${ts.iso})` : ts.iso)
+   : 'Unknown'
+  lines.push(`Line Modified: ${modLabel}`)
+  if (rawSetBy && typeof rawSetBy === 'object') {
+   const sbLaneId = rawSetBy.laneId !== undefined && rawSetBy.laneId !== null ? String(rawSetBy.laneId).trim() : ''
+   const sbLineId = rawSetBy.lineId !== undefined && rawSetBy.lineId !== null ? String(rawSetBy.lineId).trim() : ''
+   if (sbLaneId) {
+    const sbTitle = rawSetByTitle !== undefined && rawSetByTitle !== null && String(rawSetByTitle).trim()
+     ? String(rawSetByTitle).trim()
+     : (rawSetBy.laneTitle && String(rawSetBy.laneTitle).trim() ? String(rawSetBy.laneTitle).trim() : sbLaneId)
+    const sbLineLbl = rawSetByLabel !== undefined && rawSetByLabel !== null && String(rawSetByLabel).trim()
+     ? String(rawSetByLabel).trim()
+     : (rawSetBy.lineLabel && String(rawSetBy.lineLabel).trim() ? String(rawSetBy.lineLabel).trim() : sbLineId)
+    const sbDesc = sbLineLbl ? `${sbTitle} · ${sbLineLbl}` : sbTitle
+    const sbIds = sbLineId ? `${sbLaneId} / ${sbLineId}` : sbLaneId
+    const fullSb = (sbTitle !== sbLaneId || (sbLineId && sbLineLbl !== sbLineId))
+     ? `${sbDesc} (${sbIds})`
+     : sbDesc
+    lines.push(`Line Set By: ${fullSb}`)
+   }
+  }
+  else if (typeof rawSetBy === 'string' && rawSetBy.trim()) {
+   lines.push(`Line Set By: ${rawSetBy.trim()}`)
+  }
+ }
+ if (pathname) {
+  lines.push(`Route: ${pathname}`)
+ }
+ return lines.join('\n')
+}
+
+export function formatAgentPrompt(contextOrOptions = {}) {
+ const contextBlock = typeof contextOrOptions === 'string'
+  ? contextOrOptions.trim()
+  : formatAgentContext(contextOrOptions)
+ return `Read @AGENTS.md and use \`./cc\` to inspect my workspace:\n\n${contextBlock}\n\nTask: `
+}
+
+export async function inspectSessionForAgent(rootKv, options = {}) {
+ const opts = options && typeof options === 'object' ? options : {}
+ const registryKv = resolveRegistryKv(rootKv)
+ const defaultPkgSessions = registryKv ? await listPackageSessions(registryKv, DEFAULT_PACKAGE_ID) : { sessions: [] }
+ const sessions = Array.isArray(defaultPkgSessions && defaultPkgSessions.sessions) ? defaultPkgSessions.sessions : []
+
+ const rawSessionId = opts.sessionId !== undefined && opts.sessionId !== null ? String(opts.sessionId).trim() : ''
+ let matchedSession = null
+ if (rawSessionId) {
+  matchedSession = sessions.find(s => s.id === rawSessionId || s.name === rawSessionId) || null
+  if (!matchedSession && registryKv) {
+   const rawMeta = await kvGetChunked(registryKv, sessionMetaKey(rawSessionId))
+   if (!isMissingValue(rawMeta)) {
+    try {
+     const meta = JSON.parse(rawMeta)
+     if (meta && typeof meta === 'object') {
+      const dataDir = normalizeDataDir(meta.dataDir)
+      matchedSession = {
+       id: String(meta.id || rawSessionId),
+       name: meta.name ? String(meta.name) : rawSessionId,
+       dataDir,
+       dataDirConfirmed: meta.dataDirConfirmed === true || Boolean(dataDir),
+       version: Number.isInteger(meta.version) && meta.version > 0 ? meta.version : 1,
+       updatedAt: meta.updatedAt || meta.createdAt || null,
+      }
+     }
+    }
+    catch {
+     matchedSession = null
+    }
+   }
+  }
+ }
+ else if (sessions.length > 0) {
+  matchedSession = sessions[0]
+ }
+
+ const resolvedDataDir = opts.dataDir !== undefined
+  ? normalizeDataDir(opts.dataDir)
+  : (matchedSession ? normalizeDataDir(matchedSession.dataDir) : null)
+ const sessionKv = resolveSessionKv(rootKv, resolvedDataDir)
+
+ let sessionRecord = null
+ if (matchedSession && matchedSession.id) {
+  sessionRecord = await loadOrCreateSessionRecord(rootKv, matchedSession.id)
+ }
+
+ const openPackageIds = sessionRecord && Array.isArray(sessionRecord.openPackageIds) && sessionRecord.openPackageIds.length > 0
+  ? sessionRecord.openPackageIds
+  : [DEFAULT_PACKAGE_ID]
+ const catalogLoaded = sessionKv ? await loadSessionCatalog(sessionKv, openPackageIds) : { catalog: {}, list: [] }
+ const catalogList = Array.isArray(catalogLoaded && catalogLoaded.list) ? catalogLoaded.list : []
+ const rawLaneId = opts.laneId !== undefined && opts.laneId !== null ? String(opts.laneId).trim() : ''
+ let resolvedLaneId = rawLaneId
+ if (rawLaneId && catalogList.length > 0) {
+  const exactId = catalogList.find(item => item && item.id === rawLaneId)
+  if (exactId) {
+   resolvedLaneId = exactId.id
+  }
+  else {
+   const lower = rawLaneId.toLowerCase()
+   const exactTitle = catalogList.find(item => item && String(item.title || '').trim().toLowerCase() === lower)
+   if (exactTitle) {
+    resolvedLaneId = exactTitle.id
+   }
+  }
+ }
+ let lane = null
+ if (resolvedLaneId && sessionKv) {
+  const laneData = sessionKv.namespace(resolvedLaneId)
+  const [title, path, width, minimized, featuresRaw, inputsRaw, scriptLoaded, tables, packageId] = await Promise.all([
+   laneData.get('title'),
+   laneData.get('path'),
+   laneData.get('width'),
+   laneData.get('minimized'),
+   laneData.get('features'),
+   laneData.get('inputs'),
+   loadLaneScript(sessionKv, laneData, resolvedLaneId, opts.win || null),
+   loadLaneTables(sessionKv, laneData, resolvedLaneId),
+   getLanePackageId(sessionKv, resolvedLaneId),
+  ])
+  let inputs = []
+  if (typeof inputsRaw === 'string' && inputsRaw.trim()) {
+   try {
+    const parsedInputs = JSON.parse(inputsRaw)
+    if (Array.isArray(parsedInputs)) {
+     inputs = parsedInputs
+    }
+   }
+   catch {
+    inputs = []
+   }
+  }
+  const records = Array.isArray(scriptLoaded && scriptLoaded.records) ? scriptLoaded.records : []
+  lane = {
+   id: resolvedLaneId,
+   title: title === null || title === undefined ? '' : String(title),
+   packageId,
+   path: path === null || path === undefined ? '' : String(path),
+   width: width === null || width === undefined ? '' : String(width),
+   minimized: minimized === null || minimized === undefined ? '' : String(minimized),
+   features: featuresRaw === null || featuresRaw === undefined ? '' : String(featuresRaw),
+   inputs,
+   scriptInitialized: Boolean(scriptLoaded && scriptLoaded.initialized),
+   records,
+   lines: records.map(r => (r && r.text !== undefined && r.text !== null ? String(r.text) : '')),
+   tables: Array.isArray(tables) ? tables : [],
+  }
+ }
+
+ return {
+  sessions,
+  activeSession: sessionRecord ? sessionRecord.meta : matchedSession,
+  dataDir: resolvedDataDir,
+  openPackages: sessionRecord ? sessionRecord.openPackages : [],
+  openPackageIds,
+  catalog: catalogList,
+  lane,
+ }
+}
+
+// ---------- Encrypted Set-Once Secret Inputs ----------
+
+export function vaultMasterKey() {
+ return 'vault#master-key'
+}
+
+export function laneSecretsBase(laneId) {
+ return `lanes#${encodeKeySegment(laneId)}/secrets`
+}
+
+export function laneSecretKey(laneId, secretId) {
+ return `lanes#${encodeKeySegment(laneId)}/secrets/${encodeKeySegment(secretId)}`
+}
+
+let fallbackRandomByteSeq = 0
+function randomBytes(length) {
+ const out = new Uint8Array(length)
+ const c = globalThis.crypto
+ if (c && typeof c.getRandomValues === 'function') {
+  c.getRandomValues(out)
+  return out
+ }
+ for (let i = 0; i < length; i++) {
+  fallbackRandomByteSeq = (fallbackRandomByteSeq + 1) & 0xff
+  out[i] = (Date.now() + i * 31 + fallbackRandomByteSeq) & 0xff
+ }
+ return out
+}
+
+export async function ensureVaultMasterKey(rootKv) {
+ const registryKv = resolveRegistryKv(rootKv) || unwrapKv(rootKv)
+ if (registryKv) {
+  const existing = await kvGetChunked(registryKv, vaultMasterKey())
+  if (!isMissingValue(existing) && typeof existing === 'string' && existing.trim().length >= 64) {
+   return existing.trim()
+  }
+  const generated = bytesToHex(randomBytes(32))
+  await kvSetChunked(registryKv, vaultMasterKey(), generated)
+  return generated
+ }
+ return bytesToHex(sha256BytesFallback(utf8Encoder.encode('civil-command-ephemeral-vault-key')))
+}
+
+async function deriveSecretKeyBytes(masterKeyHex, laneId, secretId, saltHex) {
+ const material = utf8Encoder.encode(`${String(masterKeyHex)}:${String(laneId)}:${String(secretId)}:${String(saltHex)}`)
+ const c = globalThis.crypto
+ if (c && c.subtle && typeof c.subtle.digest === 'function') {
+  try {
+   const digest = await c.subtle.digest('SHA-256', material)
+   return new Uint8Array(digest)
+  }
+  catch {
+   // fall back to pure JS SHA-256
+  }
+ }
+ return sha256BytesFallback(material)
+}
+
+export async function encryptSecretValue(masterKeyHex, laneId, secretId, plaintext) {
+ const salt = generateSalt()
+ const ivBytes = randomBytes(12)
+ const iv = bytesToHex(ivBytes)
+ const keyBytes = await deriveSecretKeyBytes(masterKeyHex, laneId, secretId, salt)
+ const plainBytes = utf8Encoder.encode(String(plaintext ?? ''))
+ const c = globalThis.crypto
+ if (!c || !c.subtle || typeof c.subtle.importKey !== 'function' || typeof c.subtle.encrypt !== 'function') {
+  throw new Error('WebCrypto AES-256-GCM is required to encrypt secret inputs')
+ }
+ const cryptoKey = await c.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, ['encrypt'])
+ const encryptedBuf = await c.subtle.encrypt({ name: 'AES-GCM', iv: ivBytes }, cryptoKey, plainBytes)
+ const ciphertext = bytesToHex(new Uint8Array(encryptedBuf))
+ return {
+  v: 1,
+  alg: 'AES-256-GCM',
+  laneId: String(laneId),
+  secretId: String(secretId),
+  salt,
+  iv,
+  ciphertext,
+  createdAt: new Date().toISOString(),
+ }
+}
+
+export async function decryptSecretRecord(masterKeyHex, laneId, secretId, record) {
+ if (!record || typeof record !== 'object' || record.alg !== 'AES-256-GCM') {
+  throw new Error('Invalid encrypted secret record')
+ }
+ const ivBytes = hexToBytes(record.iv)
+ const cipherBytes = hexToBytes(record.ciphertext)
+ if (ivBytes.length === 0 || cipherBytes.length === 0) {
+  throw new Error('Corrupt encrypted secret record')
+ }
+ const keyBytes = await deriveSecretKeyBytes(masterKeyHex, laneId, secretId, record.salt || '')
+ const c = globalThis.crypto
+ if (!c || !c.subtle || typeof c.subtle.importKey !== 'function' || typeof c.subtle.decrypt !== 'function') {
+  throw new Error('WebCrypto AES-256-GCM is required to decrypt secret inputs')
+ }
+ const cryptoKey = await c.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, ['decrypt'])
+ const plainBuf = await c.subtle.decrypt({ name: 'AES-GCM', iv: ivBytes }, cryptoKey, cipherBytes)
+ return utf8Decoder.decode(new Uint8Array(plainBuf))
+}
+
+export async function loadLaneSecretRecord(rootKv, _laneData, laneId, secretId) {
+ const kv = unwrapKv(rootKv)
+ const cleanLaneId = String(laneId || '').trim()
+ const cleanSecretId = String(secretId || '').trim()
+ if (!kv || !cleanLaneId || !cleanSecretId) {
+  return null
+ }
+ const raw = await kvGetChunked(kv, laneSecretKey(cleanLaneId, cleanSecretId))
+ if (isMissingValue(raw)) {
+  return null
+ }
+ try {
+  const parsed = JSON.parse(raw)
+  return parsed && typeof parsed === 'object' ? parsed : null
+ }
+ catch {
+  return null
+ }
+}
+
+export async function setLaneSecret(rootKv, laneData, laneId, inputName, plaintext, existingSecretId = '') {
+ const kv = unwrapKv(rootKv)
+ const cleanLaneId = String(laneId || '').trim()
+ const cleanName = String(inputName || '').trim()
+ const secretText = plaintext === null || plaintext === undefined ? '' : String(plaintext)
+ if (!kv || !cleanLaneId) {
+  return { ok: false, error: 'rootKv and laneId are required' }
+ }
+ if (secretText.length === 0) {
+  return { ok: false, error: 'Secret value cannot be empty' }
+ }
+ const cleanExistingId = String(existingSecretId || '').trim()
+ if (cleanExistingId) {
+  const existingRecord = await loadLaneSecretRecord(rootKv, laneData, cleanLaneId, cleanExistingId)
+  if (existingRecord && existingRecord.ciphertext) {
+   return {
+    ok: false,
+    alreadySet: true,
+    error: 'Secret input is already set (set once, cannot reveal or overwrite). Remove the input first to replace it.',
+   }
+  }
+ }
+ if (laneData && typeof laneData.get === 'function' && cleanName) {
+  const rawInputs = await laneData.get('inputs')
+  if (typeof rawInputs === 'string' && rawInputs.trim().startsWith('[')) {
+   try {
+    const parsed = JSON.parse(rawInputs)
+    if (Array.isArray(parsed)) {
+     const found = parsed.find(item => item && String(item.name || '').trim() === cleanName && item.type === 'secret')
+     if (found && (found.secretSet === true || found.secretId)) {
+      const checkId = String(found.secretId || cleanExistingId || '').trim()
+      if (checkId) {
+       const rec = await loadLaneSecretRecord(rootKv, laneData, cleanLaneId, checkId)
+       if (rec && rec.ciphertext) {
+        return {
+         ok: false,
+         alreadySet: true,
+         error: 'Secret input is already set (set once, cannot reveal or overwrite). Remove the input first to replace it.',
+        }
+       }
+      }
+     }
+    }
+   }
+   catch {}
+  }
+ }
+
+ const secretId = cleanExistingId || generateId('sec')
+ const existingOnDisk = await loadLaneSecretRecord(rootKv, laneData, cleanLaneId, secretId)
+ if (existingOnDisk && existingOnDisk.ciphertext) {
+  return {
+   ok: false,
+   alreadySet: true,
+   error: 'Secret input is already set (set once, cannot reveal or overwrite). Remove the input first to replace it.',
+  }
+ }
+
+ const masterKeyHex = await ensureVaultMasterKey(rootKv)
+ const encryptedRecord = await encryptSecretValue(masterKeyHex, cleanLaneId, secretId, secretText)
+ await kvSetChunked(kv, laneSecretKey(cleanLaneId, secretId), JSON.stringify(encryptedRecord))
+
+ return {
+  ok: true,
+  laneId: cleanLaneId,
+  name: cleanName,
+  secretId,
+  secretSet: true,
+  alg: encryptedRecord.alg,
+  createdAt: encryptedRecord.createdAt,
+ }
+}
+
+export async function resolveLaneSecret(rootKv, laneData, laneId, entry) {
+ if (!entry || typeof entry !== 'object' || entry.type !== 'secret') {
+  return ''
+ }
+ const secretId = String(entry.secretId || '').trim()
+ if (!secretId) {
+  return ''
+ }
+ const cleanLaneId = String(laneId || '').trim()
+ const record = await loadLaneSecretRecord(rootKv, laneData, cleanLaneId, secretId)
+ if (!record || !record.ciphertext) {
+  return ''
+ }
+ try {
+  const masterKeyHex = await ensureVaultMasterKey(rootKv)
+  return await decryptSecretRecord(masterKeyHex, cleanLaneId, secretId, record)
+ }
+ catch {
+  return ''
+ }
+}
+
+export async function resolveLaneSecrets(rootKv, laneData, laneId, inputs) {
+ const list = Array.isArray(inputs) ? inputs : []
+ const values = {}
+ const secretNames = []
+ const secretSetNames = []
+ const secretValues = []
+ for (const entry of list) {
+  if (!entry || typeof entry !== 'object' || entry.type !== 'secret') {
+   continue
+  }
+  const name = String(entry.name || '').trim()
+  if (!name) {
+   continue
+  }
+  secretNames.push(name)
+  const decrypted = await resolveLaneSecret(rootKv, laneData, laneId, entry)
+  values[name] = decrypted
+  if (typeof decrypted === 'string' && decrypted.length > 0) {
+   secretSetNames.push(name)
+   secretValues.push(decrypted)
+  }
+  else if (entry.secretSet === true) {
+   secretSetNames.push(name)
+  }
+ }
+ return {
+  values,
+  secretNames,
+  secretSetNames,
+  secretValues,
+ }
+}
+
+export async function deleteLaneSecret(rootKv, _laneData, laneId, secretId) {
+ const kv = unwrapKv(rootKv)
+ const cleanLaneId = String(laneId || '').trim()
+ const cleanSecretId = String(secretId || '').trim()
+ if (!kv || !cleanLaneId || !cleanSecretId) {
+  return { ok: false }
+ }
+ await kvDeleteChunked(kv, laneSecretKey(cleanLaneId, cleanSecretId))
+ return { ok: true, laneId: cleanLaneId, secretId: cleanSecretId }
 }

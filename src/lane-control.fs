@@ -20,14 +20,29 @@
  { $defaultScrollbarColor : $defaultScrollbarColor }
  { true : '#383838' }
 ]
+; to min-lane-modal-width [ match
+ { [ propertyIsGreaterThan 0 minLaneModalWidth ] : $minLaneModalWidth }
+ { true : 480 }
+]
+; to min-lane-modal-height [ match
+ { [ propertyIsGreaterThan 0 minLaneModalHeight ] : $minLaneModalHeight }
+ { true : 420 }
+]
 ; to scope [ object
  { lanes {} }
  { lane-ids {} }
  { by-id ; object }
  { catalog ; object }
+ { line-num-cache ; object }
  { active-imports ; object }
  { preferences-lane-id null }
  { preferences ; object }
+ { preferences-timezones {} }
+ { clock-timezone browser }
+ { clock-hour-format '12h' }
+ { clock-show-seconds true }
+ { cron-timers ; object }
+ { cron-running ; object }
  { scroll-raf-id null }
  { session-id null }
  { browser-session-id null }
@@ -42,7 +57,12 @@
  { saved-pathname '/' }
  { saved-package-ids {} }
  { saved-active-package-id '' }
+ { table-display-options ; object }
+ { saved-table-display-options ; object }
  { session-dirty false }
+ { session-status-pending false }
+ { session-status-label '' }
+ { session-pending-count 0 }
  { recent-sessions {} }
  { session-history {} }
  { previous-session-ids {} }
@@ -52,7 +72,13 @@
  { available-previous-sessions {} }
  { available-next-sessions {} }
  { workspace-summary null }
+ { fullscreen-lane null }
+ { fullscreen-lane-id null }
+ { is-lane-fullscreen false }
+ { fullscreen-was-pinned false }
 ]
+; to lane-fs-enter-svg '<svg class="lane-fullscreen-icon lane-fullscreen-icon--enter" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 6V2.5H6M10 2.5H13.5V6M13.5 10V13.5H10M6 13.5H2.5V10"></path></svg>'
+; to lane-fs-exit-svg '<svg class="lane-fullscreen-icon lane-fullscreen-icon--exit" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 6H6V2.5M10 2.5V6H13.5M13.5 10H10V13.5M6 13.5V10H2.5"></path></svg>'
 ; to config-modal !lane-config-modal.create $scope
 ; set $config-modal scope.config-modal
 ; to import-modal !lane-import-modal.create $scope
@@ -63,9 +89,9 @@
 ; set $export-deploy-modal scope.export-deploy-modal
 ; to lane-modal !lane-modal-mod.create $scope
 ; set $lane-modal scope.lane-modal
-; to confirm-modal !confirm-modal-mod.create
+; to confirm-modal !confirm-modal-mod.create $scope
 ; set $confirm-modal scope.confirm-modal
-; to row-picker-modal !row-picker-modal-mod.create
+; to row-picker-modal !row-picker-modal-mod.create $scope
 ; set $row-picker-modal scope.row-picker-modal
 ; to session-modal !lane-session-modal-mod.create $scope
 ; set $session-modal scope.session-modal
@@ -73,14 +99,36 @@
 ; set $package-modal scope.package-modal
 ; to dir-modal !lane-dir-modal-mod.create $scope
 ; set $dir-modal scope.dir-modal
-; to line-info-modal !lane-line-info-mod.create
+; to line-info-modal !lane-line-info-mod.create $scope
 ; set $line-info-modal scope.line-info-modal
-; to terminal-modal !lane-terminal-modal-mod.create
+; to terminal-modal !lane-terminal-modal-mod.create $scope
 ; set $terminal-modal scope.terminal-modal
 ; to servers-modal !lane-servers-modal-mod.create $scope
 ; set $servers-modal scope.servers-modal
 ; to rails !lane-rails.create $scope
 ; set $rails scope.rails
+; to fullscreen-el !document.createElement div
+; assign $fullscreen-el { className lane-fullscreen } { hidden true }
+!fullscreen-el.setAttribute role region
+!fullscreen-el.setAttribute aria-label 'Fullscreen lane'
+!fullscreen-el.setAttribute aria-hidden 'true'
+!fullscreen-el.setAttribute data-lane-id ''
+; to fullscreen-frame !document.createElement div
+; set lane-fullscreen-frame fullscreen-frame.className
+; to fullscreen-header !document.createElement div
+; set 'lane-fullscreen-header lane-header' fullscreen-header.className
+; to fullscreen-body !document.createElement div
+; set 'lane-fullscreen-body lane-body' fullscreen-body.className
+!fullscreen-frame.appendChild $fullscreen-header
+!fullscreen-frame.appendChild $fullscreen-body
+!fullscreen-el.appendChild $fullscreen-frame
+[ match
+ { $document.body : !document.body.appendChild $fullscreen-el }
+]
+; set $fullscreen-el scope.fullscreen-el
+; set $fullscreen-frame scope.fullscreen-frame
+; set $fullscreen-header scope.fullscreen-header
+; set $fullscreen-body scope.fullscreen-body
 ; to copy-id-list (
  -- Returns a fresh shallow array copy of string IDs
  ; to { list } $argv
@@ -147,7 +195,7 @@
  ; object { previous $scope.available-previous-sessions } { next $scope.available-next-sessions }
 )
 ; to sync-session-ui (
- -- Refreshes top-rail session/packages menus, side-rail session nav tabs, and the left workspace summary panel
+ -- Refreshes top-rail session/packages menus, side-rail session nav tabs, open session/package modals, and the left workspace summary panel
  [ match
   { $rails.sync-session-menu : !rails.sync-session-menu }
  ]
@@ -160,24 +208,90 @@
  [ match
   { $scope.sync-workspace-summary : !scope.sync-workspace-summary }
  ]
+ [ match
+  { [ and { propertyIs true session-modal.is-open } { propertyIs history session-modal.mode } { $session-modal.render-history-page } ] : !session-modal.render-history-page }
+  { [ and { propertyIs true session-modal.is-open } { $session-modal.render-session } ] : !session-modal.render-session }
+ ]
+ [ match
+  { [ and { propertyIs true package-modal.is-open } { propertyIs packages package-modal.mode } { $package-modal.render-packages-page } ] : !package-modal.render-packages-page }
+ ]
 )
 ; to scope.recompute-session-dirty (
- -- Recomputes whether current lane routes (open lanes, order, tabs, selected data tables) or open packages differ from the session's last saved version
- ; to cur-pathname !formatLaneRoutes $scope.lanes
- ; to saved-path [ match
-  { $scope.saved-pathname : $scope.saved-pathname }
-  { true : '/' }
+ -- Recomputes whether current lane routes (open lanes, order, tabs, selected data tables) or open packages differ from the session's last saved version (deferred while session-pending-count > 0)
+ [ match
+  { [ propertyIsGreaterThan 0 scope.session-pending-count ] (
+   ; set true scope.session-status-pending
+   !sync-session-ui
+   $scope.session-dirty
+  ) }
+  { true (
+   ; set false scope.session-status-pending
+   ; set '' scope.session-status-label
+   ; to cur-pathname !formatLaneRoutes $scope.lanes
+   ; to saved-path [ match
+    { $scope.saved-pathname : $scope.saved-pathname }
+    { true : '/' }
+   ]
+   ; to routes-same [ propertyIs $cur-pathname saved-path ]
+   ; to pkgs-same !arrays-equal $scope.open-package-ids $scope.saved-package-ids
+   ; to display-opts-same [ match
+    { $sessionTableDisplayOptionsEqual : !sessionTableDisplayOptionsEqual $scope.table-display-options $scope.saved-table-display-options }
+    { true : true }
+   ]
+   ; to is-dirty [ match
+    { [ propertyIs false routes-same ] : true }
+    { [ propertyIs false pkgs-same ] : true }
+    { [ propertyIs false display-opts-same ] : true }
+    { true : false }
+   ]
+   ; set $is-dirty scope.session-dirty
+   !sync-session-ui
+   $is-dirty
+  ) }
  ]
- ; to routes-same [ propertyIs $cur-pathname saved-path ]
- ; to pkgs-same !arrays-equal $scope.open-package-ids $scope.saved-package-ids
- ; to is-dirty [ match
-  { [ propertyIs false routes-same ] : true }
-  { [ propertyIs false pkgs-same ] : true }
+)
+; to scope.begin-session-status-pending (
+ -- Enters an intermediate pending session status state (e.g. Saving… or Loading…) that blocks navigation like unsaved without flashing Unsaved version until saved/unsaved state is known
+ ; to { raw-label } $argv
+ ; to label [ match
+  { $raw-label : $raw-label }
+  { [ propertyIs '' scope.session-status-label ] : 'Loading…' }
+  { true : $scope.session-status-label }
+ ]
+ ; to next-count ; add $scope.session-pending-count 1
+ ; set $next-count scope.session-pending-count
+ ; set true scope.session-status-pending
+ ; set $label scope.session-status-label
+ !sync-session-ui
+ $next-count
+)
+; to scope.end-session-status-pending (
+ -- Completes a pending session/lane operation and recomputes accurate saved/unsaved session status once all pending operations settle
+ ; to { skip-recompute } $argv
+ ; to next-count [ match
+  { [ propertyIsGreaterThan 1 scope.session-pending-count ] : ; subtract $scope.session-pending-count 1 }
+  { true : 0 }
+ ]
+ ; set $next-count scope.session-pending-count
+ [ match
+  { [ propertyIs 0 next-count ] (
+   ; set false scope.session-status-pending
+   ; set '' scope.session-status-label
+   [ match
+    { $skip-recompute : !sync-session-ui }
+    { true : !scope.recompute-session-dirty }
+   ]
+  ) }
+ ]
+ $next-count
+)
+; to scope.is-session-navigation-blocked (
+ -- Returns true when session switching/creation should be blocked (either because the session has an unsaved version or because saved/unsaved status is currently pending)
+ [ match
+  { [ propertyIs true scope.session-status-pending ] : true }
+  { [ propertyIs true scope.session-dirty ] : true }
   { true : false }
  ]
- ; set $is-dirty scope.session-dirty
- !sync-session-ui
- $is-dirty
 )
 ; to navigate-to-session-pathname (
  -- Updates browser URL pathname to the session's saved lane routes (including per-lane tabs and data tables) while preserving search and hash
@@ -263,6 +377,21 @@
    ; set $base-path scope.saved-pathname
    ; set $base-pkgs scope.saved-package-ids
    ; set $sess.activePackageId scope.saved-active-package-id
+   ; to raw-disp-opts [ match
+    { $sess.tableDisplayOptions : $sess.tableDisplayOptions }
+    { $sess.meta.tableDisplayOptions : $sess.meta.tableDisplayOptions }
+    { true : ; object }
+   ]
+   ; to cur-disp-opts [ match
+    { $normalizeSessionTableDisplayOptions : !normalizeSessionTableDisplayOptions $raw-disp-opts }
+    { true : ; object }
+   ]
+   ; to saved-disp-opts [ match
+    { $normalizeSessionTableDisplayOptions : !normalizeSessionTableDisplayOptions $raw-disp-opts }
+    { true : ; object }
+   ]
+   ; set $cur-disp-opts scope.table-display-options
+   ; set $saved-disp-opts scope.saved-table-display-options
    ; to prev-ids [ match
     { $sess.previousSessionIds : !copy-id-list $sess.previousSessionIds }
     { $sess.meta.previousSessionIds : !copy-id-list $sess.meta.previousSessionIds }
@@ -315,14 +444,20 @@
 ; to refresh-after-session-change (
  -- Reloads catalog, optionally navigates URL to session lane routes, re-syncs lanes, recomputes dirty state, and applies preferences
  ; to { navigate-lanes } $argv
- !scope.load-catalog
- [ match
-  { $navigate-lanes : !navigate-to-session-pathname $scope.saved-pathname }
- ]
- !scope.sync
- !scope.recompute-session-dirty
+ !scope.begin-session-status-pending 'Loading…'
+ ; try (
+  !scope.load-catalog
+  [ match
+   { $navigate-lanes : !navigate-to-session-pathname $scope.saved-pathname }
+  ]
+  !scope.sync
+ ) : null
+ !scope.end-session-status-pending
  [ match
   { $scope.load-preferences-lane : !scope.load-preferences-lane }
+ ]
+ [ match
+  { $scope.load-clock-timezone : !scope.load-clock-timezone }
  ]
  [ match
   { $rails.sync-preferences-menu : !rails.sync-preferences-menu }
@@ -363,28 +498,41 @@
  -- Permanently binds the active session to a computer folder (or confirms Default when null/empty)
  ; to { data-dir } $argv
  !scope.ensure-session
- ; to res !setSessionDataDir $data $window $scope.session-id [ object { dataDir $data-dir } ]
- [ match
-  { $res.ok (
-   !scope.apply-session-state $res.session
-   !refresh-after-session-change $res.dirChanged
-   !sync-session-ui
-  ) }
- ]
+ !scope.begin-session-status-pending 'Loading…'
+ ; to res null
+ ; try (
+  ; set [ !setSessionDataDir $data $window $scope.session-id [ object { dataDir $data-dir } ] ] res
+  [ match
+   { $res.ok (
+    !scope.apply-session-state $res.session
+    !refresh-after-session-change $res.dirChanged
+   ) }
+  ]
+ ) : null
+ !scope.end-session-status-pending
  $res
 )
 ; to scope.prompt-new-session (
- -- Opens the computer directory picker modal in Create Session mode
+ -- Opens the computer directory picker modal in Create Session mode (or prompts unsaved version resolution in Sessions modal when dirty or pending)
  ; to { tab-only } $argv
- !dir-modal.open-create [ object { tab-only [ ternary $tab-only true false ] } ]
+ [ match
+  { [ propertyIs true scope.session-status-pending ] : null }
+  { [ propertyIs true scope.session-dirty ] : !session-modal.open-switch-session }
+  { true : !dir-modal.open-create [ object { tab-only [ ternary $tab-only true false ] } ] }
+ ]
 )
 ; to scope.new-session (
  -- Creates a new session (browser + tab by default), switches to it, and navigates to its lanes
  ; to { name data-dir confirmed } $argv
- ; to opts [ object { name $name } { tabOnly false } { dataDir $data-dir } { dataDirConfirmed $confirmed } ]
- ; to sess !createNewSession $data $window $opts
- !scope.apply-session-state $sess
- !refresh-after-session-change true
+ !scope.begin-session-status-pending 'Loading…'
+ ; to sess null
+ ; try (
+  ; to opts [ object { name $name } { tabOnly false } { dataDir $data-dir } { dataDirConfirmed $confirmed } ]
+  ; set [ !createNewSession $data $window $opts ] sess
+  !scope.apply-session-state $sess
+  !refresh-after-session-change true
+ ) : null
+ !scope.end-session-status-pending
  [ match
   { [ propertyIs false scope.session-data-dir-confirmed ] : !dir-modal.open-confirm }
  ]
@@ -393,20 +541,30 @@
 ; to scope.switch-session (
  -- Switches active session (browser + tab), redirecting browser URL to that session's open lanes
  ; to { id } $argv
+ !scope.begin-session-status-pending 'Loading…'
  ; to prev !capture-previous-confirmed $id
- ; to sess !switchBrowserSession $data $window $id
- !scope.apply-session-state $sess
- !refresh-after-session-change true
+ ; to sess null
+ ; try (
+  ; set [ !switchBrowserSession $data $window $id ] sess
+  !scope.apply-session-state $sess
+  !refresh-after-session-change true
+ ) : null
+ !scope.end-session-status-pending
  !maybe-prompt-confirm $prev
  $sess
 )
 ; to scope.new-tab-session (
  -- Creates a new tab-only session in sessionStorage without altering the localStorage browser session
  ; to { name data-dir confirmed } $argv
- ; to opts [ object { name $name } { dataDir $data-dir } { dataDirConfirmed $confirmed } ]
- ; to sess !createNewTabSession $data $window $opts
- !scope.apply-session-state $sess
- !refresh-after-session-change true
+ !scope.begin-session-status-pending 'Loading…'
+ ; to sess null
+ ; try (
+  ; to opts [ object { name $name } { dataDir $data-dir } { dataDirConfirmed $confirmed } ]
+  ; set [ !createNewTabSession $data $window $opts ] sess
+  !scope.apply-session-state $sess
+  !refresh-after-session-change true
+ ) : null
+ !scope.end-session-status-pending
  [ match
   { [ propertyIs false scope.session-data-dir-confirmed ] : !dir-modal.open-confirm }
  ]
@@ -415,113 +573,250 @@
 ; to scope.switch-tab-session (
  -- Switches the active tab session in sessionStorage only and navigates to its lanes
  ; to { id } $argv
+ !scope.begin-session-status-pending 'Loading…'
  ; to prev !capture-previous-confirmed $id
- ; to sess !switchTabSession $data $window $id
- !scope.apply-session-state $sess
- !refresh-after-session-change true
+ ; to sess null
+ ; try (
+  ; set [ !switchTabSession $data $window $id ] sess
+  !scope.apply-session-state $sess
+  !refresh-after-session-change true
+ ) : null
+ !scope.end-session-status-pending
  !maybe-prompt-confirm $prev
  $sess
 )
 ; to scope.return-to-browser-session (
  -- Clears the tab override, returns sessionStorage to the saved localStorage browser session, and navigates to its lanes
+ !scope.begin-session-status-pending 'Loading…'
  ; to prev !capture-previous-confirmed $scope.browser-session-id
- ; to sess !returnToBrowserSession $data $window
- !scope.apply-session-state $sess
- !refresh-after-session-change true
+ ; to sess null
+ ; try (
+  ; set [ !returnToBrowserSession $data $window ] sess
+  !scope.apply-session-state $sess
+  !refresh-after-session-change true
+ ) : null
+ !scope.end-session-status-pending
  !maybe-prompt-confirm $prev
  $sess
 )
 ; to scope.promote-tab-session (
  -- Promotes the current tab session ID to become the persistent localStorage browser session
- ; to sess !promoteTabToBrowserSession $data $window
- !scope.apply-session-state $sess
- !refresh-after-session-change false
+ !scope.begin-session-status-pending 'Saving…'
+ ; to sess null
+ ; try (
+  ; set [ !promoteTabToBrowserSession $data $window ] sess
+  !scope.apply-session-state $sess
+  !refresh-after-session-change false
+ ) : null
+ !scope.end-session-status-pending
  $sess
 )
 ; to scope.switch-browser-session (
  -- Switches both the persistent localStorage browser session and active sessionStorage tab session and navigates to its lanes
  ; to { id } $argv
+ !scope.begin-session-status-pending 'Loading…'
  ; to prev !capture-previous-confirmed $id
- ; to sess !switchBrowserSession $data $window $id
- !scope.apply-session-state $sess
- !refresh-after-session-change true
+ ; to sess null
+ ; try (
+  ; set [ !switchBrowserSession $data $window $id ] sess
+  !scope.apply-session-state $sess
+  !refresh-after-session-change true
+ ) : null
+ !scope.end-session-status-pending
  !maybe-prompt-confirm $prev
  $sess
 )
 ; to scope.save-session-draft (
- -- Commits current working lane routes (including tabs and selected data tables) and packages as the next saved version of the active session
+ -- Commits current working lane routes (including tabs and selected data tables), table display options, and packages as the next saved version of the active session
  !scope.ensure-session
- ; to cur-pathname !formatLaneRoutes $scope.lanes
- ; to opts [ object
-  { laneIds !copy-id-list $scope.lane-ids }
-  { pathname $cur-pathname }
-  { openPackageIds !copy-id-list $scope.open-package-ids }
-  { activePackageId $scope.active-package-id }
-  { incrementVersion true }
- ]
- ; to res !saveSessionVersion $data $window $scope.session-id $opts
- [ match
-  { $res (
-   ; set [ !copy-id-list $res.laneIds ] scope.saved-lane-ids
-   ; set [ match { $res.pathname : $res.pathname } { true : $cur-pathname } ] scope.saved-pathname
-   ; set [ !copy-id-list $res.openPackageIds ] scope.saved-package-ids
-   ; set $res.activePackageId scope.saved-active-package-id
-   ; set $res.recentSessions scope.recent-sessions
-   [ match
-    { $res.sessionHistory : ; set $res.sessionHistory scope.session-history }
-   ]
-   !scope.apply-session-packages $res
-  ) }
- ]
- !scope.recompute-session-dirty
+ !scope.begin-session-status-pending 'Saving…'
+ ; to res null
+ ; try (
+  ; to cur-pathname !formatLaneRoutes $scope.lanes
+  ; to cur-disp-opts [ match
+   { $normalizeSessionTableDisplayOptions : !normalizeSessionTableDisplayOptions $scope.table-display-options }
+   { true : $scope.table-display-options }
+  ]
+  ; to opts [ object
+   { laneIds !copy-id-list $scope.lane-ids }
+   { pathname $cur-pathname }
+   { openPackageIds !copy-id-list $scope.open-package-ids }
+   { activePackageId $scope.active-package-id }
+   { tableDisplayOptions $cur-disp-opts }
+   { incrementVersion true }
+  ]
+  ; set [ !saveSessionVersion $data $window $scope.session-id $opts ] res
+  [ match
+   { $res (
+    ; set [ !copy-id-list $res.laneIds ] scope.saved-lane-ids
+    ; set [ match { $res.pathname : $res.pathname } { true : $cur-pathname } ] scope.saved-pathname
+    ; set [ !copy-id-list $res.openPackageIds ] scope.saved-package-ids
+    ; set $res.activePackageId scope.saved-active-package-id
+    ; to next-saved-disp [ match
+     { $normalizeSessionTableDisplayOptions : !normalizeSessionTableDisplayOptions [ match { $res.tableDisplayOptions : $res.tableDisplayOptions } { true : $cur-disp-opts } ] }
+     { true : $cur-disp-opts }
+    ]
+    ; set $next-saved-disp scope.saved-table-display-options
+    ; set [ match { $normalizeSessionTableDisplayOptions : !normalizeSessionTableDisplayOptions $next-saved-disp } { true : $next-saved-disp } ] scope.table-display-options
+    ; set $res.recentSessions scope.recent-sessions
+    [ match
+     { $res.sessionHistory : ; set $res.sessionHistory scope.session-history }
+    ]
+    !scope.apply-session-packages $res
+   ) }
+  ]
+ ) : null
+ !scope.end-session-status-pending
  $res
 )
 ; to scope.fork-session (
- -- Forks the current working lane routes (including tabs and selected data tables) and packages into a new session while leaving the original session at its last saved version
+ -- Forks the current working lane routes (including tabs and selected data tables), table display options, and packages into a new session while leaving the original session at its last saved version
  ; to { name tab-only } $argv
  !scope.ensure-session
- ; to cur-pathname !formatLaneRoutes $scope.lanes
- ; to opts [ object
-  { name $name }
-  { laneIds !copy-id-list $scope.lane-ids }
-  { pathname $cur-pathname }
-  { openPackageIds !copy-id-list $scope.open-package-ids }
-  { activePackageId $scope.active-package-id }
-  { tabOnly [ ternary $tab-only true false ] }
-  { restoreSourcePackageIds !copy-id-list $scope.saved-package-ids }
-  { restoreSourceActivePackageId $scope.saved-active-package-id }
- ]
- ; to sess !forkSession $data $window $scope.session-id $opts
- !scope.apply-session-state $sess
- !refresh-after-session-change true
+ !scope.begin-session-status-pending 'Saving…'
+ ; to sess null
+ ; try (
+  ; to cur-pathname !formatLaneRoutes $scope.lanes
+  ; to cur-disp-opts [ match
+   { $normalizeSessionTableDisplayOptions : !normalizeSessionTableDisplayOptions $scope.table-display-options }
+   { true : $scope.table-display-options }
+  ]
+  ; to opts [ object
+   { name $name }
+   { laneIds !copy-id-list $scope.lane-ids }
+   { pathname $cur-pathname }
+   { openPackageIds !copy-id-list $scope.open-package-ids }
+   { activePackageId $scope.active-package-id }
+   { tableDisplayOptions $cur-disp-opts }
+   { tabOnly [ ternary $tab-only true false ] }
+   { restoreSourcePackageIds !copy-id-list $scope.saved-package-ids }
+   { restoreSourceActivePackageId $scope.saved-active-package-id }
+  ]
+  ; set [ !forkSession $data $window $scope.session-id $opts ] sess
+  !scope.apply-session-state $sess
+  !refresh-after-session-change true
+ ) : null
+ !scope.end-session-status-pending
  $sess
 )
 ; to scope.abandon-session-draft (
- -- Reverts working lane routes and packages back to the session's last saved version and redirects URL
+ -- Reverts working lane routes, table display options, and packages back to the session's last saved version and redirects URL
  !scope.ensure-session
- ; to opts [ object
-  { laneIds !copy-id-list $scope.saved-lane-ids }
-  { pathname $scope.saved-pathname }
-  { openPackageIds !copy-id-list $scope.saved-package-ids }
-  { activePackageId $scope.saved-active-package-id }
-  { incrementVersion false }
- ]
- ; to res !saveSessionVersion $data $window $scope.session-id $opts
- [ match
-  { $res (
-   ; set [ !copy-id-list $res.laneIds ] scope.saved-lane-ids
-   ; set [ match { $res.pathname : $res.pathname } { true : '/' } ] scope.saved-pathname
-   ; set [ !copy-id-list $res.openPackageIds ] scope.saved-package-ids
-   ; set $res.activePackageId scope.saved-active-package-id
-   ; set $res.recentSessions scope.recent-sessions
-   [ match
-    { $res.sessionHistory : ; set $res.sessionHistory scope.session-history }
-   ]
-   !scope.apply-session-packages $res
-  ) }
- ]
- !refresh-after-session-change true
+ !scope.begin-session-status-pending 'Loading…'
+ ; to res null
+ ; try (
+  ; to saved-disp-opts [ match
+   { $normalizeSessionTableDisplayOptions : !normalizeSessionTableDisplayOptions $scope.saved-table-display-options }
+   { true : $scope.saved-table-display-options }
+  ]
+  ; to opts [ object
+   { laneIds !copy-id-list $scope.saved-lane-ids }
+   { pathname $scope.saved-pathname }
+   { openPackageIds !copy-id-list $scope.saved-package-ids }
+   { activePackageId $scope.saved-active-package-id }
+   { tableDisplayOptions $saved-disp-opts }
+   { incrementVersion false }
+  ]
+  ; set [ !saveSessionVersion $data $window $scope.session-id $opts ] res
+  [ match
+   { $res (
+    ; set [ !copy-id-list $res.laneIds ] scope.saved-lane-ids
+    ; set [ match { $res.pathname : $res.pathname } { true : '/' } ] scope.saved-pathname
+    ; set [ !copy-id-list $res.openPackageIds ] scope.saved-package-ids
+    ; set $res.activePackageId scope.saved-active-package-id
+    ; to restored-disp [ match
+     { $normalizeSessionTableDisplayOptions : !normalizeSessionTableDisplayOptions [ match { $res.tableDisplayOptions : $res.tableDisplayOptions } { true : $saved-disp-opts } ] }
+     { true : $saved-disp-opts }
+    ]
+    ; set $restored-disp scope.saved-table-display-options
+    ; set [ match { $normalizeSessionTableDisplayOptions : !normalizeSessionTableDisplayOptions $restored-disp } { true : $restored-disp } ] scope.table-display-options
+    ; set $res.recentSessions scope.recent-sessions
+    [ match
+     { $res.sessionHistory : ; set $res.sessionHistory scope.session-history }
+    ]
+    !scope.apply-session-packages $res
+   ) }
+  ]
+  !refresh-after-session-change true
+ ) : null
+ !scope.end-session-status-pending
  $res
+)
+; to scope.get-visible-subtables (
+ -- Returns the list of visible subtable IDs for a given lane and table in the active session
+ ; to { lane-id table-id } $argv
+ ; to clean-lane [ match { $lane-id : ; add '' $lane-id } { true : '' } ]
+ ; to clean-tbl [ match { $table-id : ; add '' $table-id } { true : '' } ]
+ [ match
+  { [ and { $clean-lane } { $clean-tbl } ] (
+   ; to key ; add $clean-lane ; add ':' $clean-tbl
+   ; to list [ get scope.table-display-options $key ]
+   [ match
+    { [ !window.Array.isArray $list ] : !copy-id-list $list }
+    { true : {} }
+   ]
+  ) }
+  { true : {} }
+ ]
+)
+; to scope.is-subtable-visible (
+ -- Returns true when a subtable is toggled visible under the given lane and table in the active session
+ ; to { lane-id table-id subtable-id } $argv
+ ; to list !scope.get-visible-subtables $lane-id $table-id
+ ; to clean-sub [ match { $subtable-id : ; add '' $subtable-id } { true : '' } ]
+ [ match
+  { [ propertyIs '' clean-sub ] : false }
+  { true : !list.includes $clean-sub }
+ ]
+)
+; to scope.set-subtable-visible (
+ -- Sets or toggles visibility of an inbound subtable for a lane table in the active session and marks the session dirty if changed
+ ; to { lane-id table-id subtable-id visible } $argv
+ !scope.ensure-session
+ ; to clean-lane [ match { $lane-id : ; add '' $lane-id } { true : '' } ]
+ ; to clean-tbl [ match { $table-id : ; add '' $table-id } { true : '' } ]
+ ; to clean-sub [ match { $subtable-id : ; add '' $subtable-id } { true : '' } ]
+ [ match
+  { [ and { $clean-lane } { $clean-tbl } { $clean-sub } ] (
+   ; to key ; add $clean-lane ; add ':' $clean-tbl
+   ; to cur-list !scope.get-visible-subtables $clean-lane $clean-tbl
+   ; to was-vis !cur-list.includes $clean-sub
+   ; to next-vis [ match
+    { [ propertyIs undefined visible ] : [ ternary $was-vis false true ] }
+    { [ propertyIs null visible ] : [ ternary $was-vis false true ] }
+    { true : [ ternary $visible true false ] }
+   ]
+   ; to next-list {}
+   ; each $cur-list (
+    ; to { item } $argv
+    ; to is-same [ propertyIs $clean-sub item ]
+    ; condition { propertyIs false is-same } : !next-list.push $item
+   )
+   ; condition { propertyIs true next-vis } : !next-list.push $clean-sub
+   ; to next-map ; object
+   [ match
+    { $scope.table-display-options : ; assign $next-map $scope.table-display-options }
+   ]
+   [ match
+    { [ propertyIsGreaterThan 0 next-list.length ] : ; to next-map $key $next-list }
+    { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $next-map $key }
+    { true : ; to next-map $key {} }
+   ]
+   ; to normalized [ match
+    { $normalizeSessionTableDisplayOptions : !normalizeSessionTableDisplayOptions $next-map }
+    { true : $next-map }
+   ]
+   ; set $normalized scope.table-display-options
+   !scope.recompute-session-dirty
+   $next-vis
+  ) }
+  { true : false }
+ ]
+)
+; to scope.toggle-subtable-visible (
+ -- Toggles visibility of an inbound subtable for a lane table in the active session and marks the session dirty
+ ; to { lane-id table-id subtable-id } $argv
+ !scope.set-subtable-visible $lane-id $table-id $subtable-id null
 )
 ; to scope.rename-session (
  -- Renames the active session in KV, recent sessions, and session history
@@ -608,42 +903,50 @@
  -- Creates a new optionally passphrase-protected package and opens it in the active session (marking draft dirty)
  ; to { name passphrase } $argv
  !scope.ensure-session
- ; to opts [ object { name $name } { passphrase $passphrase } ]
- ; to res !createPackage $data $scope.session-id $opts $window
- [ match
-  { $res.sessionState : !scope.apply-session-packages $res.sessionState }
- ]
- !scope.load-catalog
- !scope.recompute-session-dirty
+ !scope.begin-session-status-pending 'Saving…'
+ ; to res null
+ ; try (
+  ; to opts [ object { name $name } { passphrase $passphrase } ]
+  ; set [ !createPackage $data $scope.session-id $opts $window ] res
+  [ match
+   { $res.sessionState : !scope.apply-session-packages $res.sessionState }
+  ]
+  !scope.load-catalog
+ ) : null
+ !scope.end-session-status-pending
  $res
 )
 ; to scope.open-package (
  -- Opens a package (verifying passphrase if required) in the active session and unlocks any locked mounted lanes
  ; to { package-id passphrase set-active } $argv
  !scope.ensure-session
- ; to should-activate [ match
-  { [ propertyIs false set-active ] : false }
-  { true : true }
- ]
- ; to opts [ object { packageId $package-id } { passphrase $passphrase } { setActive $should-activate } ]
- ; to res !openPackageInSession $data $scope.session-id $opts $window
+ !scope.begin-session-status-pending 'Loading…'
+ ; to res null
+ ; to unlocked-lanes ; object { hit false }
+ ; try (
+  ; to should-activate [ match
+   { [ propertyIs false set-active ] : false }
+   { true : true }
+  ]
+  ; to opts [ object { packageId $package-id } { passphrase $passphrase } { setActive $should-activate } ]
+  ; set [ !openPackageInSession $data $scope.session-id $opts $window ] res
+  [ match
+   { $res.ok (
+    !scope.apply-session-packages $res.sessionState
+    !scope.load-catalog
+    ; each $scope.lanes (
+     ; to { lane } $argv
+     ; condition { propertyIs true lane.is-locked } : ; set true unlocked-lanes.hit
+    )
+    [ match
+     { $unlocked-lanes.hit : !scope.sync }
+    ]
+   ) }
+  ]
+ ) : null
+ !scope.end-session-status-pending
  [ match
-  { $res.ok (
-   !scope.apply-session-packages $res.sessionState
-   !scope.load-catalog
-   !scope.recompute-session-dirty
-   ; to has-locked ; object { hit false }
-   ; each $scope.lanes (
-    ; to { lane } $argv
-    ; condition { propertyIs true lane.is-locked } : ; set true has-locked.hit
-   )
-   [ match
-    { $has-locked.hit (
-     !scope.sync
-     !scope.apply-preferences
-    ) }
-   ]
-  ) }
+  { $unlocked-lanes.hit : !scope.apply-preferences }
  ]
  $res
 )
@@ -651,9 +954,14 @@
  -- Closes a package in the active session and immediately enforces lock access control on open lanes
  ; to { package-id } $argv
  !scope.ensure-session
- ; to sess-rec !closePackageInSession $data $scope.session-id $package-id
- !scope.apply-session-packages $sess-rec
- !refresh-after-session-change false
+ !scope.begin-session-status-pending 'Loading…'
+ ; to sess-rec null
+ ; try (
+  ; set [ !closePackageInSession $data $scope.session-id $package-id ] sess-rec
+  !scope.apply-session-packages $sess-rec
+  !refresh-after-session-change false
+ ) : null
+ !scope.end-session-status-pending
  $sess-rec
 )
 ; to scope.set-active-package (
@@ -669,26 +977,152 @@
  -- Moves a lane between packages and updates catalog and open views
  ; to { id next-package-id } $argv
  !scope.ensure-session
- ; to lane [ get scope.by-id $id ]
- ; to from-pkg [ match
-  { $lane.package-id : $lane.package-id }
-  { true : !getLanePackageId $data $id }
- ]
- ; to title [ match
-  { $lane.title : $lane.title }
-  { true : $id }
- ]
- ; to entry !moveLaneToPackage $data $id $title $from-pkg $next-package-id
- [ match
-  { $lane : ; set $entry.packageId lane.package-id }
- ]
- !scope.load-catalog
- !sync-session-ui
- ; to still-open [ !scope.open-package-ids.includes $entry.packageId ]
- [ match
-  { [ propertyIs false still-open ] : !scope.sync }
- ]
+ !scope.begin-session-status-pending 'Saving…'
+ ; to entry null
+ ; try (
+  ; to lane [ get scope.by-id $id ]
+  ; to from-pkg [ match
+   { $lane.package-id : $lane.package-id }
+   { true : !getLanePackageId $data $id }
+  ]
+  ; to title [ match
+   { $lane.title : $lane.title }
+   { true : $id }
+  ]
+  ; set [ !moveLaneToPackage $data $id $title $from-pkg $next-package-id ] entry
+  [ match
+   { $lane : ; set $entry.packageId lane.package-id }
+  ]
+  !scope.load-catalog
+  ; to still-open [ !scope.open-package-ids.includes $entry.packageId ]
+  [ match
+   { [ propertyIs false still-open ] : !scope.sync }
+  ]
+ ) : null
+ !scope.end-session-status-pending
  $entry
+)
+; to scope.format-agent-context (
+ -- Formats concise session, optional lane, and optional line context for pasting to a coding agent
+ ; to { lane-or-opts maybe-line } $argv
+ !scope.ensure-session
+ ; to sid $scope.session-id
+ ; to sname [ match
+  { $scope.session-meta.name : $scope.session-meta.name }
+  { $sid : $sid }
+  { true : Session }
+ ]
+ ; to dir-confirmed [ propertyIs true scope.session-data-dir-confirmed ]
+ ; to cur-pathname !formatLaneRoutes $scope.lanes
+ ; to is-line-first [ match
+  { $lane-or-opts.line-number : true }
+  { $lane-or-opts.lineNumber : true }
+  { $lane-or-opts.line-id : true }
+  { $lane-or-opts.lineId : true }
+  { true : false }
+ ]
+ ; to line-info [ match
+  { $maybe-line : $maybe-line }
+  { $is-line-first : $lane-or-opts }
+  { $lane-or-opts.line : $lane-or-opts.line }
+  { true : null }
+ ]
+ ; to raw-lane [ match
+  { $is-line-first : $lane-or-opts.lane }
+  { true : $lane-or-opts }
+ ]
+ ; to lane [ match
+  { $raw-lane.id : $raw-lane }
+  { [ and { $raw-lane } { $scope.resolve-lane } ] : !scope.resolve-lane $raw-lane }
+  { $line-info.lane.id : $line-info.lane }
+  { [ and { $line-info.lane-id } { $scope.resolve-lane } ] : !scope.resolve-lane $line-info.lane-id }
+  { [ and { $line-info.laneId } { $scope.resolve-lane } ] : !scope.resolve-lane $line-info.laneId }
+  { true : null }
+ ]
+ ; to lane-id [ match
+  { $lane.id : $lane.id }
+  { $line-info.lane-id : $line-info.lane-id }
+  { $line-info.laneId : $line-info.laneId }
+  { true : '' }
+ ]
+ ; to lane-title [ match
+  { $lane.title : $lane.title }
+  { [ and { $lane-id } { $scope.get-lane-title } ] : !scope.get-lane-title $lane-id }
+  { true : '' }
+ ]
+ ; to lane-pkg [ match { $lane.package-id : $lane.package-id } { true : '' } ]
+ ; to lane-path [ match { $lane.path : $lane.path } { $lane.tab : $lane.tab } { true : '' } ]
+ ; to sb [ match
+  { $line-info.lineSetBy : $line-info.lineSetBy }
+  { $line-info.set-by : $line-info.set-by }
+  { $line-info.setBy : $line-info.setBy }
+  { true : null }
+ ]
+ ; to sb-title [ match
+  { $line-info.lineSetByTitle : $line-info.lineSetByTitle }
+  { $line-info.set-by-title : $line-info.set-by-title }
+  { [ and { $sb.laneId } { $scope.get-lane-title } ] : !scope.get-lane-title $sb.laneId }
+  { true : '' }
+ ]
+ [ match
+  { $formatAgentContext (
+   !formatAgentContext [ object
+    { sessionId $sid }
+    { sessionName $sname }
+    { dataDir $scope.session-data-dir }
+    { dataDirConfirmed $dir-confirmed }
+    { openPackages $scope.open-packages }
+    { openPackageIds $scope.open-package-ids }
+    { activePackageId $scope.active-package-id }
+    { laneId $lane-id }
+    { laneTitle $lane-title }
+    { lanePackageId $lane-pkg }
+    { lanePath $lane-path }
+    { line $line-info }
+    { lineSetByTitle $sb-title }
+    { openLanes $scope.lanes }
+    { pathname $cur-pathname }
+    { clockDisplayOptions !scope.get-clock-display-options }
+   ]
+  ) }
+  { true (
+   ; to dir-label !scope.format-data-dir-label $scope.session-data-dir $dir-confirmed
+   ; to base ; add 'Civil Command Agent Context\nSession: ' ; add $sname ; add ' (' ; add $sid ; add ')\nData Directory (basePath): ' $dir-label
+   ; to with-lane [ match
+    { $lane-id : ; add $base ; add '\nLane: ' ; add $lane-title ; add ' (' ; add $lane-id ')' }
+    { true : $base }
+   ]
+   ; to line-num [ match { $line-info.lineNumber : $line-info.lineNumber } { $line-info.line-number : $line-info.line-number } { true : null } ]
+   ; to line-id [ match { $line-info.lineId : $line-info.lineId } { $line-info.line-id : $line-info.line-id } { true : '' } ]
+   ; to with-line [ match
+    { $line-num (
+     ; to lid-lbl [ match { [ propertyIs '' line-id ] : '(unsaved)' } { true : $line-id } ]
+     ; to l-hdr [ match { [ propertyIs '' line-id ] : [ ; add '#' $line-num ] } { true : [ ; add '#' ; add $line-num ; add ' (' ; add $line-id ')' ] } ]
+     ; add $with-lane ; add '\nLine: ' ; add $l-hdr ; add '\nLine ID: ' $lid-lbl
+    ) }
+    { true : $with-lane }
+   ]
+   ; add $with-line ; add '\nRoute: ' $cur-pathname
+  ) }
+ ]
+)
+; to scope.format-agent-prompt (
+ -- Formats a ready-to-paste agent prompt wrapping the Civil Command Agent Context block
+ ; to { lane-or-opts maybe-line } $argv
+ ; to context-block !scope.format-agent-context $lane-or-opts $maybe-line
+ [ match
+  { $formatAgentPrompt : !formatAgentPrompt $context-block }
+  { true : ; add 'Read @AGENTS.md and use `./cc` to inspect my workspace:\n\n' ; add $context-block '\n\nTask: ' }
+ ]
+)
+; to scope.copy-agent-context (
+ -- Copies formatted session, optional lane, and optional line context prompt to the clipboard
+ ; to { lane-or-opts maybe-line } $argv
+ ; to text !scope.format-agent-prompt $lane-or-opts $maybe-line
+ [ match
+  { $window.navigator.clipboard.writeText : !window.navigator.clipboard.writeText $text }
+ ]
+ $text
 )
 ; to scope.mount-workspace-summary (
  -- Mounts separate Session and Packages cards into the left workspace column below + Lane / Open
@@ -741,9 +1175,12 @@
    ; assign $quick-fork-btn { type button } { className workspace-mini-btn } { textContent Fork }
    ; to quick-history-btn !document.createElement button
    ; assign $quick-history-btn { type button } { className workspace-mini-btn } { textContent History }
+   ; to quick-copy-btn !document.createElement button
+   ; assign $quick-copy-btn { type button } { className workspace-mini-btn } { textContent 'Copy Info' } { title 'Copy session & open lanes context for an agent' }
    !quick-row.appendChild $quick-switch-btn
    !quick-row.appendChild $quick-fork-btn
    !quick-row.appendChild $quick-history-btn
+   !quick-row.appendChild $quick-copy-btn
 
    !sess-sec.appendChild $sess-hdr
    !sess-sec.appendChild $sess-id-el
@@ -784,7 +1221,6 @@
    !quick-switch-btn.addEventListener click : !session-modal.open-switch-session
    !quick-fork-btn.addEventListener click : !scope.fork-session
    !quick-history-btn.addEventListener click : !session-modal.open-history
-   !pkg-add-btn.addEventListener click : !package-modal.open-packages
 
    ; to summary [ object
     { panel $panel }
@@ -795,17 +1231,38 @@
     { sess-id-el $sess-id-el }
     { sess-dir-btn $sess-dir-btn }
     { draft-box $draft-box }
+    { draft-lbl $draft-lbl }
+    { draft-acts $draft-acts }
     { draft-save-btn $draft-save-btn }
     { draft-fork-btn $draft-fork-btn }
     { draft-abandon-btn $draft-abandon-btn }
     { quick-switch-btn $quick-switch-btn }
     { quick-fork-btn $quick-fork-btn }
     { quick-history-btn $quick-history-btn }
+    { quick-copy-btn $quick-copy-btn }
+    { copy-timer null }
     { pkg-add-btn $pkg-add-btn }
     { pkg-list $pkg-list }
     { pkg-els {} }
     { pkg-items {} }
    ]
+   !quick-copy-btn.addEventListener click (
+    !scope.copy-agent-context
+    ; set Copied quick-copy-btn.textContent
+    [ match
+     { $window.setTimeout (
+      [ match
+       { $summary.copy-timer : !window.clearTimeout $summary.copy-timer }
+      ]
+      ; to next-timer !window.setTimeout (
+       ; set 'Copy Info' quick-copy-btn.textContent
+       ; set null summary.copy-timer
+      ) 1200
+      ; set $next-timer summary.copy-timer
+     ) }
+    ]
+   )
+   !pkg-add-btn.addEventListener click : !package-modal.open-packages
    ; set $summary scope.workspace-summary
    !scope.sync-workspace-summary
    $summary
@@ -827,8 +1284,16 @@
     { $scope.session-meta.version : ; add v $scope.session-meta.version }
     { true : v1 }
    ]
+   ; to pending [ propertyIs true scope.session-status-pending ]
+   ; to dirty [ and { propertyIs false pending } { propertyIs true scope.session-dirty } ]
+   ; to pending-lbl [ match
+    { [ propertyIs '' scope.session-status-label ] : 'Loading…' }
+    { $scope.session-status-label : $scope.session-status-label }
+    { true : 'Loading…' }
+   ]
    ; to ver-txt [ match
-    { [ propertyIs true scope.session-dirty ] : ; add $ver '*' }
+    { $pending : ; add $ver ' …' }
+    { $dirty : ; add $ver '*' }
     { true : $ver }
    ]
    ; set $sname summary.sess-name-btn.textContent
@@ -857,7 +1322,11 @@
    ; set $dir-label summary.sess-dir-btn.textContent
    ; set $dir-title summary.sess-dir-btn.title
    ; set [ ternary $dir-confirmed workspace-session-dir 'workspace-session-dir workspace-session-dir--unconfirmed' ] summary.sess-dir-btn.className
-   ; set [ ternary $scope.session-dirty false true ] summary.draft-box.hidden
+   ; to show-draft [ match { $pending : true } { $dirty : true } { true : false } ]
+   ; set [ ternary $show-draft false true ] summary.draft-box.hidden
+   ; set [ ternary $pending 'workspace-session-draft workspace-session-draft--pending' workspace-session-draft ] summary.draft-box.className
+   ; set [ ternary $pending $pending-lbl 'Unsaved version' ] summary.draft-lbl.textContent
+   ; set $pending summary.draft-acts.hidden
 
    ; while { propertyIsGreaterThan 0 summary.pkg-els.length } (
     ; to old !summary.pkg-els.pop
@@ -948,6 +1417,9 @@
   { $lane (
    ; set $title lane.title
    ; set $title lane.title-el.textContent
+   [ match
+    { $lane.notebook.output-view.sync-title : !lane.notebook.output-view.sync-title }
+   ]
    !scope.sync-minimized-labels $lane
    !lane.data.set title $title
    !scope.register $id $title $lane.package-id
@@ -960,14 +1432,44 @@
  ]
  $lane
 )
+; to remove-elem-attr (
+ -- Safely removes an attribute across real and mock DOM elements
+ ; to { el attr-name } $argv
+ [ match
+  { $el.removeAttribute : !el.removeAttribute $attr-name }
+  { $el.attributes (
+   [ match
+    { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $el.attributes $attr-name }
+   ]
+  ) }
+ ]
+)
+; to strip-lane-backdrop-class (
+ -- Removes lane-modal-backdrop--lane from a backdrop class string when mounted globally
+ ; to { raw-cls } $argv
+ ; to text [ match { $raw-cls : ; add '' $raw-cls } { true : lane-modal-backdrop } ]
+ ; to parts !text.split ' '
+ ; to kept {}
+ ; each $parts (
+  ; to { part } $argv
+  ; to is-empty [ propertyIs '' part ]
+  ; to is-lane-cls [ propertyIs lane-modal-backdrop--lane part ]
+  ; condition { propertyIs false is-empty } (
+   ; condition { propertyIs false is-lane-cls } : !kept.push $part
+  )
+ )
+ !kept.join ' '
+)
 ; to clear-lane-box-width (
- -- Clears inline width and --lane-width overrides on a lane header or body cell
+ -- Clears inline width, minHeight, data-modal-open, and --lane-width overrides on a lane header or body cell
  ; to { el } $argv
+ !remove-elem-attr $el data-modal-open
  [ match
   { $el.style (
    ; set '' el.style.width
    ; set '' el.style.maxWidth
    ; set '' el.style.minWidth
+   ; set '' el.style.minHeight
    [ match
     { $el.style.removeProperty : !el.style.removeProperty '--lane-width' }
     { true : ; set '' el.style.--lane-width }
@@ -975,8 +1477,357 @@
   ) }
  ]
 )
+; to scope.resolve-lane (
+ -- Resolves a lane object from a lane reference or lane ID string
+ ; to { lane-or-id } $argv
+ [ match
+  { [ propertyIs null lane-or-id ] : null }
+  { [ propertyIs undefined lane-or-id ] : null }
+  { [ propertyIs '' lane-or-id ] : null }
+  { $lane-or-id.id : $lane-or-id }
+  { true : [ get scope.by-id $lane-or-id ] }
+ ]
+)
+; to scope.get-lane-modal-host (
+ -- Returns the active DOM container for a lane's modals (fullscreen body when in lane fullscreen, floating preview body when previewed/pinned, otherwise lane.body)
+ ; to { lane-or-id } $argv
+ ; to lane !scope.resolve-lane $lane-or-id
+ [ match
+  { $lane (
+   ; to in-fullscreen [ match
+    { $scope.fullscreen-lane : [ propertyIs $lane.id scope.fullscreen-lane.id ] }
+    { true : false }
+   ]
+   ; to in-preview [ match
+    { $rails.preview-lane : [ propertyIs $lane.id rails.preview-lane.id ] }
+    { true : false }
+   ]
+   [ match
+    { [ and { [ propertyIs true in-fullscreen ] } { $scope.fullscreen-body } ] : $scope.fullscreen-body }
+    { [ and { [ propertyIs true in-preview ] } { $rails.preview-body } ] : $rails.preview-body }
+    { $lane.body : $lane.body }
+    { $lane.element : $lane.element }
+    { true : $document.body }
+   ]
+  ) }
+  { true : $document.body }
+ ]
+)
+; to restore-lane-node (
+ -- Re-inserts a child node back into its owning lane container before an optional reference node
+ ; to { container node ref } $argv
+ [ match
+  { $container (
+   [ match
+    { $node (
+     [ match
+      { $ref (
+       [ match
+        { $container.insertBefore : !container.insertBefore $node $ref }
+        { true : !container.appendChild $node }
+       ]
+      ) }
+      { true : !container.appendChild $node }
+     ]
+    ) }
+   ]
+  ) }
+ ]
+)
+; to sync-lane-fullscreen-btn (
+ -- Syncs a lane's fullscreen button class, icon SVG, title, and ARIA attributes with lane.is-fullscreen
+ ; to { lane } $argv
+ [ match
+  { $lane.fullscreen-btn (
+   ; to active [ propertyIs true lane.is-fullscreen ]
+   ; to cls [ ternary $active 'lane-fullscreen-btn lane-fullscreen-btn--active' lane-fullscreen-btn ]
+   ; to lbl [ ternary $active 'Exit fullscreen lane' 'Fullscreen lane' ]
+   ; to svg [ ternary $active $lane-fs-exit-svg $lane-fs-enter-svg ]
+   ; to flag [ ternary $active 'true' 'false' ]
+   ; assign $lane.fullscreen-btn { className $cls } { title $lbl } { innerHTML $svg }
+   !lane.fullscreen-btn.setAttribute aria-label $lbl
+   !lane.fullscreen-btn.setAttribute aria-pressed $flag
+   !lane.fullscreen-btn.setAttribute data-fullscreen $flag
+  ) }
+ ]
+)
+; to sync-fullscreen-modal-state (
+ -- Syncs data-modal-open attribute on the fullscreen lane containers from the active fullscreen lane
+ ; to fs-lane $scope.fullscreen-lane
+ ; to has-modal [ match
+  { [ and { $fs-lane } { [ propertyIs true fs-lane.has-open-modal ] } ] : true }
+  { true : false }
+ ]
+ ; each { $fullscreen-el $fullscreen-frame $fullscreen-header $fullscreen-body } (
+  ; to { el } $argv
+  [ match
+   { $el (
+    [ match
+     { $has-modal : !el.setAttribute data-modal-open 'true' }
+     { true : !remove-elem-attr $el data-modal-open }
+    ]
+   ) }
+  ]
+ )
+)
+; to scope.exit-lane-fullscreen (
+ -- Exits lane fullscreen mode, returning live lane DOM nodes back to their owning lane cells
+ ; to { skip-repin } $argv
+ ; to lane $scope.fullscreen-lane
+ [ match
+  { $lane (
+   ; to restore-pin [ match
+    { $skip-repin : false }
+    { true : [ propertyIs true scope.fullscreen-was-pinned ] }
+   ]
+   ; set null scope.fullscreen-lane
+   ; set null scope.fullscreen-lane-id
+   ; set false scope.is-lane-fullscreen
+   ; set false scope.fullscreen-was-pinned
+   ; set false lane.is-fullscreen
+   !sync-lane-fullscreen-btn $lane
+   !restore-lane-node $lane.element $lane.header-top $lane.header-resizer
+   [ match
+    { $lane.body (
+     ; to body-ref [ match
+      { $lane.body-resizer : $lane.body-resizer }
+      { $lane.minimized-placeholder : $lane.minimized-placeholder }
+      { true : null }
+     ]
+     [ match
+      { $lane.notebook.element : !restore-lane-node $lane.body $lane.notebook.element $body-ref }
+     ]
+     [ match
+      { $lane.notebook.output-view.element : !restore-lane-node $lane.body $lane.notebook.output-view.element $body-ref }
+     ]
+     [ match
+      { $lane.open-modals (
+       ; each $lane.open-modals (
+        ; to { open-m } $argv
+        [ match
+         { $open-m.backdrop : !restore-lane-node $lane.body $open-m.backdrop $body-ref }
+        ]
+       )
+      ) }
+     ]
+    ) }
+   ]
+   !sync-fullscreen-modal-state
+   !fullscreen-el.setAttribute data-lane-id ''
+   !fullscreen-el.setAttribute aria-hidden 'true'
+   ; set true fullscreen-el.hidden
+   [ match
+    { $lane.notebook.auto-size-rows : !lane.notebook.auto-size-rows }
+   ]
+   [ match
+    { [ and { [ propertyIs true restore-pin ] } { [ propertyIs true lane.is-minimized ] } { $rails.pin } ] : !rails.pin $lane.id }
+   ]
+   $lane
+  ) }
+  { true : null }
+ ]
+)
+; to scope.enter-lane-fullscreen (
+ -- Expands a lane to fill the entire screen against a black background covering all rails (without changing browser fullscreen)
+ ; to { lane-or-id } $argv
+ ; to lane !scope.resolve-lane $lane-or-id
+ [ match
+  { [ propertyIs null lane ] : null }
+  { [ propertyIs true lane.is-locked ] : null }
+  { [ and { $scope.fullscreen-lane } { [ propertyIs $lane.id scope.fullscreen-lane.id ] } ] : $lane }
+  { true (
+   [ match
+    { $scope.fullscreen-lane : !scope.exit-lane-fullscreen true }
+   ]
+   ; to was-pinned [ match
+    { $rails.pinned-lane : [ propertyIs $lane.id rails.pinned-lane.id ] }
+    { true : false }
+   ]
+   [ match
+    { $rails.close-preferences-menu : !rails.close-preferences-menu }
+   ]
+   [ match
+    { $rails.close-session-menu : !rails.close-session-menu }
+   ]
+   [ match
+    { $rails.close-packages-menu : !rails.close-packages-menu }
+   ]
+   [ match
+    { $rails.close-session-nav : !rails.close-session-nav }
+   ]
+   [ match
+    { $rails.hide-preview : !rails.hide-preview }
+   ]
+   ; set $lane scope.fullscreen-lane
+   ; set $lane.id scope.fullscreen-lane-id
+   ; set true scope.is-lane-fullscreen
+   ; set $was-pinned scope.fullscreen-was-pinned
+   ; set true lane.is-fullscreen
+   !sync-lane-fullscreen-btn $lane
+   !sync-fullscreen-modal-state
+   [ match
+    { $lane.header-top : !fullscreen-header.appendChild $lane.header-top }
+   ]
+   [ match
+    { $lane.notebook.element : !fullscreen-body.appendChild $lane.notebook.element }
+   ]
+   [ match
+    { $lane.notebook.output-view.element : !fullscreen-body.appendChild $lane.notebook.output-view.element }
+   ]
+   [ match
+    { $lane.open-modals (
+     ; each $lane.open-modals (
+      ; to { open-m } $argv
+      [ match
+       { $open-m.backdrop : !fullscreen-body.appendChild $open-m.backdrop }
+      ]
+     )
+    ) }
+   ]
+   !fullscreen-el.setAttribute data-lane-id $lane.id
+   !fullscreen-el.setAttribute aria-hidden 'false'
+   ; set false fullscreen-el.hidden
+   [ match
+    { $lane.notebook.auto-size-rows : !lane.notebook.auto-size-rows }
+   ]
+   $lane
+  ) }
+ ]
+)
+; to scope.toggle-lane-fullscreen (
+ -- Toggles a lane between full-viewport lane fullscreen mode and normal workspace view
+ ; to { lane-or-id } $argv
+ ; to lane !scope.resolve-lane $lane-or-id
+ [ match
+  { [ propertyIs null lane ] : null }
+  { [ and { $scope.fullscreen-lane } { [ propertyIs $lane.id scope.fullscreen-lane.id ] } ] (
+   !scope.exit-lane-fullscreen
+   false
+  ) }
+  { true (
+   !scope.enter-lane-fullscreen $lane
+   true
+  ) }
+ ]
+)
+; to scope.recompute-lane-modal-bounds (
+ -- Recomputes lane.has-open-modal and lane.modal-min-width from lane.open-modals
+ ; to { lane } $argv
+ [ match
+  { $lane (
+   ; to modals [ match { $lane.open-modals : $lane.open-modals } { true : {} } ]
+   ; to has-open [ propertyIsGreaterThan 0 modals.length ]
+   ; set $has-open lane.has-open-modal
+   [ match
+    { $has-open (
+     ; to max-w ; object { val $min-lane-modal-width }
+     ; each $modals (
+      ; to { m } $argv
+      ; to mw [ match
+       { [ propertyIsGreaterThan 0 m.active-min-width ] : $m.active-min-width }
+       { [ propertyIsGreaterThan 0 m.min-width ] : $m.min-width }
+       { true : $min-lane-modal-width }
+      ]
+      ; condition { propertyIsGreaterThan $max-w.val mw } : ; set $mw max-w.val
+     )
+     ; set $max-w.val lane.modal-min-width
+    ) }
+    { true : ; set null lane.modal-min-width }
+   ]
+  ) }
+ ]
+)
+; to scope.mount-lane-modal (
+ -- Mounts a lane-scoped modal backdrop inside the lane's active frame and expands the lane or pinned frame to minimum modal dimensions
+ ; to { lane-or-id modal min-width } $argv
+ ; to lane !scope.resolve-lane $lane-or-id
+ ; to backdrop $modal.backdrop
+ [ match
+  { $lane (
+   [ match
+    { $lane.open-modals : null }
+    { true : ; set {} lane.open-modals }
+   ]
+   ; to existing-idx !lane.open-modals.indexOf $modal
+   ; condition { propertyIs -1 existing-idx } : !lane.open-modals.push $modal
+   ; to req-min-w [ match
+    { [ propertyIsGreaterThan 0 min-width ] : $min-width }
+    { [ propertyIsGreaterThan 0 modal.min-width ] : $modal.min-width }
+    { true : $min-lane-modal-width }
+   ]
+   ; set $req-min-w modal.active-min-width
+   !scope.recompute-lane-modal-bounds $lane
+   [ match
+    { $backdrop (
+     !backdrop.setAttribute data-lane-modal 'true'
+     !backdrop.setAttribute data-lane-id $lane.id
+     ; to base-cls !strip-lane-backdrop-class $backdrop.className
+     ; set [ ; add $base-cls ' lane-modal-backdrop--lane' ] backdrop.className
+     ; to host !scope.get-lane-modal-host $lane
+     [ match
+      { $host.appendChild : !host.appendChild $backdrop }
+     ]
+    ) }
+   ]
+   !scope.apply-lane-width $lane $lane.width
+  ) }
+  { $backdrop (
+   !remove-elem-attr $backdrop data-lane-modal
+   !remove-elem-attr $backdrop data-lane-id
+   ; to clean-cls !strip-lane-backdrop-class $backdrop.className
+   ; set $clean-cls backdrop.className
+   [ match
+    { $document.body.appendChild : !document.body.appendChild $backdrop }
+   ]
+  ) }
+ ]
+ $modal
+)
+; to scope.unmount-lane-modal (
+ -- Detaches a lane-scoped modal from its lane and restores the lane or pinned frame's normal dimensions when no modals remain open
+ ; to { lane-or-id modal } $argv
+ ; to lane !scope.resolve-lane $lane-or-id
+ [ match
+  { $lane (
+   [ match
+    { $lane.open-modals (
+     ; to idx !lane.open-modals.indexOf $modal
+     ; condition { propertyIsGreaterThanOrEqual 0 idx } : !lane.open-modals.splice $idx 1
+    ) }
+   ]
+   !scope.recompute-lane-modal-bounds $lane
+   !scope.apply-lane-width $lane $lane.width
+  ) }
+ ]
+ $modal
+)
+; to scope.close-lane-modals (
+ -- Closes all currently open modals belonging to a lane
+ ; to { lane } $argv
+ [ match
+  { $lane.open-modals (
+   ; to copy !lane.open-modals.slice 0
+   ; each $copy (
+    ; to { m } $argv
+    [ match
+     { $m.close : !m.close true }
+    ]
+   )
+   ; set 0 lane.open-modals.length
+   ; set false lane.has-open-modal
+   ; set null lane.modal-min-width
+  ) }
+ ]
+ [ match
+  { $lane.notebook.output-view.is-floating (
+   [ match
+    { $lane.notebook.output-view.popin : !lane.notebook.output-view.popin }
+   ]
+  ) }
+ ]
+)
 ; to scope.apply-lane-width (
- -- Applies a lane's stored Width setting to header and body elements (clamping rendered width to >= 100px with no max)
+ -- Applies a lane's stored Width setting to header and body elements (clamping rendered width to >= 100px with no max, and expanding to >= modal-min-width while a lane modal is open)
  ; to { lane raw-width } $argv
  [ match
   { $lane (
@@ -984,23 +1835,55 @@
    ; to rendered !resolveLaneRenderedWidth $normalized
    ; set $normalized lane.width
    ; set $rendered lane.rendered-width
+   ; to has-modal [ propertyIs true lane.has-open-modal ]
+   ; to modal-min-w [ match
+    { [ and { propertyIs true has-modal } { propertyIsGreaterThan 0 lane.modal-min-width } ] : $lane.modal-min-width }
+    { $has-modal : $min-lane-modal-width }
+    { true : null }
+   ]
+   ; to has-width [ match
+    { [ propertyIs null rendered ] : false }
+    { true : true }
+   ]
+   ; to effective [ match
+    { $has-width (
+     [ match
+      { $modal-min-w : !window.Math.max $rendered $modal-min-w }
+      { true : $rendered }
+     ]
+    ) }
+    { $modal-min-w : $modal-min-w }
+    { true : null }
+   ]
+   ; set $effective lane.effective-width
    ; condition { propertyIs false lane.is-minimized } (
-    ; to has-width [ match
-     { [ propertyIs null rendered ] : false }
-     { true : true }
-    ]
     ; to px-str [ match
-     { $has-width : ; add $rendered px }
+     { $has-width : ; add $effective px }
+     { true : '' }
+    ]
+    ; to min-px-str [ match
+     { $modal-min-w : ; add $modal-min-w px }
+     { $has-width : 100px }
+     { true : '' }
+    ]
+    ; to min-h-str [ match
+     { $has-modal : ; add $min-lane-modal-height px }
      { true : '' }
     ]
     [ match
      { $lane.element (
-      ; set [ ternary $has-width 'lane-header lane-header--sized' lane-header ] lane.element.className
+      ; to base-hdr-cls [ ternary $has-width 'lane-header lane-header--sized' lane-header ]
+      ; to next-hdr-cls [ ternary [ propertyIs true lane.is-highlighted ] [ ; add $base-hdr-cls ' lane-header--highlighted' ] $base-hdr-cls ]
+      ; set $next-hdr-cls lane.element.className
+      [ match
+       { $has-modal : !lane.element.setAttribute data-modal-open 'true' }
+       { true : !remove-elem-attr $lane.element data-modal-open }
+      ]
       [ match
        { $lane.element.style (
         ; set $px-str lane.element.style.width
         ; set $px-str lane.element.style.maxWidth
-        ; set [ ternary $has-width 100px '' ] lane.element.style.minWidth
+        ; set $min-px-str lane.element.style.minWidth
         [ match
          { $lane.element.style.setProperty (
           [ match
@@ -1020,12 +1903,19 @@
     ]
     [ match
      { $lane.body (
-      ; set [ ternary $has-width 'lane-body lane-body--sized' lane-body ] lane.body.className
+      ; to base-body-cls [ ternary $has-width 'lane-body lane-body--sized' lane-body ]
+      ; to next-body-cls [ ternary [ propertyIs true lane.is-highlighted ] [ ; add $base-body-cls ' lane-body--highlighted' ] $base-body-cls ]
+      ; set $next-body-cls lane.body.className
+      [ match
+       { $has-modal : !lane.body.setAttribute data-modal-open 'true' }
+       { true : !remove-elem-attr $lane.body data-modal-open }
+      ]
       [ match
        { $lane.body.style (
         ; set $px-str lane.body.style.width
         ; set $px-str lane.body.style.maxWidth
-        ; set [ ternary $has-width 100px '' ] lane.body.style.minWidth
+        ; set $min-px-str lane.body.style.minWidth
+        ; set $min-h-str lane.body.style.minHeight
         [ match
          { $lane.body.style.setProperty (
           [ match
@@ -1044,6 +1934,16 @@
      ) }
     ]
    )
+   [ match
+    { $scope.fullscreen-lane (
+     ; condition { propertyIs $lane.id scope.fullscreen-lane.id } : !sync-fullscreen-modal-state
+    ) }
+   ]
+   [ match
+    { $rails.preview-lane (
+     ; condition { propertyIs $lane.id rails.preview-lane.id } : !rails.update $lane
+    ) }
+   ]
   ) }
  ]
  $lane
@@ -1058,9 +1958,17 @@
    [ match
     { $side (
      [ match
+      { $scope.fullscreen-lane (
+       ; condition { propertyIs $id scope.fullscreen-lane.id } : !scope.exit-lane-fullscreen true
+      ) }
+     ]
+     [ match
       { $rails.preview-lane (
        ; condition { propertyIs $id rails.preview-lane.id } : !rails.hide-preview
       ) }
+     ]
+     [ match
+      { $scope.clear-lane-highlight : !scope.clear-lane-highlight $lane }
      ]
      ; set true lane.is-minimized
      ; set $side lane.minimized-side
@@ -1136,7 +2044,7 @@
 )
 ; to scope.restore (
  -- Restores a minimized lane back to its original position with its previous width and state
- ; to { id skip-save } $argv
+ ; to { id skip-save skip-scroll } $argv
  ; to lane [ get scope.by-id $id ]
  [ match
   { $lane (
@@ -1168,7 +2076,10 @@
      { $skip-save : null }
      { true (
       !lane.data.set minimized ''
-      !scope.scroll-lane-into-view $lane
+      [ match
+       { $skip-scroll : null }
+       { true : !scope.scroll-lane-into-view $lane }
+      ]
      ) }
     ]
    )
@@ -1320,8 +2231,70 @@
  ; to { opts } $argv
  !lane-modal.open-picker $opts
 )
+; to scope.cache-line-number (
+ -- Caches a 1-based line number for a laneId and lineId pair
+ ; to { lane-id line-id num } $argv
+ [ match
+  { [ and { $lane-id } { $line-id } { [ propertyIsGreaterThan 0 num ] } ] (
+   ; to k ; add $lane-id ; add ':' $line-id
+   ; to scope.line-num-cache $k $num
+  ) }
+ ]
+ $num
+)
+; to scope.get-cached-line-number (
+ -- Returns a cached 1-based line number for a laneId and lineId pair, or null if not cached
+ ; to { lane-id line-id } $argv
+ [ match
+  { [ and { $lane-id } { $line-id } ] (
+   ; to k ; add $lane-id ; add ':' $line-id
+   ; to val [ get scope.line-num-cache $k ]
+   [ match
+    { [ propertyIsGreaterThan 0 val ] : $val }
+    { true : null }
+   ]
+  ) }
+  { true : null }
+ ]
+)
+; to scope.resolve-stored-line-number (
+ -- Loads a closed lane's script records from KV to populate line-num-cache and invokes on-resolved if found
+ ; to { lane-id line-id on-resolved } $argv
+ [ match
+  { [ and { $lane-id } { $line-id } ] (
+   ; to target-data !data.namespace $lane-id
+   ; to loaded !loadLaneScript $data $target-data $lane-id $window
+   ; to records [ match { $loaded.records : $loaded.records } { true : {} } ]
+   ; to found ; object { num null }
+   ; each $records (
+    ; to { rec idx } $argv
+    ; to num ; add $idx 1
+    !scope.cache-line-number $lane-id $rec.id $num
+    ; condition { propertyIs $line-id rec.id } : ; set $num found.num
+   )
+   [ match
+    { [ and { $found.num } { $on-resolved } ] : !$on-resolved $found.num }
+   ]
+   $found.num
+  ) }
+  { true : null }
+ ]
+)
+; to scope.refresh-line-numbers (
+ -- Updates export target and set-by line number labels across open lanes when a lane's lines are renumbered
+ ; to { id } $argv
+ ; each $scope.lanes (
+  ; to { lane } $argv
+  [ match
+   { $lane.notebook.refresh-export-labels : !lane.notebook.refresh-export-labels $id }
+  ]
+  [ match
+   { $lane.notebook.refresh-set-by-labels : !lane.notebook.refresh-set-by-labels $id }
+  ]
+ )
+)
 ; to scope.refresh-import-labels (
- -- Updates import and export picker button labels across all open lanes after a lane rename
+ -- Updates import, export, and set-by button labels across all open lanes after a lane rename
  ; to { id } $argv
  ; each $scope.lanes (
   ; to { lane } $argv
@@ -1330,6 +2303,9 @@
   ]
   [ match
    { $lane.notebook.refresh-export-labels : !lane.notebook.refresh-export-labels $id }
+  ]
+  [ match
+   { $lane.notebook.refresh-set-by-labels : !lane.notebook.refresh-set-by-labels $id }
   ]
  )
 )
@@ -1343,9 +2319,283 @@
   ]
  )
 )
+; to scope.resolve-exporter-line-id (
+ -- Resolves the source line ID in caller-lane-id that exports to { target-lane-id target-line-id }
+ ; to { caller-lane-id target-lane-id target-line-id caller-line-id } $argv
+ ; to clean-caller-line [ match { $caller-line-id : ; add '' $caller-line-id } { true : '' } ]
+ [ match
+  { [ propertyIs '' clean-caller-line ] (
+   ; to open-caller [ get scope.by-id $caller-lane-id ]
+   ; to found ; object { id '' }
+   [ match
+    { $open-caller.notebook.rows (
+     ; each $open-caller.notebook.rows (
+      ; to { r } $argv
+      ; condition { propertyIs '' found.id } (
+       ; condition { propertyIs export r.kind } (
+        ; to targets [ match { $r.spec.targets : $r.spec.targets } { true : {} } ]
+        ; each $targets (
+         ; to { t } $argv
+         ; condition { and { propertyIs $target-lane-id t.laneId } { propertyIs $target-line-id t.lineId } } : ; set $r.record.id found.id
+        )
+       )
+      )
+     )
+    ) }
+   ]
+   $found.id
+  ) }
+  { true : $clean-caller-line }
+ ]
+)
+; to scope.sync-export-links (
+ -- Synchronizes Set-by metadata across open lanes from all mounted export rows
+ ; each $scope.lanes (
+  ; to { src-lane } $argv
+  [ match
+   { $src-lane.notebook.rows (
+    ; each $src-lane.notebook.rows (
+     ; to { src-row } $argv
+     ; condition { propertyIs export src-row.kind } (
+      ; to targets [ match { $src-row.spec.targets : $src-row.spec.targets } { true : {} } ]
+      ; each $targets (
+       ; to { t } $argv
+       ; to is-other [ ternary [ propertyIs $src-lane.id t.laneId ] false true ]
+       ; condition { propertyIs true is-other } (
+        ; to open-target [ get scope.by-id $t.laneId ]
+        [ match
+         { $open-target.notebook.apply-line-set-by (
+          !open-target.notebook.apply-line-set-by $t.lineId [ object { laneId $src-lane.id } { lineId $src-row.record.id } ]
+         ) }
+        ]
+       )
+      )
+     )
+    )
+   ) }
+  ]
+ )
+)
+; to scope.clear-lane-line-set-by (
+ -- Clears Set-by metadata on a target lane line when an export target is removed or its export line is deleted
+ ; to { target-lane-id target-line-id source-lane-id source-line-id } $argv
+ ; to clean-lane [ match { $target-lane-id : ; add '' $target-lane-id } { true : '' } ]
+ ; to clean-line [ match { $target-line-id : ; add '' $target-line-id } { true : '' } ]
+ ; to clean-src-lane [ match { $source-lane-id : ; add '' $source-lane-id } { true : '' } ]
+ ; to clean-src-line [ match { $source-line-id : ; add '' $source-line-id } { true : '' } ]
+ [ match
+  { [ and { $clean-lane } { $clean-line } ] (
+   [ match
+    { $setTargetLaneLine (
+     !setTargetLaneLine $data $clean-lane $clean-line null $window [ object { clear true } { laneId $clean-src-lane } { lineId $clean-src-line } ]
+    ) }
+   ]
+   ; to open-target [ get scope.by-id $clean-lane ]
+   [ match
+    { $open-target.notebook.clear-line-set-by (
+     !open-target.notebook.clear-line-set-by $clean-line $clean-src-lane $clean-src-line
+    ) }
+   ]
+   !scope.sync-export-links
+  ) }
+ ]
+)
+; to sync-lane-highlight-classes (
+ -- Syncs lane.element and lane.body CSS classes and data-highlighted attributes for normal, sized, locked, minimized, and highlighted states
+ ; to { lane } $argv
+ [ match
+  { $lane (
+   ; to is-hl [ match
+    { [ propertyIs true lane.is-minimized ] : false }
+    { [ propertyIs true lane.is-highlighted ] : true }
+    { true : false }
+   ]
+   ; to has-width [ match
+    { [ propertyIs null lane.rendered-width ] : false }
+    { [ propertyIs undefined lane.rendered-width ] : false }
+    { true : true }
+   ]
+   [ match
+    { $lane.element (
+     ; to base-hdr-cls [ match
+      { [ propertyIs true lane.is-minimized ] : 'lane-header lane-header--minimized' }
+      { [ propertyIs true lane.is-locked ] : 'lane-header lane-header--locked' }
+      { $has-width : 'lane-header lane-header--sized' }
+      { true : lane-header }
+     ]
+     ; to next-hdr-cls [ ternary $is-hl [ ; add $base-hdr-cls ' lane-header--highlighted' ] $base-hdr-cls ]
+     ; set $next-hdr-cls lane.element.className
+     [ match
+      { $is-hl : !lane.element.setAttribute data-highlighted 'true' }
+      { true : !remove-elem-attr $lane.element data-highlighted }
+     ]
+    ) }
+   ]
+   [ match
+    { $lane.body (
+     ; to base-body-cls [ match
+      { [ propertyIs true lane.is-minimized ] : 'lane-body lane-body--minimized' }
+      { [ propertyIs true lane.is-locked ] : 'lane-body lane-body--locked' }
+      { $has-width : 'lane-body lane-body--sized' }
+      { true : lane-body }
+     ]
+     ; to next-body-cls [ ternary $is-hl [ ; add $base-body-cls ' lane-body--highlighted' ] $base-body-cls ]
+     ; set $next-body-cls lane.body.className
+     [ match
+      { $is-hl : !lane.body.setAttribute data-highlighted 'true' }
+      { true : !remove-elem-attr $lane.body data-highlighted }
+     ]
+    ) }
+   ]
+  ) }
+ ]
+)
+; to scope.clear-lane-highlight (
+ -- Clears any active highlight state and timer on the given lane
+ ; to { raw-lane } $argv
+ ; to lane !scope.resolve-lane $raw-lane
+ [ match
+  { $lane (
+   [ match
+    { $lane.highlight-timer (
+     [ match
+      { $window.clearTimeout : !window.clearTimeout $lane.highlight-timer }
+     ]
+     ; set null lane.highlight-timer
+    ) }
+   ]
+   ; condition { propertyIs true lane.is-highlighted } (
+    ; set false lane.is-highlighted
+    !sync-lane-highlight-classes $lane
+   )
+  ) }
+ ]
+ $lane
+)
+; to scope.highlight-lane (
+ -- Highlights an unminimized lane column with a pulse animation for 2.2s and clears any previous lane highlight
+ ; to { raw-lane } $argv
+ ; to lane !scope.resolve-lane $raw-lane
+ ; each $scope.lanes (
+  ; to { other } $argv
+  ; condition { propertyIs true other.is-highlighted } : !scope.clear-lane-highlight $other
+ )
+ [ match
+  { $lane (
+   !scope.clear-lane-highlight $lane
+   ; condition { propertyIs false lane.is-minimized } (
+    ; set true lane.is-highlighted
+    !sync-lane-highlight-classes $lane
+    [ match
+     { $window.setTimeout (
+      ; to timer !window.setTimeout (
+       ; set null lane.highlight-timer
+       ; set false lane.is-highlighted
+       !sync-lane-highlight-classes $lane
+      ) 2200
+      ; set $timer lane.highlight-timer
+     ) }
+    ]
+   )
+  ) }
+ ]
+ $lane
+)
+; to scope.locate-lane (
+ -- Reveals an open lane: floats and pins its popover if minimized to a side rail, or scrolls to and highlights the lane if in the main area
+ ; to { target-lane-id } $argv
+ ; to lane !scope.resolve-lane $target-lane-id
+ [ match
+  { $lane (
+   [ match
+    { $scope.fullscreen-lane (
+     ; to is-same-fs [ propertyIs $lane.id scope.fullscreen-lane.id ]
+     ; condition { propertyIs false is-same-fs } : !scope.exit-lane-fullscreen true
+    ) }
+   ]
+   [ match
+    { [ propertyIs true lane.is-minimized ] (
+     [ match
+      { $rails.pin : !rails.pin $lane.id }
+     ]
+    ) }
+    { true (
+     [ match
+      { $rails.preview-lane : !rails.hide-preview }
+     ]
+     !scope.highlight-lane $lane
+     !scope.scroll-lane-into-view $lane $lane.element
+    ) }
+   ]
+   $lane
+  ) }
+  { true : null }
+ ]
+)
+; set $scope.locate-lane scope.locate
+; to scope.navigate-to-lane-line (
+ -- Opens or restores a target lane on the Source tab, highlights the target line, and scrolls the lane and line into view horizontally and vertically
+ ; to { target-lane-id target-line-id from-lane-id } $argv
+ ; to clean-lane [ match { $target-lane-id : ; add '' $target-lane-id } { true : '' } ]
+ ; to clean-line [ match { $target-line-id : ; add '' $target-line-id } { true : '' } ]
+ [ match
+  { [ propertyIs '' clean-lane ] : null }
+  { true (
+   [ match
+    { $scope.fullscreen-lane (
+     ; to is-same-fs [ propertyIs $clean-lane scope.fullscreen-lane.id ]
+     ; condition { propertyIs false is-same-fs } : !scope.exit-lane-fullscreen true
+    ) }
+   ]
+   [ match
+    { $rails.preview-lane : !rails.hide-preview }
+   ]
+   ; to existing [ get scope.by-id $clean-lane ]
+   ; to target-lane [ match
+    { $existing (
+     !scope.begin-session-status-pending 'Loading…'
+     ; try (
+      ; condition { propertyIs true existing.is-minimized } : !scope.restore $clean-lane false true
+      [ match
+       { $existing.notebook.set-tab (
+        ; to is-source [ propertyIs source existing.notebook.active-tab ]
+        ; condition { propertyIs false is-source } : !existing.notebook.set-tab source
+       ) }
+      ]
+     ) : null
+     !scope.end-session-status-pending
+     $existing
+    ) }
+    { true (
+     !scope.begin-session-status-pending 'Loading…'
+     ; to opened null
+     ; try (
+      ; set [ !scope.open $clean-lane source '' $from-lane-id ] opened
+      [ match
+       { $opened.is-minimized : !scope.restore $clean-lane false true }
+      ]
+      !scope.update-url
+     ) : null
+     !scope.end-session-status-pending
+     $opened
+    ) }
+   ]
+   ; to highlighted-row [ match
+    { $target-lane.notebook.highlight-line : !target-lane.notebook.highlight-line $clean-line true }
+    { true : null }
+   ]
+   ; to target-el [ match
+    { $highlighted-row.el : $highlighted-row.el }
+    { true : null }
+   ]
+   !scope.scroll-lane-into-view $target-lane $target-el
+   $target-lane
+  ) }
+ ]
+)
 ; to scope.set-lane-line (
- -- Writes evaluated text to a target lane line if changed, updates any mounted target lane UI, and returns deploy status
- ; to { target-lane-id target-line-id content caller-lane-id visited } $argv
+ -- Writes evaluated text to a target lane line if changed, records Set-by metadata in Civil Command, updates any mounted target lane UI, and returns deploy status
+ ; to { target-lane-id target-line-id content caller-lane-id visited caller-line-id } $argv
  ; to clean-lane [ match { $target-lane-id : ; add '' $target-lane-id } { true : '' } ]
  ; to clean-line [ match { $target-line-id : ; add '' $target-line-id } { true : '' } ]
  ; to next-str [ match
@@ -1363,13 +2613,31 @@
    [ match
     { [ propertyIs false access.allowed ] : ; object { ok false } { changed false } { laneId $clean-lane } { lineId $clean-line } { error 'Access denied: lane belongs to a locked package' } }
     { true (
+     ; to resolved-caller-line !scope.resolve-exporter-line-id $caller-lane-id $clean-lane $clean-line $caller-line-id
+     ; to set-by-spec [ match
+      { $caller-lane-id : [ object { laneId $caller-lane-id } { lineId $resolved-caller-line } ] }
+      { true : null }
+     ]
      ; to write-res [ match
-      { $setTargetLaneLine : !setTargetLaneLine $data $clean-lane $clean-line $next-str $window }
+      { $setTargetLaneLine : !setTargetLaneLine $data $clean-lane $clean-line $next-str $window $set-by-spec }
       { true : ; object { ok false } { changed false } { error 'setTargetLaneLine helper is not available' } }
      ]
      [ match
+      { [ propertyIsGreaterThan 0 write-res.lineNumber ] : !scope.cache-line-number $clean-lane $clean-line $write-res.lineNumber }
+     ]
+     ; to open-target [ get scope.by-id $clean-lane ]
+     [ match
+      { [ and { propertyIs false write-res.ok } { propertyIs true write-res.syntaxError } { $write-res.draft } { $open-target.notebook.apply-external-rejected-draft } ] (
+       !open-target.notebook.apply-external-rejected-draft $clean-line $write-res.draft
+      ) }
+     ]
+     [ match
+      { [ and { propertyIs true write-res.ok } { $set-by-spec } { $open-target.notebook.apply-line-set-by } ] (
+       !open-target.notebook.apply-line-set-by $clean-line $set-by-spec
+      ) }
+     ]
+     [ match
       { [ and { propertyIs true write-res.ok } { propertyIs true write-res.changed } ] (
-       ; to open-target [ get scope.by-id $clean-lane ]
        ; to next-visited ; object
        [ match { $visited : ; assign $next-visited $visited } ]
        [ match { $caller-lane-id : ; to next-visited $caller-lane-id true } ]
@@ -1378,7 +2646,7 @@
         { $already-vis : null }
         { $open-target.notebook.apply-external-line-update (
          ; to next-visited $clean-lane true
-         !open-target.notebook.apply-external-line-update $clean-line $write-res.text $write-res.updatedAt $next-visited
+         !open-target.notebook.apply-external-line-update $clean-line $write-res.text $write-res.updatedAt $next-visited $set-by-spec
         ) }
        ]
       ) }
@@ -1403,7 +2671,7 @@
 )
 ; to scope.export-lane-line (
  -- Updates one or more { laneId lineId } targets with evaluated content and summarizes per-lane deploy status
- ; to { caller-lane-id first-arg second-arg third-arg visited } $argv
+ ; to { caller-lane-id first-arg second-arg third-arg visited caller-line-id } $argv
  ; to is-list [ match { $first-arg.map : true } { true : false } ]
  ; to raw-targets [ match
   { $is-list : $first-arg }
@@ -1438,7 +2706,7 @@
  ; to needs-deploy-count ; object { n 0 }
  ; each $norm-targets (
   ; to { t } $argv
-  ; to res !scope.set-lane-line $t.laneId $t.lineId $content-str $caller-lane-id $visited
+  ; to res !scope.set-lane-line $t.laneId $t.lineId $content-str $caller-lane-id $visited $caller-line-id
   !results.push $res
   ; condition { propertyIs true res.changed } : ; set [ ; add $changed-count.n 1 ] changed-count.n
   ; to already-lane [ get seen-lanes $res.laneId ]
@@ -1460,12 +2728,326 @@
    ) }
   ]
  )
- ; object
+ [ object
   { content $content-str }
   { targets $results }
   { laneStatuses $lane-statuses }
   { changedCount $changed-count.n }
   { needsDeployCount $needs-deploy-count.n }
+ ]
+)
+; to scope.sync-lane-table (
+ -- Syncs an array of row objects into a target lane's Data table after verifying package access control
+ ; to { caller-lane-id target-lane-id tbl-query records key-col } $argv
+ ; to clean-target [ match { $target-lane-id : ; add '' $target-lane-id } { true : '' } ]
+ ; to clean-tbl [ match { $tbl-query : ; add '' $tbl-query } { true : '' } ]
+ [ match
+  { [ propertyIs '' clean-target ] : ; object { ok false } { changed false } { count 0 } { error 'Target lane ID is required' } }
+  { [ propertyIs '' clean-tbl ] : ; object { ok false } { changed false } { count 0 } { error 'Target table name or ID is required' } }
+  { true (
+   !scope.ensure-session
+   ; to access !checkLaneAccess $data $scope.open-package-ids $clean-target
+   [ match
+    { [ propertyIs false access.allowed ] : ; object { ok false } { changed false } { laneId $clean-target } { count 0 } { error 'Access denied: lane belongs to a locked package' } }
+    { true (
+     ; to target-data !data.namespace $clean-target
+     ; to open-target [ get scope.by-id $clean-target ]
+     ; to tables [ match
+      { $open-target.notebook.data-view.tables : $open-target.notebook.data-view.tables }
+      { true : !loadLaneTables $data $target-data $clean-target }
+     ]
+     ; to res [ match
+      { $syncTableRowsInMemory : !syncTableRowsInMemory $tables $clean-tbl $records $key-col }
+      { true : ; object { ok false } { changed false } { count 0 } { added 0 } { updated 0 } { removed 0 } { error 'syncTableRowsInMemory is not available' } }
+     ]
+     [ match
+      { $res.ok (
+       !saveTableSchemaAndRows $data $target-data $clean-target $res.table
+       [ match
+        { $open-target.notebook.data-view (
+         ; set $tables open-target.notebook.data-view.tables
+         [ match
+          { $open-target.notebook.data-view.render-grid : !open-target.notebook.data-view.render-grid }
+         ]
+         [ match
+          { $open-target.notebook.data-view.update-table-tabs-text : !open-target.notebook.data-view.update-table-tabs-text }
+         ]
+        ) }
+       ]
+      ) }
+     ]
+     ; to out ; object
+     ; assign $out $res [ object { laneId $clean-target } ]
+     $out
+    ) }
+   ]
+  ) }
+ ]
+)
+; to scope.deploy-lane (
+ -- Resyncs and deploys a target lane after verifying package access control, updating the triggering table's Updates section in real time
+ ; to { caller-lane-id target-lane-id raw-opts table-change } $argv
+ ; to clean-target [ match { $target-lane-id : ; add '' $target-lane-id } { true : '' } ]
+ [ match
+  { [ propertyIs '' clean-target ] : ; object { ok false } { status error } { error 'Target lane ID is required' } }
+  { true (
+   !scope.ensure-session
+   ; to access !checkLaneAccess $data $scope.open-package-ids $clean-target
+   [ match
+    { [ propertyIs false access.allowed ] : ; object { ok false } { status error } { laneId $clean-target } { error 'Access denied: lane belongs to a locked package' } }
+    { true (
+     ; to opts [ match
+      { [ and { $raw-opts } { $raw-opts.table } ] : $raw-opts }
+      { [ and { $raw-opts } { $raw-opts.tableId } ] : $raw-opts }
+      { [ and { $raw-opts } { $raw-opts.tableName } ] : $raw-opts }
+      { [ and { $raw-opts } { $raw-opts.summary } ] : $raw-opts }
+      { [ and { $raw-opts } { [ propertyIs false [ propertyIs undefined raw-opts.recordCount ] ] } ] : $raw-opts }
+      { [ and { $raw-opts } { [ propertyIs false [ propertyIs undefined raw-opts.changed ] ] } ] : $raw-opts }
+      { [ and { $raw-opts } { [ propertyIs false [ propertyIs undefined raw-opts.force ] ] } ] : $raw-opts }
+      { true : ; object }
+     ]
+     ; to caller-lane [ get scope.by-id $caller-lane-id ]
+     ; to caller-dv $caller-lane.notebook.data-view
+     ; to caller-tables [ match
+      { $caller-dv.tables : $caller-dv.tables }
+      { $caller-lane-id : !loadLaneTables $data [ !data.namespace $caller-lane-id ] $caller-lane-id }
+      { true : {} }
+     ]
+     ; to tbl-query [ match
+      { $opts.tableId : ; add '' $opts.tableId }
+      { $opts.table : ; add '' $opts.table }
+      { $opts.tableName : ; add '' $opts.tableName }
+      { $table-change.tableId : ; add '' $table-change.tableId }
+      { $table-change.tableName : ; add '' $table-change.tableName }
+      { $caller-dv.active-table-id : ; add '' $caller-dv.active-table-id }
+      { true : '' }
+     ]
+     ; to found-tbl ; object { tbl null }
+     ; each $caller-tables (
+      ; to { ct } $argv
+      ; condition { propertyIs null found-tbl.tbl } (
+       [ match
+        { [ propertyIs $tbl-query ct.id ] : ; set $ct found-tbl.tbl }
+        { [ propertyIs $tbl-query ct.name ] : ; set $ct found-tbl.tbl }
+       ]
+      )
+     )
+     ; to src-tbl [ match
+      { $found-tbl.tbl : $found-tbl.tbl }
+      { [ propertyIsGreaterThan 0 caller-tables.length ] : [ get caller-tables 0 ] }
+      { true : null }
+     ]
+     ; to has-explicit-tbl [ match
+      { $opts.tableId : true }
+      { $opts.table : true }
+      { $opts.tableName : true }
+      { true : false }
+     ]
+     ; to matches-table-change [ match
+      { [ propertyIs null table-change ] : true }
+      { [ propertyIs undefined table-change ] : true }
+      { [ propertyIs false has-explicit-tbl ] : true }
+      { [ propertyIs null src-tbl ] : true }
+      { [ propertyIs $src-tbl.id table-change.tableId ] : true }
+      { [ propertyIs $src-tbl.name table-change.tableName ] : true }
+      { true : false }
+     ]
+     ; to should-skip-other-table [ match
+      { [ propertyIs true matches-table-change ] : false }
+      { [ propertyIs true opts.changed ] : false }
+      { [ propertyIs true opts.force ] : false }
+      { true : true }
+     ]
+     [ match
+      { $should-skip-other-table : ; object { ok true } { skipped true } { status 'up-to-date' } { laneId $clean-target } }
+      { true (
+       ; to is-idle-check [ match
+        { $table-change : false }
+        { [ propertyIs true opts.changed ] : false }
+        { [ propertyIs true opts.force ] : false }
+        { [ propertyIs false opts.changed ] : true }
+        { true : false }
+       ]
+       ; to prior-ds [ match
+        { [ and { $is-idle-check } { $getLaneDeployStatus } ] : !getLaneDeployStatus $data $data $clean-target }
+        { true : null }
+       ]
+       ; to already-synced [ match
+        { [ and { $is-idle-check } { [ propertyIs true prior-ds.deployed ] } { [ propertyIs false prior-ds.hasChanges ] } ] : true }
+        { true : false }
+       ]
+       [ match
+        { $already-synced : ; object { ok true } { skipped true } { status 'up-to-date' } { laneId $clean-target } }
+        { true (
+         ; to target-title !scope.get-lane-title $clean-target
+         ; to dep [ match
+          { $loadLaneDeployment : !loadLaneDeployment $data $clean-target }
+          { true : null }
+         ]
+         ; to servers [ match
+          { $loadDeployServers : !loadDeployServers $data }
+          { true : {} }
+         ]
+         ; to found-srv ; object { srv null }
+         [ match
+          { $dep.serverId (
+           ; each $servers (
+            ; to { s } $argv
+            ; condition { propertyIs $dep.serverId s.id } : ; set $s found-srv.srv
+           )
+          ) }
+         ]
+         ; to srv $found-srv.srv
+         ; to raw-line-id [ match
+          { $generateLineId : !generateLineId $window }
+          { true : 'ln-upd' }
+         ]
+         ; to upd-id [ match
+          { $raw-line-id.replace : !raw-line-id.replace 'ln-' 'upd-' }
+          { true : $raw-line-id }
+         ]
+         ; to now-str [ match
+          { $window.Date : ; add '' [ !window.Date ] }
+          { true : '' }
+         ]
+         ; to rec-count $opts.recordCount
+         ; to has-count [ match
+          { [ propertyIs null rec-count ] : false }
+          { [ propertyIs undefined rec-count ] : false }
+          { true : true }
+         ]
+         ; to count-phrase [ match
+          { $has-count (
+           ; to unit [ ternary [ propertyIs 1 rec-count ] 'public item' 'public items' ]
+           ; add $rec-count ; add ' ' $unit
+          ) }
+          { true : 'public items' }
+         ]
+         ; to srv-phrase [ match
+          { $srv.name : ; add ' to ' $srv.name }
+          { true : '' }
+         ]
+         ; to trigger-lbl [ match
+          { $table-change.action : $table-change.action }
+          { $opts.trigger : $opts.trigger }
+          { true : 'Record change' }
+         ]
+         ; to src-tbl-id [ match { $src-tbl.id : $src-tbl.id } { true : '' } ]
+         ; to src-tbl-name [ match { $src-tbl.name : $src-tbl.name } { true : $tbl-query } ]
+         ; to pending-upd [ object
+          { id $upd-id }
+          { tableId $src-tbl-id }
+          { tableName $src-tbl-name }
+          { targetLaneId $clean-target }
+          { targetLaneTitle $target-title }
+          { status deploying }
+          { ok true }
+          { slug [ match { $dep.slug : $dep.slug } { true : '' } ] }
+          { serverName [ match { $srv.name : $srv.name } { true : '' } ] }
+          { publicUrl [ match { $dep.publicUrl : $dep.publicUrl } { true : '' } ] }
+          { recordCount $rec-count }
+          { trigger $trigger-lbl }
+          { summary [ ; add 'Syncing ' ; add $count-phrase ; add ' & deploying' ; add $srv-phrase '…' ] }
+          { triggeredAt $now-str }
+          { deployedAt $now-str }
+          { error null }
+         ]
+         [ match
+          { [ and { $src-tbl-id } { $caller-dv.upsert-table-update } ] (
+           !caller-dv.upsert-table-update $src-tbl-id $pending-upd false
+          ) }
+         ]
+         ; to inc-imports [ ternary $dep.includeImports true false ]
+         ; to bundle !scope.collect-lane-bundle $clean-target $inc-imports
+         ; to resync-res [ match
+          { [ and { $resyncDeployedLane } { $bundle } ] (
+           !resyncDeployedLane [ object
+            { laneId $clean-target }
+            { deployment $dep }
+            { server $srv }
+            { bundle $bundle }
+           ]
+          ) }
+          { $bundle : ; object { ok true } { deployedAt $now-str } { publicUrl [ match { $dep.publicUrl : $dep.publicUrl } { true : '' } ] } }
+          { true : ; object { ok false } { error 'Could not collect lane sync bundle' } }
+         ]
+         ; to dep-ok [ propertyIs true resync-res.ok ]
+         ; to dep-at [ match
+          { $resync-res.deployedAt : $resync-res.deployedAt }
+          { true : $now-str }
+         ]
+         ; to pub-url [ match
+          { $resync-res.publicUrl : $resync-res.publicUrl }
+          { $dep.publicUrl : $dep.publicUrl }
+          { true : '' }
+         ]
+         [ match
+          { $dep-ok (
+           [ match
+            { $saveDeployedLaneScript (
+             ; to snap-recs [ match
+              { $bundle.lanes.0.records : $bundle.lanes.0.records }
+              { true : {} }
+             ]
+             !saveDeployedLaneScript $data $clean-target $snap-recs $dep-at
+            ) }
+           ]
+           [ match
+            { [ and { $dep } { $saveLaneDeployment } ] (
+             ; to next-dep ; object
+             ; assign $next-dep $dep [ object
+              { lastDeployedAt $dep-at }
+              { lastSyncedAt $dep-at }
+              { lastSyncLaneIds { $clean-target } }
+              { publicUrl $pub-url }
+             ]
+             !saveLaneDeployment $data $next-dep
+            ) }
+           ]
+          ) }
+         ]
+         ; to final-summary [ match
+          { $opts.summary : ; add '' $opts.summary }
+          { $dep-ok : ; add 'Synced ' ; add $count-phrase ; add ' & deployed' $srv-phrase }
+          { true : ; add 'Deploy failed: ' [ match { $resync-res.error : $resync-res.error } { true : 'Unknown error' } ] }
+         ]
+         ; to final-upd [ object
+          { id $upd-id }
+          { tableId $src-tbl-id }
+          { tableName $src-tbl-name }
+          { targetLaneId $clean-target }
+          { targetLaneTitle $target-title }
+          { status [ ternary $dep-ok deployed error ] }
+          { ok $dep-ok }
+          { slug [ match { $dep.slug : $dep.slug } { $resync-res.slug : $resync-res.slug } { true : '' } ] }
+          { serverName [ match { $srv.name : $srv.name } { true : '' } ] }
+          { publicUrl $pub-url }
+          { recordCount $rec-count }
+          { trigger $trigger-lbl }
+          { summary $final-summary }
+          { triggeredAt $now-str }
+          { deployedAt $dep-at }
+          { error [ match { $dep-ok : null } { $resync-res.error : $resync-res.error } { true : 'Deploy failed' } ] }
+         ]
+         [ match
+          { [ and { $src-tbl-id } { $caller-dv.upsert-table-update } ] (
+           !caller-dv.upsert-table-update $src-tbl-id $final-upd true
+          ) }
+          { [ and { $src-tbl-id } { $recordTableDeploymentUpdate } ] (
+           !recordTableDeploymentUpdate $data [ !data.namespace $caller-lane-id ] $caller-lane-id $src-tbl-id $final-upd
+          ) }
+         ]
+         !scope.refresh-export-statuses $clean-target
+         !scope.refresh-deploy-servers
+         $final-upd
+        ) }
+       ]
+      ) }
+     ]
+    ) }
+   ]
+  ) }
+ ]
 )
 ; to scope.refresh-lane-labels (
  -- Updates Data table lane cell display labels across all open lanes after a lane rename or reload
@@ -1479,7 +3061,13 @@
 )
 ; to scope.evaluate-stored-lane (
  -- Evaluates an unmounted lane's persisted script and inputs to completion and returns its final state
- ; to { target-id } $argv
+ ; to { target-id eval-opts } $argv
+ ; to trigger [ match
+  { $eval-opts.trigger : $eval-opts.trigger }
+  { true : background }
+ ]
+ ; to apply-exports [ propertyIs true eval-opts.applyExports ]
+ ; to skip-story [ propertyIs false eval-opts.recordStory ]
  ; to target-data !data.namespace $target-id
  ; to loaded-script !loadLaneScript $data $target-data $target-id $window
  ; to lines {}
@@ -1490,42 +3078,194 @@
  ; to stored-inputs !target-data.get inputs
  ; to inputs !lane-inputs.parse-stored $stored-inputs
  ; to tables !loadLaneTables $data $target-data $target-id
+ ; to line-ctx ; object { index null } { lineNumber null } { lineId '' }
+ ; to story-rec [ match
+  { [ and { [ propertyIs false skip-story ] } { $createStoryRunRecorder } ] : !createStoryRunRecorder [ object { laneId $target-id } { trigger $trigger } ] }
+  { true : null }
+ ]
+ ; to export-lane-fn (
+  ; to { first-arg second-arg third-arg } $argv
+  ; to exp-res [ match
+   { $apply-exports : !scope.export-lane-line $target-id $first-arg $second-arg $third-arg null $line-ctx.lineId }
+   { true (
+    ; to is-list [ match { $first-arg.map : true } { true : false } ]
+    ; to raw-c [ ternary $is-list $second-arg $third-arg ]
+    ; to c-str [ match
+     { [ propertyIs null raw-c ] : '' }
+     { [ propertyIs undefined raw-c ] : '' }
+     { true : ; add '' $raw-c }
+    ]
+    ; object { ok true } { readonly true } { content $c-str } { targets {} } { laneStatuses {} } { changedCount 0 } { needsDeployCount 0 }
+   ) }
+  ]
+  [ match
+   { [ and { $trackStoryExportLineCall } { $story-rec } ] (
+    !trackStoryExportLineCall [ object
+     { recorder $story-rec }
+     { lineContext $line-ctx }
+     { lines $lines }
+     { result $exp-res }
+    ]
+   ) }
+  ]
+  $exp-res
+ )
+ ; to sync-lane-tbl-fn (
+  ; to { nested-target tbl-q recs k-col } $argv
+  ; to sync-res !scope.sync-lane-table $target-id $nested-target $tbl-q $recs $k-col
+  [ match
+   { [ and { $trackStoryExportTableCall } { $story-rec } ] (
+    ; to tgt-title [ match
+     { $scope.get-lane-title : !scope.get-lane-title $nested-target }
+     { true : $nested-target }
+    ]
+    !trackStoryExportTableCall [ object
+     { recorder $story-rec }
+     { lineContext $line-ctx }
+     { targetLaneId $nested-target }
+     { laneTitle $tgt-title }
+     { tableName $tbl-q }
+     { records $recs }
+     { result $sync-res }
+    ]
+   ) }
+  ]
+  $sync-res
+ )
+ ; to import-lane-fn (
+  ; to { nested-id ...nested-path } $argv
+  [ match
+   { [ propertyIs '' nested-id ] : undefined }
+   { [ propertyIs undefined nested-id ] : undefined }
+   { true (
+    [ match
+     { [ and { $trackStoryImportCall } { $story-rec } ] (
+      ; to tgt-title [ match
+       { $scope.get-lane-title : !scope.get-lane-title $nested-id }
+       { true : $nested-id }
+      ]
+      !trackStoryImportCall [ object
+       { recorder $story-rec }
+       { lineContext $line-ctx }
+       { lines $lines }
+       { targetId $nested-id }
+       { path $nested-path }
+       { laneTitle $tgt-title }
+       { invokeImport ( ; to res !scope.get-lane-final-state $nested-id $target-id , !resolveImportValue $res $nested-path ) }
+      ]
+     ) }
+     { true (
+      ; to res !scope.get-lane-final-state $nested-id $target-id
+      !resolveImportValue $res $nested-path
+     ) }
+    ]
+   ) }
+  ]
+ )
  ; to env [ object
   { console $console }
   { data $target-data }
   { Math $window.Math }
+  { Number $window.Number }
   { JSON $window.JSON }
   { Date $window.Date }
+  { Array $window.Array }
+  { fetch ( ; to { u o } $argv, [ match { $window.fetch : !window.fetch $u $o } { true : null } ] ) }
   { respond [ match { $createResponseHelper : !createResponseHelper } { true : null } ] }
-  { exportLaneLine ( ; object { ok true } { readonly true } { targets {} } { laneStatuses {} } { changedCount 0 } { needsDeployCount 0 } ) }
-  { setLaneLine ( ; object { ok true } { readonly true } { targets {} } { laneStatuses {} } { changedCount 0 } { needsDeployCount 0 } ) }
-  { importLane (
-   ; to { nested-id ...nested-path } $argv
+  { exportLaneLine $export-lane-fn }
+  { setLaneLine $export-lane-fn }
+  { syncLaneTable $sync-lane-tbl-fn }
+  { deployLane (
+   ; to { nested-target d-opts } $argv
+   !scope.deploy-lane $target-id $nested-target $d-opts null
+  ) }
+  { resyncLane (
+   ; to { nested-target d-opts } $argv
+   !scope.deploy-lane $target-id $nested-target $d-opts null
+  ) }
+  { syncTable (
+   ; to { tbl-query records key-col } $argv
+   ; to res [ match
+    { $syncTableRowsInMemory : !syncTableRowsInMemory $tables $tbl-query $records $key-col }
+    { true : ; object { ok false } { count 0 } { added 0 } { updated 0 } }
+   ]
    [ match
-    { [ propertyIs '' nested-id ] : undefined }
-    { [ propertyIs undefined nested-id ] : undefined }
-    { true (
-     ; to res !scope.get-lane-final-state $nested-id $target-id
-     !resolveImportValue $res $nested-path
+    { $res.ok (
+     ; to next-scoped !buildTablesScope $tables
+     ; assign $env $next-scoped
+     !saveTableSchemaAndRows $data $target-data $target-id $res.table
+     ; to open-target [ get scope.by-id $target-id ]
+     [ match
+      { $open-target.notebook.data-view (
+       ; set $tables open-target.notebook.data-view.tables
+       [ match
+        { $open-target.notebook.data-view.render-grid : !open-target.notebook.data-view.render-grid }
+       ]
+       [ match
+        { $open-target.notebook.data-view.update-table-tabs-text : !open-target.notebook.data-view.update-table-tabs-text }
+       ]
+      ) }
+     ]
     ) }
    ]
+   $res
   ) }
+  { importLane $import-lane-fn }
  ]
+ ; to secret-names {}
+ ; to secret-set-names {}
+ ; to secret-values {}
  ; each $inputs (
   ; to { entry } $argv
   ; to trimmed !entry.name.trim
   [ match
    { [ propertyIs '' trimmed ] : null }
+   { [ propertyIs secret entry.type ] (
+    !secret-names.push $trimmed
+    ; to val [ match
+     { [ propertyIs true entry.secretSet ] : [ match
+      { $resolveLaneSecret : !resolveLaneSecret $data $target-data $target-id $entry }
+      { true : '' }
+     ] }
+     { true : '' }
+    ]
+    ; to env $trimmed $val
+    ; condition { propertyIs true entry.secretSet } : !secret-set-names.push $trimmed
+    ; condition { propertyIsGreaterThan 0 val.length } : !secret-values.push $val
+   ) }
    { true (
     ; to val !defaultValueForType $entry.type
     ; to env $trimmed $val
    ) }
   ]
  )
+ ; condition { propertyIsGreaterThan 0 secret-names.length } (
+  ; to env.__secretNames $secret-names
+  ; to env.__secretSetNames $secret-set-names
+  ; to env.__secretValues $secret-values
+ )
  ; to scoped-tables !buildTablesScope $tables
  ; assign $env $scoped-tables
- ; to run-opts [ object { filename $target-id } { initialState $env } ]
+ ; to captured-inputs [ match
+  { $captureStoryEnvInputs : !captureStoryEnvInputs $inputs $env }
+  { true : null }
+ ]
+ ; to run-opts [ object
+  { filename $target-id }
+  { initialState $env }
+  { lineContext $line-ctx }
+  { lineRecords $loaded-script.records }
+ ]
  ; to outcome !runLines $lines $run-opts
+ [ match
+  { [ and { [ propertyIs false skip-story ] } { $recordLaneStoryFromRun } ] (
+   ; to story-entry !recordLaneStoryFromRun $data $target-data $target-id $story-rec $captured-inputs $outcome $loaded-script.records [ object { trigger $trigger } ]
+   ; to open-target [ get scope.by-id $target-id ]
+   [ match
+    { $open-target.notebook.story-view.on-new-entry : !open-target.notebook.story-view.on-new-entry $story-entry }
+   ]
+  ) }
+ ]
  ; object { ok true } { state $outcome.state } { error null }
 )
 ; to scope.get-lane-final-state (
@@ -1663,42 +3403,46 @@
  ; to lane [ get scope.by-id $id ]
  [ match
   { $lane (
-   ; to normalized !normalizeLanePath $raw-path
-   ; set $normalized lane.path
-   ; to stored [ match
-    { $normalized : $normalized }
-    { true : '' }
-   ]
-   [ match
-    { $lane.data.set : !lane.data.set path $stored }
-   ]
-   ; to parsed !parseLanePath $normalized
-   ; to next-tab [ match
-    { $parsed.tab : $parsed.tab }
-    { true : source }
-   ]
-   ; to next-subroute [ match
-    { $parsed.subroute : $parsed.subroute }
-    { true : '' }
-   ]
-   ; set $next-tab lane.tab
-   ; set $next-subroute lane.subroute
-   [ match
-    { [ propertyIs data next-tab ] (
-     [ match
-      { $lane.notebook.data-view.select-table-by-name : !lane.notebook.data-view.select-table-by-name $next-subroute true }
-     ]
-    ) }
-   ]
-   [ match
-    { $lane.notebook.set-tab (
-     [ match
-      { [ propertyIs $next-tab lane.notebook.active-tab ] : null }
-      { true : !lane.notebook.set-tab $next-tab true }
-     ]
-    ) }
-   ]
-   !scope.update-url
+   !scope.begin-session-status-pending 'Loading…'
+   ; try (
+    ; to normalized !normalizeLanePath $raw-path
+    ; set $normalized lane.path
+    ; to stored [ match
+     { $normalized : $normalized }
+     { true : '' }
+    ]
+    [ match
+     { $lane.data.set : !lane.data.set path $stored }
+    ]
+    ; to parsed !parseLanePath $normalized
+    ; to next-tab [ match
+     { $parsed.tab : $parsed.tab }
+     { true : source }
+    ]
+    ; to next-subroute [ match
+     { $parsed.subroute : $parsed.subroute }
+     { true : '' }
+    ]
+    ; set $next-tab lane.tab
+    ; set $next-subroute lane.subroute
+    [ match
+     { [ propertyIs data next-tab ] (
+      [ match
+       { $lane.notebook.data-view.select-table-by-name : !lane.notebook.data-view.select-table-by-name $next-subroute true }
+      ]
+     ) }
+    ]
+    [ match
+     { $lane.notebook.set-tab (
+      [ match
+       { [ propertyIs $next-tab lane.notebook.active-tab ] : null }
+       { true : !lane.notebook.set-tab $next-tab true }
+      ]
+     ) }
+    ]
+    !scope.update-url
+   ) : null
+   !scope.end-session-status-pending
   ) }
  ]
  $lane
@@ -1713,13 +3457,13 @@
  ]
 )
 ; to scope.set-features (
- -- Updates a lane's feature flags in live state, lane KV storage, and notebook UI
+ -- Updates a lane's feature flags in live state, lane KV storage, notebook UI, and singleton cron scheduler
  ; to { id raw-features } $argv
  ; to lane [ get scope.by-id $id ]
  ; to normalized [ match
   { $normalizeLaneFeatures : !normalizeLaneFeatures $raw-features }
   { $raw-features : $raw-features }
-  { true : ; object { httpServer false } }
+  { true : ; object { httpServer false } { runEvery30Minutes false } }
  ]
  [ match
   { $lane (
@@ -1733,24 +3477,60 @@
    ]
   ) }
  ]
+ [ match
+  { $scope.sync-lane-cron : !scope.sync-lane-cron $id $normalized }
+ ]
  $normalized
 )
 ; to scope.refresh-deploy-servers (
- -- Refreshes the target SSH servers dropdown across all open lanes with Server tabs
+ -- Refreshes the target SSH servers dropdown and known deployments across all open lanes with Server tabs
  ; each $scope.lanes (
   ; to { lane } $argv
   [ match
    { $lane.notebook.server-view.refresh-servers : !lane.notebook.server-view.refresh-servers }
   ]
+  [ match
+   { $lane.notebook.server-view.refresh-deployments : !lane.notebook.server-view.refresh-deployments }
+  ]
  )
 )
 ; to scope.collect-lane-bundle (
- -- Collects a lane (and optionally transitively imported lanes) for syncing to civil-memory KV
+ -- Collects a lane (and optionally transitively imported lanes) for syncing to civil-memory KV, overlaying any open lane's live in-memory tables and script records
  ; to { lane-id include-imports } $argv
+ ; to open-main [ get scope.by-id $lane-id ]
  [ match
+  { $open-main.notebook.data-view.save : !open-main.notebook.data-view.save }
+ ]
+ ; to bundle [ match
   { $collectLaneSyncBundle : !collectLaneSyncBundle $data $lane-id [ object { includeImports $include-imports } { openPackageIds $scope.open-package-ids } { win $window } ] }
   { true : null }
  ]
+ [ match
+  { $bundle.lanes (
+   ; each $bundle.lanes (
+    ; to { item } $argv
+    ; to open-item [ get scope.by-id $item.id ]
+    [ match
+     { $open-item.notebook.data-view.tables : ; set $open-item.notebook.data-view.tables item.tables }
+    ]
+    [ match
+     { [ and { $open-item.notebook.line-records } { [ propertyIsGreaterThan 0 open-item.notebook.line-records.length ] } ] (
+      ; to live-recs {}
+      ; each $open-item.notebook.line-records (
+       ; to { r } $argv
+       !live-recs.push [ object
+        { id $r.id }
+        { text [ match { [ propertyIs null r.text ] : '' } { [ propertyIs undefined r.text ] : '' } { true : ; add '' $r.text } ] }
+        { updatedAt [ match { $r.updatedAt : $r.updatedAt } { true : null } ] }
+       ]
+      )
+      ; set $live-recs item.records
+     ) }
+    ]
+   )
+  ) }
+ ]
+ $bundle
 )
 ; to scope.mount-locked (
  -- Mounts a locked access-denied lane placeholder with an unlock/open-package prompt
@@ -1841,8 +3621,14 @@
   { title 'Locked Lane' }
   { width null }
   { rendered-width null }
+  { effective-width null }
+  { open-modals {} }
+  { has-open-modal false }
+  { modal-min-width null }
   { is-resizing false }
   { is-minimized false }
+  { is-highlighted false }
+  { highlight-timer null }
   { header-top $header-top }
   { title-el $title-el }
   { element $element }
@@ -1868,6 +3654,7 @@
  ; to scope.by-id $id $lane
  $lane
 )
+; to default-lane-features : ; object { httpServer false } { runEvery30Minutes false }
 ; to scope.mount (
  -- Mounts a lane DOM header, gear config button, minimize buttons, reload button, close button, resize handles, notebook body, and registers it on scope
  ; to { id title lane-data initial-tab initial-subroute initial-width initial-minimized insert-index initial-path package-id initial-features } $argv
@@ -1878,7 +3665,7 @@
  ; to features [ match
   { $normalizeLaneFeatures : !normalizeLaneFeatures $initial-features }
   { $initial-features : $initial-features }
-  { true : ; object { httpServer false } }
+  { true : !default-lane-features }
  ]
  ; to raw-tab !normalizeLaneTab $initial-tab
  ; to tab [ match
@@ -1935,6 +3722,11 @@
  ; assign id-el.style { fontFamily '"IBM Plex Mono", monospace' } { fontSize 10px } { fontWeight normal } { opacity '0.65' }
  !meta-el.appendChild $title-el
  !meta-el.appendChild $id-el
+ ; to copy-icon-svg '<svg class="lane-copy-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"></rect><path d="M10.5 5.5V3.5C10.5 2.67 9.83 2 9 2H3.5C2.67 2 2 2.67 2 3.5V9C2 9.83 2.67 10.5 3.5 10.5H5.5"></path></svg>'
+ ; to copy-check-svg '<svg class="lane-copy-icon lane-copy-icon--copied" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5L6.5 11.5L12.5 4.5"></path></svg>'
+ ; to copy-info-btn !document.createElement button
+ ; assign $copy-info-btn { type button } { className lane-copy-btn } { title 'Copy lane info for agent' } { innerHTML $copy-icon-svg }
+ !copy-info-btn.setAttribute aria-label 'Copy lane info for agent'
  ; to min-left-btn !document.createElement button
  ; assign $min-left-btn { type button } { className 'lane-min-btn lane-min-btn--left' } { title 'Minimize to left rail' } { innerHTML '<svg class="lane-min-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3.5L5.5 8L10 12.5"></path></svg>' }
  !min-left-btn.setAttribute aria-label 'Minimize to left rail'
@@ -1947,14 +3739,22 @@
  ; assign $reload-btn { type button } { className lane-reload-btn } { textContent '↻' } { title 'Reload lane' }
  !reload-btn.setAttribute aria-label 'Reload lane'
  !reload-btn.addEventListener click : !scope.reload $id
+ ; to fullscreen-btn !document.createElement button
+ ; assign $fullscreen-btn { type button } { className lane-fullscreen-btn } { textContent '' } { title 'Fullscreen lane' } { innerHTML $lane-fs-enter-svg }
+ !fullscreen-btn.setAttribute aria-label 'Fullscreen lane'
+ !fullscreen-btn.setAttribute aria-pressed 'false'
+ !fullscreen-btn.setAttribute data-fullscreen 'false'
+ !fullscreen-btn.addEventListener click : !scope.toggle-lane-fullscreen $id
  ; to close-btn !document.createElement button
  ; assign $close-btn { type button } { className lane-close-btn } { textContent '×' } { title 'Close lane' }
  !close-btn.addEventListener click : !scope.close $id
  !header-top.appendChild $config-btn
  !header-top.appendChild $meta-el
+ !header-top.appendChild $copy-info-btn
  !header-top.appendChild $min-left-btn
  !header-top.appendChild $min-right-btn
  !header-top.appendChild $reload-btn
+ !header-top.appendChild $fullscreen-btn
  !header-top.appendChild $close-btn
  !element.appendChild $header-top
  ; to header-resizer !document.createElement div
@@ -1970,8 +3770,15 @@
   { title $title }
   { width null }
   { rendered-width null }
+  { effective-width null }
+  { open-modals {} }
+  { has-open-modal false }
+  { modal-min-width null }
   { is-resizing false }
+  { is-fullscreen false }
   { is-minimized false }
+  { is-highlighted false }
+  { highlight-timer null }
   { minimized-side null }
   { minimized-header-btn null }
   { minimized-placeholder null }
@@ -1984,11 +3791,32 @@
   { header-resizer $header-resizer }
   { body-resizer null }
   { config-btn $config-btn }
+  { copy-info-btn $copy-info-btn }
+  { copy-agent-btn $copy-info-btn }
+  { copy-btn $copy-info-btn }
+  { copy-timer null }
   { min-left-btn $min-left-btn }
   { min-right-btn $min-right-btn }
   { reload-btn $reload-btn }
+  { fullscreen-btn $fullscreen-btn }
   { close-btn $close-btn }
  ]
+ !copy-info-btn.addEventListener click (
+  !scope.copy-agent-context $lane
+  ; assign $copy-info-btn { className 'lane-copy-btn lane-copy-btn--copied' } { title Copied } { innerHTML $copy-check-svg }
+  [ match
+   { $window.setTimeout (
+    [ match
+     { $lane.copy-timer : !window.clearTimeout $lane.copy-timer }
+    ]
+    ; to next-timer !window.setTimeout (
+     ; assign $copy-info-btn { className lane-copy-btn } { title 'Copy lane info for agent' } { innerHTML $copy-icon-svg }
+     ; set null lane.copy-timer
+    ) 1200
+    ; set $next-timer lane.copy-timer
+   ) }
+  ]
+ )
  !scope.attach-lane-resizer $lane $header-resizer
  [ match
   { $has-insert-index (
@@ -2048,94 +3876,139 @@
  [ match
   { $lane (
    !scope.ensure-session
-   ; to access !checkLaneAccess $data $scope.open-package-ids $id
-   [ match
-    { [ propertyIs true lane.is-locked ] (
-     ; condition { propertyIs true access.allowed } : !scope.sync
-    ) }
-    { [ propertyIs false access.allowed ] : !scope.sync }
-    { true (
-     [ match
-      { $rails.preview-lane (
-       ; condition { propertyIs $id rails.preview-lane.id } : !rails.hide-preview
-      ) }
-     ]
-     ; set $access.packageId lane.package-id
-     ; to was-minimized $lane.is-minimized
-     ; to raw-tab [ match
-      { $lane.notebook.active-tab : $lane.notebook.active-tab }
-      { true : $lane.tab }
-     ]
-     ; to current-tab !normalizeLaneTab $raw-tab
-     ; set $current-tab lane.tab
-     ; to stored-title !lane.data.get title
-     ; to stored-width !lane.data.get width
-     ; to stored-minimized !lane.data.get minimized
-     ; to stored-path-raw !lane.data.get path
-     ; to stored-path !normalizeLanePath $stored-path-raw
-     ; set $stored-path lane.path
-     ; to stored-features-raw !lane.data.get features
-     ; to next-features [ match
-      { $parseLaneFeatures : !parseLaneFeatures $stored-features-raw }
-      { true : ; object { httpServer false } }
-     ]
-     ; set $next-features lane.features
-     ; to current-tab [ match
-      { [ propertyIs server current-tab ] (
-       [ match
-        { $next-features.httpServer : server }
-        { true : source }
-       ]
-      ) }
-      { true : $current-tab }
-     ]
-     ; set $current-tab lane.tab
-     ; to next-min !normalizeLaneMinimizeSide $stored-minimized
-     [ match
-      { $stored-title (
-       ; set $stored-title lane.title
-       ; set $stored-title lane.title-el.textContent
-       !scope.sync-minimized-labels $lane
-       !scope.register $id $stored-title $access.packageId
-       !scope.refresh-import-labels $id
-       !scope.refresh-lane-labels $id
-       [ match
-        { $rails.sync-preferences-menu : !rails.sync-preferences-menu }
-       ]
-      ) }
-     ]
-     !scope.apply-lane-width $lane $stored-width
-     [ match
-      { $lane.body (
-       [ match
-        { $lane.body.replaceChildren : !lane.body.replaceChildren }
-        { true (
-         ; while { propertyIsGreaterThan 0 lane.body.children.length } (
-          ; to child !lane.body.children.pop
-          [ match
-           { $child.remove : !child.remove }
-          ]
-         )
-        ) }
-       ]
-       ; set null lane.minimized-placeholder
-       ; set null lane.minimized-title-el
-       !lane-notebook.mount $lane $lane.body $scope $current-tab
-       [ match
-        { $lane.body-resizer : !lane.body.appendChild $lane.body-resizer }
-       ]
-       [ match
-        { [ propertyIs input current-tab ] : !scope.notify-lane-idle $id }
-        { [ propertyIs data current-tab ] : !scope.notify-lane-idle $id }
-       ]
-      ) }
-     ]
-     [ match
-      { $next-min : !scope.minimize $id $next-min true }
-      { $was-minimized : !scope.restore $id true }
-     ]
-    ) }
-   ]
+   !scope.begin-session-status-pending 'Loading…'
+   ; try (
+    ; to access !checkLaneAccess $data $scope.open-package-ids $id
+    [ match
+     { [ propertyIs true lane.is-locked ] (
+      ; condition { propertyIs true access.allowed } : !scope.sync
+     ) }
+     { [ propertyIs false access.allowed ] : !scope.sync }
+     { true (
+      ; to was-fullscreen [ match
+       { $scope.fullscreen-lane : [ propertyIs $id scope.fullscreen-lane.id ] }
+       { true : false }
+      ]
+      ; to was-fs-pinned [ match
+       { $was-fullscreen : [ propertyIs true scope.fullscreen-was-pinned ] }
+       { true : false }
+      ]
+      [ match
+       { $was-fullscreen : !scope.exit-lane-fullscreen true }
+      ]
+      ; to was-pinned [ match
+       { $rails.pinned-lane : [ propertyIs $id rails.pinned-lane.id ] }
+       { true : false }
+      ]
+      [ match
+       { $rails.preview-lane (
+        ; condition { propertyIs $id rails.preview-lane.id } : !rails.hide-preview
+       ) }
+      ]
+      ; set $access.packageId lane.package-id
+      ; to was-minimized $lane.is-minimized
+      ; to raw-tab [ match
+       { $lane.notebook.active-tab : $lane.notebook.active-tab }
+       { true : $lane.tab }
+      ]
+      ; to current-tab !normalizeLaneTab $raw-tab
+      ; set $current-tab lane.tab
+      ; to stored-title !lane.data.get title
+      ; to stored-width !lane.data.get width
+      ; to stored-minimized !lane.data.get minimized
+      ; to stored-path-raw !lane.data.get path
+      ; to stored-path !normalizeLanePath $stored-path-raw
+      ; set $stored-path lane.path
+      ; to stored-features-raw !lane.data.get features
+      ; to next-features [ match
+       { $parseLaneFeatures : !parseLaneFeatures $stored-features-raw }
+       { true : ; object { httpServer false } { runEvery30Minutes false } }
+      ]
+      ; set $next-features lane.features
+      [ match
+       { $scope.sync-lane-cron : !scope.sync-lane-cron $id $next-features }
+      ]
+      ; to current-tab [ match
+       { [ propertyIs server current-tab ] (
+        [ match
+         { $next-features.httpServer : server }
+         { true : source }
+        ]
+       ) }
+       { true : $current-tab }
+      ]
+      ; set $current-tab lane.tab
+      ; to next-min !normalizeLaneMinimizeSide $stored-minimized
+      [ match
+       { $stored-title (
+        ; set $stored-title lane.title
+        ; set $stored-title lane.title-el.textContent
+        !scope.sync-minimized-labels $lane
+        !scope.register $id $stored-title $access.packageId
+        !scope.refresh-import-labels $id
+        !scope.refresh-lane-labels $id
+        [ match
+         { $rails.sync-preferences-menu : !rails.sync-preferences-menu }
+        ]
+       ) }
+      ]
+      !scope.apply-lane-width $lane $stored-width
+      [ match
+       { $lane.body (
+        [ match
+         { $lane.body.replaceChildren : !lane.body.replaceChildren }
+         { true (
+          ; while { propertyIsGreaterThan 0 lane.body.children.length } (
+           ; to child !lane.body.children.pop
+           [ match
+            { $child.remove : !child.remove }
+           ]
+          )
+         ) }
+        ]
+        ; set null lane.minimized-placeholder
+        ; set null lane.minimized-title-el
+        !lane-notebook.mount $lane $lane.body $scope $current-tab
+        [ match
+         { $lane.body-resizer : !lane.body.appendChild $lane.body-resizer }
+        ]
+        [ match
+         { [ propertyIs story current-tab ] : !scope.notify-lane-idle $id }
+         { [ propertyIs input current-tab ] : !scope.notify-lane-idle $id }
+         { [ propertyIs data current-tab ] : !scope.notify-lane-idle $id }
+        ]
+       ) }
+      ]
+      [ match
+       { $next-min (
+        !scope.minimize $id $next-min true
+        ; condition { propertyIs true was-pinned } (
+         ; condition { propertyIs false was-fullscreen } : !rails.pin $id
+        )
+       ) }
+       { $was-minimized : !scope.restore $id true }
+      ]
+      [ match
+       { $was-fullscreen (
+        !scope.enter-lane-fullscreen $id
+        ; set $was-fs-pinned scope.fullscreen-was-pinned
+       ) }
+      ]
+      [ match
+       { $lane.open-modals (
+        ; to modal-host !scope.get-lane-modal-host $lane
+        ; each $lane.open-modals (
+         ; to { open-m } $argv
+         [ match
+          { [ and { $open-m.backdrop } { $modal-host.appendChild } ] : !modal-host.appendChild $open-m.backdrop }
+         ]
+        )
+       ) }
+      ]
+     ) }
+    ]
+   ) : null
+   !scope.end-session-status-pending
   ) }
  ]
  $lane
@@ -2146,29 +4019,56 @@
  ; to lane [ get scope.by-id $id ]
  [ match
   { $lane (
-   ; to was-minimized $lane.is-minimized
-   !rails.remove $id
-   [ match
-    { $was-minimized : !lane.data.set minimized '' }
-   ]
-   !lane.element.remove
-   [ match
-    { $lane.body : !lane.body.remove }
-   ]
-   ; to lane-idx !scope.lanes.indexOf $lane
-   ; condition { propertyIsGreaterThanOrEqual 0 lane-idx } : !scope.lanes.splice $lane-idx 1
-   ; to id-idx !scope.lane-ids.indexOf $id
-   ; condition { propertyIsGreaterThanOrEqual 0 id-idx } : !scope.lane-ids.splice $id-idx 1
-   !window.Reflect.deleteProperty $scope.by-id $id
-   !scope.update-url
-   !scope.recompute-session-dirty
+   !scope.begin-session-status-pending 'Saving…'
+   ; try (
+    [ match
+     { $scope.fullscreen-lane (
+      ; condition { propertyIs $id scope.fullscreen-lane.id } : !scope.exit-lane-fullscreen true
+     ) }
+    ]
+    !scope.clear-lane-highlight $lane
+    !scope.close-lane-modals $lane
+    ; to was-minimized $lane.is-minimized
+    !rails.remove $id
+    [ match
+     { $was-minimized : !lane.data.set minimized '' }
+    ]
+    !lane.element.remove
+    [ match
+     { $lane.body : !lane.body.remove }
+    ]
+    ; to lane-idx !scope.lanes.indexOf $lane
+    ; condition { propertyIsGreaterThanOrEqual 0 lane-idx } : !scope.lanes.splice $lane-idx 1
+    ; to id-idx !scope.lane-ids.indexOf $id
+    ; condition { propertyIsGreaterThanOrEqual 0 id-idx } : !scope.lane-ids.splice $id-idx 1
+    !window.Reflect.deleteProperty $scope.by-id $id
+    ; to is-pref [ match
+     { $scope.preferences-lane-id : [ propertyIs $id scope.preferences-lane-id ] }
+     { true : false }
+    ]
+    [ match
+     { [ propertyIs false is-pref ] (
+      ; to prev-timer [ get scope.cron-timers $id ]
+      [ match
+       { $prev-timer (
+        [ match
+         { $window.clearInterval : !window.clearInterval $prev-timer }
+        ]
+        !window.Reflect.deleteProperty $scope.cron-timers $id
+       ) }
+      ]
+     ) }
+    ]
+    !scope.update-url
+   ) : null
+   !scope.end-session-status-pending
   ) }
  ]
  $lane
 )
 ; to scope.scroll-lane-into-view (
- -- Smoothly scrolls the horizontal viewport so the entire lane (header and body) clears side rails with right breathing room
- ; to { lane } $argv
+ -- Smoothly scrolls the viewport so the entire lane clears side rails horizontally and optional target-el is brought into view vertically
+ ; to { lane target-el } $argv
  ; to rect-bounds (
   ; to { el } $argv
   [ match
@@ -2181,7 +4081,60 @@
        { [ propertyIs null r.right ] : ; add $r.left $r.width }
        { true : $r.right }
       ]
-      ; object { left $r.left } { right $right }
+      ; to top [ match
+       { [ propertyIs undefined r.top ] : 0 }
+       { [ propertyIs null r.top ] : 0 }
+       { true : $r.top }
+      ]
+      ; to height [ match
+       { [ propertyIsGreaterThan 0 r.height ] : $r.height }
+       { true : 0 }
+      ]
+      ; to bottom [ match
+       { [ propertyIs undefined r.bottom ] : ; add $top $height }
+       { [ propertyIs null r.bottom ] : ; add $top $height }
+       { true : $r.bottom }
+      ]
+      ; object { left $r.left } { right $right } { top $top } { bottom $bottom } { height $height }
+     ) }
+     { true : null }
+    ]
+   ) }
+   { true : null }
+  ]
+ )
+ ; to target-v-bounds (
+  ; to { el } $argv
+  [ match
+   { $el.getBoundingClientRect (
+    ; to r !el.getBoundingClientRect
+    ; to has-top [ match
+     { [ propertyIs null r.top ] : false }
+     { [ propertyIs undefined r.top ] : false }
+     { true : true }
+    ]
+    ; to has-dim [ match
+     { [ propertyIsGreaterThan 0 r.height ] : true }
+     { [ and { [ propertyIsGreaterThan 0 r.width ] } { $has-top } ] : true }
+     { true : false }
+    ]
+    [ match
+     { $has-dim (
+      ; to top [ match
+       { [ propertyIs undefined r.top ] : 0 }
+       { [ propertyIs null r.top ] : 0 }
+       { true : $r.top }
+      ]
+      ; to height [ match
+       { [ propertyIsGreaterThan 0 r.height ] : $r.height }
+       { true : 0 }
+      ]
+      ; to bottom [ match
+       { [ propertyIs undefined r.bottom ] : ; add $top $height }
+       { [ propertyIs null r.bottom ] : ; add $top $height }
+       { true : $r.bottom }
+      ]
+      ; object { top $top } { bottom $bottom } { height $height }
      ) }
      { true : null }
     ]
@@ -2211,9 +4164,16 @@
  )
  ; to do-scroll (
   [ match
+   { [ and { $target-el } { $lane.notebook.auto-size-rows } ] : !lane.notebook.auto-size-rows }
+  ]
+  [ match
    { $lane.element (
     ; to el-rect !rect-bounds $lane.element
     ; to body-rect !rect-bounds $lane.body
+    ; to target-rect [ match
+     { $target-el : !target-v-bounds $target-el }
+     { true : null }
+    ]
     ; to has-rect [ match
      { $el-rect : true }
      { $body-rect : true }
@@ -2224,6 +4184,64 @@
     ; to viewport-w [ match
      { [ propertyIsGreaterThan 0 doc-w ] : $doc-w }
      { true : $win-w }
+    ]
+    ; to doc-h !to-pos $document.documentElement.clientHeight
+    ; to win-h !to-pos $window.innerHeight
+    ; to viewport-h [ match
+     { [ propertyIsGreaterThan 0 doc-h ] : $doc-h }
+     { true : $win-h }
+    ]
+    ; to vx !to-nonneg $window.scrollX
+    ; to dx !to-nonneg $document.documentElement.scrollLeft
+    ; to cur-x [ match
+     { [ propertyIs null vx ] (
+      [ match
+       { [ propertyIs null dx ] : 0 }
+       { true : $dx }
+      ]
+     ) }
+     { true : $vx }
+    ]
+    ; to vy !to-nonneg $window.scrollY
+    ; to dy !to-nonneg $document.documentElement.scrollTop
+    ; to cur-y [ match
+     { [ propertyIs null vy ] (
+      [ match
+       { [ propertyIs null dy ] : 0 }
+       { true : $dy }
+      ]
+     ) }
+     { true : $vy }
+    ]
+    ; to target-y [ match
+     { [ and { $target-rect } { [ propertyIsGreaterThan 0 viewport-h ] } { $computeLaneScrollTop } ] (
+      !computeLaneScrollTop $cur-y $viewport-h $target-rect.top $target-rect.bottom
+     ) }
+     { [ and { $target-rect } { [ propertyIsGreaterThan 0 viewport-h ] } ] (
+      ; to visible-top 48
+      ; to visible-bottom ; subtract $viewport-h 64
+      ; to already-visible [ and { propertyIsGreaterThan $visible-top visible-bottom } { propertyIsGreaterThanOrEqual $visible-top target-rect.top } { propertyIsLessThanOrEqual $visible-bottom target-rect.bottom } ]
+      [ match
+       { $already-visible : null }
+       { true (
+        ; to abs-top ; add $cur-y $target-rect.top
+        ; to usable-h ; subtract $visible-bottom $visible-top
+        ; to center-offset ; add $visible-top [ !window.Math.floor [ ; divide [ ; subtract $usable-h $target-rect.height ] 2 ] ]
+        ; to raw-y !window.Math.round [ ; subtract $abs-top $center-offset ]
+        ; to clamped-y !window.Math.max 0 $raw-y
+        [ match
+         { [ propertyIs $cur-y clamped-y ] : null }
+         { true : $clamped-y }
+        ]
+       ) }
+      ]
+     ) }
+     { true : null }
+    ]
+    ; to has-target-y [ match
+     { [ propertyIs null target-y ] : false }
+     { [ propertyIs undefined target-y ] : false }
+     { true : true }
     ]
     [ match
      { $has-rect (
@@ -2247,39 +4265,43 @@
          ) }
          { true : $body-rect.right }
         ]
-        ; to vx !to-nonneg $window.scrollX
-        ; to dx !to-nonneg $document.documentElement.scrollLeft
-        ; to cur-x [ match
-         { [ propertyIs null vx ] (
-          [ match
-           { [ propertyIs null dx ] : 0 }
-           { true : $dx }
-          ]
-         ) }
-         { true : $vx }
-        ]
-        ; to vy !to-nonneg $window.scrollY
-        ; to dy !to-nonneg $document.documentElement.scrollTop
-        ; to cur-y [ match
-         { [ propertyIs null vy ] (
-          [ match
-           { [ propertyIs null dy ] : 0 }
-           { true : $dy }
-          ]
-         ) }
-         { true : $vy }
-        ]
         ; to target-x !computeLaneScrollLeft $cur-x $viewport-w $lane-left $lane-right
+        ; to has-target-x [ match
+         { [ propertyIs null target-x ] : false }
+         { [ propertyIs undefined target-x ] : false }
+         { true : true }
+        ]
+        ; to resolved-x [ ternary $has-target-x $target-x $cur-x ]
+        ; to resolved-y [ ternary $has-target-y $target-y $cur-y ]
         [ match
-         { [ propertyIs null target-x ] : null }
-         { [ propertyIs undefined target-x ] : null }
-         { $window.scrollTo : !window.scrollTo [ object { left $target-x } { top $cur-y } { behavior smooth } ] }
-         { $document.documentElement : ; set $target-x document.documentElement.scrollLeft }
+         { [ propertyIs true has-target-x ] (
+          [ match
+           { $window.scrollTo : !window.scrollTo [ object { left $resolved-x } { top $resolved-y } { behavior smooth } ] }
+           { $document.documentElement (
+            ; set $resolved-x document.documentElement.scrollLeft
+            [ match
+             { $has-target-y : ; set $resolved-y document.documentElement.scrollTop }
+            ]
+           ) }
+          ]
+         ) }
+         { [ propertyIs true has-target-y ] (
+          [ match
+           { $window.scrollTo : !window.scrollTo [ object { left $resolved-x } { top $resolved-y } { behavior smooth } ] }
+           { $document.documentElement : ; set $resolved-y document.documentElement.scrollTop }
+          ]
+         ) }
+         { [ and { $target-el } { [ propertyIs null target-rect ] } { $target-el.scrollIntoView } ] (
+          !target-el.scrollIntoView [ object { behavior smooth } { block center } { inline nearest } ]
+         ) }
         ]
        ) }
+       { [ and { $target-el } { $target-el.scrollIntoView } ] : !target-el.scrollIntoView [ object { behavior smooth } { block center } { inline nearest } ] }
        { $lane.element.scrollIntoView : !lane.element.scrollIntoView [ object { behavior smooth } { block nearest } { inline nearest } ] }
       ]
      ) }
+     { [ and { $has-target-y } { $window.scrollTo } ] : !window.scrollTo [ object { left $cur-x } { top $target-y } { behavior smooth } ] }
+     { [ and { $target-el } { $target-el.scrollIntoView } ] : !target-el.scrollIntoView [ object { behavior smooth } { block center } { inline nearest } ] }
      { $lane.element.scrollIntoView : !lane.element.scrollIntoView [ object { behavior smooth } { block nearest } { inline nearest } ] }
     ]
    ) }
@@ -2323,16 +4345,20 @@
 ; to scope.add (
  -- Creates, persists, registers in active package, and mounts a new lane
  !console.log lane-control--add $argv
- ; to pkg-id !resolve-target-package
- ; to id !crypto.randomUUID
- ; to number ; add $scope.lanes.length 1
- ; to title ; add 'Lane ' $number
- ; to lane-data !data.namespace $id
- ; to lane !scope.mount $id $title $lane-data undefined undefined undefined undefined undefined undefined $pkg-id
- !scope.update-url
- !lane-data.set title $title
- !scope.register $id $title $pkg-id
- !scope.recompute-session-dirty
+ !scope.begin-session-status-pending 'Loading…'
+ ; to lane null
+ ; try (
+  ; to pkg-id !resolve-target-package
+  ; to id !crypto.randomUUID
+  ; to number ; add $scope.lanes.length 1
+  ; to title ; add 'Lane ' $number
+  ; to lane-data !data.namespace $id
+  ; set [ !scope.mount $id $title $lane-data undefined undefined undefined undefined undefined undefined $pkg-id ] lane
+  !scope.update-url
+  !lane-data.set title $title
+  !scope.register $id $title $pkg-id
+ ) : null
+ !scope.end-session-status-pending
  !scope.scroll-lane-into-view $lane
  !console.log new lane $lane
  $lane
@@ -2425,159 +4451,178 @@
  -- Loads or initializes a lane by ID on an optional tab and subroute (or mounts locked card if package access is denied), seeding missing default scrollbar preference when opening the active preferences lane
  ; to { id tab subroute after-id } $argv
  !scope.ensure-session
- ; to is-pref-lane [ match
-  { $scope.preferences-lane-id : [ propertyIs $id scope.preferences-lane-id ] }
-  { true : false }
- ]
- ; to existing [ get scope.by-id $id ]
- [ match
-  { $existing (
-   [ match
-    { [ propertyIs true existing.is-locked ] : null }
-    { true (
-     [ match
-      { $is-pref-lane [ match
-       { $existing.notebook.sync-records [ match
+ !scope.begin-session-status-pending 'Loading…'
+ ; to opened-lane null
+ ; try (
+  ; to is-pref-lane [ match
+   { $scope.preferences-lane-id : [ propertyIs $id scope.preferences-lane-id ] }
+   { true : false }
+  ]
+  ; to existing [ get scope.by-id $id ]
+  [ match
+   { $existing (
+    [ match
+     { [ propertyIs true existing.is-locked ] : null }
+     { true (
+      [ match
+       { $is-pref-lane [ match
+        { $existing.notebook.sync-records [ match
+         { $seedPreferencesScrollbarRecords (
+          ; to make-id : !generateLineId $window
+          ; to seeded !seedPreferencesScrollbarRecords $existing.notebook.line-records $default-scrollbar-color $make-id
+          [ match
+           { $seeded.seeded (
+            !existing.notebook.sync-records $seeded.records
+            !scope.apply-preferences
+           ) }
+          ]
+         ) }
+        ] }
+       ] }
+      ]
+      [ match
+       { [ propertyIs undefined tab ] : null }
+       { [ propertyIs null tab ] : null }
+       { true (
+        ; to normalized-tab !normalizeLaneTab $tab
+        ; set $normalized-tab existing.tab
+        ; to next-subroute [ match
+         { $subroute : $subroute }
+         { true : '' }
+        ]
+        ; set $next-subroute existing.subroute
+        [ match
+         { [ and { [ propertyIs data normalized-tab ] } { $existing.notebook.data-view.select-table-by-name } ] : !existing.notebook.data-view.select-table-by-name $next-subroute true }
+        ]
+        [ match
+         { $existing.notebook.set-tab : !existing.notebook.set-tab $normalized-tab true }
+        ]
+       ) }
+      ]
+     ) }
+    ]
+    [ match
+     { $after-id : !scope.move-lane-after $id $after-id }
+    ]
+    ; set $existing opened-lane
+   ) }
+   { true (
+    ; to access !checkLaneAccess $data $scope.open-package-ids $id
+    ; to insert-index [ match
+     { $after-id (
+      ; to anchor [ get scope.by-id $after-id ]
+      [ match
+       { $anchor (
+        ; to anchor-idx !scope.lanes.indexOf $anchor
+        [ match
+         { [ propertyIsGreaterThanOrEqual 0 anchor-idx ] : ; add $anchor-idx 1 }
+         { true : null }
+        ]
+       ) }
+       { true : null }
+      ]
+     ) }
+     { true : null }
+    ]
+    [ match
+     { [ propertyIs false access.allowed ] (
+      ; set [ !scope.mount-locked $id $access.packageId $tab $subroute $insert-index ] opened-lane
+     ) }
+     { true (
+      ; to lane-data !data.namespace $id
+      [ match
+       { $is-pref-lane [ match
         { $seedPreferencesScrollbarRecords (
+         ; to loaded-pref !loadLaneScript $data $lane-data $id $window
          ; to make-id : !generateLineId $window
-         ; to seeded !seedPreferencesScrollbarRecords $existing.notebook.line-records $default-scrollbar-color $make-id
+         ; to seeded !seedPreferencesScrollbarRecords $loaded-pref.records $default-scrollbar-color $make-id
          [ match
-          { $seeded.seeded (
-           !existing.notebook.sync-records $seeded.records
-           !scope.apply-preferences
-          ) }
+          { $seeded.seeded : !saveLaneScript $data $lane-data $id $seeded.records $window null }
          ]
         ) }
        ] }
-      ] }
-     ]
-     [ match
-      { [ propertyIs undefined tab ] : null }
-      { [ propertyIs null tab ] : null }
-      { true (
-       ; to normalized-tab !normalizeLaneTab $tab
-       ; set $normalized-tab existing.tab
-       ; to next-subroute [ match
-        { $subroute : $subroute }
-        { true : '' }
-       ]
-       ; set $next-subroute existing.subroute
-       [ match
-        { [ and { [ propertyIs data normalized-tab ] } { $existing.notebook.data-view.select-table-by-name } ] : !existing.notebook.data-view.select-table-by-name $next-subroute true }
-       ]
-       [ match
-        { $existing.notebook.set-tab : !existing.notebook.set-tab $normalized-tab true }
-       ]
-      ) }
-     ]
-    ) }
-   ]
-   [ match
-    { $after-id : !scope.move-lane-after $id $after-id }
-   ]
-   $existing
-  ) }
-  { true (
-   ; to access !checkLaneAccess $data $scope.open-package-ids $id
-   ; to insert-index [ match
-    { $after-id (
-     ; to anchor [ get scope.by-id $after-id ]
-     [ match
-      { $anchor (
-       ; to anchor-idx !scope.lanes.indexOf $anchor
-       [ match
-        { [ propertyIsGreaterThanOrEqual 0 anchor-idx ] : ; add $anchor-idx 1 }
-        { true : null }
-       ]
-      ) }
-      { true : null }
-     ]
-    ) }
-    { true : null }
-   ]
-   [ match
-    { [ propertyIs false access.allowed ] : !scope.mount-locked $id $access.packageId $tab $subroute $insert-index }
-    { true (
-     ; to lane-data !data.namespace $id
-     [ match
-      { $is-pref-lane [ match
-       { $seedPreferencesScrollbarRecords (
-        ; to loaded-pref !loadLaneScript $data $lane-data $id $window
-        ; to make-id : !generateLineId $window
-        ; to seeded !seedPreferencesScrollbarRecords $loaded-pref.records $default-scrollbar-color $make-id
+      ]
+      ; to stored-title !lane-data.get title
+      ; to stored-width !lane-data.get width
+      ; to stored-minimized !lane-data.get minimized
+      ; to stored-path-raw !lane-data.get path
+      ; to stored-path !normalizeLanePath $stored-path-raw
+      ; to stored-features-raw !lane-data.get features
+      ; to parsed-features [ match
+       { $parseLaneFeatures : !parseLaneFeatures $stored-features-raw }
+       { true : ; object { httpServer false } { runEvery30Minutes false } }
+      ]
+      [ match
+       { $scope.sync-lane-cron : !scope.sync-lane-cron $id $parsed-features }
+      ]
+      ; to parsed-stored-path !parseLanePath $stored-path
+      ; to has-explicit-tab [ match
+       { [ propertyIs undefined tab ] : false }
+       { [ propertyIs null tab ] : false }
+       { [ propertyIs '' tab ] : false }
+       { true : true }
+      ]
+      ; to normalized-tab [ match
+       { $has-explicit-tab : !normalizeLaneTab $tab }
+       { $parsed-stored-path : $parsed-stored-path.tab }
+       { true : !normalizeLaneTab $tab }
+      ]
+      ; to resolved-subroute [ match
+       { $has-explicit-tab (
         [ match
-         { $seeded.seeded : !saveLaneScript $data $lane-data $id $seeded.records $window null }
+         { $subroute : $subroute }
+         { true : '' }
         ]
        ) }
-      ] }
-     ]
-     ; to stored-title !lane-data.get title
-     ; to stored-width !lane-data.get width
-     ; to stored-minimized !lane-data.get minimized
-     ; to stored-path-raw !lane-data.get path
-     ; to stored-path !normalizeLanePath $stored-path-raw
-     ; to stored-features-raw !lane-data.get features
-     ; to parsed-features [ match
-      { $parseLaneFeatures : !parseLaneFeatures $stored-features-raw }
-      { true : ; object { httpServer false } }
-     ]
-     ; to parsed-stored-path !parseLanePath $stored-path
-     ; to has-explicit-tab [ match
-      { [ propertyIs undefined tab ] : false }
-      { [ propertyIs null tab ] : false }
-      { [ propertyIs '' tab ] : false }
-      { true : true }
-     ]
-     ; to normalized-tab [ match
-      { $has-explicit-tab : !normalizeLaneTab $tab }
-      { $parsed-stored-path : $parsed-stored-path.tab }
-      { true : !normalizeLaneTab $tab }
-     ]
-     ; to resolved-subroute [ match
-      { $has-explicit-tab (
-       [ match
-        { $subroute : $subroute }
-        { true : '' }
-       ]
-      ) }
-      { $parsed-stored-path : $parsed-stored-path.subroute }
-      { true : '' }
-     ]
-     ; to number ; add $scope.lanes.length 1
-     ; to title [ match
-      { $stored-title : $stored-title }
-      { true (
-       ; to default-title ; add 'Lane ' $number
-       !lane-data.set title $default-title
-       $default-title
-      ) }
-     ]
-     !scope.register $id $title $access.packageId
-     ; to lane !scope.mount $id $title $lane-data $normalized-tab $resolved-subroute $stored-width $stored-minimized $insert-index $stored-path $access.packageId $parsed-features
-     !scope.recompute-session-dirty
-     $lane
-    ) }
-   ]
-  ) }
- ]
+       { $parsed-stored-path : $parsed-stored-path.subroute }
+       { true : '' }
+      ]
+      ; to number ; add $scope.lanes.length 1
+      ; to title [ match
+       { $stored-title : $stored-title }
+       { true (
+        ; to default-title ; add 'Lane ' $number
+        !lane-data.set title $default-title
+        $default-title
+       ) }
+      ]
+      !scope.register $id $title $access.packageId
+      ; set [ !scope.mount $id $title $lane-data $normalized-tab $resolved-subroute $stored-width $stored-minimized $insert-index $stored-path $access.packageId $parsed-features ] opened-lane
+     ) }
+    ]
+   ) }
+  ]
+ ) : null
+ !scope.end-session-status-pending
+ $opened-lane
 )
 ; to scope.open-after (
  -- Opens a lane (or moves and restores it if already open) immediately to the right of anchor lane and updates the URL
  ; to { id after-id tab subroute } $argv
- ; to lane !scope.open $id $tab $subroute $after-id
- [ match
-  { $lane.is-minimized : !scope.restore $id }
- ]
- !scope.update-url
- !scope.recompute-session-dirty
+ !scope.begin-session-status-pending 'Loading…'
+ ; to lane null
+ ; try (
+  [ match
+   { $scope.fullscreen-lane : !scope.exit-lane-fullscreen true }
+  ]
+  ; set [ !scope.open $id $tab $subroute $after-id ] lane
+  [ match
+   { $lane.is-minimized : !scope.restore $id }
+  ]
+  !scope.update-url
+ ) : null
+ !scope.end-session-status-pending
  !scope.scroll-lane-into-view $lane
  $lane
 )
 ; to scope.clear (
  -- Removes all mounted lane elements and resets lane collections and side rails
+ !scope.exit-lane-fullscreen true
+ !scope.clear-lane-crons
  !rails.clear
  ; while { propertyIsGreaterThan 0 scope.lanes.length } (
   ; to removing !scope.lanes.pop
+  !scope.close-lane-modals $removing
   !removing.element.remove
   [ match
    { $removing.body : !removing.body.remove }
@@ -2588,13 +4633,16 @@
 )
 ; to scope.sync (
  -- Synchronizes mounted lanes and their active tabs from the current URL pathname
- !scope.clear
- ; to routes !parseLaneRoutes $location.pathname
- ; each $routes (
-  ; to { route } $argv
-  !scope.open $route.id $route.tab $route.subroute
- )
- !scope.recompute-session-dirty
+ !scope.begin-session-status-pending 'Loading…'
+ ; try (
+  !scope.clear
+  ; to routes !parseLaneRoutes $location.pathname
+  ; each $routes (
+   ; to { route } $argv
+   !scope.open $route.id $route.tab $route.subroute
+  )
+ ) : null
+ !scope.end-session-status-pending
 )
 ; to scope.load-preferences-lane (
  -- Loads the global active preferences lane ID from root KV
@@ -2620,8 +4668,370 @@
  ]
  $resolved
 )
+; to read-stored-clock-key (
+ -- Reads a clock preference key from workspace KV with localStorage fallback
+ ; to { key-name } $argv
+ ; to stored !data.get $key-name
+ ; to fallback-local [ match
+  { $window.localStorage.getItem : !window.localStorage.getItem $key-name }
+  { true : null }
+ ]
+ [ match
+  { [ propertyIs null stored ] : $fallback-local }
+  { [ propertyIs undefined stored ] : $fallback-local }
+  { [ propertyIs '' stored ] : $fallback-local }
+  { true : $stored }
+ ]
+)
+; to scope.get-clock-display-options (
+ -- Resolves active clock display options ({ timeZone, shortZone, offset, label, selectedValue, hourFormat, showTimeZone, intl }) from clock preferences and preferences.timezones
+ ; to raw-tz [ match
+  { $scope.clock-timezone : $scope.clock-timezone }
+  { true : browser }
+ ]
+ ; to raw-hr [ match
+  { $scope.clock-hour-format : $scope.clock-hour-format }
+  { true : '12h' }
+ ]
+ ; to tz-list [ match
+  { [ propertyIsGreaterThan 0 scope.preferences-timezones.length ] : $scope.preferences-timezones }
+  { [ propertyIsGreaterThan 0 rails.clock-timezones.length ] : $rails.clock-timezones }
+  { [ !window.Array.isArray $scope.preferences-timezones ] : $scope.preferences-timezones }
+  { true : {} }
+ ]
+ [ match
+  { $resolveClockDisplayOptions : !resolveClockDisplayOptions $raw-tz $tz-list $raw-hr $window.Intl }
+  { true (
+   ; to fallback-tz [ match
+    { [ and { [ propertyIs false [ propertyIs browser raw-tz ] ] } { [ propertyIs false [ propertyIs '' raw-tz ] ] } ] : $raw-tz }
+    { $getBrowserTimeZone : !getBrowserTimeZone $window.Intl }
+    { true : UTC }
+   ]
+   ; to fallback-hr [ match
+    { $normalizeClockHourFormat : !normalizeClockHourFormat $raw-hr $window.Intl }
+    { [ propertyIs '24h' raw-hr ] : '24h' }
+    { true : '12h' }
+   ]
+   [ object
+    { timeZone $fallback-tz }
+    { shortZone $fallback-tz }
+    { offset '' }
+    { label $fallback-tz }
+    { selectedValue $raw-tz }
+    { hourFormat $fallback-hr }
+    { showTimeZone true }
+    { intl $window.Intl }
+   ]
+  ) }
+ ]
+)
+; to scope.refresh-clock-displays (
+ -- Refreshes all open timestamp displays (top-rail chip popover, mounted Data tables & Updates, Line Info modal, Session History, Server Last synced, Story timeline, and Row Picker)
+ [ match
+  { [ and { propertyIs true rails.is-chip-menu-open } { $rails.sync-chip-menu } ] : !rails.sync-chip-menu }
+ ]
+ ; each $scope.lanes (
+  ; to { lane } $argv
+  [ match
+   { $lane.notebook.data-view.refresh-clock-displays : !lane.notebook.data-view.refresh-clock-displays }
+  ]
+  [ match
+   { $lane.notebook.server-view.refresh-clock-displays : !lane.notebook.server-view.refresh-clock-displays }
+  ]
+  [ match
+   { $lane.notebook.story-view.refresh-clock-displays : !lane.notebook.story-view.refresh-clock-displays }
+  ]
+ )
+ [ match
+  { [ and { propertyIs true line-info-modal.is-open } { $line-info-modal.refresh-timestamp } ] : !line-info-modal.refresh-timestamp }
+ ]
+ [ match
+  { [ and { propertyIs true session-modal.is-open } { propertyIs history session-modal.mode } { $session-modal.render-history-page } ] : !session-modal.render-history-page }
+ ]
+ [ match
+  { [ and { propertyIs true row-picker-modal.is-open } { $row-picker-modal.refresh-clock-displays } ] : !row-picker-modal.refresh-clock-displays }
+ ]
+)
+; to scope.load-clock-timezone (
+ -- Loads the selected top-rail clock timezone, 12/24-hour format, and show-seconds preferences from workspace KV (or localStorage fallback)
+ ; to raw !read-stored-clock-key clock-timezone
+ ; to resolved [ match
+  { [ propertyIs null raw ] : browser }
+  { [ propertyIs undefined raw ] : browser }
+  { true (
+   ; to raw-str ; add '' $raw
+   ; to trimmed !raw-str.trim
+   [ match
+    { [ propertyIs '' trimmed ] : browser }
+    { true : $trimmed }
+   ]
+  ) }
+ ]
+ ; to raw-hr !read-stored-clock-key clock-hour-format
+ ; to resolved-hr [ match
+  { $normalizeClockHourFormat : !normalizeClockHourFormat $raw-hr $window.Intl }
+  { [ propertyIs '24h' raw-hr ] : '24h' }
+  { [ propertyIs '24' raw-hr ] : '24h' }
+  { true : '12h' }
+ ]
+ ; to raw-sec !read-stored-clock-key clock-show-seconds
+ ; to resolved-sec [ match
+  { $normalizeClockShowSeconds : !normalizeClockShowSeconds $raw-sec }
+  { [ propertyIs false raw-sec ] : false }
+  { [ propertyIs 'false' raw-sec ] : false }
+  { true : true }
+ ]
+ ; set $resolved scope.clock-timezone
+ ; set $resolved-hr scope.clock-hour-format
+ ; set $resolved-sec scope.clock-show-seconds
+ [ match
+  { $rails.sync-clock : !rails.sync-clock }
+ ]
+ !scope.refresh-clock-displays
+ $resolved
+)
+; to scope.set-clock-hour-format (
+ -- Persists the top-rail clock 12h/24h preference to workspace KV and refreshes the clock
+ ; to { raw-fmt } $argv
+ ; to clean [ match
+  { $normalizeClockHourFormat : !normalizeClockHourFormat $raw-fmt $window.Intl }
+  { [ propertyIs '24h' raw-fmt ] : '24h' }
+  { [ propertyIs '24' raw-fmt ] : '24h' }
+  { [ propertyIs false raw-fmt ] : '24h' }
+  { true : '12h' }
+ ]
+ ; set $clean scope.clock-hour-format
+ !data.set clock-hour-format $clean
+ [ match
+  { $window.localStorage.setItem : !window.localStorage.setItem clock-hour-format $clean }
+ ]
+ [ match
+  { $rails.sync-clock : !rails.sync-clock }
+ ]
+ [ match
+  { [ and { propertyIs true rails.is-clock-open } { $rails.render-clock-options } ] : !rails.render-clock-options }
+ ]
+ !scope.refresh-clock-displays
+ $clean
+)
+; to scope.set-clock-show-seconds (
+ -- Persists the top-rail clock show-seconds preference to workspace KV and refreshes the clock
+ ; to { raw-show } $argv
+ ; to clean [ match
+  { $normalizeClockShowSeconds : !normalizeClockShowSeconds $raw-show }
+  { [ propertyIs false raw-show ] : false }
+  { [ propertyIs 'false' raw-show ] : false }
+  { true : true }
+ ]
+ ; to stored-str [ ternary $clean 'true' 'false' ]
+ ; set $clean scope.clock-show-seconds
+ !data.set clock-show-seconds $stored-str
+ [ match
+  { $window.localStorage.setItem : !window.localStorage.setItem clock-show-seconds $stored-str }
+ ]
+ [ match
+  { $rails.sync-clock : !rails.sync-clock }
+ ]
+ [ match
+  { [ and { propertyIs true rails.is-clock-open } { $rails.render-clock-options } ] : !rails.render-clock-options }
+ ]
+ ; each $scope.lanes (
+  ; to { lane } $argv
+  [ match
+   { $lane.notebook.story-view.refresh-clock-displays : !lane.notebook.story-view.refresh-clock-displays }
+  ]
+ )
+ $clean
+)
+; to scope.set-clock-timezone (
+ -- Persists the selected top-rail clock timezone preference to workspace KV and refreshes the top-rail clock
+ ; to { tz } $argv
+ ; to clean [ match
+  { [ propertyIs null tz ] : browser }
+  { [ propertyIs undefined tz ] : browser }
+  { true (
+   ; to raw-str ; add '' $tz
+   ; to trimmed !raw-str.trim
+   [ match
+    { [ propertyIs '' trimmed ] : browser }
+    { true : $trimmed }
+   ]
+  ) }
+ ]
+ ; set $clean scope.clock-timezone
+ !data.set clock-timezone $clean
+ [ match
+  { $window.localStorage.setItem : !window.localStorage.setItem clock-timezone $clean }
+ ]
+ [ match
+  { $rails.sync-clock : !rails.sync-clock }
+ ]
+ !scope.refresh-clock-displays
+ $clean
+)
+; to extract-tz-list (
+ -- Extracts valid canonical timezone names from a table or array using extractTimezoneNames with a safe fallback
+ ; to { raw-source } $argv
+ [ match
+  { [ propertyIs null raw-source ] : {} }
+  { [ propertyIs undefined raw-source ] : {} }
+  { $extractTimezoneNames : !extractTimezoneNames $raw-source $window.Intl }
+  { [ !window.Array.isArray $raw-source ] (
+   ; to out {}
+   ; to seen ; object
+   ; each $raw-source (
+    ; to { entry } $argv
+    ; to raw-name [ match
+     { $entry.trim : !entry.trim }
+     { $entry.name.trim : !entry.name.trim }
+     { $entry.timezone.trim : !entry.timezone.trim }
+     { true : '' }
+    ]
+    ; to already [ ternary [ get seen $raw-name ] true false ]
+    ; condition { and { propertyIsGreaterThan 0 raw-name.length } { propertyIs false already } } (
+     ; to seen $raw-name true
+     !out.push $raw-name
+    )
+   )
+   $out
+  ) }
+  { [ !window.Array.isArray $raw-source.rows ] (
+   ; to cols [ match { [ !window.Array.isArray $raw-source.columns ] : $raw-source.columns } { true : {} } ]
+   ; to name-col ; object { col null }
+   ; each $cols (
+    ; to { c } $argv
+    ; to cname [ match { $c.name.trim ( ; to t !c.name.trim , !t.toLowerCase ) } { true : '' } ]
+    ; condition { propertyIs name cname } : ; set $c name-col.col
+   )
+   ; to out {}
+   ; to seen ; object
+   [ match
+    { $name-col.col (
+     ; each $raw-source.rows (
+      ; to { r } $argv
+      ; to rv [ get r.values $name-col.col.id ]
+      ; to clean-rv [ match { $rv.trim : !rv.trim } { true : '' } ]
+      ; to already [ ternary [ get seen $clean-rv ] true false ]
+      ; condition { and { propertyIsGreaterThan 0 clean-rv.length } { propertyIs false already } } (
+       ; to seen $clean-rv true
+       !out.push $clean-rv
+      )
+     )
+    ) }
+   ]
+   $out
+  ) }
+  { true : {} }
+ ]
+)
+; to scope.get-preferences-timezones (
+ -- Resolves configured timezone names from the active preferences lane's timezones table (and optional evaluated state)
+ ; to { pref-state } $argv
+ ; to pref-id $scope.preferences-lane-id
+ ; to merged {}
+ ; to seen ; object
+ ; to append-names (
+  ; to { list } $argv
+  [ match
+   { [ !window.Array.isArray $list ] (
+    ; each $list (
+     ; to { tz } $argv
+     ; to already [ ternary [ get seen $tz ] true false ]
+     ; condition { and { propertyIsGreaterThan 0 tz.length } { propertyIs false already } } (
+      ; to seen $tz true
+      !merged.push $tz
+     )
+    )
+   ) }
+  ]
+ )
+ [ match
+  { $pref-id (
+   ; to open-pref [ get scope.by-id $pref-id ]
+   ; to pref-data !data.namespace $pref-id
+   ; to tables [ match
+    { [ !window.Array.isArray $open-pref.notebook.data-view.tables ] : $open-pref.notebook.data-view.tables }
+    { $loadLaneTables : !loadLaneTables $data $pref-data $pref-id }
+    { true : {} }
+   ]
+   ; each $tables (
+    ; to { tbl } $argv
+    ; to tbl-name [ match
+     { $tbl.name (
+      ; to t-trim !tbl.name.trim
+      !t-trim.toLowerCase
+     ) }
+     { true : '' }
+    ]
+    ; condition { propertyIs timezones tbl-name } (
+     ; to from-tbl !extract-tz-list $tbl
+     !append-names $from-tbl
+    )
+   )
+  ) }
+ ]
+ [ match
+  { $pref-state.timezones (
+   ; to from-state !extract-tz-list $pref-state.timezones
+   !append-names $from-state
+  ) }
+ ]
+ [ match
+  { $pref-state.interface.timezones (
+   ; to from-iface !extract-tz-list $pref-state.interface.timezones
+   !append-names $from-iface
+  ) }
+ ]
+ $merged
+)
+; to scope.sync-preferences-timezones (
+ -- Refreshes configured timezone names from the active preferences lane and syncs the top-rail clock selector
+ ; to prev-disp !scope.get-clock-display-options
+ ; to tz-names !scope.get-preferences-timezones $scope.preferences
+ ; set $tz-names scope.preferences-timezones
+ [ match
+  { $scope.preferences : ; set $tz-names scope.preferences.timezones }
+ ]
+ [ match
+  { $rails.set-timezones : !rails.set-timezones $tz-names }
+ ]
+ ; to next-disp !scope.get-clock-display-options
+ ; to disp-changed [ match
+  { [ propertyIs false [ propertyIs $prev-disp.timeZone next-disp.timeZone ] ] : true }
+  { [ propertyIs false [ propertyIs $prev-disp.hourFormat next-disp.hourFormat ] ] : true }
+  { true : false }
+ ]
+ ; condition { propertyIs true disp-changed } : !scope.refresh-clock-displays
+ $tz-names
+)
+; to scope.refresh-preferences-from-storage (
+ -- Evaluates the active preferences lane from stored script & tables without re-rendering its View output, and applies preferences to the interface
+ ; to pref-id $scope.preferences-lane-id
+ [ match
+  { $pref-id (
+   !scope.sync-lane-cron $pref-id
+   ; to eval-res !scope.evaluate-stored-lane $pref-id
+   [ match
+    { $eval-res.ok (
+     ; to open-pref [ get scope.by-id $pref-id ]
+     [ match
+      { $open-pref.notebook (
+       ; set $eval-res.state open-pref.notebook.state
+       [ match
+        { $open-pref.notebook.scope-view.render : !open-pref.notebook.scope-view.render $eval-res.state }
+       ]
+      ) }
+     ]
+     !scope.apply-preferences-state $eval-res.state
+    ) }
+    { true : !scope.sync-preferences-timezones }
+   ]
+  ) }
+  { true : null }
+ ]
+)
 ; to scope.apply-preferences-state (
- -- Applies evaluated preferences state (interface.backgroundColor and interface.scrollbarColor) to the document
+ -- Applies evaluated preferences state (interface.backgroundColor, interface.scrollbarColor, top-rail chips, and timezones) to the document
  ; to { pref-state } $argv
  ; to raw-bg $pref-state.interface.backgroundColor
  ; to trimmed [ match
@@ -2672,20 +5082,208 @@
    ]
   ) }
  ]
+ ; to top-elements [ match
+  { [ !window.Array.isArray $pref-state.interface.rails.top.elements ] : $pref-state.interface.rails.top.elements }
+  { true : {} }
+ ]
+ ; to top-order [ match
+  { $normalizeTopRailOrder : !normalizeTopRailOrder $pref-state.interface.rails.top.order }
+  { [ !window.Array.isArray $pref-state.interface.rails.top.order ] : $pref-state.interface.rails.top.order }
+  { true : {} }
+ ]
+ ; to top-hidden [ match
+  { $normalizeTopRailHidden : !normalizeTopRailHidden $pref-state.interface.rails.top.hidden }
+  { [ !window.Array.isArray $pref-state.interface.rails.top.hidden ] : $pref-state.interface.rails.top.hidden }
+  { true : {} }
+ ]
+ ; to prev-disp !scope.get-clock-display-options
+ ; to tz-names !scope.get-preferences-timezones $pref-state
+ ; set $tz-names scope.preferences-timezones
+ [ match
+  { $rails.set-top-layout : !rails.set-top-layout $top-order $top-hidden }
+ ]
+ [ match
+  { $rails.set-top-elements : !rails.set-top-elements $top-elements }
+ ]
+ [ match
+  { $rails.set-timezones : !rails.set-timezones $tz-names }
+ ]
+ ; to next-disp !scope.get-clock-display-options
+ ; to disp-changed [ match
+  { [ propertyIs false [ propertyIs $prev-disp.timeZone next-disp.timeZone ] ] : true }
+  { [ propertyIs false [ propertyIs $prev-disp.hourFormat next-disp.hourFormat ] ] : true }
+  { true : false }
+ ]
+ [ match
+  { [ propertyIs true disp-changed ] : !scope.refresh-clock-displays }
+  { [ and { propertyIs true rails.is-chip-menu-open } { $rails.sync-chip-menu } ] : !rails.sync-chip-menu }
+ ]
  ; to prefs [ object
+  { timezones $tz-names }
   { interface [ object
    { backgroundColor $resolved-bg }
    { scrollbarColor $resolved-sb.color }
+   { rails [ object
+    { top [ object
+     { elements $top-elements }
+     { order $top-order }
+     { hidden $top-hidden }
+    ] }
+   ] }
   ] }
  ]
  ; set $prefs scope.preferences
  $prefs
 )
+; to cron-interval-ms [ match
+ { [ propertyIsGreaterThan 0 LANE_CRON_INTERVAL_MS ] : $LANE_CRON_INTERVAL_MS }
+ { true : 1800000 }
+]
+; to scope.clear-lane-crons (
+ -- Clears all scheduled lane cron interval timers
+ [ match
+  { $window.Object.keys (
+   ; to keys !window.Object.keys $scope.cron-timers
+   ; each $keys (
+    ; to { k } $argv
+    ; to timer [ get scope.cron-timers $k ]
+    [ match
+     { [ and { $timer } { $window.clearInterval } ] : !window.clearInterval $timer }
+    ]
+    !window.Reflect.deleteProperty $scope.cron-timers $k
+   )
+  ) }
+ ]
+ ; to scope.cron-timers ; object
+)
+; to scope.run-lane-cron (
+ -- Executes a single scheduled cron evaluation for a lane with a singleton lock so concurrent ticks never overlap
+ ; to { id } $argv
+ ; to clean-id [ match
+  { $id (
+   ; to s ; add '' $id
+   !s.trim
+  ) }
+  { true : '' }
+ ]
+ ; to is-already-running [ get scope.cron-running $clean-id ]
+ [ match
+  { [ propertyIs '' clean-id ] : ; object { ok false } { skipped true } { reason 'empty-id' } }
+  { [ propertyIs true is-already-running ] : ; object { ok false } { skipped true } { reason 'already-running' } }
+  { true (
+   ; to open-lane [ get scope.by-id $clean-id ]
+   ; to nb-running [ match
+    { $open-lane.notebook.is-running : !open-lane.notebook.is-running }
+    { true : false }
+   ]
+   [ match
+    { [ propertyIs true nb-running ] : ; object { ok false } { skipped true } { reason 'notebook-running' } }
+    { true (
+     ; to scope.cron-running $clean-id true
+     ; to outcome null
+     ; try (
+      ; to is-pref [ match
+       { $scope.preferences-lane-id : [ propertyIs $clean-id scope.preferences-lane-id ] }
+       { true : false }
+      ]
+      ; to res [ match
+       { $open-lane.notebook (
+        ; to tab $open-lane.notebook.active-tab
+        ; to is-non-run-tab [ match
+         { [ propertyIs story tab ] : true }
+         { [ propertyIs input tab ] : true }
+         { [ propertyIs data tab ] : true }
+         { true : false }
+        ]
+        [ match
+         { $is-non-run-tab : !scope.evaluate-stored-lane $clean-id [ object { trigger cron } { applyExports true } ] }
+         { true (
+          ; to run-res !open-lane.notebook.run null false null [ object { trigger cron } ]
+          ; object { ok true } { state $open-lane.notebook.state } { outcome $run-res }
+         ) }
+        ]
+       ) }
+       { true : !scope.evaluate-stored-lane $clean-id [ object { trigger cron } { applyExports true } ] }
+      ]
+      [ match
+       { [ and { $is-pref } { $res.ok } ] : !scope.apply-preferences-state $res.state }
+      ]
+      ; set $res outcome
+     ) (
+      ; to { err } $argv
+      ; set [ object { ok false } { error [ match { $err.message : $err.message } { true : ; add '' $err } ] } ] outcome
+     )
+     ; to scope.cron-running $clean-id false
+     $outcome
+    ) }
+   ]
+  ) }
+ ]
+)
+; to scope.sync-lane-cron (
+ -- Ensures at most one singleton 30-minute interval timer exists for a lane based on its runEvery30Minutes feature flag
+ ; to { id raw-features } $argv
+ ; to clean-id [ match
+  { $id (
+   ; to s ; add '' $id
+   !s.trim
+  ) }
+  { true : '' }
+ ]
+ [ match
+  { [ propertyIs '' clean-id ] : null }
+  { true (
+   ; to prev-timer [ get scope.cron-timers $clean-id ]
+   [ match
+    { $prev-timer (
+     [ match
+      { $window.clearInterval : !window.clearInterval $prev-timer }
+     ]
+     !window.Reflect.deleteProperty $scope.cron-timers $clean-id
+    ) }
+   ]
+   ; to features [ match
+    { $raw-features (
+     [ match
+      { $normalizeLaneFeatures : !normalizeLaneFeatures $raw-features }
+      { true : $raw-features }
+     ]
+    ) }
+    { true (
+     ; to open-lane [ get scope.by-id $clean-id ]
+     [ match
+      { $open-lane.features : $open-lane.features }
+      { true (
+       ; to lane-data !data.namespace $clean-id
+       ; to raw !lane-data.get features
+       [ match
+        { $parseLaneFeatures : !parseLaneFeatures $raw }
+        { true : ; object { httpServer false } { runEvery30Minutes false } }
+       ]
+      ) }
+     ]
+    ) }
+   ]
+   ; to should-run [ propertyIs true features.runEvery30Minutes ]
+   [ match
+    { [ and { $should-run } { $window.setInterval } ] (
+     ; to next-timer !window.setInterval (
+      !scope.run-lane-cron $clean-id
+     ) $cron-interval-ms
+     ; to scope.cron-timers $clean-id $next-timer
+     $next-timer
+    ) }
+    { true : null }
+   ]
+  ) }
+ ]
+)
 ; to scope.apply-preferences (
- -- Evaluates the global active preferences lane (if set) and applies preferences to the interface
+ -- Evaluates the global active preferences lane (if set), syncs its cron schedule, and applies preferences to the interface
  ; to pref-id $scope.preferences-lane-id
  [ match
   { $pref-id (
+   !scope.sync-lane-cron $pref-id
    ; try (
     ; to res !scope.get-lane-final-state $pref-id
     [ match
@@ -2697,9 +5295,442 @@
   { true : !scope.apply-preferences-state null }
  ]
 )
+; to scope.find-preferences-chip-row (
+ -- Locates the backing row in the active preferences lane's chips table matching a top-rail chip item
+ ; to { item } $argv
+ ; to pref-id $scope.preferences-lane-id
+ [ match
+  { [ and $pref-id $item ] (
+   ; to target-row-id [ match
+    { $item._rowId.trim : !item._rowId.trim }
+    { $item.row._rowId.trim : !item.row._rowId.trim }
+    { $item.rowId.trim : !item.rowId.trim }
+    { true : '' }
+   ]
+   ; to target-url [ match
+    { $item.url.trim : !item.url.trim }
+    { $item.row.url.trim : !item.row.url.trim }
+    { true : '' }
+   ]
+   ; to target-title [ match
+    { $item.title.trim : !item.title.trim }
+    { $item.row.title.trim : !item.row.title.trim }
+    { true : '' }
+   ]
+   ; to open-pref [ get scope.by-id $pref-id ]
+   ; to pref-data !data.namespace $pref-id
+   ; to tables [ match
+    { [ !window.Array.isArray $open-pref.notebook.data-view.tables ] : $open-pref.notebook.data-view.tables }
+    { $loadLaneTables : !loadLaneTables $data $pref-data $pref-id }
+    { true : {} }
+   ]
+   ; to found-tbl ; object { table null }
+   ; each $tables (
+    ; to { tbl } $argv
+    ; to tbl-name [ match
+     { $tbl.name (
+      ; to t-trim !tbl.name.trim
+      !t-trim.toLowerCase
+     ) }
+     { true : '' }
+    ]
+    ; condition { propertyIs chips tbl-name } : ; set $tbl found-tbl.table
+   )
+   ; to chips-tbl $found-tbl.table
+   [ match
+    { $chips-tbl (
+     ; to cols [ match
+      { [ !window.Array.isArray $chips-tbl.columns ] : $chips-tbl.columns }
+      { true : {} }
+     ]
+     ; to col-map ; object { url null } { title null } { fetched null } { value null }
+     ; each $cols (
+      ; to { col } $argv
+      ; to cname [ match
+       { $col.name (
+        ; to c-trim !col.name.trim
+        !c-trim.toLowerCase
+       ) }
+       { true : '' }
+      ]
+      ; condition { propertyIs url cname } : ; set $col col-map.url
+      ; condition { propertyIs title cname } : ; set $col col-map.title
+      ; condition { propertyIs fetched cname } : ; set $col col-map.fetched
+      ; condition { propertyIs value cname } : ; set $col col-map.value
+     )
+     ; to rows [ match
+      { [ !window.Array.isArray $chips-tbl.rows ] : $chips-tbl.rows }
+      { true : {} }
+     ]
+     ; to matched ; object { row null }
+     ; each $rows (
+      ; to { row } $argv
+      ; condition { propertyIs null matched.row } (
+       ; to row-url [ match
+        { $col-map.url (
+         ; to raw-u [ get row.values $col-map.url.id ]
+         [ match { $raw-u.trim : !raw-u.trim } { $raw-u : ; add '' $raw-u } { true : '' } ]
+        ) }
+        { true : '' }
+       ]
+       ; to row-title [ match
+        { $col-map.title (
+         ; to raw-t [ get row.values $col-map.title.id ]
+         [ match { $raw-t.trim : !raw-t.trim } { $raw-t : ; add '' $raw-t } { true : '' } ]
+        ) }
+        { true : '' }
+       ]
+       ; to is-match [ match
+        { [ and { propertyIsGreaterThan 0 target-row-id.length } { propertyIs $target-row-id row.id } ] : true }
+        { [ and { propertyIsGreaterThan 0 target-url.length } { propertyIs $target-url row-url } ] : true }
+        { [ and { propertyIsGreaterThan 0 target-title.length } { propertyIs $target-title row-title } ] : true }
+        { true : false }
+       ]
+       ; condition { propertyIs true is-match } : ; set $row matched.row
+      )
+     )
+     [ match
+      { $matched.row (
+       [ object
+        { found true }
+        { prefId $pref-id }
+        { prefData $pref-data }
+        { openPref $open-pref }
+        { tables $tables }
+        { table $chips-tbl }
+        { row $matched.row }
+        { urlCol $col-map.url }
+        { titleCol $col-map.title }
+        { fetchedCol $col-map.fetched }
+        { valueCol $col-map.value }
+       ]
+      ) }
+      { true : ; object { found false } }
+     ]
+    ) }
+    { true : ; object { found false } }
+   ]
+  ) }
+  { true : ; object { found false } }
+ ]
+)
+; to scope.get-top-rail-chip-row (
+ -- Returns a clean JSON-serializable chip row object (including title, value, and fetched timestamp) for a top-rail chip
+ ; to { item } $argv
+ ; to lookup !scope.find-preferences-chip-row $item
+ [ match
+  { [ and $lookup.found $lookup.row $lookup.table ] (
+   ; to out ; object
+   ; to cols [ match
+    { [ !window.Array.isArray $lookup.table.columns ] : $lookup.table.columns }
+    { true : {} }
+   ]
+   ; each $cols (
+    ; to { col } $argv
+    ; to cname [ match { $col.name.trim : !col.name.trim } { true : '' } ]
+    [ match
+     { [ propertyIs '' cname ] : null }
+     { true (
+      ; to cval [ get lookup.row.values $col.id ]
+      ; to resolved-val [ match
+       { [ propertyIs undefined cval ] : '' }
+       { [ propertyIs null cval ] : '' }
+       { true : $cval }
+      ]
+      ; to out $cname $resolved-val
+     ) }
+    ]
+   )
+   [ match
+    { [ propertyIs undefined out.title ] : [ match { $item.title : ; set $item.title out.title } ] }
+    { [ propertyIs '' out.title ] : [ match { $item.title : ; set $item.title out.title } ] }
+   ]
+   [ match
+    { [ propertyIs undefined out.value ] : [ match { [ propertyIs undefined item.value ] : null } { [ propertyIs null item.value ] : null } { true : ; set $item.value out.value } ] }
+    { [ propertyIs '' out.value ] : [ match { [ propertyIs undefined item.value ] : null } { [ propertyIs null item.value ] : null } { [ propertyIs '' item.value ] : null } { true : ; set $item.value out.value } ] }
+   ]
+   [ match
+    { [ propertyIs undefined out.fetched ] : [ match { $item.fetched : ; set $item.fetched out.fetched } ] }
+    { [ propertyIs '' out.fetched ] : [ match { $item.fetched : ; set $item.fetched out.fetched } ] }
+   ]
+   $out
+  ) }
+  { [ and $item.row $window.Object.keys ] (
+   ; to out ; object
+   ; to rkeys !window.Object.keys $item.row
+   ; each $rkeys (
+    ; to { k } $argv
+    ; to v [ get item.row $k ]
+    ; to is-fn [ match { $v.call : true } { true : false } ]
+    ; condition { propertyIs false is-fn } : ; to out $k $v
+   )
+   [ match
+    { $item.title : ; set $item.title out.title }
+   ]
+   [ match
+    { [ propertyIs undefined item.value ] : null }
+    { [ propertyIs null item.value ] : null }
+    { true : ; set $item.value out.value }
+   ]
+   [ match
+    { $item.fetched : ; set $item.fetched out.fetched }
+   ]
+   $out
+  ) }
+  { [ and $item $window.Object.keys ] (
+   ; to out ; object
+   ; to ikeys !window.Object.keys $item
+   ; each $ikeys (
+    ; to { k } $argv
+    ; to v [ get item $k ]
+    ; to is-fn [ match { $v.call : true } { true : false } ]
+    ; to is-row-prop [ propertyIs row k ]
+    ; condition { and { propertyIs false is-fn } { propertyIs false is-row-prop } } : ; to out $k $v
+   )
+   $out
+  ) }
+  { true : ; object { title [ match { $item : ; add '' $item } { true : '' } ] } { value [ match { $item : ; add '' $item } { true : '' } ] } { fetched '' } }
+ ]
+)
+; to scope.run-preferences-lane-now (
+ -- Re-runs the active preferences lane (either via its open runnable notebook or headless stored evaluation) and applies its state
+ ; to pref-id $scope.preferences-lane-id
+ [ match
+  { $pref-id (
+   ; to open-pref [ get scope.by-id $pref-id ]
+   ; to is-runnable-open [ match
+    { $open-pref.notebook (
+     ; to tab $open-pref.notebook.active-tab
+     [ match
+      { [ propertyIs story tab ] : false }
+      { [ propertyIs input tab ] : false }
+      { [ propertyIs data tab ] : false }
+      { true : true }
+     ]
+    ) }
+    { true : false }
+   ]
+   [ match
+    { $is-runnable-open (
+     !open-pref.notebook.run null false null [ object { trigger preferences } ]
+     !scope.apply-preferences-state $open-pref.notebook.state
+    ) }
+    { true (
+     ; to eval-res !scope.evaluate-stored-lane $pref-id [ object { trigger preferences } { applyExports true } ]
+     [ match
+      { $eval-res.ok (
+       [ match
+        { $open-pref.notebook (
+         ; set $eval-res.state open-pref.notebook.state
+         [ match
+          { $open-pref.notebook.scope-view.render : !open-pref.notebook.scope-view.render $eval-res.state }
+         ]
+        ) }
+       ]
+       !scope.apply-preferences-state $eval-res.state
+      ) }
+     ]
+    ) }
+   ]
+  ) }
+ ]
+)
+; to scope.sync-top-rail-chip (
+ -- Forces an immediate sync for a clicked top-rail chip, persists updated value and fetched timestamp to the chips table, and refreshes top-rail elements
+ ; to { item } $argv
+ [ match
+  { [ propertyIs null item ] : ; object { ok false } }
+  { [ propertyIs undefined item ] : ; object { ok false } }
+  { true (
+   [ match
+    { $item.onSync.call : !item.onSync $item }
+   ]
+   ; to target-url [ match
+    { $item.url.trim : !item.url.trim }
+    { $item.row.url.trim : !item.row.url.trim }
+    { true : '' }
+   ]
+   ; to lookup !scope.find-preferences-chip-row $item
+   ; to prev-fetched [ match
+    { [ and $lookup.found $lookup.row $lookup.fetchedCol ] (
+     ; to pf [ get lookup.row.values $lookup.fetchedCol.id ]
+     [ match { $pf.trim : !pf.trim } { $pf : ; add '' $pf } { true : '' } ]
+    ) }
+    { true : '' }
+   ]
+   [ match
+    { [ and $lookup.found $lookup.row $lookup.fetchedCol ] (
+     ; to lookup.row.values $lookup.fetchedCol.id ''
+     [ match
+      { $saveTableSchemaAndRows : !saveTableSchemaAndRows $data $lookup.prefData $lookup.prefId $lookup.table }
+     ]
+     [ match
+      { $lookup.openPref.notebook.data-view.render-grid : !lookup.openPref.notebook.data-view.render-grid }
+     ]
+    ) }
+   ]
+   !scope.run-preferences-lane-now
+   ; to after-lookup !scope.find-preferences-chip-row $item
+   ; to after-fetched [ match
+    { [ and $after-lookup.found $after-lookup.row $after-lookup.fetchedCol ] (
+     ; to rf [ get after-lookup.row.values $after-lookup.fetchedCol.id ]
+     [ match { $rf.trim : !rf.trim } { $rf : ; add '' $rf } { true : '' } ]
+    ) }
+    { true : '' }
+   ]
+   ; to need-direct-fetch [ match
+    { [ propertyIs '' target-url ] : false }
+    { [ propertyIs false after-lookup.found ] : true }
+    { [ propertyIs '' after-fetched ] : true }
+    { true : false }
+   ]
+   ; to direct-synced ; object { ok false }
+   ; condition { and { propertyIs true need-direct-fetch } { get window.fetch } } (
+    ; try (
+     ; to res !window.fetch $target-url
+     [ match
+      { $res.ok (
+       ; to txt !res.text
+       ; to clean-txt [ match { $txt.trim : !txt.trim } { true : ; add '' $txt } ]
+       [ match
+        { [ propertyIs '' clean-txt ] : null }
+        { true (
+         ; to now-dt !window.Reflect.construct $window.Date {}
+         ; to now-iso !now-dt.toISOString
+         ; set true direct-synced.ok
+         ; set $clean-txt item.value
+         ; set $now-iso item.fetched
+         [ match
+          { $item.row (
+           ; set $clean-txt item.row.value
+           ; set $now-iso item.row.fetched
+          ) }
+         ]
+         [ match
+          { [ and $after-lookup.found $after-lookup.row ] (
+           [ match
+            { $after-lookup.valueCol : ; to after-lookup.row.values $after-lookup.valueCol.id $clean-txt }
+           ]
+           [ match
+            { $after-lookup.fetchedCol : ; to after-lookup.row.values $after-lookup.fetchedCol.id $now-iso }
+           ]
+           [ match
+            { $saveTableSchemaAndRows : !saveTableSchemaAndRows $data $after-lookup.prefData $after-lookup.prefId $after-lookup.table }
+           ]
+           [ match
+            { $after-lookup.openPref.notebook.data-view.render-grid : !after-lookup.openPref.notebook.data-view.render-grid }
+           ]
+           !scope.run-preferences-lane-now
+          ) }
+          { true (
+           ; to pfx [ match { $item.prefix : $item.prefix } { true : '' } ]
+           ; to fmt-val [ match
+            { [ propertyIs fixed_2 item.format ] (
+             ; to num !window.Number $clean-txt
+             [ match
+              { [ !window.Number.isFinite $num ] (
+               ; to scaled ; divide $num 100
+               !scaled.toFixed 2
+              ) }
+              { true : $clean-txt }
+             ]
+            ) }
+            { [ propertyIs decimal item.format ] (
+             ; to num !window.Number.parseFloat $clean-txt
+             [ match
+              { [ !window.Number.isFinite $num ] : ; add '' $num }
+              { true : $clean-txt }
+             ]
+            ) }
+            { [ propertyIs integer item.format ] (
+             ; to num !window.Number.parseInt $clean-txt 10
+             [ match
+              { [ !window.Number.isFinite $num ] : ; add '' $num }
+              { true : $clean-txt }
+             ]
+            ) }
+            { [ propertyIs json item.format ] (
+             ; to parsed ; object { ok false } { val null }
+             ; try (
+              ; set [ !window.JSON.parse $clean-txt ] parsed.val
+              ; set true parsed.ok
+             ) : null
+             [ match
+              { [ propertyIs false parsed.ok ] : $clean-txt }
+              { true (
+               ; to cur ; object { val $parsed.val }
+               ; to opts [ match { $item.format_options : $item.format_options } { $item.row.format_options : $item.row.format_options } { true : null } ]
+               ; to path-str [ match { $opts.json.path.trim : !opts.json.path.trim } { true : '' } ]
+               ; to has-path [ match { [ propertyIs '' path-str ] : false } { true : true } ]
+               [ match
+                { [ propertyIs true has-path ] (
+                 ; to parts !path-str.split '.'
+                 ; each $parts (
+                  ; to { seg } $argv
+                  ; to has-seg [ match { [ propertyIs '' seg ] : false } { true : true } ]
+                  ; condition { propertyIs true has-seg } (
+                   [ match
+                    { [ propertyIs null cur.val ] : null }
+                    { [ propertyIs undefined cur.val ] : null }
+                    { true : ; set [ get cur.val $seg ] cur.val }
+                   ]
+                  )
+                 )
+                ) }
+               ]
+               ; to out-val $cur.val
+               [ match
+                { [ propertyIs null out-val ] : '' }
+                { [ propertyIs undefined out-val ] : '' }
+                { $out-val.trim : ; add '' $out-val }
+                { $out-val.toFixed : ; add '' $out-val }
+                { [ propertyIs true out-val ] : 'true' }
+                { [ propertyIs false out-val ] : 'false' }
+                { true : !window.JSON.stringify $out-val }
+               ]
+              ) }
+             ]
+            ) }
+            { true : $clean-txt }
+           ]
+           ; set [ ternary [ propertyIs '' fmt-val ] '' [ add $pfx $fmt-val ] ] item.text
+           [ match
+            { $rails.set-top-elements : !rails.set-top-elements $scope.preferences.interface.rails.top.elements }
+           ]
+          ) }
+         ]
+        ) }
+       ]
+      ) }
+     ]
+    ) : null
+   )
+   [ match
+    { [ and { propertyIs false direct-synced.ok } { propertyIs '' after-fetched } { propertyIsGreaterThan 0 prev-fetched.length } ] (
+     ; to restore-lookup !scope.find-preferences-chip-row $item
+     [ match
+      { [ and $restore-lookup.found $restore-lookup.row $restore-lookup.fetchedCol ] (
+       ; to restore-lookup.row.values $restore-lookup.fetchedCol.id $prev-fetched
+       [ match
+        { $saveTableSchemaAndRows : !saveTableSchemaAndRows $data $restore-lookup.prefData $restore-lookup.prefId $restore-lookup.table }
+       ]
+       [ match
+        { $restore-lookup.openPref.notebook.data-view.render-grid : !restore-lookup.openPref.notebook.data-view.render-grid }
+       ]
+       !scope.run-preferences-lane-now
+      ) }
+     ]
+    ) }
+   ]
+   ; to row-data !scope.get-top-rail-chip-row $item
+   ; object { ok true } { row $row-data }
+  ) }
+ ]
+)
 ; to scope.set-preferences-lane (
  -- Sets or clears the global system-wide preferences lane ID without modifying its script, and applies preferences
  ; to { id } $argv
+ ; to prev-id $scope.preferences-lane-id
  ; to normalized [ match
   { [ propertyIs null id ] : null }
   { [ propertyIs undefined id ] : null }
@@ -2713,6 +5744,25 @@
   ) }
  ]
  ; set $normalized scope.preferences-lane-id
+ [ match
+  { [ and { $prev-id } { [ propertyIs false [ propertyIs $prev-id normalized ] ] } ] (
+   ; to prev-open [ get scope.by-id $prev-id ]
+   [ match
+    { $prev-open : !scope.sync-lane-cron $prev-id }
+    { true (
+     ; to old-timer [ get scope.cron-timers $prev-id ]
+     [ match
+      { $old-timer (
+       [ match
+        { $window.clearInterval : !window.clearInterval $old-timer }
+       ]
+       !window.Reflect.deleteProperty $scope.cron-timers $prev-id
+      ) }
+     ]
+    ) }
+   ]
+  ) }
+ ]
  ; to stored [ match
   { $normalized : $normalized }
   { true : '' }
@@ -2726,21 +5776,25 @@
 )
 ; to scope.create-preferences-lane (
  -- Creates a new lane seeded with default interface preferences and assigns it as the global active preferences lane
- ; to pkg-id !resolve-target-package
- ; to id !crypto.randomUUID
- ; to title 'Preferences'
- ; to lane-data !data.namespace $id
- ; to bg-line ; add '; to interface.backgroundColor ' $default-body-bg
- ; to sb-line ; add '; to interface.scrollbarColor ' $default-scrollbar-color
- ; to seed-lines { '; to interface ; object' $bg-line $sb-line }
- !saveLaneScript $data $lane-data $id $seed-lines $window
- !lane-data.set title $title
- !scope.register $id $title $pkg-id
- ; set $id scope.preferences-lane-id
- !data.set preferences-lane $id
- ; to lane !scope.mount $id $title $lane-data undefined undefined undefined undefined undefined undefined $pkg-id
- !scope.update-url
- !scope.recompute-session-dirty
+ !scope.begin-session-status-pending 'Loading…'
+ ; to lane null
+ ; try (
+  ; to pkg-id !resolve-target-package
+  ; to id !crypto.randomUUID
+  ; to title 'Preferences'
+  ; to lane-data !data.namespace $id
+  ; to bg-line ; add '; to interface.backgroundColor ' $default-body-bg
+  ; to sb-line ; add '; to interface.scrollbarColor ' $default-scrollbar-color
+  ; to seed-lines { '; to interface ; object' $bg-line $sb-line }
+  !saveLaneScript $data $lane-data $id $seed-lines $window
+  !lane-data.set title $title
+  !scope.register $id $title $pkg-id
+  ; set $id scope.preferences-lane-id
+  !data.set preferences-lane $id
+  ; set [ !scope.mount $id $title $lane-data undefined undefined undefined undefined undefined undefined $pkg-id ] lane
+  !scope.update-url
+ ) : null
+ !scope.end-session-status-pending
  !scope.apply-preferences
  [ match
   { $rails.sync-preferences-menu : !rails.sync-preferences-menu }
@@ -2753,65 +5807,197 @@
  ; to pref-id $scope.preferences-lane-id
  [ match
   { $pref-id (
-   ; to lane !scope.open $pref-id
-   [ match
-    { $lane.is-minimized : !scope.restore $pref-id }
-   ]
-   !scope.update-url
-   !scope.recompute-session-dirty
+   !scope.begin-session-status-pending 'Loading…'
+   ; to lane null
+   ; try (
+    ; set [ !scope.open $pref-id ] lane
+    [ match
+     { $lane.is-minimized : !scope.restore $pref-id }
+    ]
+    !scope.update-url
+   ) : null
+   !scope.end-session-status-pending
    !scope.scroll-lane-into-view $lane
    $lane
   ) }
   { true : null }
  ]
 )
-; to scope.init (
- -- Initializes session & packages, reconciles initial URL lane routes, subscribes to popstate, loads global preferences, syncs URL lanes, and applies preferences
- !scope.init-session
- ; to initial-routes !parseLaneRoutes $location.pathname
- ; to saved-is-empty [ match
-  { [ propertyIs '/' scope.saved-pathname ] : true }
-  { [ propertyIs '' scope.saved-pathname ] : true }
-  { true : false }
- ]
+; to scope.open-preferences-timezones-view (
+ -- Opens (and restores if minimized) the global active preferences lane directly on its View tab
+ ; to pref-id $scope.preferences-lane-id
  [ match
-  { [ and { propertyIsGreaterThan 0 initial-routes.length } { propertyIs true saved-is-empty } ] (
-   ; to initial-ids {}
-   ; each $initial-routes (
-    ; to { r } $argv
-    !initial-ids.push $r.id
-   )
-   ; to initial-pathname !formatLaneRoutes $initial-routes
-   ; to base-opts [ object
-    { laneIds $initial-ids }
-    { pathname $initial-pathname }
-    { openPackageIds !copy-id-list $scope.open-package-ids }
-    { activePackageId $scope.active-package-id }
-    { incrementVersion false }
-   ]
-   ; to saved-res !saveSessionVersion $data $window $scope.session-id $base-opts
+  { $pref-id (
+   !scope.begin-session-status-pending 'Loading…'
+   ; to lane null
+   ; try (
+    ; set [ !scope.open $pref-id view ] lane
+    [ match
+     { $lane.is-minimized : !scope.restore $pref-id }
+    ]
+    !scope.update-url
+   ) : null
+   !scope.end-session-status-pending
+   !scope.scroll-lane-into-view $lane
+   $lane
+  ) }
+  { true : null }
+ ]
+)
+; to scope.handle-agent-event (
+ -- Handles real-time Server-Sent Events emitted when an agent creates or modifies a lane over /api/agent/* or ./cc
+ ; to { ev } $argv
+ [ match
+  { $ev (
+   ; to ev-type $ev.type
+   ; to target-id $ev.laneId
    [ match
-    { $saved-res (
-     ; set [ !copy-id-list $saved-res.laneIds ] scope.saved-lane-ids
-     ; set [ match { $saved-res.pathname : $saved-res.pathname } { true : $initial-pathname } ] scope.saved-pathname
-     ; set $saved-res.recentSessions scope.recent-sessions
+    { [ propertyIs 'lane-story-added' ev-type ] (
      [ match
-      { $saved-res.sessionHistory : ; set $saved-res.sessionHistory scope.session-history }
+      { $target-id (
+       ; to open-lane [ get scope.by-id $target-id ]
+       [ match
+        { $open-lane.notebook.story-view.on-new-entry : !open-lane.notebook.story-view.on-new-entry null }
+       ]
+      ) }
      ]
-     !scope.apply-session-packages $saved-res
+    ) }
+    { [ propertyIs 'lane-updated' ev-type ] (
+     !scope.load-catalog
+     [ match
+      { $target-id (
+       ; to open-lane [ get scope.by-id $target-id ]
+       [ match
+        { $open-lane : !scope.reload $target-id }
+       ]
+       [ match
+        { $scope.preferences-lane-id (
+         ; condition { propertyIs $target-id scope.preferences-lane-id } : !scope.apply-preferences
+        ) }
+       ]
+      ) }
+     ]
+    ) }
+    { [ propertyIs 'lane-created' ev-type ] (
+     !scope.load-catalog
+     ; to matches-session [ match
+      { [ propertyIs null ev.sessionId ] : true }
+      { [ propertyIs undefined ev.sessionId ] : true }
+      { [ propertyIs '' ev.sessionId ] : true }
+      { [ propertyIs $scope.session-id ev.sessionId ] : true }
+      { true : false }
+     ]
+     [ match
+      { $matches-session (
+       [ match
+        { $target-id (
+         ; to already [ get scope.by-id $target-id ]
+         [ match
+          { $already : !scope.reload $target-id }
+          { true (
+           !scope.begin-session-status-pending 'Loading…'
+           ; try (
+            !scope.open $target-id
+            !scope.update-url
+           ) : null
+           !scope.end-session-status-pending
+          ) }
+         ]
+        ) }
+       ]
+      ) }
+     ]
     ) }
    ]
   ) }
-  { [ and { propertyIs 0 initial-routes.length } { propertyIs false saved-is-empty } ] : !navigate-to-session-pathname $scope.saved-pathname }
  ]
- !scope.load-preferences-lane
- !window.addEventListener popstate $scope.sync
- !scope.sync
- !sync-session-ui
+)
+; to scope.handle-before-unload (
+ -- Prompts browser confirmation before unloading or leaving the page while the active session has an unsaved version or pending status
+ ; to { ev } $argv
+ [ match
+  { [ propertyIs true scope.session-status-pending ] (
+   ; to msg 'Session status is still loading or saving. Please wait before leaving.'
+   [ match
+    { $ev (
+     [ match
+      { $ev.preventDefault : !ev.preventDefault }
+     ]
+     ; set $msg ev.returnValue
+    ) }
+   ]
+   $msg
+  ) }
+  { [ propertyIs true scope.session-dirty ] (
+   ; to msg 'This session has an unsaved version. Save, fork, or abandon before leaving.'
+   [ match
+    { $ev (
+     [ match
+      { $ev.preventDefault : !ev.preventDefault }
+     ]
+     ; set $msg ev.returnValue
+    ) }
+   ]
+   $msg
+  ) }
+  { true : undefined }
+ ]
+)
+; to scope.init (
+ -- Initializes session & packages, reconciles initial URL lane routes, subscribes to popstate, beforeunload, and agent SSE events, loads global preferences, syncs URL lanes, and applies preferences
+ !scope.begin-session-status-pending 'Loading…'
+ ; try (
+  !scope.init-session
+  ; to initial-routes !parseLaneRoutes $location.pathname
+  ; to saved-is-empty [ match
+   { [ propertyIs '/' scope.saved-pathname ] : true }
+   { [ propertyIs '' scope.saved-pathname ] : true }
+   { true : false }
+  ]
+  [ match
+   { [ and { propertyIsGreaterThan 0 initial-routes.length } { propertyIs true saved-is-empty } ] (
+    ; to initial-ids {}
+    ; each $initial-routes (
+     ; to { r } $argv
+     !initial-ids.push $r.id
+    )
+    ; to initial-pathname !formatLaneRoutes $initial-routes
+    ; to base-opts [ object
+     { laneIds $initial-ids }
+     { pathname $initial-pathname }
+     { openPackageIds !copy-id-list $scope.open-package-ids }
+     { activePackageId $scope.active-package-id }
+     { incrementVersion false }
+    ]
+    ; to saved-res !saveSessionVersion $data $window $scope.session-id $base-opts
+    [ match
+     { $saved-res (
+      ; set [ !copy-id-list $saved-res.laneIds ] scope.saved-lane-ids
+      ; set [ match { $saved-res.pathname : $saved-res.pathname } { true : $initial-pathname } ] scope.saved-pathname
+      ; set $saved-res.recentSessions scope.recent-sessions
+      [ match
+       { $saved-res.sessionHistory : ; set $saved-res.sessionHistory scope.session-history }
+      ]
+      !scope.apply-session-packages $saved-res
+     ) }
+    ]
+   ) }
+   { [ and { propertyIs 0 initial-routes.length } { propertyIs false saved-is-empty } ] : !navigate-to-session-pathname $scope.saved-pathname }
+  ]
+  !scope.load-preferences-lane
+  !scope.load-clock-timezone
+  !window.addEventListener popstate $scope.sync
+  !window.addEventListener beforeunload $scope.handle-before-unload
+  !scope.sync
+ ) : null
+ !scope.end-session-status-pending
  [ match
   { $rails.sync-preferences-menu : !rails.sync-preferences-menu }
  ]
  !scope.apply-preferences
+ [ match
+  { $subscribeAgentEvents : !subscribeAgentEvents $scope.handle-agent-event $window }
+ ]
  [ match
   { [ propertyIs false scope.session-data-dir-confirmed ] : !dir-modal.open-confirm }
  ]

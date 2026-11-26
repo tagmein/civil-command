@@ -1,7 +1,7 @@
 -- file lane-server.fs
 ; to scope ; object
 ; to scope.mount (
- -- Mounts the per-lane HTTP API Tester (Mock & Live) and Remote SSH/Nginx/Civil-Memory Deployment panel
+ -- Mounts the per-lane HTTP API Tester (Mock & Live), Known Deployments table, and Remote SSH/Nginx/Civil-Memory Deployment panel
  ; to { lane container lane-control nb } $argv
 
  ; to root-el !document.createElement div
@@ -23,6 +23,10 @@
   { resp-meta-open false }
   { servers {} }
   { server-option-els {} }
+  { deployments {} }
+  { deployment-rows {} }
+  { deployment-option-els {} }
+  { deployment-test-results ; object }
   { deployment null }
   { kv-ready false }
   { detected-handlers ; object { hasHandlers false } { methods {} } }
@@ -69,6 +73,15 @@
  ; assign $live-mode-btn { type button } { className lane-tab } { textContent 'Live (Deployed)' }
  !mode-row.appendChild $mock-mode-btn
  !mode-row.appendChild $live-mode-btn
+
+ ; to deployment-field !document.createElement div
+ ; set 'lane-config-field cc-tester-deployment-field' deployment-field.className
+ ; to deployment-lbl !document.createElement label
+ ; assign $deployment-lbl { className lane-config-label } { textContent Deployment }
+ ; to deployment-select !document.createElement select
+ ; assign $deployment-select { className 'lane-input-type lane-config-input lane-config-select cc-deployment-select' } { disabled true }
+ !deployment-field.appendChild $deployment-lbl
+ !deployment-field.appendChild $deployment-select
 
  ; to req-row !document.createElement div
  ; set cc-req-row req-row.className
@@ -141,13 +154,56 @@
 
  !tester-card.appendChild $tester-hdr
  !tester-card.appendChild $mode-row
+ !tester-card.appendChild $deployment-field
  !tester-card.appendChild $req-row
  !tester-card.appendChild $extra-toggle
  !tester-card.appendChild $extra-box
  !tester-card.appendChild $tester-err
  !tester-card.appendChild $resp-box
 
- -- Section 2: Deployment & Civil-Memory Prerequisites
+ -- Section 2: Known Deployments Table
+ ; to deployments-card !document.createElement div
+ ; set cc-card deployments-card.className
+
+ ; to deployments-hdr !document.createElement div
+ ; set cc-card-header deployments-hdr.className
+ ; to deployments-title !document.createElement div
+ ; assign $deployments-title { className cc-card-title } { textContent Deployments }
+ ; to deployments-count-badge !document.createElement span
+ ; assign $deployments-count-badge { className cc-badge } { textContent '0' }
+ !deployments-hdr.appendChild $deployments-title
+ !deployments-hdr.appendChild $deployments-count-badge
+
+ ; to deployments-empty-el !document.createElement div
+ ; assign $deployments-empty-el { className 'cc-deployments-empty cc-muted-meta' } { textContent 'No known deployments yet. Save or deploy a configuration below.' }
+
+ ; to deployments-table-wrap !document.createElement div
+ ; assign $deployments-table-wrap { className cc-deployments-table-wrap } { hidden true }
+ ; to deployments-table !document.createElement table
+ ; set 'lane-data-grid cc-deployments-table' deployments-table.className
+ ; to deployments-thead !document.createElement thead
+ ; to deployments-hrow !document.createElement tr
+ ; each { Service Server Endpoint Test } (
+  ; to { col-name } $argv
+  ; to th !document.createElement th
+  ; assign $th { className lane-data-th } { textContent $col-name }
+  !deployments-hrow.appendChild $th
+ )
+ ; to act-th !document.createElement th
+ ; assign $act-th { className 'lane-data-th lane-data-th--actions' } { textContent '' }
+ !deployments-hrow.appendChild $act-th
+ !deployments-thead.appendChild $deployments-hrow
+
+ ; to deployments-tbody !document.createElement tbody
+ !deployments-table.appendChild $deployments-thead
+ !deployments-table.appendChild $deployments-tbody
+ !deployments-table-wrap.appendChild $deployments-table
+
+ !deployments-card.appendChild $deployments-hdr
+ !deployments-card.appendChild $deployments-empty-el
+ !deployments-card.appendChild $deployments-table-wrap
+
+ -- Section 3: Deployment & Civil-Memory Prerequisites
  ; to deploy-card !document.createElement div
  ; set cc-card deploy-card.className
 
@@ -255,6 +311,7 @@
  ; assign $opt-dom { value domain } { textContent 'Dedicated domain / subdomain' }
  !rmode-select.appendChild $opt-sub
  !rmode-select.appendChild $opt-dom
+ ; set subpath rmode-select.value
 
  ; to domain-lbl !document.createElement label
  ; assign $domain-lbl { className lane-config-label } { textContent 'Domain / Subdomain' }
@@ -355,14 +412,19 @@
  !deploy-card.appendChild $route-card
 
  !root-el.appendChild $tester-card
+ !root-el.appendChild $deployments-card
  !root-el.appendChild $deploy-card
  !container.appendChild $root-el
 
  ; assign $view [ object
   { element $root-el }
+  { tester-card $tester-card }
   { handlers-badge $handlers-badge }
   { mock-mode-btn $mock-mode-btn }
   { live-mode-btn $live-mode-btn }
+  { deployment-field $deployment-field }
+  { deployment-label $deployment-lbl }
+  { deployment-select $deployment-select }
   { method-select $method-select }
   { path-input $path-input }
   { send-btn $send-btn }
@@ -378,6 +440,14 @@
   { resp-pre $resp-pre }
   { resp-details-toggle $resp-details-toggle }
   { resp-details-box $resp-details-box }
+  { deployments-card $deployments-card }
+  { deployments-count-badge $deployments-count-badge }
+  { deployments-empty-el $deployments-empty-el }
+  { deployments-table-wrap $deployments-table-wrap }
+  { deployments-table $deployments-table }
+  { deployments-thead $deployments-thead }
+  { deployments-tbody $deployments-tbody }
+  { deploy-card $deploy-card }
   { deploy-err $deploy-err }
   { deploy-status $deploy-status }
   { servers-btn $servers-btn }
@@ -390,6 +460,7 @@
   { install-cm-btn $install-cm-btn }
   { sync-kv-btn $sync-kv-btn }
   { sync-meta-el $sync-meta-el }
+  { showing-last-synced false }
   { slug-input $slug-input }
   { port-input $port-input }
   { rmode-select $rmode-select }
@@ -432,14 +503,45 @@
   ; set [ ternary [ propertyIs '' clean ] true false ] deploy-status.hidden
  )
 
- ; to selected-server (
-  ; to target-id $srv-select.value
+ ; to set-tester-mode (
+  ; to { next-mode } $argv
+  ; to is-live [ propertyIs live next-mode ]
+  ; set [ ternary $is-live live mock ] view.tester-mode
+  ; set [ ternary $is-live lane-tab 'lane-tab lane-tab--active' ] mock-mode-btn.className
+  ; set [ ternary $is-live 'lane-tab lane-tab--active' lane-tab ] live-mode-btn.className
+  ; set [ ternary $is-live false true ] deployment-select.disabled
+ )
+
+ ; to find-server-by-id (
+  ; to { target-id } $argv
   ; to found ; object { val null }
   ; each $view.servers (
    ; to { s } $argv
    ; condition { propertyIs $target-id s.id } : ; set $s found.val
   )
   $found.val
+ )
+
+ ; to find-deployment-by-id (
+  ; to { target-id } $argv
+  ; to found ; object { val null }
+  [ match
+   { $target-id (
+    ; each $view.deployments (
+     ; to { d } $argv
+     ; condition { propertyIs $target-id d.id } : ; set $d found.val
+    )
+    [ match
+     { $found.val : null }
+     { [ propertyIs $target-id view.deployment.id ] : ; set $view.deployment found.val }
+    ]
+   ) }
+  ]
+  $found.val
+ )
+
+ ; to selected-server (
+  !find-server-by-id $srv-select.value
  )
 
  ; to compute-public-url (
@@ -450,6 +552,46 @@
   [ match
    { $buildPublicEndpointUrl : !buildPublicEndpointUrl [ object { routeMode $rmode } { domain $dom } { subpath $sub } { https $https } ] }
    { true : '' }
+  ]
+ )
+
+ ; to resolve-deployment-url (
+  ; to { dep } $argv
+  [ match
+   { [ propertyIs null dep ] : '' }
+   { [ propertyIs undefined dep ] : '' }
+   { $dep.publicUrl : $dep.publicUrl }
+   { $buildPublicEndpointUrl : !buildPublicEndpointUrl [ object { routeMode $dep.routeMode } { domain $dep.domain } { subpath $dep.subpath } { https $dep.enableLetsEncrypt } ] }
+   { true : '' }
+  ]
+ )
+
+ ; to format-deployment-option-label (
+  ; to { dep } $argv
+  ; to dep-url !resolve-deployment-url $dep
+  ; to srv !find-server-by-id $dep.serverId
+  ; to srv-name [ match
+   { $srv.name : $srv.name }
+   { $dep.serverId : $dep.serverId }
+   { true : '' }
+  ]
+  ; to endpoint [ match
+   { $dep-url : $dep-url }
+   { true : ; add 'http://127.0.0.1:' $dep.port }
+  ]
+  [ match
+   { $srv-name : ; add $dep.slug ; add ' — ' ; add $endpoint ; add ' (' ; add $srv-name ')' }
+   { true : ; add $dep.slug ; add ' — ' $endpoint }
+  ]
+ )
+
+ ; to selected-tester-deployment (
+  ; to target-id $deployment-select.value
+  ; to matched !find-deployment-by-id $target-id
+  [ match
+   { $matched : $matched }
+   { [ propertyIsGreaterThan 0 view.deployments.length ] : [ get view.deployments 0 ] }
+   { true : null }
   ]
  )
 
@@ -510,16 +652,25 @@
   ]
   ; to clean-port !safe-port
   ; to pub !compute-public-url
-  ; to prev $view.deployment
+  ; to rmode $rmode-select.value
+  ; to clean-dom !domain-input.value.trim
+  ; to clean-sub !subpath-input.value.trim
+  ; to srv-id $srv-select.value
+  ; to dep-id [ match
+   { $buildDeploymentId : !buildDeploymentId [ object { laneId $lane.id } { serverId $srv-id } { slug $clean-slug } { routeMode $rmode } { domain $clean-dom } { subpath $clean-sub } ] }
+   { true : ; add $lane.id ; add '::' ; add $srv-id ; add '::' ; add $clean-slug ; add '::' ; add $rmode ; add '::' ; add $clean-dom ; add '::' $clean-sub }
+  ]
+  ; to prev !find-deployment-by-id $dep-id
   ; to base [ object
+   { id $dep-id }
    { laneId $lane.id }
    { title $lane.title }
-   { serverId $srv-select.value }
+   { serverId $srv-id }
    { slug $clean-slug }
    { port $clean-port }
-   { routeMode $rmode-select.value }
-   { domain !domain-input.value.trim }
-   { subpath !subpath-input.value.trim }
+   { routeMode $rmode }
+   { domain $clean-dom }
+   { subpath $clean-sub }
    { enableLetsEncrypt $le-check.checked }
    { letsEncryptEmail !le-email-input.value.trim }
    { cors $cors-check.checked }
@@ -536,22 +687,6 @@
    { $extras : ; assign $base $extras }
   ]
   $base
- )
-
- ; to persist-deployment (
-  ; to { extras } $argv
-  ; to rec !build-deployment-record $extras
-  [ match
-   { $saveLaneDeployment (
-    ; to saved !saveLaneDeployment $data $rec
-    ; set $saved view.deployment
-    $saved
-   ) }
-   { true (
-    ; set $rec view.deployment
-    $rec
-   ) }
-  ]
  )
 
  ; to view.refresh-handlers (
@@ -628,6 +763,28 @@
   ; set $details-str resp-details-box.textContent
  )
 
+ ; to update-row-test-status (
+  ; to { dep-id is-pass } $argv
+  [ match
+   { $dep-id (
+    ; to status-txt [ ternary $is-pass Pass Fail ]
+    ; to status-cls [ ternary $is-pass 'cc-badge cc-badge--ok cc-dep-test-status' 'cc-badge cc-badge--err cc-dep-test-status' ]
+    ; to res-attr [ ternary $is-pass pass fail ]
+    ; to rec [ object { ok $is-pass } { status $status-txt } ]
+    ; to view.deployment-test-results $dep-id $rec
+    ; each $view.deployment-rows (
+     ; to { row } $argv
+     ; condition { propertyIs $dep-id row.deployment.id } (
+      ; set $status-txt row.test-status-el.textContent
+      ; set $status-cls row.test-status-el.className
+      ; set false row.test-status-el.hidden
+      !row.test-status-el.setAttribute data-test-result $res-attr
+     )
+    )
+   ) }
+  ]
+ )
+
  ; to run-tester-request (
   !set-tester-error ''
   ; to req-method $method-select.value
@@ -645,7 +802,10 @@
   ) : null
 
   [ match
-   { [ propertyIs null parsed-headers ] : !set-tester-error 'Request Headers must be valid JSON object.' }
+   { [ propertyIs null parsed-headers ] (
+    !set-tester-error 'Request Headers must be valid JSON object.'
+    ; object { ok false } { status 0 } { error 'Request Headers must be valid JSON object.' }
+   ) }
    { [ propertyIs mock view.tester-mode ] (
     [ match
      { $simulateLaneRequest (
@@ -679,14 +839,32 @@
       ]
       ; to resp !simulateLaneRequest $sim-opts
       !render-response $resp
+      ; to code [ match { $resp.status : $resp.status } { true : 200 } ]
+      ; to is-pass [ match
+       { [ propertyIsLessThan 200 code ] : false }
+       { [ propertyIsLessThan 300 code ] : true }
+       { true : false }
+      ]
+      ; object { ok $is-pass } { status $code } { response $resp }
      ) }
-     { true : !set-tester-error 'Mock simulator is not available.' }
+     { true (
+      !set-tester-error 'Mock simulator is not available.'
+      ; object { ok false } { status 0 } { error 'Mock simulator is not available.' }
+     ) }
     ]
    ) }
    { true (
-    ; to base-url !compute-public-url
+    ; to sel-dep !selected-tester-deployment
+    ; to dep-url !resolve-deployment-url $sel-dep
+    ; to base-url [ match
+     { $dep-url : $dep-url }
+     { true : !compute-public-url }
+    ]
     [ match
-     { [ propertyIs '' base-url ] : !set-tester-error 'Configure a domain (or deploy first) to send live requests.' }
+     { [ propertyIs '' base-url ] (
+      !set-tester-error 'Configure a domain (or deploy first) to send live requests.'
+      ; object { ok false } { status 0 } { error 'Configure a domain (or deploy first) to send live requests.' } { deployment $sel-dep }
+     ) }
      { $proxyDeployRequest (
       ; to clean-path [ match
        { [ !req-path.startsWith '/' ] : $req-path }
@@ -700,14 +878,270 @@
        { body $body-input.value }
       ]
       [ match
-       { [ propertyIs true proxy-res.ok ] : !render-response $proxy-res }
-       { true : !set-tester-error [ match { $proxy-res.error : $proxy-res.error } { true : 'Live request failed' } ] }
+       { [ propertyIs true proxy-res.ok ] (
+        !render-response $proxy-res
+        ; to code [ match { $proxy-res.status : $proxy-res.status } { true : 200 } ]
+        ; to is-pass [ match
+         { [ propertyIsLessThan 200 code ] : false }
+         { [ propertyIsLessThan 300 code ] : true }
+         { true : false }
+        ]
+        [ match
+         { [ propertyIs null sel-dep ] : null }
+         { [ propertyIs false [ propertyIs GET req-method ] ] : null }
+         { [ propertyIs '/' clean-path ] : !update-row-test-status $sel-dep.id $is-pass }
+        ]
+        ; object { ok $is-pass } { status $code } { response $proxy-res } { deployment $sel-dep }
+       ) }
+       { true (
+        ; to err-msg [ match { $proxy-res.error : $proxy-res.error } { true : 'Live request failed' } ]
+        !set-tester-error $err-msg
+        [ match
+         { [ propertyIs null sel-dep ] : null }
+         { [ propertyIs false [ propertyIs GET req-method ] ] : null }
+         { [ propertyIs '/' clean-path ] : !update-row-test-status $sel-dep.id false }
+        ]
+        ; object { ok false } { status 0 } { error $err-msg } { response $proxy-res } { deployment $sel-dep }
+       ) }
       ]
      ) }
-     { true : !set-tester-error 'Live proxy API is not available.' }
+     { true (
+      !set-tester-error 'Live proxy API is not available.'
+      ; object { ok false } { status 0 } { error 'Live proxy API is not available.' } { deployment $sel-dep }
+     ) }
     ]
    ) }
   ]
+ )
+
+ ; to test-deployment (
+  -- Selects the deployment in HTTP Request Tester (Live mode), runs GET /, displays full details in tester, and records pass/fail in the table row
+  ; to { dep } $argv
+  !set-tester-mode live
+  ; set $dep.id deployment-select.value
+  ; set GET method-select.value
+  ; set '/' path-input.value
+  ; to res !run-tester-request
+  ; to passed [ match
+   { [ propertyIs true res.ok ] : true }
+   { true : false }
+  ]
+  !update-row-test-status $dep.id $passed
+  $res
+ )
+
+ ; to sync-deployment-select (
+  ; to { preferred-id } $argv
+  ; to prev-val $deployment-select.value
+  !clear-children $deployment-select
+  ; set 0 view.deployment-option-els.length
+  [ match
+   { [ propertyIs 0 view.deployments.length ] (
+    ; to empty-opt !document.createElement option
+    ; assign $empty-opt { value '' } { textContent 'No known deployments' }
+    !deployment-select.appendChild $empty-opt
+    !view.deployment-option-els.push $empty-opt
+    ; set '' deployment-select.value
+   ) }
+   { true (
+    ; to match-state ; object { has-preferred false } { has-prev false } { has-current false }
+    ; each $view.deployments (
+     ; to { d } $argv
+     ; to opt !document.createElement option
+     ; to lbl !format-deployment-option-label $d
+     ; assign $opt { value $d.id } { textContent $lbl }
+     !deployment-select.appendChild $opt
+     !view.deployment-option-els.push $opt
+     ; condition { propertyIs $preferred-id d.id } : ; set true match-state.has-preferred
+     ; condition { propertyIs $prev-val d.id } : ; set true match-state.has-prev
+     ; condition { propertyIs $view.deployment.id d.id } : ; set true match-state.has-current
+    )
+    ; to first-dep [ get view.deployments 0 ]
+    ; to target-dep-id [ match
+     { $match-state.has-preferred : $preferred-id }
+     { $match-state.has-prev : $prev-val }
+     { $match-state.has-current : $view.deployment.id }
+     { $first-dep : $first-dep.id }
+     { true : '' }
+    ]
+    ; set $target-dep-id deployment-select.value
+   ) }
+  ]
+ )
+
+ ; to request-remove-deployment (
+  ; to { dep } $argv
+  ; to resolved-url !resolve-deployment-url $dep
+  ; to dep-label [ match
+   { $resolved-url : ; add $dep.slug ; add ' (' ; add $resolved-url ')' }
+   { $dep.slug : $dep.slug }
+   { true : $dep.id }
+  ]
+  ; to do-remove (
+   [ match
+    { $deleteLaneDeployment : !deleteLaneDeployment $data $lane.id $dep.id }
+   ]
+   [ match
+    { [ propertyIs $dep.id view.deployment.id ] : ; set null view.deployment }
+   ]
+   !view.refresh-deployments
+   [ match
+    { $lane-control.servers-modal.refresh : !lane-control.servers-modal.refresh }
+   ]
+   [ match
+    { $lane-control.refresh-export-statuses : !lane-control.refresh-export-statuses $lane.id }
+   ]
+  )
+  [ match
+   { $lane-control.confirm-modal.open (
+    !lane-control.confirm-modal.open [ object
+     { lane $lane }
+     { lane-id $lane.id }
+     { host $container }
+     { title 'Remove Deployment' }
+     { message ; add 'Remove known deployment "' ; add $dep-label '"?' }
+     { confirm-label Remove }
+     { on-confirm $do-remove }
+    ]
+   ) }
+   { true : !do-remove }
+  ]
+ )
+
+ ; to render-deployments-table (
+  !clear-children $deployments-tbody
+  ; set 0 view.deployment-rows.length
+  ; to count $view.deployments.length
+  ; set [ ; add '' $count ] deployments-count-badge.textContent
+  ; to has-deps [ propertyIsGreaterThan 0 count ]
+  ; set $has-deps deployments-empty-el.hidden
+  ; set [ ternary $has-deps false true ] deployments-table-wrap.hidden
+  ; each $view.deployments (
+   ; to { dep dep-idx } $argv
+   ; to tr !document.createElement tr
+   ; set 'lane-data-row cc-deployment-row' tr.className
+   !tr.setAttribute data-deployment-id $dep.id
+
+   ; to slug-td !document.createElement td
+   ; assign $slug-td { className 'lane-data-td cc-dep-slug-td' } { textContent $dep.slug }
+
+   ; to srv !find-server-by-id $dep.serverId
+   ; to srv-txt [ match
+    { $srv.name : ; add $srv.name ; add ' (:' ; add $dep.port ')' }
+    { $dep.serverId : ; add $dep.serverId ; add ' (:' ; add $dep.port ')' }
+    { true : ; add '127.0.0.1:' $dep.port }
+   ]
+   ; to server-td !document.createElement td
+   ; assign $server-td { className 'lane-data-td cc-dep-server-td' } { textContent $srv-txt }
+
+   ; to resolved-url !resolve-deployment-url $dep
+   ; to url-txt [ match
+    { $resolved-url : $resolved-url }
+    { true : ; add 'http://127.0.0.1:' $dep.port }
+   ]
+   ; to url-td !document.createElement td
+   ; assign $url-td { className 'lane-data-td cc-dep-url-td' } { textContent $url-txt }
+
+   ; to test-td !document.createElement td
+   ; set 'lane-data-td cc-dep-test-td' test-td.className
+   ; to test-btn !document.createElement button
+   ; assign $test-btn { type button } { className 'lane-modal-action cc-dep-test-btn' } { textContent Test }
+   ; to test-status-el !document.createElement span
+   ; to prev-test [ get view.deployment-test-results $dep.id ]
+   [ match
+    { $prev-test (
+     ; to is-ok [ propertyIs true prev-test.ok ]
+     ; assign $test-status-el { className [ ternary $is-ok 'cc-badge cc-badge--ok cc-dep-test-status' 'cc-badge cc-badge--err cc-dep-test-status' ] } { textContent $prev-test.status } { hidden false }
+     !test-status-el.setAttribute data-test-result [ ternary $is-ok pass fail ]
+    ) }
+    { true : ; assign $test-status-el { className 'cc-badge cc-dep-test-status' } { textContent '' } { hidden true } }
+   ]
+   !test-btn.addEventListener click : !test-deployment $dep
+   !test-td.appendChild $test-btn
+   !test-td.appendChild $test-status-el
+
+   ; to act-td !document.createElement td
+   ; set 'lane-data-td lane-data-td--actions' act-td.className
+   ; to rm-btn !document.createElement button
+   ; assign $rm-btn { type button } { className lane-data-row-remove } { textContent '×' } { title 'Remove deployment' }
+   !rm-btn.addEventListener click : !request-remove-deployment $dep
+   !act-td.appendChild $rm-btn
+
+   !tr.appendChild $slug-td
+   !tr.appendChild $server-td
+   !tr.appendChild $url-td
+   !tr.appendChild $test-td
+   !tr.appendChild $act-td
+   !deployments-tbody.appendChild $tr
+
+   !view.deployment-rows.push [ object
+    { deployment $dep }
+    { index $dep-idx }
+    { el $tr }
+    { tr $tr }
+    { slug-td $slug-td }
+    { server-td $server-td }
+    { url-td $url-td }
+    { test-td $test-td }
+    { test-btn $test-btn }
+    { test-status-el $test-status-el }
+    { result-el $test-status-el }
+    { actions-td $act-td }
+    { remove-btn $rm-btn }
+    { delete-btn $rm-btn }
+   ]
+  )
+ )
+
+ ; to load-known-deployments (
+  [ match
+   { $loadLaneDeployments : !loadLaneDeployments $data $lane.id }
+   { $loadDeployments (
+    ; to all-deps !loadDeployments $data
+    ; to matched {}
+    ; each $all-deps (
+     ; to { d } $argv
+     ; condition { propertyIs $lane.id d.laneId } : !matched.push $d
+    )
+    $matched
+   ) }
+   { $loadLaneDeployment (
+    ; to single !loadLaneDeployment $data $lane.id
+    [ match
+     { $single : { $single } }
+     { true : {} }
+    ]
+   ) }
+   { true : {} }
+  ]
+ )
+
+ ; to view.refresh-deployments (
+  -- Reloads known deployments for this lane and updates the Deployments table and HTTP Request Tester dropdown
+  ; to { preferred-id } $argv
+  ; to deps !load-known-deployments
+  ; set $deps view.deployments
+  !render-deployments-table
+  !sync-deployment-select $preferred-id
+  $deps
+ )
+
+ ; to persist-deployment (
+  ; to { extras } $argv
+  ; to rec !build-deployment-record $extras
+  ; to saved [ match
+   { $saveLaneDeployment (
+    ; to s !saveLaneDeployment $data $rec
+    ; set $s view.deployment
+    $s
+   ) }
+   { true (
+    ; set $rec view.deployment
+    $rec
+   ) }
+  ]
+  !view.refresh-deployments $saved.id
+  $saved
  )
 
  ; to is-ssh-local-kv (
@@ -731,6 +1165,9 @@
      { [ propertyIs false resp.ok ] : !set-deploy-error [ match { $resp.error : $resp.error } { true : 'Failed to start terminal session' } ] }
      { $lane-control.terminal-modal.open (
       ; to open-opts [ object
+       { lane $lane }
+       { lane-id $lane.id }
+       { host $container }
        { title $resp.title }
        { subtitle $payload.subtitle }
        { wsPath $resp.wsPath }
@@ -886,6 +1323,7 @@
           ; to synced-at [ match { $evt.data.syncedAt : $evt.data.syncedAt } { true : !window.Date } ]
           ; to synced-ids [ match { $evt.data.laneIds : $evt.data.laneIds } { true : { $lane.id } } ]
           !persist-deployment [ object { lastSyncedAt $synced-at } { lastSyncLaneIds $synced-ids } ]
+          ; set false view.showing-last-synced
           ; set [ ; add 'Synced ' ; add $synced-ids.length ' lane(s) to civil-memory.' ] sync-meta-el.textContent
           !set-deploy-status 'Lane synced to civil-memory!'
          )
@@ -899,6 +1337,7 @@
           ; to synced-at [ match { $res.syncedAt : $res.syncedAt } { true : !window.Date } ]
           ; to synced-ids [ match { $res.laneIds : $res.laneIds } { true : { $lane.id } } ]
           !persist-deployment [ object { lastSyncedAt $synced-at } { lastSyncLaneIds $synced-ids } ]
+          ; set false view.showing-last-synced
           ; set [ ; add 'Synced ' ; add $synced-ids.length ' lane(s) to civil-memory.' ] sync-meta-el.textContent
           !set-deploy-status 'Lane synced to civil-memory!'
          ) }
@@ -999,16 +1438,28 @@
       ; to { evt } $argv
       ; condition { propertyIs __CC_UNDEPLOY_OK__ evt.type } (
        [ match
-        { $deleteLaneDeployment : !deleteLaneDeployment $data $lane.id }
+        { $deleteLaneDeployment : !deleteLaneDeployment $data $lane.id $dep.id }
        ]
-       ; set null view.deployment
+       [ match
+        { [ propertyIs $dep.id view.deployment.id ] : ; set null view.deployment }
+       ]
+       !view.refresh-deployments
        !set-deploy-status ; add 'Undeployed ' $dep.slug
+       [ match
+        { $lane-control.servers-modal.refresh : !lane-control.servers-modal.refresh }
+       ]
+       [ match
+        { $lane-control.refresh-export-statuses : !lane-control.refresh-export-statuses $lane.id }
+       ]
       )
      )
     )
     [ match
      { $lane-control.confirm-modal.open (
       !lane-control.confirm-modal.open [ object
+       { lane $lane }
+       { lane-id $lane.id }
+       { host $container }
        { title 'Undeploy Lane Service' }
        { message ; add 'Stop and remove "' ; add $dep.slug ; add '" from ' ; add $srv.host '?' }
        { confirm-label Undeploy }
@@ -1043,7 +1494,12 @@
     [ match
      { $loadDeployments (
       ; to all-deps !loadDeployments $data
-      ; to has-saved [ match { $view.deployment.port : true } { true : false } ]
+      ; to has-saved [ match
+       { [ propertyIs null view.deployment ] : false }
+       { [ propertyIs false [ propertyIs $srv.id view.deployment.serverId ] ] : false }
+       { $view.deployment.port : true }
+       { true : false }
+      ]
       [ match
        { [ propertyIs false has-saved ] (
         ; to next-p !allocateNextPort $all-deps $srv.id $srv.basePort
@@ -1088,12 +1544,44 @@
   ]
   ; set $target-val srv-select.value
   !apply-server-defaults
+  !render-deployments-table
+  !sync-deployment-select null
+ )
+
+ ; to render-last-synced-meta (
+  ; to { raw-synced } $argv
+  ; to ts-opts [ match
+   { $lane-control.get-clock-display-options : !lane-control.get-clock-display-options }
+   { true (
+    ; to fb-tz [ match { $getBrowserTimeZone : !getBrowserTimeZone $window.Intl } { true : UTC } ]
+    ; to fb-hr [ match { $lane-control.clock-hour-format : $lane-control.clock-hour-format } { true : '12h' } ]
+    [ object { timeZone $fb-tz } { hourFormat $fb-hr } { showTimeZone true } { intl $window.Intl } ]
+   ) }
+  ]
+  ; to ts [ match
+   { $formatLineTimestamp : !formatLineTimestamp $raw-synced $ts-opts }
+   { true : ; object { known true } { display $raw-synced } { iso $raw-synced } }
+  ]
+  ; to label [ match { $ts.known : $ts.display } { true : $raw-synced } ]
+  ; set [ ; add 'Last synced: ' $label ] sync-meta-el.textContent
+  ; set [ match { $ts.iso : $ts.iso } { true : $raw-synced } ] sync-meta-el.title
+  ; set true view.showing-last-synced
+ )
+
+ ; to view.refresh-clock-displays (
+  -- Re-formats Last synced timestamp when clock timezone or 12h/24h preference changes
+  ; condition { and { propertyIs true view.showing-last-synced } { $view.deployment.lastSyncedAt } } (
+   !render-last-synced-meta $view.deployment.lastSyncedAt
+  )
  )
 
  ; to view.load (
-  -- Loads persisted deployment configuration and server list for this lane
+  -- Loads persisted deployment configurations and server list for this lane
+  ; to deps !load-known-deployments
+  ; set $deps view.deployments
   ; to dep [ match
    { $loadLaneDeployment : !loadLaneDeployment $data $lane.id }
+   { [ propertyIsGreaterThan 0 deps.length ] : [ get deps [ ; subtract $deps.length 1 ] ] }
    { true : null }
   ]
   ; set $dep view.deployment
@@ -1112,7 +1600,7 @@
     ; set [ ternary $dep.includeImports true false ] imports-check.checked
     ; set [ ternary $dep.kvReady true false ] view.kv-ready
     [ match
-     { $dep.lastSyncedAt : ; set [ ; add 'Last synced: ' $dep.lastSyncedAt ] sync-meta-el.textContent }
+     { $dep.lastSyncedAt : !render-last-synced-meta $dep.lastSyncedAt }
     ]
    ) }
   ]
@@ -1121,16 +1609,8 @@
   !sync-gate-ui
  )
 
- !mock-mode-btn.addEventListener click (
-  ; set mock view.tester-mode
-  ; set 'lane-tab lane-tab--active' mock-mode-btn.className
-  ; set lane-tab live-mode-btn.className
- )
- !live-mode-btn.addEventListener click (
-  ; set live view.tester-mode
-  ; set lane-tab mock-mode-btn.className
-  ; set 'lane-tab lane-tab--active' live-mode-btn.className
- )
+ !mock-mode-btn.addEventListener click : !set-tester-mode mock
+ !live-mode-btn.addEventListener click : !set-tester-mode live
  !extra-toggle.addEventListener click (
   ; to next [ ternary $view.headers-open false true ]
   ; set $next view.headers-open
@@ -1147,7 +1627,7 @@
 
  !servers-btn.addEventListener click (
   [ match
-   { $lane-control.servers-modal.open : !lane-control.servers-modal.open servers }
+   { $lane-control.servers-modal.open : !lane-control.servers-modal.open servers $lane }
   ]
  )
  !srv-select.addEventListener change (

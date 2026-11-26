@@ -39,7 +39,8 @@ Open [http://localhost:8080](http://localhost:8080) in your browser.
 ### Run the Tests
 
 ```bash
-node --test field.test.mjs
+./test
+# or a single suite: ./test field.rails.test.mjs
 ```
 
 ---
@@ -60,7 +61,8 @@ node --test field.test.mjs
 | [src/lane-import-modal.fs](src/lane-import-modal.fs) | **Import from Lane** modal picker embedding the Scope browser of another lane's final idle state to assign a value under the same or a custom name. |
 | [src/lane-modal.fs](src/lane-modal.fs) | Full-screen **Open Lane** modal for searching, opening, and closing saved lanes. |
 | [src/lane-config-modal.fs](src/lane-config-modal.fs) | **Configure Lane** modal dialog opened by each lane's SVG gear button. |
-| [field.test.mjs](field.test.mjs) | Unit and end-to-end integration tests covering the parser, runtime, notebook evaluator, and all `.fs` modules. |
+| [field.fixtures.mjs](field.fixtures.mjs) | Shared test harness and runtime fixtures imported by the test suites. |
+| [field.test.mjs](field.test.mjs), `field.*.test.mjs` | Unit and end-to-end integration test suites (`lanes`, `data`, `rails`, `sessions`, `deploy`, `story`) covering the parser, runtime, notebook evaluator, and all `.fs` modules. |
 | [AGENTS.md](AGENTS.md) | Detailed FieldScript syntax reference, runtime semantics, and repository coding conventions. |
 
 ### Bootstrap Flow
@@ -167,7 +169,7 @@ Each notebook runs top-to-bottom in a fresh runtime seeded with `console`, `data
 - **JavaScript (`.mjs`)**: 1-space indentation, no semicolons, native ESM.
 - **FieldScript (`.fs`)**: 1-space indentation for nested blocks; spaces inside delimiters (`{ a }`, `[ cmd ]`, `( ... )`); prefer `:` for single-statement trailing `( will )` blocks.
 - **Paths**: Never commit machine-specific absolute filesystem paths; always use repo-relative paths.
-- **Tests**: Run `node --test field.test.mjs` after changes. The suite covers parser edge cases, scoping, async concurrency, `runLines`, and full mock-DOM integration tests for all `.fs` modules.
+- **Tests**: Run `./test` after changes (or `./test field.<suite>.test.mjs` for one suite). The suites cover parser edge cases, scoping, async concurrency, `runLines`, and full mock-DOM integration tests for all `.fs` modules.
 
 ---
 

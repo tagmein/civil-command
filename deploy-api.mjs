@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import os from 'node:os'
@@ -595,7 +596,13 @@ export function generateNginxSubpathConfig({ slug, port, subpath }) {
  return [
   `# Civil Command lane service: ${cleanSlug}`,
   `location = ${cleanSub} {`,
-  ` return 308 ${cleanSub}/;`,
+  ` proxy_pass http://127.0.0.1:${cleanPort};`,
+  ' proxy_http_version 1.1;',
+  ' proxy_set_header Host $host;',
+  ' proxy_set_header X-Real-IP $remote_addr;',
+  ' proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;',
+  ' proxy_set_header X-Forwarded-Proto $scheme;',
+  ` proxy_set_header X-Forwarded-Prefix ${cleanSub};`,
   '}',
   `location ${cleanSub}/ {`,
   ` proxy_pass http://127.0.0.1:${cleanPort}/;`,
@@ -1051,6 +1058,7 @@ export function generateRemoteKvSyncScript({
   "const bundle = JSON.parse(await fs.readFile('./bundle.json', 'utf8'))",
   "const kv = httpKV({ baseUrl: process.env.CC_KV_URL, basePath: process.env.CC_KV_BASE || null, switchable: false })",
   'const res = await writeLaneSyncBundleToKv(kv, bundle, null)',
+  "try { const regRaw = await fs.readFile('/opt/civil-command/registry.json', 'utf8'); const reg = JSON.parse(regRaw); const syncedSet = new Set(res.laneIds || []); for (const entry of Object.values(reg || {})) { if (entry && entry.port && (syncedSet.has(entry.laneId) || (process.env.CC_KV_BASE && entry.dataBasePath === process.env.CC_KV_BASE))) { await fetch(`http://127.0.0.1:${entry.port}/_cc/reload`, { method: 'POST' }).catch(() => {}) } } } catch {}",
   "console.log('__CC_SYNC_OK__ ' + JSON.stringify(res))",
   'NODEEOF',
   '',
@@ -1152,19 +1160,48 @@ export function generateDeployScript({
 
  if (syncBundle && Array.isArray(syncBundle.lanes) && syncBundle.lanes.length > 0) {
   lines.push('echo "Syncing lane bundle to connected civil-memory KV store..."')
-  lines.push(`printf '%s' ${shellQuote(encodeBase64(JSON.stringify(syncBundle)))} | base64 -d > "$SERVICE_DIR/.sync-bundle.json"`)
-  lines.push(`(cd "$SERVICE_DIR" && CC_KV_URL=${shellQuote(cleanCmUrl)} CC_KV_BASE=${shellQuote(dataBasePath || '')} node --input-type=module - <<'NODEEOF'`)
+  lines.push('SYNC_BUNDLE_TMP="$(mktemp "$SERVICE_DIR/.sync-bundle.XXXXXX.json")"')
+  lines.push(`printf '%s' ${shellQuote(encodeBase64(JSON.stringify(syncBundle)))} | base64 -d > "$SYNC_BUNDLE_TMP"`)
+  lines.push(`(cd "$SERVICE_DIR" && CC_SYNC_FILE="$SYNC_BUNDLE_TMP" CC_KV_URL=${shellQuote(cleanCmUrl)} CC_KV_BASE=${shellQuote(dataBasePath || '')} node --input-type=module - <<'NODEEOF'`)
   lines.push("import fs from 'node:fs/promises'")
   lines.push("import { httpKV } from './data.mjs'")
   lines.push("import { writeLaneSyncBundleToKv } from './storage.mjs'")
-  lines.push("const bundle = JSON.parse(await fs.readFile('./.sync-bundle.json', 'utf8'))")
+  lines.push("const bundle = JSON.parse(await fs.readFile(process.env.CC_SYNC_FILE, 'utf8'))")
   lines.push("const kv = httpKV({ baseUrl: process.env.CC_KV_URL, basePath: process.env.CC_KV_BASE || null, switchable: false })")
   lines.push('const res = await writeLaneSyncBundleToKv(kv, bundle, null)')
   lines.push("console.log('__CC_SYNC_OK__ ' + JSON.stringify(res))")
   lines.push('NODEEOF')
   lines.push(')')
-  lines.push('rm -f "$SERVICE_DIR/.sync-bundle.json"')
+  lines.push('rm -f "$SYNC_BUNDLE_TMP"')
  }
+
+ lines.push('if [ -f "$INSTALL_ROOT/registry.json" ]; then')
+ lines.push(` OLD_SLUGS="$(node - "$INSTALL_ROOT/registry.json" "$SLUG" "$PORT" ${shellQuote(String(laneId || '').trim())} <<'NODEEOF'`)
+ lines.push("const fs = require('node:fs')")
+ lines.push('const [regPath, curSlug, curPort, curLaneId] = process.argv.slice(2)')
+ lines.push('try {')
+ lines.push(" const reg = JSON.parse(fs.readFileSync(regPath, 'utf8'))")
+ lines.push(' const out = []')
+ lines.push(' for (const [k, v] of Object.entries(reg || {})) {')
+ lines.push('  if (!v || k === curSlug) continue')
+ lines.push('  if (String(v.port) === String(curPort) || (curLaneId && v.laneId === curLaneId && String(v.port) === String(curPort))) {')
+ lines.push('   out.push(k)')
+ lines.push('   delete reg[k]')
+ lines.push('  }')
+ lines.push(' }')
+ lines.push(' if (out.length > 0) fs.writeFileSync(regPath, JSON.stringify(reg, null, 1))')
+ lines.push(" console.log(out.join(' '))")
+ lines.push('} catch {}')
+ lines.push('NODEEOF')
+ lines.push(')"')
+ lines.push(' for OLD_S in $OLD_SLUGS; do')
+ lines.push('  [ -n "$OLD_S" ] || continue')
+ lines.push('  echo "Stopping superseded service civil-lane-${OLD_S}.service on port ${PORT}..."')
+ lines.push('  sudo systemctl stop "civil-lane-${OLD_S}.service" >/dev/null 2>&1 || true')
+ lines.push('  sudo systemctl disable "civil-lane-${OLD_S}.service" >/dev/null 2>&1 || true')
+ lines.push('  sudo rm -f "/etc/systemd/system/civil-lane-${OLD_S}.service"')
+ lines.push(' done')
+ lines.push('fi')
 
  lines.push(`printf '%s' ${shellQuote(encodeBase64(unitContent))} | base64 -d | sudo tee "/etc/systemd/system/civil-lane-${cleanSlug}.service" >/dev/null`)
  lines.push('sudo systemctl daemon-reload')
@@ -1270,6 +1307,7 @@ export function generateDeployScript({
  lines.push(' sudo journalctl -u "civil-lane-${SLUG}.service" -n 30 --no-pager >&2 || true')
  lines.push(' exit 1')
  lines.push('fi')
+ lines.push('curl -sf -X POST "http://127.0.0.1:${PORT}/_cc/reload" >/dev/null 2>&1 || true')
 
  const okPayload = JSON.stringify({
   ok: true,
@@ -1281,6 +1319,300 @@ export function generateDeployScript({
  })
  lines.push(`echo ${shellQuote(`__CC_DEPLOY_OK__ ${okPayload}`)}`)
  return lines.join('\n') + '\n'
+}
+
+export function generateFastResyncScript(options = {}) {
+ const {
+  slug,
+  laneId,
+  port = 4100,
+  routeMode = 'subpath',
+  domain = '',
+  subpath = '',
+  enableLetsEncrypt = false,
+  civilMemoryUrl,
+  dataBasePath = '',
+  installRoot = '/opt/civil-command',
+  runtimeFiles = {},
+  syncBundle = null,
+ } = options
+ const cleanSlug = normalizeServiceSlug(slug || laneId)
+ const cleanRoot = normalizeRemoteDirPath(installRoot, '/opt/civil-command')
+ const serviceDir = `${cleanRoot}/${cleanSlug}`
+ const cleanPort = Number(port) || 4100
+ const cleanMode = routeMode === 'domain' ? 'domain' : 'subpath'
+ const cleanDomain = domain ? normalizeDomainName(domain) : ''
+ const cleanSubpath = cleanMode === 'subpath' ? (normalizeSubpath(subpath || `/${cleanSlug}`) || `/${cleanSlug}`) : ''
+ const cleanCmUrl = normalizeCivilMemoryBaseUrl(civilMemoryUrl)
+ const publicUrl = cleanDomain
+  ? `${enableLetsEncrypt ? 'https' : 'http'}://${cleanDomain}${cleanMode === 'subpath' && cleanSubpath !== '/' ? cleanSubpath : ''}`
+  : `http://127.0.0.1:${cleanPort}`
+
+ const fullDeployScript = generateDeployScript(options)
+ if (!syncBundle || !Array.isArray(syncBundle.lanes) || syncBundle.lanes.length === 0) {
+  return fullDeployScript
+ }
+
+ const fastLines = [
+  '#!/usr/bin/env bash',
+  'set -euo pipefail',
+  `SERVICE_DIR=${shellQuote(serviceDir)}`,
+  `SLUG=${shellQuote(cleanSlug)}`,
+  `PORT=${shellQuote(String(cleanPort))}`,
+  'if [ -d "$SERVICE_DIR" ] && [ -f "$SERVICE_DIR/config.json" ] && sudo systemctl is-active --quiet "civil-lane-${SLUG}.service"; then',
+ ]
+ for (const name of ['field.mjs', 'data.mjs', 'storage.mjs', 'lane-http.mjs', 'lane-server.mjs']) {
+  if (typeof runtimeFiles[name] === 'string' && runtimeFiles[name].length > 0) {
+   fastLines.push(` printf '%s' ${shellQuote(encodeBase64(runtimeFiles[name]))} | base64 -d > "$SERVICE_DIR/${name}"`)
+  }
+ }
+ fastLines.push(
+  ' SYNC_BUNDLE_TMP="$(mktemp "$SERVICE_DIR/.sync-bundle.XXXXXX.json")"',
+  ` printf '%s' ${shellQuote(encodeBase64(JSON.stringify(syncBundle)))} | base64 -d > "$SYNC_BUNDLE_TMP"`,
+  ` (cd "$SERVICE_DIR" && CC_SYNC_FILE="$SYNC_BUNDLE_TMP" CC_KV_URL=${shellQuote(cleanCmUrl)} CC_KV_BASE=${shellQuote(dataBasePath || '')} node --input-type=module - <<'NODEEOF'`,
+  "import fs from 'node:fs/promises'",
+  "import { httpKV } from './data.mjs'",
+  "import { writeLaneSyncBundleToKv } from './storage.mjs'",
+  "const bundle = JSON.parse(await fs.readFile(process.env.CC_SYNC_FILE, 'utf8'))",
+  "const kv = httpKV({ baseUrl: process.env.CC_KV_URL, basePath: process.env.CC_KV_BASE || null, switchable: false })",
+  'const res = await writeLaneSyncBundleToKv(kv, bundle, null)',
+  "console.log('__CC_SYNC_OK__ ' + JSON.stringify(res))",
+  'NODEEOF',
+  ' )',
+  ' rm -f "$SYNC_BUNDLE_TMP"',
+  ' if curl -sf -X POST "http://127.0.0.1:${PORT}/_cc/reload" >/dev/null 2>&1; then',
+  `  echo "__CC_DEPLOY_OK__ $(node -e 'console.log(JSON.stringify({ok:true,slug:process.argv[1],laneId:process.argv[2],port:Number(process.argv[3]),publicUrl:process.argv[4],deployedAt:new Date().toISOString(),mode:"reload"}))' "$SLUG" ${shellQuote(String(laneId || '').trim())} "$PORT" ${shellQuote(publicUrl)})"`,
+  '  exit 0',
+  ' fi',
+  'fi',
+  fullDeployScript,
+ )
+ return fastLines.join('\n')
+}
+
+const activeResyncQueues = new Map()
+
+function enqueueResync(key, fn) {
+ const cleanKey = String(key || '__default__')
+ const prev = activeResyncQueues.get(cleanKey) || Promise.resolve()
+ const next = prev.then(fn, fn)
+ const tracked = next.finally(() => {
+  if (activeResyncQueues.get(cleanKey) === tracked) {
+   activeResyncQueues.delete(cleanKey)
+  }
+ })
+ activeResyncQueues.set(cleanKey, tracked)
+ return next
+}
+
+export function executeRemoteSshScript(server, scriptText, options = {}) {
+ const target = validateSshTarget(server || {})
+ const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 60000
+ const spawnImpl = options.spawnImpl || spawn
+ const sshArgs = [
+  '-o', 'BatchMode=yes',
+  '-o', 'ConnectTimeout=15',
+  '-o', 'StrictHostKeyChecking=accept-new',
+  ...buildSshBaseArgs(target),
+  `${target.user}@${target.host}`,
+  'bash -s',
+ ]
+ return new Promise((resolve, reject) => {
+  let stdout = ''
+  let stderr = ''
+  let settled = false
+  const child = spawnImpl('ssh', sshArgs, { stdio: ['pipe', 'pipe', 'pipe'] })
+  const timer = setTimeout(() => {
+   if (!settled) {
+    settled = true
+    try { child.kill('SIGKILL') } catch {}
+    reject(new Error(`SSH resync timed out after ${timeoutMs}ms`))
+   }
+  }, timeoutMs)
+
+  if (child.stdout) {
+   child.stdout.on('data', chunk => {
+    stdout += chunk.toString('utf8')
+   })
+  }
+  if (child.stderr) {
+   child.stderr.on('data', chunk => {
+    stderr += chunk.toString('utf8')
+   })
+  }
+  child.on('error', err => {
+   if (!settled) {
+    settled = true
+    clearTimeout(timer)
+    reject(err)
+   }
+  })
+  child.on('close', code => {
+   if (settled) {
+    return
+   }
+   settled = true
+   clearTimeout(timer)
+   resolve({ code: code ?? 0, stdout, stderr })
+  })
+  if (child.stdin) {
+   child.stdin.write(String(scriptText || ''))
+   child.stdin.end()
+  }
+ })
+}
+
+function parseSentinelLine(outputText, sentinel) {
+ const lines = String(outputText || '').split(/\r?\n/)
+ for (let i = lines.length - 1; i >= 0; i--) {
+  const line = lines[i].trim()
+  const idx = line.indexOf(sentinel)
+  if (idx !== -1) {
+   const jsonPart = line.slice(idx + sentinel.length).trim()
+   if (!jsonPart) {
+    return {}
+   }
+   try {
+    return JSON.parse(jsonPart)
+   }
+   catch {
+    return {}
+   }
+  }
+ }
+ return null
+}
+
+export async function executeLaneResync({
+ laneId = '',
+ deployment = null,
+ server = null,
+ bundle = null,
+ rootDir = REPO_DIR,
+ kvFactory = null,
+ fetchImpl = globalThis.fetch,
+ sshRunner = null,
+} = {}) {
+ if (!bundle || !Array.isArray(bundle.lanes) || bundle.lanes.length === 0) {
+  return { ok: false, error: 'Valid lane sync bundle is required' }
+ }
+ const dep = deployment && typeof deployment === 'object' ? deployment : {}
+ const cleanLaneId = String(laneId || dep.laneId || bundle.mainLaneId || '').trim()
+ const slug = normalizeServiceSlug(dep.slug || dep.title || cleanLaneId || 'lane-service')
+ const queueKey = `${dep.serverId || ''}::${slug}::${cleanLaneId}`
+
+ return enqueueResync(queueKey, async () => {
+  const startMs = Date.now()
+  const hasSshServer = Boolean(server && typeof server === 'object' && String(server.host || '').trim())
+  const rawCmUrl = String(dep.civilMemoryUrl || (server && server.civilMemoryUrl) || 'http://127.0.0.1:3333').trim()
+  let cleanCmUrl = ''
+  try {
+   cleanCmUrl = normalizeCivilMemoryBaseUrl(rawCmUrl)
+  }
+  catch {
+   cleanCmUrl = ''
+  }
+
+  if (hasSshServer) {
+   const runtimeFiles = await readRuntimeFiles(rootDir)
+   const scriptText = generateFastResyncScript({
+    slug,
+    laneId: cleanLaneId,
+    title: dep.title || slug,
+    port: dep.port || 4100,
+    routeMode: dep.routeMode || 'subpath',
+    domain: dep.domain || (server && server.defaultDomain) || '',
+    subpath: dep.subpath || `/${slug}`,
+    enableLetsEncrypt: Boolean(dep.enableLetsEncrypt),
+    letsEncryptEmail: dep.letsEncryptEmail || '',
+    cors: dep.cors !== false,
+    civilMemoryUrl: cleanCmUrl || 'http://127.0.0.1:3333/?mode=disk',
+    dataBasePath: dep.dataBasePath || '',
+    includeImports: Boolean(dep.includeImports),
+    installRoot: (server && server.installRoot) || '/opt/civil-command',
+    runtimeFiles,
+    syncBundle: bundle,
+   })
+   const runSsh = sshRunner || executeRemoteSshScript
+   const sshRes = await runSsh(server, scriptText)
+   const deploySentinel = parseSentinelLine(sshRes.stdout, '__CC_DEPLOY_OK__')
+   const syncSentinel = parseSentinelLine(sshRes.stdout, '__CC_SYNC_OK__')
+   if (sshRes.code !== 0 && !deploySentinel) {
+    const errMsg = (sshRes.stderr || sshRes.stdout || `SSH exited with code ${sshRes.code}`).trim().slice(-400)
+    return {
+     ok: false,
+     slug,
+     laneId: cleanLaneId,
+     error: errMsg || `SSH deploy failed (exit ${sshRes.code})`,
+     durationMs: Math.max(0, Date.now() - startMs),
+    }
+   }
+   const nowIso = new Date().toISOString()
+   const deployedAt = (deploySentinel && deploySentinel.deployedAt) || nowIso
+   const publicUrl = (deploySentinel && deploySentinel.publicUrl) || dep.publicUrl || ''
+   return {
+    ok: true,
+    slug,
+    laneId: cleanLaneId,
+    port: Number(dep.port) || 4100,
+    publicUrl,
+    deployedAt,
+    syncedAt: (syncSentinel && syncSentinel.syncedAt) || deployedAt,
+    laneIds: (syncSentinel && Array.isArray(syncSentinel.laneIds)) ? syncSentinel.laneIds : bundle.lanes.map(l => l.id),
+    mode: (deploySentinel && deploySentinel.mode) || 'deploy',
+    durationMs: Math.max(0, Date.now() - startMs),
+   }
+  }
+
+  if (cleanCmUrl) {
+   const basePath = dep.dataBasePath ? String(dep.dataBasePath).trim() : null
+   const kv = kvFactory
+    ? kvFactory({ baseUrl: cleanCmUrl, basePath })
+    : httpKV({ baseUrl: cleanCmUrl, basePath, switchable: false })
+   const syncRes = await writeLaneSyncBundleToKv(kv, bundle, null)
+   let reloaded = false
+   if (dep.reloadUrl || dep.port) {
+    const reloadTarget = dep.reloadUrl || `http://127.0.0.1:${Number(dep.port) || 4100}/_cc/reload`
+    try {
+     const rResp = await fetchImpl(reloadTarget, {
+      method: 'POST',
+      signal: AbortSignal.timeout(5000),
+     })
+     reloaded = Boolean(rResp && rResp.ok)
+    }
+    catch {
+     reloaded = false
+    }
+   }
+   const nowIso = syncRes.syncedAt || new Date().toISOString()
+   return {
+    ok: true,
+    slug,
+    laneId: cleanLaneId,
+    port: Number(dep.port) || 4100,
+    publicUrl: dep.publicUrl || '',
+    deployedAt: nowIso,
+    syncedAt: nowIso,
+    laneIds: syncRes.laneIds || bundle.lanes.map(l => l.id),
+    mode: reloaded ? 'reload' : 'kv-sync',
+    durationMs: Math.max(0, Date.now() - startMs),
+   }
+  }
+
+  const nowIso = new Date().toISOString()
+  return {
+   ok: true,
+   slug,
+   laneId: cleanLaneId,
+   port: Number(dep.port) || 4100,
+   publicUrl: dep.publicUrl || '',
+   deployedAt: nowIso,
+   syncedAt: nowIso,
+   laneIds: bundle.lanes.map(l => l.id),
+   mode: 'local',
+   durationMs: Math.max(0, Date.now() - startMs),
+  }
+ })
 }
 
 export function generateUndeployScript({
@@ -1351,7 +1683,13 @@ export function generateUndeployScript({
  return lines.join('\n') + '\n'
 }
 
-export function generateServiceActionScript({ slug, action = 'status', port = 4100 } = {}) {
+export function generateServiceActionScript({
+ slug,
+ action = 'status',
+ port = 4100,
+ installRoot = '/opt/civil-command',
+ runtimeFiles = null,
+} = {}) {
  const cleanSlug = normalizeServiceSlug(slug)
  const cleanAction = String(action || 'status').trim().toLowerCase()
  const allowed = ['start', 'stop', 'restart', 'status', 'logs', 'reload']
@@ -1361,8 +1699,39 @@ export function generateServiceActionScript({ slug, action = 'status', port = 41
  const cleanPort = Number(port) || 4100
  const unit = `civil-lane-${cleanSlug}.service`
  const lines = ['#!/usr/bin/env bash', 'set -euo pipefail']
+ const requiredRuntime = ['field.mjs', 'data.mjs', 'storage.mjs', 'lane-http.mjs', 'lane-server.mjs']
+ const hasRuntimeFiles = Boolean(
+  runtimeFiles &&
+  typeof runtimeFiles === 'object' &&
+  requiredRuntime.every(name => typeof runtimeFiles[name] === 'string' && runtimeFiles[name].length > 0)
+ )
+ if (hasRuntimeFiles && (cleanAction === 'logs' || cleanAction === 'restart' || cleanAction === 'start')) {
+  const cleanRoot = normalizeRemoteDirPath(installRoot, '/opt/civil-command')
+  const serviceDir = `${cleanRoot}/${cleanSlug}`
+  lines.push(`SERVICE_DIR=${shellQuote(serviceDir)}`)
+  lines.push('if [ -d "$SERVICE_DIR" ]; then')
+  lines.push(' CC_RUNTIME_UPDATED=0')
+  for (const name of requiredRuntime) {
+   lines.push(' CC_TMP_FILE="$(mktemp)"')
+   lines.push(` printf '%s' ${shellQuote(encodeBase64(runtimeFiles[name]))} | base64 -d > "$CC_TMP_FILE"`)
+   lines.push(` if [ ! -f "$SERVICE_DIR/${name}" ] || ! cmp -s "$CC_TMP_FILE" "$SERVICE_DIR/${name}"; then`)
+   lines.push(`  mv "$CC_TMP_FILE" "$SERVICE_DIR/${name}"`)
+   lines.push('  CC_RUNTIME_UPDATED=1')
+   lines.push(' else')
+   lines.push('  rm -f "$CC_TMP_FILE"')
+   lines.push(' fi')
+  }
+  if (cleanAction === 'logs') {
+   lines.push(' if [ "$CC_RUNTIME_UPDATED" = "1" ]; then')
+   lines.push(`  sudo systemctl restart ${shellQuote(unit)}`)
+   lines.push(' fi')
+  }
+  lines.push('fi')
+ }
  if (cleanAction === 'logs') {
-  lines.push(`sudo journalctl -u ${shellQuote(unit)} -n 80 -f`)
+  lines.push(`sudo journalctl -u ${shellQuote(unit)} -n 80 --no-pager || true`)
+  lines.push('echo "__CC_LOGS_FOLLOW__"')
+  lines.push(`exec sudo journalctl -u ${shellQuote(unit)} -n 0 -f`)
  }
  else if (cleanAction === 'status') {
   lines.push(`sudo systemctl status ${shellQuote(unit)} --no-pager || true`)
@@ -1642,6 +2011,38 @@ export async function handleDeployApiRequest(req, res, opts = {}) {
   }
  }
 
+ if (pathname === '/api/deploy/resync') {
+  if (method !== 'POST') {
+   return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
+  }
+  let body
+  try {
+   body = await readJsonBody(req)
+  }
+  catch (err) {
+   return sendJson(res, err && err.status ? err.status : 400, { ok: false, error: err.message || 'Invalid JSON body' })
+  }
+  try {
+   const result = await executeLaneResync({
+    laneId: body.laneId,
+    deployment: body.deployment,
+    server: body.server,
+    bundle: body.bundle,
+    rootDir,
+    kvFactory: opts.kvFactory || null,
+    fetchImpl,
+    sshRunner: opts.sshRunner || null,
+   })
+   return sendJson(res, result.ok ? 200 : 502, result)
+  }
+  catch (err) {
+   return sendJson(res, 502, {
+    ok: false,
+    error: err && err.message ? err.message : 'Failed to resync deployed lane',
+   })
+  }
+ }
+
  if (pathname === '/api/deploy/proxy') {
   if (method !== 'POST') {
    return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
@@ -1809,12 +2210,19 @@ export async function handleDeployApiRequest(req, res, opts = {}) {
    }
    else if (action === 'service-action') {
     const dep = body.deployment || {}
+    const srv = body.server || {}
     const svcAction = String(body.serviceAction || 'status')
+    const svcActionLower = svcAction.trim().toLowerCase()
+    const runtimeFiles = (svcActionLower === 'logs' || svcActionLower === 'restart' || svcActionLower === 'start')
+     ? await readRuntimeFiles(rootDir)
+     : null
     sessionTitle = `${svcAction} ${dep.slug || 'lane'} (${target.host})`
     remoteScriptText = generateServiceActionScript({
      slug: dep.slug,
      action: svcAction,
      port: dep.port,
+     installRoot: srv.installRoot || '/opt/civil-command',
+     runtimeFiles,
     })
    }
    else if (action === 'undeploy-lane') {

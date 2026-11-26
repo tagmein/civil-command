@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE_NAME="civil-command.service"
+UID_NUM="$(id -u)"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/${UID_NUM}}"
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -S "${XDG_RUNTIME_DIR}/bus" ]; then
+ export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+fi
+
+FOLLOW=1
+ARGS=()
+for arg in "$@"; do
+ if [ "${arg}" = "--no-follow" ]; then
+  FOLLOW=0
+ else
+  ARGS+=("${arg}")
+ fi
+done
+
+if [ "${FOLLOW}" -eq 1 ]; then
+ exec journalctl --user -u "${SERVICE_NAME}" -n 100 -f ${ARGS[@]+"${ARGS[@]}"}
+else
+ exec journalctl --user -u "${SERVICE_NAME}" -n 100 --no-pager ${ARGS[@]+"${ARGS[@]}"}
+fi

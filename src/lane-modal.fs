@@ -26,8 +26,24 @@
  ; set true clear-btn.hidden
  ; to pkg-bar !document.createElement div
  ; set lane-modal-packages pkg-bar.className
+ ; to selected-section !document.createElement div
+ ; assign $selected-section { className lane-multiselect-bar } { hidden true }
+ ; to selected-label-el !document.createElement span
+ ; assign $selected-label-el { className lane-multiselect-label } { textContent 'Selected (0)' }
+ ; to selected-chips-el !document.createElement div
+ ; set lane-multiselect-chips selected-chips-el.className
+ !selected-section.appendChild $selected-label-el
+ !selected-section.appendChild $selected-chips-el
  ; to list-el !document.createElement div
  ; set lane-modal-list list-el.className
+ ; to footer !document.createElement div
+ ; assign $footer { className 'lane-config-footer lane-modal-footer' } { hidden true }
+ ; to cancel-btn !document.createElement button
+ ; assign $cancel-btn { type button } { className 'lane-modal-action lane-config-btn--cancel' } { textContent Cancel }
+ ; to apply-btn !document.createElement button
+ ; assign $apply-btn { type button } { className 'lane-modal-action lane-config-btn--save lane-modal-apply' } { textContent Apply }
+ !footer.appendChild $cancel-btn
+ !footer.appendChild $apply-btn
 
  !title-wrap.appendChild $heading
  !title-wrap.appendChild $count-el
@@ -38,7 +54,9 @@
  !panel.appendChild $header
  !panel.appendChild $toolbar
  !panel.appendChild $pkg-bar
+ !panel.appendChild $selected-section
  !panel.appendChild $list-el
+ !panel.appendChild $footer
  !backdrop.appendChild $panel
 
  ; to modal [ object
@@ -48,29 +66,112 @@
   { search-input $search-input }
   { clear-btn $clear-btn }
   { pkg-bar $pkg-bar }
+  { selected-section $selected-section }
+  { selected-label-el $selected-label-el }
+  { selected-chips-el $selected-chips-el }
   { list-el $list-el }
+  { footer $footer }
+  { cancel-btn $cancel-btn }
+  { apply-btn $apply-btn }
   { count-el $count-el }
   { close-btn $close-btn }
   { is-open false }
+  { lane null }
+  { target-lane null }
   { mode open }
+  { multiple false }
   { selected-id null }
+  { selected-ids {} }
   { on-select null }
   { query '' }
   { package-filter '' }
   { known {} }
   { pkg-pill-els {} }
   { pkg-pills {} }
+  { selected-chip-els {} }
+  { selected-chips {} }
   { row-els {} }
   { items {} }
  ]
 
+ ; to normalize-lane-id (
+  ; to { raw-val } $argv
+  [ match
+   { [ propertyIs undefined raw-val ] : null }
+   { [ propertyIs null raw-val ] : null }
+   { true (
+    ; to raw-str ; add '' $raw-val
+    ; to trimmed !raw-str.trim
+    [ match
+     { [ propertyIs '' trimmed ] : null }
+     { true : $trimmed }
+    ]
+   ) }
+  ]
+ )
+
+ ; to find-selected-id-idx (
+  ; to { target-id } $argv
+  ; to found ; object { idx -1 }
+  ; each $modal.selected-ids (
+   ; to { item-id idx } $argv
+   ; condition { propertyIs -1 found.idx } (
+    ; condition { propertyIs $target-id item-id } : ; set $idx found.idx
+   )
+  )
+  $found.idx
+ )
+
+ ; to lookup-known-title (
+  ; to { target-id } $argv
+  ; to open-lane [ get lane-control.by-id $target-id ]
+  ; to cat-entry [ get lane-control.catalog $target-id ]
+  ; to known-box ; object { title '' }
+  ; each $modal.known (
+   ; to { kentry } $argv
+   ; condition { propertyIs '' known-box.title } (
+    ; condition { propertyIs $target-id kentry.id } (
+     [ match
+      { $kentry.title : ; set $kentry.title known-box.title }
+     ]
+    )
+   )
+  )
+  [ match
+   { $open-lane.title : $open-lane.title }
+   { [ propertyIs false [ propertyIs '' known-box.title ] ] : $known-box.title }
+   { $cat-entry.title : $cat-entry.title }
+   { $lane-control.get-lane-title : !lane-control.get-lane-title $target-id }
+   { true : $target-id }
+  ]
+ )
+
+ ; to modal.clear-selected-chips (
+  ; while { propertyIsGreaterThan 0 modal.selected-chip-els.length } (
+   ; to old-chip !modal.selected-chip-els.pop
+   !old-chip.remove
+  )
+  ; set 0 modal.selected-chips.length
+ )
+
  ; to modal.close (
-  -- Closes the full-screen lanes modal and resets picker session state
+  -- Closes the lanes modal and resets picker session state
   ; condition { propertyIs true modal.is-open } (
+   ; to prev-lane $modal.lane
    ; set false modal.is-open
+   ; set false modal.multiple
+   ; set null modal.lane
+   ; set null modal.target-lane
    ; set null modal.selected-id
+   ; set 0 modal.selected-ids.length
    ; set null modal.on-select
+   !modal.clear-selected-chips
+   ; set true selected-section.hidden
+   ; set true footer.hidden
    !backdrop.remove
+   [ match
+    { [ and { $prev-lane } { $lane-control.unmount-lane-modal } ] : !lane-control.unmount-lane-modal $prev-lane $modal }
+   ]
   )
  )
 
@@ -81,6 +182,98 @@
   !modal.close
   [ match
    { $cb : !$cb $chosen }
+  ]
+ )
+
+ ; to modal.apply (
+  -- Applies the current multiselect lane ID list, closes the modal, and forwards the array to on-select
+  ; condition { propertyIs true modal.is-open } (
+   ; condition { propertyIs true modal.multiple } (
+    ; to out {}
+    ; each $modal.selected-ids (
+     ; to { sid } $argv
+     !out.push $sid
+    )
+    !emit-selection $out
+   )
+  )
+ )
+
+ ; to modal.toggle-id (
+  -- Adds or removes a lane ID in the multiselect draft list without saving until Apply is clicked
+  ; to { raw-id } $argv
+  ; to clean-id !normalize-lane-id $raw-id
+  [ match
+   { $clean-id (
+    ; to idx !find-selected-id-idx $clean-id
+    [ match
+     { [ propertyIsGreaterThan -1 idx ] : !modal.selected-ids.splice $idx 1 }
+     { true : !modal.selected-ids.push $clean-id }
+    ]
+    !modal.render
+   ) }
+  ]
+ )
+
+ ; to modal.render-selected-chips (
+  -- Renders the multiselect Selected (N) chips bar with one-click item removal
+  !modal.clear-selected-chips
+  [ match
+   { [ propertyIs true modal.multiple ] (
+    ; set false selected-section.hidden
+    ; to sel-count $modal.selected-ids.length
+    ; set [ ; add 'Selected (' ; add $sel-count ')' ] selected-label-el.textContent
+    ; set [ ternary [ propertyIsGreaterThan 0 sel-count ] false true ] clear-btn.hidden
+    ; set 'Clear all selected lanes' clear-btn.title
+    [ match
+     { [ propertyIs 0 sel-count ] (
+      ; to none-el !document.createElement span
+      ; assign $none-el { className lane-multiselect-empty } { textContent 'None selected' }
+      !selected-chips-el.appendChild $none-el
+      !modal.selected-chip-els.push $none-el
+     ) }
+     { true (
+      ; each $modal.selected-ids (
+       ; to { sid idx } $argv
+       ; to stitle !lookup-known-title $sid
+       ; to has-sep [ match
+        { [ propertyIs '' stitle ] : false }
+        { [ propertyIs $sid stitle ] : false }
+        { true : true }
+       ]
+       ; to chip-el !document.createElement span
+       ; set lane-multiselect-chip chip-el.className
+       ; to lbl-el !document.createElement span
+       ; assign $lbl-el { className lane-multiselect-chip-label } { textContent [ ternary $has-sep $stitle $sid ] }
+       !chip-el.appendChild $lbl-el
+       [ match
+        { $has-sep (
+         ; to cid-el !document.createElement span
+         ; assign $cid-el { className lane-multiselect-chip-id } { textContent $sid }
+         !chip-el.appendChild $cid-el
+        ) }
+       ]
+       ; to rm-btn !document.createElement button
+       ; assign $rm-btn { type button } { className lane-multiselect-chip-remove } { textContent '×' } { title [ ; add 'Remove ' [ ternary $has-sep $stitle $sid ] ] }
+       !rm-btn.addEventListener click : !modal.toggle-id $sid
+       !chip-el.appendChild $rm-btn
+       !selected-chips-el.appendChild $chip-el
+       !modal.selected-chip-els.push $chip-el
+       !modal.selected-chips.push [ object
+        { id $sid }
+        { title $stitle }
+        { index $idx }
+        { el $chip-el }
+        { label-el $lbl-el }
+        { remove-btn $rm-btn }
+       ]
+      )
+     ) }
+    ]
+   ) }
+   { true (
+    ; set true selected-section.hidden
+   ) }
   ]
  )
 
@@ -159,7 +352,9 @@
  )
 
  ; to modal.render (
-  -- Renders filtered known lanes with Open/Close controls and package badges
+  -- Renders filtered known lanes with Open/Close or single/multi Select controls and package badges
+  !modal.render-selected-chips
+  ; set [ ternary $modal.multiple false true ] footer.hidden
   ; while { propertyIsGreaterThan 0 modal.row-els.length } (
    ; to old-el !modal.row-els.pop
    !old-el.remove
@@ -252,40 +447,89 @@
       { is-open [ ternary $open-lane true false ] }
      ]
      [ match
-      { [ propertyIs pick modal.mode ] (
-       ; to is-selected [ match
-        { $modal.selected-id : [ propertyIs $modal.selected-id entry.id ] }
-        { true : false }
-       ]
-       ; set [ ternary $is-selected 'lane-modal-item lane-modal-item--selected' lane-modal-item ] row-el.className
-       ; set $is-selected item-record.is-selected
-       [ match
-        { $is-selected (
-         ; to sel-badge !document.createElement span
-         ; assign $sel-badge { className 'lane-modal-badge lane-modal-badge--selected' } { textContent Selected }
-         ; to item-clear-btn !document.createElement button
-         ; assign $item-clear-btn { type button } { className 'lane-modal-action lane-modal-action--close' } { textContent Clear }
-         !item-clear-btn.addEventListener click : !emit-selection null
-         !actions-el.appendChild $sel-badge
-         !actions-el.appendChild $item-clear-btn
-         ; set $item-clear-btn item-record.clear-btn
-        ) }
-        { true (
-         [ match
-          { $open-lane (
-           ; to badge !document.createElement span
-           ; assign $badge { className lane-modal-badge } { textContent Open }
-           !actions-el.appendChild $badge
-          ) }
-         ]
-         ; to item-select-btn !document.createElement button
-         ; assign $item-select-btn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent Select }
-         !item-select-btn.addEventListener click : !emit-selection $entry.id
-         !actions-el.appendChild $item-select-btn
-         ; set $item-select-btn item-record.select-btn
-        ) }
-       ]
-      ) }
+      { [ propertyIs pick modal.mode ] [ match
+       { [ propertyIs true modal.multiple ] (
+        ; to sel-idx !find-selected-id-idx $entry.id
+        ; to is-selected [ propertyIsGreaterThan -1 sel-idx ]
+        ; set [ ternary $is-selected 'lane-modal-item lane-modal-item--selected lane-modal-item--multiselect' 'lane-modal-item lane-modal-item--multiselect' ] row-el.className
+        !row-el.setAttribute aria-selected [ ternary $is-selected 'true' 'false' ]
+        ; set $is-selected item-record.is-selected
+        [ match
+         { $is-selected (
+          ; to sel-badge !document.createElement span
+          ; assign $sel-badge { className 'lane-modal-badge lane-modal-badge--selected' } { textContent Selected }
+          ; to item-remove-btn !document.createElement button
+          ; assign $item-remove-btn { type button } { className 'lane-modal-action lane-modal-action--close' } { textContent Remove }
+          !item-remove-btn.addEventListener click : !modal.toggle-id $entry.id
+          !row-el.addEventListener click (
+           ; to { ev } $argv
+           ; to is-btn [ propertyIs $item-remove-btn ev.target ]
+           ; condition { propertyIs false is-btn } : !modal.toggle-id $entry.id
+          )
+          !actions-el.appendChild $sel-badge
+          !actions-el.appendChild $item-remove-btn
+          ; set $item-remove-btn item-record.remove-btn
+          ; set $item-remove-btn item-record.clear-btn
+          ; set $item-remove-btn item-record.toggle-btn
+         ) }
+         { true (
+          [ match
+           { $open-lane (
+            ; to badge !document.createElement span
+            ; assign $badge { className lane-modal-badge } { textContent Open }
+            !actions-el.appendChild $badge
+           ) }
+          ]
+          ; to item-add-btn !document.createElement button
+          ; assign $item-add-btn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent '+ Add' }
+          !item-add-btn.addEventListener click : !modal.toggle-id $entry.id
+          !row-el.addEventListener click (
+           ; to { ev } $argv
+           ; to is-btn [ propertyIs $item-add-btn ev.target ]
+           ; condition { propertyIs false is-btn } : !modal.toggle-id $entry.id
+          )
+          !actions-el.appendChild $item-add-btn
+          ; set $item-add-btn item-record.add-btn
+          ; set $item-add-btn item-record.select-btn
+          ; set $item-add-btn item-record.toggle-btn
+         ) }
+        ]
+       ) }
+       { true (
+        ; to is-selected [ match
+         { $modal.selected-id : [ propertyIs $modal.selected-id entry.id ] }
+         { true : false }
+        ]
+        ; set [ ternary $is-selected 'lane-modal-item lane-modal-item--selected' lane-modal-item ] row-el.className
+        ; set $is-selected item-record.is-selected
+        [ match
+         { $is-selected (
+          ; to sel-badge !document.createElement span
+          ; assign $sel-badge { className 'lane-modal-badge lane-modal-badge--selected' } { textContent Selected }
+          ; to item-clear-btn !document.createElement button
+          ; assign $item-clear-btn { type button } { className 'lane-modal-action lane-modal-action--close' } { textContent Clear }
+          !item-clear-btn.addEventListener click : !emit-selection null
+          !actions-el.appendChild $sel-badge
+          !actions-el.appendChild $item-clear-btn
+          ; set $item-clear-btn item-record.clear-btn
+         ) }
+         { true (
+          [ match
+           { $open-lane (
+            ; to badge !document.createElement span
+            ; assign $badge { className lane-modal-badge } { textContent Open }
+            !actions-el.appendChild $badge
+           ) }
+          ]
+          ; to item-select-btn !document.createElement button
+          ; assign $item-select-btn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent Select }
+          !item-select-btn.addEventListener click : !emit-selection $entry.id
+          !actions-el.appendChild $item-select-btn
+          ; set $item-select-btn item-record.select-btn
+         ) }
+        ]
+       ) }
+      ] }
       { true [ match
        { $open-lane (
         ; to badge !document.createElement span
@@ -296,16 +540,36 @@
          !lane-control.close $entry.id
          !modal.render
         )
+        ; to item-locate-btn !document.createElement button
+        ; assign $item-locate-btn { type button } { className 'lane-modal-action lane-modal-action--locate' } { textContent Locate }
+        !item-locate-btn.addEventListener click (
+         !modal.close
+         [ match
+          { $lane-control.locate-lane : !lane-control.locate-lane $entry.id }
+          { $lane-control.locate : !lane-control.locate $entry.id }
+         ]
+        )
         !actions-el.appendChild $badge
         !actions-el.appendChild $item-close-btn
+        !actions-el.appendChild $item-locate-btn
         ; set $item-close-btn item-record.close-btn
+        ; set $item-locate-btn item-record.locate-btn
        ) }
        { true (
         ; to item-open-btn !document.createElement button
         ; assign $item-open-btn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent Open }
         !item-open-btn.addEventListener click (
-         ; to opened !lane-control.open $entry.id
-         !lane-control.update-url
+         [ match
+          { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Loading…' }
+         ]
+         ; to opened null
+         ; try (
+          ; set [ !lane-control.open $entry.id ] opened
+          !lane-control.update-url
+         ) : null
+         [ match
+          { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
+         ]
          !modal.close
          [ match
           { $lane-control.scroll-lane-into-view : !lane-control.scroll-lane-into-view $opened }
@@ -333,12 +597,27 @@
   ; set '' modal.package-filter
   ; to known !lane-control.list-known
   ; set $known modal.known
-  ; condition { propertyIs false modal.is-open } (
-   ; set true modal.is-open
+  ; condition { propertyIs true modal.is-open } (
    [ match
-    { $document.body.appendChild : !document.body.appendChild $backdrop }
+    { [ and { $modal.lane } { $lane-control.unmount-lane-modal } ] : !lane-control.unmount-lane-modal $modal.lane $modal }
    ]
   )
+  ; to next-lane $modal.target-lane
+  ; set $next-lane modal.lane
+  ; set true modal.is-open
+  [ match
+   { [ and { $next-lane } { $lane-control.mount-lane-modal } ] : !lane-control.mount-lane-modal $next-lane $modal }
+   { $next-lane.body.appendChild (
+    !backdrop.setAttribute data-lane-modal 'true'
+    ; set 'lane-modal-backdrop lane-modal-backdrop--lane' backdrop.className
+    !next-lane.body.appendChild $backdrop
+   ) }
+   { $lane-control.mount-lane-modal : !lane-control.mount-lane-modal null $modal }
+   { $document.body.appendChild (
+    ; set lane-modal-backdrop backdrop.className
+    !document.body.appendChild $backdrop
+   ) }
+  ]
   !modal.render-packages
   !modal.render
   [ match
@@ -350,42 +629,81 @@
  ; to modal.open (
   -- Loads all known lanes from KV and displays the full-screen Open Lane modal
   ; set open modal.mode
+  ; set false modal.multiple
+  ; set null modal.target-lane
   ; set 'Open Lane' heading.textContent
   ; set true clear-btn.hidden
+  ; set 'Clear selected lane' clear-btn.title
   ; set null modal.selected-id
+  ; set 0 modal.selected-ids.length
   ; set null modal.on-select
   !show-modal
  )
 
  ; to modal.open-picker (
-  -- Loads all known lanes from KV and displays the full-screen modal in Select Lane picker mode
+  -- Loads all known lanes from KV and displays the modal in single or multiple Select Lane picker mode (scoped to opts.lane when provided)
   ; to { opts } $argv
   ; set pick modal.mode
+  ; to is-multi [ ternary $opts.multiple true false ]
+  ; set $is-multi modal.multiple
+  ; to target-lane [ match
+   { $opts.lane : $opts.lane }
+   { [ and { $opts.lane-id } { $lane-control.resolve-lane } ] : !lane-control.resolve-lane $opts.lane-id }
+   { $opts.lane-id : [ get lane-control.by-id $opts.lane-id ] }
+   { true : null }
+  ]
+  ; set $target-lane modal.target-lane
   ; to picker-title [ match
    { $opts.title : $opts.title }
+   { $is-multi : 'Select Lanes' }
    { true : 'Select Lane' }
   ]
   ; set $picker-title heading.textContent
-  ; to normalized-id [ match
-   { [ propertyIs undefined opts.current-value ] : null }
-   { [ propertyIs null opts.current-value ] : null }
-   { true (
-    ; to raw-str ; add '' $opts.current-value
-    ; to trimmed !raw-str.trim
-    [ match
-     { [ propertyIs '' trimmed ] : null }
-     { true : $trimmed }
+  ; set 0 modal.selected-ids.length
+  [ match
+   { $is-multi (
+    ; set null modal.selected-id
+    ; to raw-list [ match
+     { [ !window.Array.isArray $opts.current-values ] : $opts.current-values }
+     { [ !window.Array.isArray $opts.current-value ] : $opts.current-value }
+     { true : {} }
     ]
+    ; each $raw-list (
+     ; to { raw-item } $argv
+     ; to clean-id !normalize-lane-id $raw-item
+     [ match
+      { $clean-id (
+       ; to dup-idx !find-selected-id-idx $clean-id
+       ; condition { propertyIs -1 dup-idx } : !modal.selected-ids.push $clean-id
+      ) }
+     ]
+    )
+    ; set [ ternary [ propertyIsGreaterThan 0 modal.selected-ids.length ] false true ] clear-btn.hidden
+    ; set 'Clear all selected lanes' clear-btn.title
+   ) }
+   { true (
+    ; to normalized-id !normalize-lane-id $opts.current-value
+    ; set $normalized-id modal.selected-id
+    ; set [ ternary $normalized-id false true ] clear-btn.hidden
+    ; set 'Clear selected lane' clear-btn.title
    ) }
   ]
-  ; set $normalized-id modal.selected-id
-  ; set [ ternary $normalized-id false true ] clear-btn.hidden
   ; set [ match { $opts.on-select : $opts.on-select } { true : null } ] modal.on-select
   !show-modal
  )
 
  !close-btn.addEventListener click $modal.close
- !clear-btn.addEventListener click : !emit-selection null
+ !cancel-btn.addEventListener click $modal.close
+ !apply-btn.addEventListener click $modal.apply
+ !clear-btn.addEventListener click (
+  [ match
+   { [ propertyIs true modal.multiple ] (
+    ; set 0 modal.selected-ids.length
+    !modal.render
+   ) }
+   { true : !emit-selection null }
+  ]
+ )
  !backdrop.addEventListener click (
   ; to { ev } $argv
   ; condition { propertyIs $backdrop ev.target } : !modal.close

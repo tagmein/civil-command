@@ -1,4 +1,5 @@
 -- file lane-notebook.fs
+; to lane-story ; load /src/lane-story.fs
 ; to lane-inputs ; load /src/lane-inputs.fs
 ; to lane-scope ; load /src/lane-scope.fs
 ; to lane-data ; load /src/lane-data.fs
@@ -120,7 +121,10 @@
   { state ; object }
   { run-id 0 }
   { editing-row null }
+  { highlighted-line-id null }
+  { highlight-timer null }
   { script-initialized false }
+  { has-completed-initial-run false }
   { idle-tracker $idle-tracker }
  ]
  ; to root-el !document.createElement div
@@ -129,6 +133,12 @@
  ; to tabs-el !document.createElement div
  ; set lane-tabs tabs-el.className
  !tabs-el.setAttribute role tablist
+
+ ; to story-tab !document.createElement button
+ ; assign $story-tab { type button } { className lane-tab } { textContent Story }
+ !story-tab.setAttribute role tab
+ !story-tab.setAttribute data-tab story
+ !story-tab.setAttribute aria-selected 'false'
 
  ; to source-tab !document.createElement button
  ; assign $source-tab { type button } { className 'lane-tab lane-tab--active' } { textContent Source }
@@ -166,12 +176,19 @@
  !server-tab.setAttribute data-tab server
  !server-tab.setAttribute aria-selected 'false'
 
+ !tabs-el.appendChild $story-tab
  !tabs-el.appendChild $source-tab
  !tabs-el.appendChild $input-tab
  !tabs-el.appendChild $scope-tab
  !tabs-el.appendChild $data-tab
  !tabs-el.appendChild $view-tab
  !tabs-el.appendChild $server-tab
+
+ ; to story-panel !document.createElement div
+ ; set lane-tab-panel story-panel.className
+ !story-panel.setAttribute role tabpanel
+ !story-panel.setAttribute data-panel story
+ ; set true story-panel.hidden
 
  ; to source-panel !document.createElement div
  ; set lane-tab-panel source-panel.className
@@ -225,19 +242,33 @@
  !root-el.appendChild $scope-panel
  !root-el.appendChild $data-panel
  !root-el.appendChild $server-panel
+ !root-el.appendChild $story-panel
  !container.appendChild $root-el
 
- ; to tabs ; object { source $source-tab } { input $input-tab } { scope $scope-tab } { data $data-tab } { view $view-tab } { server $server-tab }
+ ; to tabs ; object { story $story-tab } { source $source-tab } { input $input-tab } { scope $scope-tab } { data $data-tab } { view $view-tab } { server $server-tab }
+ ; to story-view !lane-story.mount $lane $story-panel $lane-control $nb
  ; to inputs-view !lane-inputs.mount $lane $input-panel
  ; to scope-view !lane-scope.mount $lane $scope-panel
  ; to data-view !lane-data.mount $lane $data-panel $lane-control
+ ; to data-view.on-record-change (
+  ; to { change-info } $argv
+  [ match
+   { [ and $lane-control.preferences-lane-id [ propertyIs $lane.id lane-control.preferences-lane-id ] ] (
+    [ match
+     { $lane-control.refresh-preferences-from-storage : !lane-control.refresh-preferences-from-storage }
+     { $lane-control.sync-preferences-timezones : !lane-control.sync-preferences-timezones }
+    ]
+   ) }
+  ]
+  !nb.run-on-table-change $change-info
+ )
  ; to server-view !lane-server.mount $lane $server-panel $lane-control $nb
- ; to output-view !lane-output.mount $lane $container
+ ; to output-view !lane-output.mount $lane $container $nb $lane-control
  ; to info-modal [ match
   { $lane-control.line-info-modal : $lane-control.line-info-modal }
-  { true : !lane-line-info-mod.create $container }
+  { true : !lane-line-info-mod.create $container $lane-control }
  ]
- ; assign $nb { element $root-el } { tabs-el $tabs-el } { tabs $tabs } { source-panel $source-panel } { input-panel $input-panel } { scope-panel $scope-panel } { data-panel $data-panel } { server-panel $server-panel } { lines-el $lines-el } { actions-el $actions-el } { add-btn $add-btn } { add-import-btn $add-import-btn } { add-export-btn $add-export-btn } { inputs-view $inputs-view } { inputs $inputs-view.inputs } { scope-view $scope-view } { data-view $data-view } { tables $data-view.tables } { server-view $server-view } { output-view $output-view } { info-modal $info-modal }
+ ; assign $nb { element $root-el } { tabs-el $tabs-el } { tabs $tabs } { story-panel $story-panel } { story-view $story-view } { source-panel $source-panel } { input-panel $input-panel } { scope-panel $scope-panel } { data-panel $data-panel } { server-panel $server-panel } { lines-el $lines-el } { actions-el $actions-el } { add-btn $add-btn } { add-import-btn $add-import-btn } { add-export-btn $add-export-btn } { inputs-view $inputs-view } { inputs $inputs-view.inputs } { scope-view $scope-view } { data-view $data-view } { tables $data-view.tables } { server-view $server-view } { output-view $output-view } { info-modal $info-modal }
 
  ; to nb.when-idle (
   -- Resolves once all in-flight runs of this lane have completed
@@ -283,6 +314,145 @@
   )
  )
 
+ ; to nb.refresh-set-by-labels (
+  -- Updates Set-by display labels on all rows set by another lane's export
+  ; each $nb.rows (
+   ; to { row } $argv
+   [ match
+    { $row.update-set-by-label : !row.update-set-by-label }
+   ]
+  )
+ )
+
+ ; to nb.apply-line-set-by (
+  -- Sets or updates the Set-by indicator on a row by line ID without re-running Source
+  ; to { line-id set-by } $argv
+  ; to found ; object { row null }
+  ; each $nb.rows (
+   ; to { r } $argv
+   ; condition { propertyIs $line-id r.record.id } : ; set $r found.row
+  )
+  ; to target-row $found.row
+  [ match
+   { [ and { $target-row } { $target-row.set-set-by } ] : !target-row.set-set-by $set-by }
+  ]
+  $target-row
+ )
+
+ ; to nb.clear-line-set-by (
+  -- Clears the Set-by indicator on a row by line ID when matching the given exporter lane and line ID
+  ; to { line-id source-lane-id source-line-id } $argv
+  ; to found ; object { row null }
+  ; each $nb.rows (
+   ; to { r } $argv
+   ; condition { propertyIs $line-id r.record.id } : ; set $r found.row
+  )
+  ; to target-row $found.row
+  [ match
+   { $target-row.set-by (
+    ; to cur-sb $target-row.set-by
+    ; to match-lane [ match
+     { [ propertyIs '' source-lane-id ] : true }
+     { [ propertyIs null source-lane-id ] : true }
+     { [ propertyIs undefined source-lane-id ] : true }
+     { [ propertyIs $source-lane-id cur-sb.laneId ] : true }
+     { true : false }
+    ]
+    ; to match-line [ match
+     { [ propertyIs '' source-line-id ] : true }
+     { [ propertyIs null source-line-id ] : true }
+     { [ propertyIs undefined source-line-id ] : true }
+     { [ propertyIs $source-line-id cur-sb.lineId ] : true }
+     { true : false }
+    ]
+    ; condition { and { propertyIs true match-lane } { propertyIs true match-line } } (
+     [ match
+      { $target-row.set-set-by : !target-row.set-set-by null }
+     ]
+    )
+   ) }
+  ]
+  $target-row
+ )
+
+ ; to nb.clear-highlight (
+  -- Clears any active line highlight in this notebook
+  [ match
+   { $nb.highlight-timer (
+    [ match
+     { $window.clearTimeout : !window.clearTimeout $nb.highlight-timer }
+    ]
+    ; set null nb.highlight-timer
+   ) }
+  ]
+  ; set null nb.highlighted-line-id
+  ; each $nb.rows (
+   ; to { r } $argv
+   ; condition { propertyIs true r.is-highlighted } (
+    ; set false r.is-highlighted
+    [ match
+     { $r.el.removeAttribute : !r.el.removeAttribute data-highlighted }
+    ]
+    [ match
+     { $r.update-classes : !r.update-classes }
+    ]
+   )
+  )
+ )
+
+ ; to nb.highlight-line (
+  -- Switches to Source tab if needed, highlights the specified line by ID, and scrolls it into view unless skip-scroll is true
+  ; to { line-id skip-scroll } $argv
+  ; to is-source [ propertyIs source nb.active-tab ]
+  ; condition { propertyIs false is-source } : !nb.set-tab source
+  !nb.clear-highlight
+  ; to found ; object { row null }
+  [ match
+   { $line-id (
+    ; each $nb.rows (
+     ; to { r } $argv
+     ; condition { propertyIs $line-id r.record.id } : ; set $r found.row
+    )
+   ) }
+  ]
+  ; to target-row [ match
+   { $found.row : $found.row }
+   { [ propertyIsGreaterThan 0 nb.rows.length ] : $nb.rows.0 }
+   { true : null }
+  ]
+  [ match
+   { $target-row (
+    ; set true target-row.is-highlighted
+    ; set $target-row.record.id nb.highlighted-line-id
+    !target-row.el.setAttribute data-highlighted 'true'
+    [ match
+     { $target-row.update-classes : !target-row.update-classes }
+    ]
+    [ match
+     { $skip-scroll : null }
+     { $target-row.el.scrollIntoView : !target-row.el.scrollIntoView [ object { behavior smooth } { block center } { inline nearest } ] }
+    ]
+    [ match
+     { $window.setTimeout (
+      ; to timer !window.setTimeout (
+       ; set null nb.highlight-timer
+       ; set false target-row.is-highlighted
+       ; condition { propertyIs $target-row.record.id nb.highlighted-line-id } : ; set null nb.highlighted-line-id
+       [ match
+        { $target-row.el.removeAttribute : !target-row.el.removeAttribute data-highlighted }
+       ]
+       [ match
+        { $target-row.update-classes : !target-row.update-classes }
+       ]
+      ) 2200
+      ; set $timer nb.highlight-timer
+     ) }
+    ]
+   ) }
+  ]
+  $target-row
+ )
+
  ; to nb.refresh-export-statuses (
   -- Refreshes deploy status bars on export rows targeting the given lane ID (or all export rows if omitted)
   ; to { target-id } $argv
@@ -319,6 +489,7 @@
  ; to nb.apply-tab-ui (
   -- Updates tab button active styles, panel visibility, and View output mode for the current active tab
   ; to active $nb.active-tab
+  ; to is-story [ propertyIs story active ]
   ; to is-source [ propertyIs source active ]
   ; to is-input [ propertyIs input active ]
   ; to is-scope [ propertyIs scope active ]
@@ -326,12 +497,14 @@
   ; to is-view [ propertyIs view active ]
   ; to is-server [ propertyIs server active ]
 
+  ; set [ ternary $is-story 'lane-tab lane-tab--active' lane-tab ] story-tab.className
   ; set [ ternary $is-source 'lane-tab lane-tab--active' lane-tab ] source-tab.className
   ; set [ ternary $is-input 'lane-tab lane-tab--active' lane-tab ] input-tab.className
   ; set [ ternary $is-scope 'lane-tab lane-tab--active' lane-tab ] scope-tab.className
   ; set [ ternary $is-data 'lane-tab lane-tab--active' lane-tab ] data-tab.className
   ; set [ ternary $is-view 'lane-tab lane-tab--active' lane-tab ] view-tab.className
   ; set [ ternary $is-server 'lane-tab lane-tab--active' lane-tab ] server-tab.className
+  !story-tab.setAttribute aria-selected [ ternary $is-story 'true' 'false' ]
   !source-tab.setAttribute aria-selected [ ternary $is-source 'true' 'false' ]
   !input-tab.setAttribute aria-selected [ ternary $is-input 'true' 'false' ]
   !scope-tab.setAttribute aria-selected [ ternary $is-scope 'true' 'false' ]
@@ -339,12 +512,23 @@
   !view-tab.setAttribute aria-selected [ ternary $is-view 'true' 'false' ]
   !server-tab.setAttribute aria-selected [ ternary $is-server 'true' 'false' ]
 
+  ; set [ ternary $is-story false true ] story-panel.hidden
   ; set [ ternary $is-source false true ] source-panel.hidden
   ; set [ ternary $is-input false true ] input-panel.hidden
   ; set [ ternary $is-scope false true ] scope-panel.hidden
   ; set [ ternary $is-data false true ] data-panel.hidden
   ; set [ ternary $is-server false true ] server-panel.hidden
   !output-view.set-always-visible $is-view
+  [ match
+   { $output-view.set-suppressed : !output-view.set-suppressed $is-story }
+  ]
+  [ match
+   { $is-story (
+    [ match
+     { $story-view.activate : !story-view.activate }
+    ]
+   ) }
+  ]
   [ match
    { $is-source (
     !nb.auto-size-rows
@@ -400,14 +584,23 @@
    { $skip-url : null }
    { true (
     [ match
-     { $lane-control.remember-path : !lane-control.remember-path $nb.lane }
+     { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Saving…' }
     ]
+    ; try (
+     [ match
+      { $lane-control.remember-path : !lane-control.remember-path $nb.lane }
+     ]
+     [ match
+      { $lane-control.update-url : !lane-control.update-url }
+     ]
+    ) : null
     [ match
-     { $lane-control.update-url : !lane-control.update-url }
+     { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
     ]
    ) }
   ]
   [ match
+   { [ propertyIs story next-tab ] : null }
    { [ propertyIs input next-tab ] : null }
    { [ propertyIs data next-tab ] : null }
    { true : !nb.run }
@@ -415,6 +608,7 @@
   $next-tab
  )
 
+ !story-tab.addEventListener click : !nb.set-tab story
  !source-tab.addEventListener click : !nb.set-tab source
  !input-tab.addEventListener click : !nb.set-tab input
  !scope-tab.addEventListener click : !nb.set-tab scope
@@ -430,6 +624,69 @@
    !ids.push $rec.id
   )
   $ids
+ )
+
+ ; to validate-line (
+  -- Validates that a Source line is parseable FieldScript without syntax errors
+  ; to { text line-idx } $argv
+  [ match
+   { $validateFieldScriptLine : !validateFieldScriptLine $text [ object { filename $nb.lane.id } { lineIndex $line-idx } ] }
+   { true : ; object { ok true } { error null } }
+  ]
+ )
+
+ ; to save-row-draft (
+  -- Persists a rejected unparseable Source line draft in localStorage without writing to KV
+  ; to { row draft-text err-msg expr-text } $argv
+  ; to draft-spec [ object
+   { lineId $row.record.id }
+   { lineIndex $row.index }
+   { text $draft-text }
+   { savedText $row.record.text }
+   { error [ match { $err-msg : $err-msg } { true : 'Syntax error' } ] }
+  ]
+  [ match
+   { [ propertyIs false [ propertyIs undefined expr-text ] ] : ; set $expr-text draft-spec.exprText }
+  ]
+  [ match
+   { $saveLaneSourceDraft : !saveLaneSourceDraft $data $window $nb.lane.id $draft-spec }
+   { true : $draft-spec }
+  ]
+ )
+
+ ; to clear-row-draft (
+  -- Removes any stored rejected draft for a Source row from localStorage and hides its draft notice
+  ; to { row } $argv
+  [ match
+   { [ and { $clearLaneSourceDraft } { $row.record.id } ] (
+    !clearLaneSourceDraft $data $window $nb.lane.id $row.record.id
+   ) }
+  ]
+  [ match
+   { $row.set-draft : !row.set-draft null false }
+  ]
+ )
+
+ ; to commit-or-draft-row (
+  -- Evaluates live Source, then saves to KV if parseable or stores a rejected draft in localStorage if unparseable
+  ; to { row next-text expr-text } $argv
+  ; to nb.lines $row.index $next-text
+  ; to check !validate-line $next-text $row.index
+  !nb.run
+  [ match
+   { $check.ok (
+    ; set $next-text row.record.text
+    !clear-row-draft $row
+    !nb.save-line $row
+   ) }
+   { true (
+    ; to draft-rec !save-row-draft $row $next-text $check.error $expr-text
+    [ match
+     { $row.set-draft : !row.set-draft $draft-rec true }
+    ]
+    null
+   ) }
+  ]
  )
 
  ; to persist-structural (
@@ -485,27 +742,112 @@
    ; to num ; add $idx 1
    ; set $idx row.index
    ; set $num row.num-el.textContent
+   [ match
+    { [ and { $lane-control.cache-line-number } { $row.record.id } ] (
+     !lane-control.cache-line-number $nb.lane.id $row.record.id $num
+    ) }
+   ]
   )
+  [ match
+   { [ and { $nb.script-initialized } { $lane-control.refresh-line-numbers } ] (
+    !lane-control.refresh-line-numbers $nb.lane.id
+   ) }
+  ]
+ )
+
+ ; to nb.has-table-change-script (
+  -- Returns true when the notebook script contains any cross-lane table sync, export, or deploy command
+  ; to found ; object { hit false }
+  ; each $nb.lines (
+   ; to { line-text } $argv
+   ; condition { propertyIs false found.hit } (
+    ; to txt [ match { $line-text : ; add '' $line-text } { true : '' } ]
+    ; to trimmed [ match { $txt.trim : !txt.trim } { true : $txt } ]
+    ; to is-comment [ match
+     { [ propertyIs '--' trimmed ] : true }
+     { [ !trimmed.startsWith '-- ' ] : true }
+     { [ !trimmed.startsWith '--\t' ] : true }
+     { true : false }
+    ]
+    ; condition { propertyIs false is-comment } (
+     [ match
+      { [ !txt.includes syncLaneTable ] : ; set true found.hit }
+      { [ !txt.includes deployLane ] : ; set true found.hit }
+      { [ !txt.includes resyncLane ] : ; set true found.hit }
+      { [ !txt.includes exportLaneLine ] : ; set true found.hit }
+      { [ !txt.includes setLaneLine ] : ; set true found.hit }
+     ]
+    )
+   )
+  )
+  $found.hit
+ )
+
+ ; to nb.run-on-table-change (
+  -- Runs the lane script when a record in a Data table changes and the script contains table-triggered sync/deploy/export logic
+  ; to { change-info } $argv
+  ; to has-trigger !nb.has-table-change-script
+  [ match
+   { $has-trigger : !nb.run null true $change-info }
+   { true : null }
+  ]
  )
 
  ; to nb.run (
-  -- Evaluates all notebook lines top-to-bottom when on Source or Scope (skipped on Input and Data)
-  ; to { visited } $argv
+  -- Evaluates all notebook lines top-to-bottom when on Source, Scope, View, or Server (skipped on Story, Input, and Data unless force-run is true for a table record change)
+  ; to { visited force-run table-change run-meta } $argv
+  ; to skip-for-tab [ match
+   { [ propertyIs true force-run ] : false }
+   { [ propertyIs story nb.active-tab ] : true }
+   { [ propertyIs input nb.active-tab ] : true }
+   { [ propertyIs data nb.active-tab ] : true }
+   { true : false }
+  ]
   [ match
-   { [ propertyIs input nb.active-tab ] : null }
-   { [ propertyIs data nb.active-tab ] : null }
+   { $skip-for-tab : null }
    { true (
     ; to next-run-id ; add $nb.run-id 1
     ; set $next-run-id nb.run-id
     ; to finish !idle-tracker.begin
+    ; to trigger [ match
+     { $run-meta.trigger : $run-meta.trigger }
+     { $table-change : 'table-change' }
+     { $visited : import }
+     { [ propertyIs false nb.has-completed-initial-run ] : mount }
+     { true : manual }
+    ]
+    ; to story-rec [ match
+     { $createStoryRunRecorder : !createStoryRunRecorder [ object { laneId $nb.lane.id } { trigger $trigger } ] }
+     { true : null }
+    ]
+    ; to line-ctx ; object { index null } { lineNumber null } { lineId '' }
     ; to import-lane-fn (
      ; to { target-id ...path } $argv
      [ match
       { [ propertyIs '' target-id ] : undefined }
       { [ propertyIs undefined target-id ] : undefined }
       { $lane-control (
-       ; to res !lane-control.get-lane-final-state $target-id $nb.lane.id
-       !resolveImportValue $res $path
+       [ match
+        { [ and { $trackStoryImportCall } { $story-rec } ] (
+         ; to tgt-title [ match
+          { $lane-control.get-lane-title : !lane-control.get-lane-title $target-id }
+          { true : $target-id }
+         ]
+         !trackStoryImportCall [ object
+          { recorder $story-rec }
+          { lineContext $line-ctx }
+          { lines $nb.lines }
+          { targetId $target-id }
+          { path $path }
+          { laneTitle $tgt-title }
+          { invokeImport ( ; to res !lane-control.get-lane-final-state $target-id $nb.lane.id , !resolveImportValue $res $path ) }
+         ]
+        ) }
+        { true (
+         ; to res !lane-control.get-lane-final-state $target-id $nb.lane.id
+         !resolveImportValue $res $path
+        ) }
+       ]
       ) }
       { true (
        ; to no-ctrl ; object { ok false } { state null } { error 'Lane control is not available' }
@@ -515,27 +857,83 @@
     )
     ; to export-lane-line-fn (
      ; to { first-arg second-arg third-arg } $argv
-     [ match
-      { $lane-control.export-lane-line : !lane-control.export-lane-line $nb.lane.id $first-arg $second-arg $third-arg $visited }
+     ; to exp-res [ match
+      { $lane-control.export-lane-line : !lane-control.export-lane-line $nb.lane.id $first-arg $second-arg $third-arg $visited $line-ctx.lineId }
       { true : ; object { ok false } { targets {} } { laneStatuses {} } { changedCount 0 } { needsDeployCount 0 } { error 'Lane control is not available' } }
+     ]
+     [ match
+      { [ and { $trackStoryExportLineCall } { $story-rec } ] (
+       !trackStoryExportLineCall [ object
+        { recorder $story-rec }
+        { lineContext $line-ctx }
+        { lines $nb.lines }
+        { result $exp-res }
+       ]
+      ) }
+     ]
+     $exp-res
+    )
+    ; to sync-lane-table-fn (
+     ; to { target-id tbl-query records key-col } $argv
+     ; to sync-res [ match
+      { $lane-control.sync-lane-table : !lane-control.sync-lane-table $nb.lane.id $target-id $tbl-query $records $key-col }
+      { true : ; object { ok false } { changed false } { count 0 } { error 'Lane control is not available' } }
+     ]
+     [ match
+      { [ and { $trackStoryExportTableCall } { $story-rec } ] (
+       ; to tgt-title [ match
+        { $lane-control.get-lane-title : !lane-control.get-lane-title $target-id }
+        { true : $target-id }
+       ]
+       !trackStoryExportTableCall [ object
+        { recorder $story-rec }
+        { lineContext $line-ctx }
+        { targetLaneId $target-id }
+        { laneTitle $tgt-title }
+        { tableName $tbl-query }
+        { records $records }
+        { result $sync-res }
+       ]
+      ) }
+     ]
+     $sync-res
+    )
+    ; to deploy-lane-fn (
+     ; to { target-id deploy-opts } $argv
+     [ match
+      { $lane-control.deploy-lane : !lane-control.deploy-lane $nb.lane.id $target-id $deploy-opts $table-change }
+      { true : ; object { ok false } { status error } { error 'Lane control is not available' } }
      ]
     )
     ; to env [ object
      { console $console }
      { data $nb.lane.data }
      { Math $window.Math }
+     { Number $window.Number }
      { JSON $window.JSON }
      { Date $window.Date }
+     { Array $window.Array }
+     { fetch ( ; to { u o } $argv, [ match { $window.fetch : !window.fetch $u $o } { true : null } ] ) }
      { importLane $import-lane-fn }
      { exportLaneLine $export-lane-line-fn }
      { setLaneLine $export-lane-line-fn }
+     { syncLaneTable $sync-lane-table-fn }
+     { deployLane $deploy-lane-fn }
+     { resyncLane $deploy-lane-fn }
+     { tableChange [ match { $table-change : $table-change } { true : null } ] }
      { respond [ match { $createResponseHelper : !createResponseHelper } { true : null } ] }
     ]
     !inputs-view.seed-env $env
     !data-view.seed-env $env
+    ; to captured-inputs [ match
+     { $captureStoryEnvInputs : !captureStoryEnvInputs $inputs-view.inputs $env }
+     { true : null }
+    ]
     ; to run-opts [ object
      { filename $nb.lane.id }
      { initialState $env }
+     { lineContext $line-ctx }
+     { lineRecords $nb.line-records }
     ]
     ; to outcome !runLines $nb.lines $run-opts
     [ match
@@ -569,7 +967,35 @@
       [ match
        { $server-view.refresh-handlers : !server-view.refresh-handlers $outcome }
       ]
+      ; to all-blank-box ; object { val true }
+      ; each $nb.lines (
+       ; to { ln-txt } $argv
+       ; condition { propertyIs true all-blank-box.val } (
+        ; to s [ match
+         { [ propertyIs null ln-txt ] : '' }
+         { [ propertyIs undefined ln-txt ] : '' }
+         { true : ; add '' $ln-txt }
+        ]
+        ; to trimmed [ match { $s.trim : !s.trim } { true : $s } ]
+        ; condition { propertyIsGreaterThan 0 trimmed.length } : ; set false all-blank-box.val
+       )
+      )
+      ; to skip-empty-mount [ ternary [ and
+       { [ propertyIs mount trigger ] }
+       { [ propertyIs false nb.script-initialized ] }
+       { [ propertyIs true all-blank-box.val ] }
+       { [ propertyIs 0 inputs-view.inputs.length ] }
+      ] true false ]
+      ; set true nb.has-completed-initial-run
       !$finish true
+      [ match
+       { [ and { [ propertyIs false skip-empty-mount ] } { $recordLaneStoryFromRun } ] (
+        ; to story-entry !recordLaneStoryFromRun $data $nb.lane.data $nb.lane.id $story-rec $captured-inputs $outcome $nb.line-records [ object { trigger $trigger } ]
+        [ match
+         { $story-view.on-new-entry : !story-view.on-new-entry $story-entry }
+        ]
+       ) }
+      ]
       [ match
        { $lane-control.notify-lane-idle : !lane-control.notify-lane-idle $nb.lane.id $visited }
       ]
@@ -577,6 +1003,64 @@
      { true : !$finish false }
     ]
     $outcome
+   ) }
+  ]
+ )
+
+ ; to normalize-set-by (
+  ; to { raw } $argv
+  [ match
+   { $normalizeLineSetBy : !normalizeLineSetBy $raw }
+   { $raw.laneId (
+    ; to lid [ match { $raw.laneId.trim : !raw.laneId.trim } { true : ; add '' $raw.laneId } ]
+    ; to lnid [ match { $raw.lineId.trim : !raw.lineId.trim } { $raw.lineId : ; add '' $raw.lineId } { true : '' } ]
+    [ match
+     { [ propertyIs '' lid ] : null }
+     { true : ; object { laneId $lid } { lineId $lnid } }
+    ]
+   ) }
+   { true : null }
+  ]
+ )
+
+ ; to resolve-lane-line-label (
+  -- Resolves L<num> for a { laneId lineId } reference from an open lane or lane-control cache, triggering async lookup if closed
+  ; to { target-lane-id target-line-id on-resolved } $argv
+  [ match
+   { [ propertyIs '' target-line-id ] : '' }
+   { [ propertyIs null target-line-id ] : '' }
+   { [ propertyIs undefined target-line-id ] : '' }
+   { true (
+    ; to open-lane [ get lane-control.by-id $target-lane-id ]
+    ; to found ; object { num null }
+    [ match
+     { $open-lane.notebook.line-records (
+      ; each $open-lane.notebook.line-records (
+       ; to { r idx } $argv
+       ; condition { propertyIs $target-line-id r.id } : ; set [ ; add $idx 1 ] found.num
+      )
+     ) }
+    ]
+    [ match
+     { $found.num : ; add L $found.num }
+     { true (
+      ; to cached-num [ match
+       { $lane-control.get-cached-line-number : !lane-control.get-cached-line-number $target-lane-id $target-line-id }
+       { true : null }
+      ]
+      [ match
+       { $cached-num : ; add L $cached-num }
+       { true (
+        [ match
+         { [ and { $on-resolved } { $lane-control.resolve-stored-line-number } ] (
+          !lane-control.resolve-stored-line-number $target-lane-id $target-line-id $on-resolved
+         ) }
+        ]
+        $target-line-id
+       ) }
+      ]
+     ) }
+    ]
    ) }
   ]
  )
@@ -590,11 +1074,314 @@
   !info-btn.setAttribute aria-label 'Line info'
   !info-btn.addEventListener click (
    ; to line-num ; add $row.index 1
-   !info-modal.open [ object { line-number $line-num } { line-id $row.record.id } { updated-at $row.record.updatedAt } ]
+   ; to sb $row.set-by
+   ; to sb-line-lbl [ match
+    { $sb : !resolve-lane-line-label $sb.laneId $sb.lineId null }
+    { true : '' }
+   ]
+   !info-modal.open [ object
+    { lane $nb.lane }
+    { lane-id $nb.lane.id }
+    { host $nb.container }
+    { line-number $line-num }
+    { line-id $row.record.id }
+    { line-text $row.record.text }
+    { updated-at $row.record.updatedAt }
+    { set-by $sb }
+    { set-by-label $sb-line-lbl }
+   ]
   )
   !el.appendChild $info-btn
   ; set $info-btn row.info-btn
   $info-btn
+ )
+
+ ; to attach-line-set-by (
+  -- Attaches the "Set by <Lane> · L<num>" indicator bar and navigation button to a notebook row
+  ; to { row el } $argv
+  ; to set-by-el !document.createElement div
+  ; assign $set-by-el { className lane-line-set-by } { hidden true }
+  ; to set-by-btn !document.createElement button
+  ; assign $set-by-btn { type button } { className lane-line-set-by-btn }
+  !set-by-el.appendChild $set-by-btn
+  ; to initial-sb !normalize-set-by $row.record.setBy
+  ; assign $row { set-by $initial-sb } { set-by-el $set-by-el } { set-by-btn $set-by-btn } { is-highlighted false }
+
+  ; to mount-set-by-el (
+   [ match
+    { [ propertyIs $el set-by-el.parentNode ] : null }
+    { $row.editor-el : !el.insertBefore $set-by-el $row.editor-el }
+    { true : !el.appendChild $set-by-el }
+   ]
+  )
+
+  ; to unmount-set-by-el (
+   [ match
+    { $set-by-el.parentNode : !set-by-el.remove }
+   ]
+  )
+
+  ; to row.update-set-by-label (
+   ; to sb $row.set-by
+   [ match
+    { $sb (
+     ; to lane-title [ match
+      { $lane-control.get-lane-title : !lane-control.get-lane-title $sb.laneId }
+      { true : $sb.laneId }
+     ]
+     ; to line-lbl !resolve-lane-line-label $sb.laneId $sb.lineId : !row.update-set-by-label
+     ; to target-desc [ match
+      { [ propertyIs '' line-lbl ] : $lane-title }
+      { true : ; add $lane-title ; add ' · ' $line-lbl }
+     ]
+     ; to btn-txt ; add '← Set by ' ; add $target-desc ' ↗'
+     ; to btn-ttl ; add 'Set by ' ; add $target-desc ' — click to navigate'
+     ; set $btn-txt set-by-btn.textContent
+     ; set $btn-ttl set-by-btn.title
+     !set-by-btn.setAttribute aria-label $btn-ttl
+     !el.setAttribute data-set-by-lane $sb.laneId
+     !el.setAttribute data-set-by-line [ match { $sb.lineId : $sb.lineId } { true : '' } ]
+     !mount-set-by-el
+     ; set false set-by-el.hidden
+    ) }
+    { true (
+     ; set '' set-by-btn.textContent
+     ; set '' set-by-btn.title
+     ; set true set-by-el.hidden
+     !unmount-set-by-el
+     [ match
+      { $el.removeAttribute (
+       !el.removeAttribute data-set-by-lane
+       !el.removeAttribute data-set-by-line
+      ) }
+     ]
+    ) }
+   ]
+   [ match
+    { $row.update-classes : !row.update-classes }
+   ]
+  )
+
+  ; to row.set-set-by (
+   ; to { next-sb } $argv
+   ; to norm !normalize-set-by $next-sb
+   ; set $norm row.set-by
+   [ match
+    { $row.record : ; set $norm row.record.setBy }
+   ]
+   !row.update-set-by-label
+  )
+
+  !set-by-btn.addEventListener click (
+   ; to sb $row.set-by
+   [ match
+    { [ and { $sb } { $lane-control.navigate-to-lane-line } ] (
+     !lane-control.navigate-to-lane-line $sb.laneId $sb.lineId $nb.lane.id
+    ) }
+   ]
+  )
+
+  !row.update-set-by-label
+  $set-by-el
+ )
+
+ ; to attach-line-draft (
+  -- Attaches the rejected unsaved draft status bar (Edit draft / Discard) to a notebook row
+  ; to { row el } $argv
+  ; to draft-el !document.createElement div
+  ; assign $draft-el { className lane-line-draft } { hidden true }
+  ; to draft-main !document.createElement div
+  ; set lane-line-draft-main draft-main.className
+  ; to draft-badge !document.createElement span
+  ; set lane-line-draft-badge draft-badge.className
+  ; to draft-code !document.createElement code
+  ; assign $draft-code { className lane-line-draft-code } { hidden true }
+  ; to draft-err !document.createElement span
+  ; assign $draft-err { className lane-line-draft-error } { hidden true }
+  ; to draft-acts !document.createElement div
+  ; set lane-line-draft-actions draft-acts.className
+  ; to restore-btn !document.createElement button
+  ; assign $restore-btn { type button } { className 'lane-line-draft-btn lane-line-draft-btn--restore' } { textContent 'Edit draft' } { title 'Load rejected draft into line editor to fix and save' } { hidden true }
+  ; to discard-btn !document.createElement button
+  ; assign $discard-btn { type button } { className 'lane-line-draft-btn lane-line-draft-btn--discard' } { textContent Discard } { title 'Discard rejected unsaved draft' }
+  !draft-main.appendChild $draft-badge
+  !draft-main.appendChild $draft-code
+  !draft-main.appendChild $draft-err
+  !draft-acts.appendChild $restore-btn
+  !draft-acts.appendChild $discard-btn
+  !draft-el.appendChild $draft-main
+  !draft-el.appendChild $draft-acts
+  ; assign $row { draft null } { draft-active false } { draft-el $draft-el } { draft-badge $draft-badge } { draft-code $draft-code } { draft-err $draft-err } { draft-restore-btn $restore-btn } { draft-discard-btn $discard-btn }
+
+  ; to mount-draft-el (
+   [ match
+    { [ propertyIs $el draft-el.parentNode ] : null }
+    { $row.editor-el : !el.insertBefore $draft-el $row.editor-el }
+    { [ and { propertyIs export row.kind } { $row.deploy-bar-el } { [ propertyIs $el row.deploy-bar-el.parentNode ] } ] : !el.insertBefore $draft-el $row.deploy-bar-el }
+    { true : !el.appendChild $draft-el }
+   ]
+  )
+
+  ; to unmount-draft-el (
+   [ match
+    { $draft-el.parentNode : !draft-el.remove }
+   ]
+  )
+
+  ; to row.update-draft-ui (
+   ; to d $row.draft
+   [ match
+    { $d (
+     ; to is-active [ propertyIs true row.draft-active ]
+     [ match
+      { $is-active (
+       ; set 'Unsaved draft — syntax error (not saved)' draft-badge.textContent
+       ; set '' draft-code.textContent
+       ; set true draft-code.hidden
+       ; set '' draft-err.textContent
+       ; set true draft-err.hidden
+       ; set true restore-btn.hidden
+       ; set 'Discard draft' discard-btn.textContent
+       ; set 'Discard unsaved draft and revert to last saved line' discard-btn.title
+      ) }
+      { true (
+       ; set 'Unsaved draft rejected (syntax error)' draft-badge.textContent
+       ; to shown-txt [ match
+        { [ propertyIs false [ propertyIs undefined d.exprText ] ] : $d.exprText }
+        { $d.text : $d.text }
+        { true : '' }
+       ]
+       ; set $shown-txt draft-code.textContent
+       ; set $shown-txt draft-code.title
+       ; set false draft-code.hidden
+       ; to err-txt [ match { $d.error : $d.error } { true : '' } ]
+       ; set $err-txt draft-err.textContent
+       ; set $err-txt draft-err.title
+       ; set [ ternary [ propertyIs '' err-txt ] true false ] draft-err.hidden
+       ; set false restore-btn.hidden
+       ; set Discard discard-btn.textContent
+       ; set 'Discard rejected unsaved draft from localStorage' discard-btn.title
+      ) }
+     ]
+     !el.setAttribute data-draft-rejected 'true'
+     !mount-draft-el
+     ; set false draft-el.hidden
+    ) }
+    { true (
+     ; set '' draft-badge.textContent
+     ; set '' draft-code.textContent
+     ; set '' draft-err.textContent
+     ; set true draft-code.hidden
+     ; set true draft-err.hidden
+     ; set true restore-btn.hidden
+     ; set true draft-el.hidden
+     !unmount-draft-el
+     [ match
+      { $el.removeAttribute : !el.removeAttribute data-draft-rejected }
+     ]
+    ) }
+   ]
+   [ match
+    { $row.update-classes : !row.update-classes }
+   ]
+  )
+
+  ; to row.set-draft (
+   ; to { next-draft is-active } $argv
+   ; to clean-d [ match { $next-draft : $next-draft } { true : null } ]
+   ; to clean-act [ match
+    { [ and { $clean-d } { [ propertyIs true is-active ] } ] : true }
+    { true : false }
+   ]
+   ; set $clean-d row.draft
+   ; set $clean-act row.draft-active
+   !row.update-draft-ui
+  )
+
+  !restore-btn.addEventListener click (
+   ; to d $row.draft
+   [ match
+    { $d (
+     ; to draft-txt [ match
+      { [ propertyIs null d.text ] : '' }
+      { [ propertyIs undefined d.text ] : '' }
+      { true : $d.text }
+     ]
+     ; to nb.lines $row.index $draft-txt
+     [ match
+      { [ propertyIs code row.kind ] (
+       !row.sync-input-control $draft-txt true
+       [ match
+        { $row.editor-el (
+         ; set $draft-txt row.editor-el.value
+         !scope.auto-size-textarea $row.editor-el
+         [ match { $row.editor-el.focus : !row.editor-el.focus } ]
+        ) }
+       ]
+      ) }
+      { [ propertyIs export row.kind ] (
+       ; to expr-val [ match
+        { [ propertyIs false [ propertyIs undefined d.exprText ] ] : $d.exprText }
+        { true : $draft-txt }
+       ]
+       ; set $expr-val row.spec.contentExpr
+       ; set $expr-val row.expr-el.value
+       [ match { $row.expr-el.focus : !row.expr-el.focus } ]
+      ) }
+     ]
+     !row.set-draft $d true
+     !nb.run
+    ) }
+   ]
+  )
+
+  !discard-btn.addEventListener click (
+   ; to was-active [ propertyIs true row.draft-active ]
+   !clear-row-draft $row
+   ; condition { propertyIs true was-active } (
+    ; to saved-txt [ match
+     { [ propertyIs null row.record.text ] : '' }
+     { [ propertyIs undefined row.record.text ] : '' }
+     { true : $row.record.text }
+    ]
+    ; to nb.lines $row.index $saved-txt
+    [ match
+     { [ propertyIs code row.kind ] (
+      !row.sync-input-control $saved-txt true
+      [ match
+       { $row.editor-el (
+        ; set $saved-txt row.editor-el.value
+        !scope.auto-size-textarea $row.editor-el
+       ) }
+      ]
+     ) }
+     { [ propertyIs export row.kind ] (
+      ; to parsed-exp [ match { $parseExportLine : !parseExportLine $saved-txt } { true : null } ]
+      [ match
+       { $parsed-exp (
+        ; set $parsed-exp row.spec
+        ; set $parsed-exp.contentExpr row.expr-el.value
+        !row.update-label
+       ) }
+      ]
+     ) }
+     { [ propertyIs import row.kind ] (
+      ; to parsed-imp !parseImportLine $saved-txt
+      [ match
+       { $parsed-imp (
+        ; set $parsed-imp row.spec
+        ; set $parsed-imp.alias row.alias-el.value
+        !row.update-label
+       ) }
+      ]
+     ) }
+    ]
+    !nb.run
+   )
+  )
+
+  !row.update-draft-ui
+  $draft-el
  )
 
  ; to nb.create-import-row (
@@ -647,6 +1434,16 @@
   ]
   !attach-line-info-btn $row $el
 
+  ; to row.update-classes (
+   ; to base 'lane-line lane-line--import'
+   ; to with-sb [ ternary $row.set-by [ ; add $base ' lane-line--set-by' ] $base ]
+   ; to with-dr [ ternary $row.draft [ ; add $with-sb ' lane-line--draft-rejected' ] $with-sb ]
+   ; to full [ ternary [ propertyIs true row.is-highlighted ] [ ; add $with-dr ' lane-line--highlighted' ] $with-dr ]
+   ; set $full row.el.className
+  )
+  !attach-line-set-by $row $el
+  !attach-line-draft $row $el
+
   ; to row.update-label (
    -- Updates the picker button label to show the source lane title and optional $path (or whole lane)
    ; to cur $row.spec
@@ -680,16 +1477,13 @@
   )
 
   ; to row.apply-spec (
-   -- Applies a newly chosen { alias laneId path } import spec, re-runs, and saves
+   -- Applies a newly chosen { alias laneId path } import spec, re-runs, and saves if parseable
    ; to { next-spec } $argv
    ; set $next-spec row.spec
    ; set $next-spec.alias alias-el.value
    !row.update-label
    ; to formatted !formatImportLine $next-spec
-   ; to nb.lines $row.index $formatted
-   ; set $formatted row.record.text
-   !nb.run
-   !nb.save-line $row
+   !commit-or-draft-row $row $formatted
   )
 
   ; to row.open-picker (
@@ -697,6 +1491,7 @@
    [ match
     { $lane-control.pick-import (
      ; to pick-opts [ object
+      { lane $nb.lane }
       { current-lane-id $nb.lane.id }
       { lane-id $row.spec.laneId }
       { path $row.spec.path }
@@ -714,10 +1509,7 @@
   !alias-el.addEventListener input (
    ; set $alias-el.value row.spec.alias
    ; to formatted !formatImportLine $row.spec
-   ; to nb.lines $row.index $formatted
-   ; set $formatted row.record.text
-   !nb.run
-   !nb.save-line $row
+   !commit-or-draft-row $row $formatted
   )
   !alias-el.addEventListener keydown (
    ; to { ev } $argv
@@ -755,9 +1547,12 @@
   ; assign $arrow-el { className lane-export-arrow } { textContent '→' }
   ; to pick-btn !document.createElement button
   ; assign $pick-btn { type button } { className lane-export-pick-btn } { title 'Pick target lane lines' }
+  ; to nav-btn !document.createElement button
+  ; assign $nav-btn { type button } { className lane-export-nav-btn } { textContent '↗' } { title 'Navigate to target line' } { hidden true }
   !control-el.appendChild $expr-el
   !control-el.appendChild $arrow-el
   !control-el.appendChild $pick-btn
+  !control-el.appendChild $nav-btn
 
   ; to preview-el !document.createElement code
   ; set lane-line-preview preview-el.className
@@ -787,6 +1582,7 @@
    { control-el $control-el }
    { expr-el $expr-el }
    { pick-btn $pick-btn }
+   { nav-btn $nav-btn }
    { preview-el $preview-el }
    { remove-btn $remove-btn }
    { info-btn null }
@@ -798,6 +1594,16 @@
   ]
   !attach-line-info-btn $row $el
   !el.appendChild $deploy-bar-el
+
+  ; to row.update-classes (
+   ; to base 'lane-line lane-line--export'
+   ; to with-sb [ ternary $row.set-by [ ; add $base ' lane-line--set-by' ] $base ]
+   ; to with-dr [ ternary $row.draft [ ; add $with-sb ' lane-line--draft-rejected' ] $with-sb ]
+   ; to full [ ternary [ propertyIs true row.is-highlighted ] [ ; add $with-dr ' lane-line--highlighted' ] $with-dr ]
+   ; set $full row.el.className
+  )
+  !attach-line-set-by $row $el
+  !attach-line-draft $row $el
 
   ; to clear-pills (
    [ match
@@ -816,30 +1622,18 @@
 
   ; to resolve-line-label (
    ; to { t } $argv
-   ; to open-lane [ get lane-control.by-id $t.laneId ]
-   ; to found ; object { num null }
-   [ match
-    { $open-lane.notebook.line-records (
-     ; each $open-lane.notebook.line-records (
-      ; to { r idx } $argv
-      ; condition { propertyIs $t.lineId r.id } : ; set [ ; add $idx 1 ] found.num
-     )
-    ) }
-   ]
-   [ match
-    { $found.num : ; add L $found.num }
-    { true : $t.lineId }
-   ]
+   !resolve-lane-line-label $t.laneId $t.lineId : !row.update-label
   )
 
   ; to row.update-label (
-   -- Updates the target picker button label with connected target lane(s) and line number(s)
+   -- Updates the target picker button label and navigation button with connected target lane(s) and line number(s)
    ; to targets [ match { $row.spec.targets : $row.spec.targets } { true : {} } ]
    [ match
     { [ propertyIs 0 targets.length ] (
      ; set 'Pick target lines…' pick-btn.textContent
      ; set 'Select target lane lines to overwrite' pick-btn.title
      ; set lane-export-pick-btn pick-btn.className
+     ; set true nav-btn.hidden
     ) }
     { true (
      ; to labels {}
@@ -864,6 +1658,10 @@
      ; set $btn-txt pick-btn.textContent
      ; set $full-title pick-btn.title
      ; set 'lane-export-pick-btn lane-export-pick-btn--set' pick-btn.className
+     ; to nav-ttl ; add 'Navigate to ' $first-lbl
+     ; set $nav-ttl nav-btn.title
+     !nav-btn.setAttribute aria-label $nav-ttl
+     ; set false nav-btn.hidden
     ) }
    ]
   )
@@ -886,18 +1684,40 @@
       ; to lbl [ match { $st.laneTitle : $st.laneTitle } { true : $st.laneId } ]
       ; to ds-status [ match { $st.status : $st.status } { true : 'not-deployed' } ]
       ; to pill-info [ match
-       { [ propertyIs up-to-date ds-status ] : [ object { suffix 'Up to date' } { cls 'lane-export-status-pill lane-export-status-pill--ok' } ] }
+       { [ propertyIs up-to-date ds-status ] : [ object { suffix 'Up to date' } { cls 'lane-export-status-pill lane-export-status-pill--ok lane-export-status-pill--nav' } ] }
        { [ propertyIs needs-deploy ds-status ] (
         ; set [ ; add $need-n.n 1 ] need-n.n
-        ; object { suffix 'Changes pending' } { cls 'lane-export-status-pill lane-export-status-pill--warn' }
+        ; object { suffix 'Changes pending' } { cls 'lane-export-status-pill lane-export-status-pill--warn lane-export-status-pill--nav' }
        ) }
        { [ propertyIs unverified-baseline ds-status ] (
         ; set [ ; add $need-n.n 1 ] need-n.n
-        ; object { suffix 'Baseline uncached' } { cls 'lane-export-status-pill lane-export-status-pill--warn' }
+        ; object { suffix 'Baseline uncached' } { cls 'lane-export-status-pill lane-export-status-pill--warn lane-export-status-pill--nav' }
        ) }
-       { true : [ object { suffix 'Not deployed' } { cls 'lane-export-status-pill' } ] }
+       { true : [ object { suffix 'Not deployed' } { cls 'lane-export-status-pill lane-export-status-pill--nav' } ] }
       ]
-      ; assign $pill { className $pill-info.cls } { textContent [ ; add $lbl ; add ': ' $pill-info.suffix ] }
+      ; to target-line ; object { id '' }
+      ; each $row.spec.targets (
+       ; to { t } $argv
+       ; condition { propertyIs '' target-line.id } (
+        ; condition { propertyIs $st.laneId t.laneId } : ; set $t.lineId target-line.id
+       )
+      )
+      ; to pill-line-lbl [ match
+       { $target-line.id : !resolve-lane-line-label $st.laneId $target-line.id null }
+       { true : '' }
+      ]
+      ; to pill-ttl [ match
+       { [ propertyIs '' pill-line-lbl ] : ; add 'Navigate to ' $lbl }
+       { true : ; add 'Navigate to ' ; add $lbl ; add ' · ' $pill-line-lbl }
+      ]
+      ; assign $pill { className $pill-info.cls } { textContent [ ; add $lbl ; add ': ' $pill-info.suffix ] } { title $pill-ttl }
+      !pill.addEventListener click (
+       [ match
+        { $lane-control.navigate-to-lane-line (
+         !lane-control.navigate-to-lane-line $st.laneId $target-line.id $nb.lane.id
+        ) }
+       ]
+      )
       !pills-el.appendChild $pill
      )
      [ match
@@ -960,20 +1780,34 @@
   )
 
   ; to row.apply-spec (
-   -- Applies newly selected targets and content expression, re-runs, and saves
+   -- Applies newly selected targets and content expression, clears any removed target set-by links, re-runs, and saves
    ; to { next-spec } $argv
+   ; to prev-targets [ match { $row.spec.targets : $row.spec.targets } { true : {} } ]
+   ; to next-targets [ match { $next-spec.targets : $next-spec.targets } { true : {} } ]
    ; set $next-spec row.spec
    ; set $next-spec.contentExpr expr-el.value
    [ match
     { $next-spec.contentExpr : null }
     { true : ; set '' next-spec.contentExpr }
    ]
+   ; each $prev-targets (
+    ; to { old-t } $argv
+    ; to still-present ; object { hit false }
+    ; each $next-targets (
+     ; to { new-t } $argv
+     ; condition { and { propertyIs $old-t.laneId new-t.laneId } { propertyIs $old-t.lineId new-t.lineId } } : ; set true still-present.hit
+    )
+    ; condition { propertyIs false still-present.hit } (
+     [ match
+      { $lane-control.clear-lane-line-set-by (
+       !lane-control.clear-lane-line-set-by $old-t.laneId $old-t.lineId $nb.lane.id $row.record.id
+      ) }
+     ]
+    )
+   )
    !row.update-label
    ; to formatted !formatExportLine $next-spec
-   ; to nb.lines $row.index $formatted
-   ; set $formatted row.record.text
-   !nb.run
-   !nb.save-line $row
+   !commit-or-draft-row $row $formatted $next-spec.contentExpr
   )
 
   ; to row.open-picker (
@@ -981,6 +1815,7 @@
    [ match
     { $lane-control.pick-export (
      ; to pick-opts [ object
+      { lane $nb.lane }
       { current-lane-id $nb.lane.id }
       { targets $row.spec.targets }
       { content-expr $expr-el.value }
@@ -998,10 +1833,7 @@
   !expr-el.addEventListener input (
    ; set $expr-el.value row.spec.contentExpr
    ; to formatted !formatExportLine $row.spec
-   ; to nb.lines $row.index $formatted
-   ; set $formatted row.record.text
-   !nb.run
-   !nb.save-line $row
+   !commit-or-draft-row $row $formatted $expr-el.value
   )
   !expr-el.addEventListener keydown (
    ; to { ev } $argv
@@ -1012,10 +1844,20 @@
    )
   )
   !pick-btn.addEventListener click $row.open-picker
+  !nav-btn.addEventListener click (
+   ; to targets [ match { $row.spec.targets : $row.spec.targets } { true : {} } ]
+   ; to first-t $targets.0
+   [ match
+    { [ and { $first-t } { $lane-control.navigate-to-lane-line } ] (
+     !lane-control.navigate-to-lane-line $first-t.laneId $first-t.lineId $nb.lane.id
+    ) }
+   ]
+  )
   !deploy-btn.addEventListener click (
    [ match
     { $lane-control.open-export-deploy (
      !lane-control.open-export-deploy [ object
+      { lane $nb.lane }
       { source-lane-id $nb.lane.id }
       { targets $row.spec.targets }
       { on-deployed (
@@ -1082,12 +1924,9 @@
     !scope.auto-size-textarea $editor-el
     !editor-el.addEventListener input (
      ; to next-val $editor-el.value
-     ; to nb.lines $row.index $next-val
-     ; set $next-val row.record.text
      !row.sync-input-control $next-val false
      !scope.auto-size-textarea $editor-el
-     !nb.run
-     !nb.save-line $row
+     !commit-or-draft-row $row $next-val
     )
     !editor-el.addEventListener keydown (
      ; to { ev } $argv
@@ -1151,13 +1990,16 @@
     ]
 
     ; to row.update-classes (
-     -- Syncs row and line-number CSS classes for multiline and edit-individual-line states
-     ; to line-cls [ match
+     -- Syncs row and line-number CSS classes for multiline, edit-individual-line, set-by, draft-rejected, and highlighted states
+     ; to base-cls [ match
       { [ and { propertyIs true row.is-multiline } { propertyIs true row.is-editing } ] : 'lane-line lane-line--multiline lane-line--editing' }
       { [ propertyIs true row.is-multiline ] : 'lane-line lane-line--multiline' }
       { [ propertyIs true row.is-editing ] : 'lane-line lane-line--editing' }
       { true : lane-line }
      ]
+     ; to with-sb [ ternary $row.set-by [ ; add $base-cls ' lane-line--set-by' ] $base-cls ]
+     ; to with-dr [ ternary $row.draft [ ; add $with-sb ' lane-line--draft-rejected' ] $with-sb ]
+     ; to line-cls [ ternary [ propertyIs true row.is-highlighted ] [ ; add $with-dr ' lane-line--highlighted' ] $with-dr ]
      ; set $line-cls row.el.className
      ; to num-cls [ match
       { [ propertyIs true row.is-editing ] : 'lane-line-num lane-line-num--editable lane-line-num--active' }
@@ -1198,8 +2040,6 @@
      ; set $row.is-editing ctrl.disabled
      !ctrl.addEventListener input (
       ; to next-val $ctrl.value
-      ; to nb.lines $row.index $next-val
-      ; set $next-val row.record.text
       ; to still-multi !scope.has-newline $next-val
       [ match
        { [ propertyIs $row.is-multiline still-multi ] (
@@ -1207,8 +2047,7 @@
        ) }
        { true : !row.sync-input-control $next-val true }
       ]
-      !nb.run
-      !nb.save-line $row
+      !commit-or-draft-row $row $next-val
      )
      [ match
       { $multiline : null }
@@ -1297,6 +2136,8 @@
     !el.appendChild $preview-el
     !el.appendChild $remove-btn
     !attach-line-info-btn $row $el
+    !attach-line-set-by $row $el
+    !attach-line-draft $row $el
     !row.update-classes
     !num-el.addEventListener click : !nb.open-line-editor $row
     !remove-btn.addEventListener click : !nb.remove-line $row.index
@@ -1355,8 +2196,19 @@
   ; to first-line ; add $before $first
   ; set $first-line input-el.value
   ; to nb.lines $row.index $first-line
-  ; set $first-line row.record.text
-  ; to dirty-recs { $row.record }
+  ; to dirty-recs {}
+  ; to first-check !validate-line $first-line $row.index
+  ; to pending-drafts {}
+  [ match
+   { $first-check.ok (
+    ; set $first-line row.record.text
+    !clear-row-draft $row
+    !dirty-recs.push $row.record
+   ) }
+   { true (
+    !pending-drafts.push [ object { row $row } { text $first-line } { error $first-check.error } ]
+   ) }
+  ]
   ; to last-rest-idx ; subtract $rest.length 1
   ; to last-pasted [ get rest $last-rest-idx ]
   ; to caret-pos $last-pasted.length
@@ -1366,11 +2218,30 @@
   ; to last-row ; each $rest (
    ; to { line-text offset } $argv
    ; to target-idx ; add $base-idx $offset
-   ; to inserted !nb.insert-row $target-idx $line-text
-   !dirty-recs.push $inserted.record
-   $inserted
+   ; to paste-check !validate-line $line-text $target-idx
+   [ match
+    { $paste-check.ok (
+     ; to inserted !nb.insert-row $target-idx $line-text
+     !dirty-recs.push $inserted.record
+     $inserted
+    ) }
+    { true (
+     ; to safe-rec [ object { id !generateLineId $window } { text '' } { updatedAt null } ]
+     ; to inserted !nb.insert-row $target-idx $line-text $safe-rec
+     !dirty-recs.push $safe-rec
+     !pending-drafts.push [ object { row $inserted } { text $line-text } { error $paste-check.error } ]
+     $inserted
+    ) }
+   ]
   )
   !nb.renumber
+  ; each $pending-drafts (
+   ; to { pd } $argv
+   ; to d-rec !save-row-draft $pd.row $pd.text $pd.error
+   [ match
+    { $pd.row.set-draft : !pd.row.set-draft $d-rec true }
+   ]
+  )
   [ match
    { $last-row.input-el.focus : !last-row.input-el.focus }
   ]
@@ -1383,10 +2254,29 @@
  )
 
  ; to nb.insert-line (
-  -- Inserts a line at the given index, focuses it, re-runs, and persists
+  -- Inserts a line at the given index, focuses it, re-runs, and persists if parseable (or stores a rejected draft)
   ; to { index text } $argv
-  ; to row !nb.insert-row $index $text
+  ; to initial [ match
+   { [ propertyIs undefined text ] : '' }
+   { true : $text }
+  ]
+  ; to ins-check !validate-line $initial $index
+  ; to row [ match
+   { $ins-check.ok : !nb.insert-row $index $initial }
+   { true (
+    ; to safe-rec [ object { id !generateLineId $window } { text '' } { updatedAt null } ]
+    !nb.insert-row $index $initial $safe-rec
+   ) }
+  ]
   !nb.renumber
+  [ match
+   { [ propertyIs false ins-check.ok ] (
+    ; to d-rec !save-row-draft $row $initial $ins-check.error
+    [ match
+     { $row.set-draft : !row.set-draft $d-rec true }
+    ]
+   ) }
+  ]
   [ match
    { $row.input-el.focus : !row.input-el.focus }
   ]
@@ -1439,9 +2329,24 @@
   $row
  )
 
+ ; to nb.apply-external-rejected-draft (
+  -- Displays a rejected draft notice on an open target row without modifying its active or saved FieldScript
+  ; to { line-id draft } $argv
+  ; to found ; object { row null }
+  ; each $nb.rows (
+   ; to { r } $argv
+   ; condition { propertyIs $line-id r.record.id } : ; set $r found.row
+  )
+  ; to target-row $found.row
+  [ match
+   { [ and { $target-row } { $target-row.set-draft } ] : !target-row.set-draft $draft false }
+  ]
+  $target-row
+ )
+
  ; to nb.apply-external-line-update (
   -- Applies a line text update written by another lane to an open row without re-writing KV, then re-runs Source if active
-  ; to { line-id next-text updated-at visited } $argv
+  ; to { line-id next-text updated-at visited set-by } $argv
   ; to found ; object { row null }
   ; each $nb.rows (
    ; to { r } $argv
@@ -1453,6 +2358,10 @@
     ; to nb.lines $target-row.index $next-text
     ; set $next-text target-row.record.text
     ; set $updated-at target-row.record.updatedAt
+    !clear-row-draft $target-row
+    [ match
+     { [ and { $set-by } { $target-row.set-set-by } ] : !target-row.set-set-by $set-by }
+    ]
     [ match
      { [ propertyIs code target-row.kind ] (
       !target-row.sync-input-control $next-text false
@@ -1485,33 +2394,166 @@
      ) }
     ]
     [ match
+     { [ propertyIs story nb.active-tab ] : null }
      { [ propertyIs input nb.active-tab ] : null }
      { [ propertyIs data nb.active-tab ] : null }
-     { true : !nb.run $visited }
+     { true : !nb.run $visited false null [ object { trigger export } ] }
     ]
    ) }
   ]
   $target-row
  )
 
+ ; to nb.set-line-quiet (
+  -- Updates a line by exact line ID or trimmed prefix in-place and persists to KV without re-running Source (preserving active View DOM)
+  ; to { target next-text insert-if-missing } $argv
+  ; to clean-target [ match { $target.trim : !target.trim } { $target : ; add '' $target } { true : '' } ]
+  ; to text-str [ match
+   { [ propertyIs null next-text ] : '' }
+   { [ propertyIs undefined next-text ] : '' }
+   { true : ; add '' $next-text }
+  ]
+  ; to found ; object { row null }
+  ; each $nb.rows (
+   ; to { r } $argv
+   ; condition { propertyIs null found.row } (
+    ; to is-id [ propertyIs $clean-target r.record.id ]
+    ; to r-txt [ match { $r.record.text.trim : !r.record.text.trim } { true : '' } ]
+    ; to is-pfx [ match
+     { [ propertyIs '' clean-target ] : false }
+     { [ !r-txt.startsWith $clean-target ] : true }
+     { true : false }
+    ]
+    ; to is-hit [ match { $is-id : true } { $is-pfx : true } { true : false } ]
+    ; condition { propertyIs true is-hit } : ; set $r found.row
+   )
+  )
+  [ match
+   { $found.row (
+    ; to r $found.row
+    ; to q-check !validate-line $text-str $r.index
+    [ match
+     { $q-check.ok (
+      ; to nb.lines $r.index $text-str
+      ; set $text-str r.record.text
+      !clear-row-draft $r
+      [ match
+       { [ propertyIs code r.kind ] (
+        !r.sync-input-control $text-str false
+        [ match
+         { $r.editor-el (
+          ; set $text-str r.editor-el.value
+          !scope.auto-size-textarea $r.editor-el
+         ) }
+        ]
+       ) }
+      ]
+      !nb.save-line $r
+      ; object { ok true } { lineId $r.record.id } { index $r.index } { inserted false }
+     ) }
+     { true (
+      ; to d-rec !save-row-draft $r $text-str $q-check.error
+      [ match
+       { $r.set-draft : !r.set-draft $d-rec false }
+      ]
+      ; object { ok false } { syntaxError true } { lineId $r.record.id } { index $r.index } { error $q-check.error }
+     ) }
+    ]
+   ) }
+   { $insert-if-missing (
+    ; to q-ins-check !validate-line $text-str $nb.lines.length
+    [ match
+     { $q-ins-check.ok (
+      ; to inserted !nb.insert-row $nb.lines.length $text-str
+      !nb.renumber
+      !persist-structural { $inserted.record } {}
+      ; object { ok true } { lineId $inserted.record.id } { index $inserted.index } { inserted true }
+     ) }
+     { true : ; object { ok false } { syntaxError true } { error $q-ins-check.error } }
+    ]
+   ) }
+   { true : ; object { ok false } { error 'Target line not found' } }
+  ]
+ )
+
  ; to nb.remove-line (
-  -- Removes the line at the given index, renumbers, re-runs, and persists
+  -- Removes the line at the given index, clears any exported set-by links and rejected drafts, renumbers, re-runs, and persists
   ; to { index } $argv
   ; to row [ get nb.rows $index ]
   [ match
    { $row (
     ; condition { propertyIs $row nb.editing-row } : !nb.close-line-editor false
+    !clear-row-draft $row
     ; to removed-rec $row.record
+    ; to was-export [ propertyIs export row.kind ]
+    ; to exp-targets [ match { $row.spec.targets : $row.spec.targets } { true : {} } ]
     !row.el.remove
     !nb.lines.splice $index 1
     !nb.line-records.splice $index 1
     !nb.rows.splice $index 1
+    ; condition { propertyIs true was-export } (
+     ; each $exp-targets (
+      ; to { old-t } $argv
+      [ match
+       { $lane-control.clear-lane-line-set-by (
+        !lane-control.clear-lane-line-set-by $old-t.laneId $old-t.lineId $nb.lane.id $removed-rec.id
+       ) }
+      ]
+     )
+    )
     !nb.renumber
     !nb.run
     ; to removed-ids [ match { $removed-rec.id : { $removed-rec.id } } { true : {} } ]
     !persist-structural {} $removed-ids
    ) }
   ]
+ )
+
+ ; to restore-stored-drafts (
+  -- Attaches any stored rejected drafts from localStorage onto loaded rows without overwriting saved FieldScript
+  ; to { was-init } $argv
+  ; to drafts-map [ match
+   { $loadLaneSourceDrafts : !loadLaneSourceDrafts $data $window $nb.lane.id }
+   { true : ; object }
+  ]
+  ; to drafts-list [ match
+   { $listLaneSourceDrafts : !listLaneSourceDrafts $data $window $nb.lane.id }
+   { $window.Object.values : !window.Object.values $drafts-map }
+   { true : {} }
+  ]
+  ; condition { propertyIsGreaterThan 0 drafts-list.length } (
+   ; each $nb.rows (
+    ; to { r idx } $argv
+    ; to direct [ get drafts-map $r.record.id ]
+    ; to matched-draft [ match
+     { $direct : $direct }
+     { [ and { [ propertyIs false was-init ] } { [ propertyIs 1 nb.rows.length ] } { [ propertyIs 0 idx ] } { [ propertyIs '' r.record.text ] } ] (
+      ; to by-idx ; object { item null }
+      ; each $drafts-list (
+       ; to { cand } $argv
+       ; condition { and { [ propertyIs null by-idx.item ] } { [ propertyIs 0 cand.lineIndex ] } } : ; set $cand by-idx.item
+      )
+      [ match
+       { $by-idx.item (
+        ; set $by-idx.item.lineId r.record.id
+        $by-idx.item
+       ) }
+       { true : null }
+      ]
+     ) }
+     { true : null }
+    ]
+    [ match
+     { $matched-draft (
+      ; to d-check !validate-line $matched-draft.text $idx
+      [ match
+       { $d-check.ok : !clear-row-draft $r }
+       { $r.set-draft : !r.set-draft $matched-draft false }
+      ]
+     ) }
+    ]
+   )
+  )
  )
 
  ; to nb.sync-records (
@@ -1526,17 +2568,33 @@
   ; set 0 nb.line-records.length
   ; set 0 nb.rows.length
   ; each $next-records (
-   ; to { rec } $argv
-   ; to row !nb.create-row $rec.text $rec
-   !nb.lines.push $rec.text
-   !nb.line-records.push $rec
+   ; to { rec idx } $argv
+   ; to raw-txt [ match { [ propertyIs null rec.text ] : '' } { [ propertyIs undefined rec.text ] : '' } { true : $rec.text } ]
+   ; to sync-check !validate-line $raw-txt $idx
+   ; to safe-rec [ match
+    { $sync-check.ok : $rec }
+    { true : [ object { id $rec.id } { text '' } { updatedAt $rec.updatedAt } { setBy $rec.setBy } ] }
+   ]
+   ; to row !nb.create-row $safe-rec.text $safe-rec
+   !nb.lines.push $safe-rec.text
+   !nb.line-records.push $safe-rec
    !nb.rows.push $row
    !lines-el.appendChild $row.el
+   [ match
+    { [ propertyIs false sync-check.ok ] (
+     ; to d-rec !save-row-draft $row $raw-txt $sync-check.error
+     [ match
+      { $row.set-draft : !row.set-draft $d-rec false }
+     ]
+    ) }
+   ]
   )
   !nb.renumber
+  !restore-stored-drafts true
   ; set true nb.script-initialized
   !saveLaneScript $data $nb.lane.data $nb.lane.id $nb.line-records $window null
   [ match
+   { [ propertyIs story nb.active-tab ] : null }
    { [ propertyIs input nb.active-tab ] : null }
    { [ propertyIs data nb.active-tab ] : null }
    { true : !nb.run }
@@ -1559,7 +2617,11 @@
   !lines-el.appendChild $row.el
  )
  !nb.renumber
+ !restore-stored-drafts $loaded.initialized
  ; set $nb lane.notebook
+ [ match
+  { $lane-control.sync-export-links : !lane-control.sync-export-links }
+ ]
  !nb.apply-tab-ui
  !nb.run
  $nb

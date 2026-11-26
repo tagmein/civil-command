@@ -38,8 +38,14 @@
  ; set lane-config-field active-field.className
  ; to active-label !document.createElement div
  ; assign $active-label { className lane-config-label } { textContent 'Current Session' }
+ ; to active-id-row !document.createElement div
+ ; set lane-session-dir-row active-id-row.className
  ; to active-id-box !document.createElement div
  ; set lane-session-id-box active-id-box.className
+ ; to copy-agent-btn !document.createElement button
+ ; assign $copy-agent-btn { type button } { className 'lane-modal-action lane-config-reset-btn' } { textContent 'Copy Info' } { title 'Copy session & open lanes context for an agent' }
+ !active-id-row.appendChild $active-id-box
+ !active-id-row.appendChild $copy-agent-btn
  ; to active-dir-row !document.createElement div
  ; set lane-session-dir-row active-dir-row.className
  ; to active-dir-box !document.createElement div
@@ -57,22 +63,22 @@
  !rename-row.appendChild $rename-input
  !rename-row.appendChild $rename-btn
  !active-field.appendChild $active-label
- !active-field.appendChild $active-id-box
+ !active-field.appendChild $active-id-row
  !active-field.appendChild $active-dir-row
  !active-field.appendChild $rename-row
 
  ; to draft-field !document.createElement div
- ; assign $draft-field { className lane-session-draft-banner } { hidden true }
+ ; assign $draft-field { className 'workspace-session-draft lane-session-draft-banner' } { hidden true }
  ; to draft-text !document.createElement div
- ; assign $draft-text { className lane-session-draft-text } { textContent 'This session has unsaved changes.' }
+ ; assign $draft-text { className 'workspace-session-draft-label lane-session-draft-text' } { textContent 'Unsaved version' }
  ; to draft-btns !document.createElement div
- ; set lane-config-input-row draft-btns.className
+ ; set 'workspace-session-draft-actions lane-config-input-row' draft-btns.className
  ; to draft-save-btn !document.createElement button
- ; assign $draft-save-btn { type button } { className 'lane-modal-action lane-config-btn--save' } { textContent 'Save version' }
+ ; assign $draft-save-btn { type button } { className 'workspace-mini-btn workspace-mini-btn--save' } { textContent Save }
  ; to draft-fork-btn !document.createElement button
- ; assign $draft-fork-btn { type button } { className lane-modal-action } { textContent 'Fork as new' }
+ ; assign $draft-fork-btn { type button } { className workspace-mini-btn } { textContent Fork }
  ; to draft-abandon-btn !document.createElement button
- ; assign $draft-abandon-btn { type button } { className 'lane-modal-action lane-modal-action--close' } { textContent Abandon }
+ ; assign $draft-abandon-btn { type button } { className 'workspace-mini-btn workspace-mini-btn--danger' } { textContent Abandon }
  !draft-btns.appendChild $draft-save-btn
  !draft-btns.appendChild $draft-fork-btn
  !draft-btns.appendChild $draft-abandon-btn
@@ -241,10 +247,29 @@
  !hist-toolbar.appendChild $hist-new-btn
  !hist-toolbar.appendChild $hist-fork-btn
 
+ ; to hist-draft-field !document.createElement div
+ ; assign $hist-draft-field { className workspace-session-draft } { hidden true }
+ ; to hist-draft-text !document.createElement div
+ ; assign $hist-draft-text { className workspace-session-draft-label } { textContent 'Unsaved version' }
+ ; to hist-draft-btns !document.createElement div
+ ; set workspace-session-draft-actions hist-draft-btns.className
+ ; to hist-draft-save-btn !document.createElement button
+ ; assign $hist-draft-save-btn { type button } { className 'workspace-mini-btn workspace-mini-btn--save' } { textContent Save }
+ ; to hist-draft-fork-btn !document.createElement button
+ ; assign $hist-draft-fork-btn { type button } { className workspace-mini-btn } { textContent Fork }
+ ; to hist-draft-abandon-btn !document.createElement button
+ ; assign $hist-draft-abandon-btn { type button } { className 'workspace-mini-btn workspace-mini-btn--danger' } { textContent Abandon }
+ !hist-draft-btns.appendChild $hist-draft-save-btn
+ !hist-draft-btns.appendChild $hist-draft-fork-btn
+ !hist-draft-btns.appendChild $hist-draft-abandon-btn
+ !hist-draft-field.appendChild $hist-draft-text
+ !hist-draft-field.appendChild $hist-draft-btns
+
  ; to hist-list !document.createElement div
  ; set lane-modal-list hist-list.className
 
  !history-page.appendChild $hist-toolbar
+ !history-page.appendChild $hist-draft-field
  !history-page.appendChild $hist-list
 
  !panel.appendChild $header
@@ -262,11 +287,15 @@
   { close-btn $close-btn }
   { session-body $session-body }
   { active-id-box $active-id-box }
+  { copy-agent-btn $copy-agent-btn }
+  { copy-timer null }
   { active-dir-box $active-dir-box }
   { active-dir-btn $active-dir-btn }
   { rename-input $rename-input }
   { rename-btn $rename-btn }
   { draft-field $draft-field }
+  { draft-text $draft-text }
+  { draft-btns $draft-btns }
   { draft-save-btn $draft-save-btn }
   { draft-fork-btn $draft-fork-btn }
   { draft-abandon-btn $draft-abandon-btn }
@@ -303,6 +332,12 @@
   { hist-search $hist-search }
   { hist-new-btn $hist-new-btn }
   { hist-fork-btn $hist-fork-btn }
+  { hist-draft-field $hist-draft-field }
+  { hist-draft-text $hist-draft-text }
+  { hist-draft-btns $hist-draft-btns }
+  { hist-draft-save-btn $hist-draft-save-btn }
+  { hist-draft-fork-btn $hist-draft-fork-btn }
+  { hist-draft-abandon-btn $hist-draft-abandon-btn }
   { hist-list $hist-list }
   { hist-query '' }
   { hist-els {} }
@@ -361,6 +396,14 @@
   )
   ; set 0 items-store.length
 
+  ; to pending [ propertyIs true lane-control.session-status-pending ]
+  ; to dirty [ and { propertyIs false pending } { propertyIs true lane-control.session-dirty } ]
+  ; to blocked [ match { $pending : true } { $dirty : true } { true : false } ]
+  ; to pending-lbl [ match
+   { [ propertyIs '' lane-control.session-status-label ] : 'Loading…' }
+   { $lane-control.session-status-label : $lane-control.session-status-label }
+   { true : 'Loading…' }
+  ]
   ; to items [ match { $resolved-list : $resolved-list } { true : {} } ]
   [ match
    { [ propertyIs 0 items.length ] (
@@ -374,20 +417,26 @@
     ; each $items (
      ; to { item } $argv
      ; to is-avail [ propertyIs true item.available ]
+     ; to can-go [ and { propertyIs true is-avail } { propertyIs false blocked } ]
      ; to row !document.createElement div
      ; set [ ternary $is-avail lane-session-link-row 'lane-session-link-row lane-session-link-row--unavailable' ] row.className
      ; to go-btn !document.createElement button
      ; to display-name [ match { $item.name : $item.name } { true : $item.id } ]
      ; to go-title [ match
-      { $is-avail : ; add 'Switch to ' ; add $display-name ; add ' (' ; add $item.id ')' }
-      { true : ; add 'Session ' ; add $item.id ' is no longer available' }
+      { [ propertyIs false is-avail ] : ; add 'Session ' ; add $item.id ' is no longer available' }
+      { $pending : ; add $pending-lbl ; add ' — wait before switching to ' ; add $display-name ; add ' (' ; add $item.id ')' }
+      { $dirty : ; add 'Resolve unsaved version (Save, Fork, or Abandon) before switching to ' ; add $display-name ; add ' (' ; add $item.id ')' }
+      { true : ; add 'Switch to ' ; add $display-name ; add ' (' ; add $item.id ')' }
      ]
-     ; assign $go-btn { type button } { className lane-session-link-go } { textContent $display-name } { title $go-title } { disabled [ ternary $is-avail false true ] }
+     ; assign $go-btn { type button } { className lane-session-link-go } { textContent $display-name } { title $go-title } { disabled [ ternary $can-go false true ] }
+     !go-btn.setAttribute aria-disabled [ ternary $can-go 'false' 'true' ]
      [ match
       { $is-avail (
        !go-btn.addEventListener click (
-        !lane-control.switch-session $item.id
-        !modal.close
+        ; condition { and { propertyIs false lane-control.session-status-pending } { propertyIs false lane-control.session-dirty } } (
+         !lane-control.switch-session $item.id
+         !modal.close
+        )
        )
       ) }
      ]
@@ -472,7 +521,14 @@
   ; to cur-id $lane-control.session-id
   ; to browser-id $lane-control.browser-session-id
   ; to overridden [ propertyIs true lane-control.session-overridden ]
-  ; to dirty [ propertyIs true lane-control.session-dirty ]
+  ; to pending [ propertyIs true lane-control.session-status-pending ]
+  ; to dirty [ and { propertyIs false pending } { propertyIs true lane-control.session-dirty } ]
+  ; to blocked [ match { $pending : true } { $dirty : true } { true : false } ]
+  ; to pending-lbl [ match
+   { [ propertyIs '' lane-control.session-status-label ] : 'Loading…' }
+   { $lane-control.session-status-label : $lane-control.session-status-label }
+   { true : 'Loading…' }
+  ]
   ; to cur-name [ match
    { $lane-control.session-meta.name : $lane-control.session-meta.name }
    { true : $cur-id }
@@ -498,7 +554,16 @@
   ; set $dir-label active-dir-box.title
   ; set $dir-confirmed active-dir-btn.hidden
   ; set $cur-name rename-input.value
-  ; set [ ternary $dirty false true ] draft-field.hidden
+  ; set [ ternary $blocked false true ] draft-field.hidden
+  ; set [ ternary $pending 'workspace-session-draft workspace-session-draft--pending lane-session-draft-banner' 'workspace-session-draft lane-session-draft-banner' ] draft-field.className
+  ; set [ ternary $pending $pending-lbl 'Unsaved version' ] draft-text.textContent
+  ; set $pending draft-btns.hidden
+  ; set $blocked switch-input.disabled
+  ; set $blocked switch-go-btn.disabled
+  ; set $blocked new-sess-btn.disabled
+  ; set $blocked return-btn.disabled
+  ; set $blocked switch-tab-btn.disabled
+  ; set $blocked new-tab-btn.disabled
   ; set $browser-id browser-id-box.textContent
   ; set [ ternary $overridden false true ] override-actions.hidden
 
@@ -542,19 +607,25 @@
     ) }
     { true (
      ; to sw-btn !document.createElement button
-     ; assign $sw-btn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent Switch }
+     ; assign $sw-btn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent Switch } { disabled $blocked }
+     !sw-btn.setAttribute aria-disabled [ ternary $blocked 'true' 'false' ]
      !sw-btn.addEventListener click (
-      !lane-control.switch-session $rec.id
-      !modal.close
+      ; condition { and { propertyIs false lane-control.session-status-pending } { propertyIs false lane-control.session-dirty } } (
+       !lane-control.switch-session $rec.id
+       !modal.close
+      )
      )
      !acts.appendChild $sw-btn
      [ match
       { $modal.adv-open (
        ; to tab-btn !document.createElement button
-       ; assign $tab-btn { type button } { className lane-modal-action } { textContent 'Tab only' }
+       ; assign $tab-btn { type button } { className lane-modal-action } { textContent 'Tab only' } { disabled $blocked }
+       !tab-btn.setAttribute aria-disabled [ ternary $blocked 'true' 'false' ]
        !tab-btn.addEventListener click (
-        !lane-control.switch-tab-session $rec.id
-        !modal.render-session
+        ; condition { and { propertyIs false lane-control.session-status-pending } { propertyIs false lane-control.session-dirty } } (
+         !lane-control.switch-tab-session $rec.id
+         !modal.render-session
+        )
        )
        !acts.appendChild $tab-btn
       ) }
@@ -565,13 +636,26 @@
    !row.appendChild $acts
    !recent-list.appendChild $row
    !modal.recent-els.push $row
-   !modal.recent-items.push ; object { rec $rec } { el $row }
+   !modal.recent-items.push ; object { rec $rec } { el $row } { switch-btn [ match { $is-cur : null } { true : $sw-btn } ] }
   )
  )
 
  ; to modal.render-history-page (
   -- Renders the full-screen Session History Page with chronological activation times and 1-click switching
   !lane-control.ensure-session
+  ; to pending [ propertyIs true lane-control.session-status-pending ]
+  ; to dirty [ and { propertyIs false pending } { propertyIs true lane-control.session-dirty } ]
+  ; to blocked [ match { $pending : true } { $dirty : true } { true : false } ]
+  ; to pending-lbl [ match
+   { [ propertyIs '' lane-control.session-status-label ] : 'Loading…' }
+   { $lane-control.session-status-label : $lane-control.session-status-label }
+   { true : 'Loading…' }
+  ]
+  ; set [ ternary $blocked false true ] hist-draft-field.hidden
+  ; set [ ternary $pending 'workspace-session-draft workspace-session-draft--pending' workspace-session-draft ] hist-draft-field.className
+  ; set [ ternary $pending $pending-lbl 'Unsaved version' ] hist-draft-text.textContent
+  ; set $pending hist-draft-btns.hidden
+  ; set $blocked hist-new-btn.disabled
   ; while { propertyIsGreaterThan 0 modal.hist-els.length } (
    ; to old !modal.hist-els.pop
    !old.remove
@@ -608,6 +692,14 @@
     !modal.hist-els.push $empty-h
    ) }
    { true (
+    ; to ts-opts [ match
+     { $lane-control.get-clock-display-options : !lane-control.get-clock-display-options }
+     { true (
+      ; to fb-tz [ match { $getBrowserTimeZone : !getBrowserTimeZone $window.Intl } { true : UTC } ]
+      ; to fb-hr [ match { $lane-control.clock-hour-format : $lane-control.clock-hour-format } { true : '12h' } ]
+      [ object { timeZone $fb-tz } { hourFormat $fb-hr } { showTimeZone true } { intl $window.Intl } ]
+     ) }
+    ]
     ; each $matches (
      ; to { entry } $argv
      ; to row !document.createElement div
@@ -616,11 +708,11 @@
      ; set lane-modal-item-info info.className
      ; to nm !document.createElement div
      ; assign $nm { className lane-modal-item-title } { textContent $entry.sessionName }
-     ; to start-fmt !formatLineTimestamp $entry.startedAt
+     ; to start-fmt !formatLineTimestamp $entry.startedAt $ts-opts
      ; to dur-txt !formatSessionDuration $entry.startedAt $entry.endedAt
      ; to time-txt [ match
       { $entry.endedAt (
-       ; to end-fmt !formatLineTimestamp $entry.endedAt
+       ; to end-fmt !formatLineTimestamp $entry.endedAt $ts-opts
        ; add $start-fmt.display ; add ' – ' ; add $end-fmt.display ; add ' (' ; add $dur-txt ')'
       ) }
       { true : ; add $start-fmt.display ' · Active now' }
@@ -654,10 +746,13 @@
       ) }
       { true (
        ; to sw-btn !document.createElement button
-       ; assign $sw-btn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent Switch }
+       ; assign $sw-btn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent Switch } { disabled $blocked }
+       !sw-btn.setAttribute aria-disabled [ ternary $blocked 'true' 'false' ]
        !sw-btn.addEventListener click (
-        !lane-control.switch-session $entry.sessionId
-        !modal.close
+        ; condition { and { propertyIs false lane-control.session-status-pending } { propertyIs false lane-control.session-dirty } } (
+         !lane-control.switch-session $entry.sessionId
+         !modal.close
+        )
        )
        !acts.appendChild $sw-btn
       ) }
@@ -666,7 +761,7 @@
      !row.appendChild $acts
      !hist-list.appendChild $row
      !modal.hist-els.push $row
-     !modal.hist-items.push ; object { entry $entry } { el $row }
+     !modal.hist-items.push ; object { entry $entry } { el $row } { switch-btn [ match { $is-cur : null } { true : $sw-btn } ] }
     )
    ) }
   ]
@@ -677,6 +772,7 @@
   ; set '' switch-input.value
   !show-mode session Sessions 'Switch, rename, fork, or manage your active session'
   !modal.render-session
+  ; set 'Copy Info' copy-agent-btn.textContent
   $modal
  )
 
@@ -696,6 +792,24 @@
   !modal.close
   [ match
    { $lane-control.dir-modal.open-confirm : !lane-control.dir-modal.open-confirm }
+  ]
+ )
+ !copy-agent-btn.addEventListener click (
+  [ match
+   { $lane-control.copy-agent-context : !lane-control.copy-agent-context }
+  ]
+  ; set Copied copy-agent-btn.textContent
+  [ match
+   { $window.setTimeout (
+    [ match
+     { $modal.copy-timer : !window.clearTimeout $modal.copy-timer }
+    ]
+    ; to next-timer !window.setTimeout (
+     ; set 'Copy Info' copy-agent-btn.textContent
+     ; set null modal.copy-timer
+    ) 1200
+    ; set $next-timer modal.copy-timer
+   ) }
   ]
  )
  !rename-btn.addEventListener click (
@@ -732,24 +846,28 @@
   )
  )
  !switch-go-btn.addEventListener click (
-  ; to target-id !switch-input.value.trim
-  [ match
-   { [ propertyIs '' target-id ] : !set-error 'Enter a session ID to switch to' }
-   { true (
-    !set-error ''
-    !lane-control.switch-session $target-id
-    ; set '' switch-input.value
-    !modal.close
-   ) }
-  ]
+  ; condition { and { propertyIs false lane-control.session-status-pending } { propertyIs false lane-control.session-dirty } } (
+   ; to target-id !switch-input.value.trim
+   [ match
+    { [ propertyIs '' target-id ] : !set-error 'Enter a session ID to switch to' }
+    { true (
+     !set-error ''
+     !lane-control.switch-session $target-id
+     ; set '' switch-input.value
+     !modal.close
+    ) }
+   ]
+  )
  )
  !new-sess-btn.addEventListener click (
-  !set-error ''
-  !modal.close
-  [ match
-   { $lane-control.prompt-new-session : !lane-control.prompt-new-session false }
-   { true : !lane-control.new-session }
-  ]
+  ; condition { and { propertyIs false lane-control.session-status-pending } { propertyIs false lane-control.session-dirty } } (
+   !set-error ''
+   !modal.close
+   [ match
+    { $lane-control.prompt-new-session : !lane-control.prompt-new-session false }
+    { true : !lane-control.new-session }
+   ]
+  )
  )
  !fork-sess-btn.addEventListener click (
   !set-error ''
@@ -766,47 +884,67 @@
   !modal.render-session
  )
  !return-btn.addEventListener click (
-  !lane-control.return-to-browser-session
-  !modal.render-session
+  ; condition { and { propertyIs false lane-control.session-status-pending } { propertyIs false lane-control.session-dirty } } (
+   !lane-control.return-to-browser-session
+   !modal.render-session
+  )
  )
  !promote-btn.addEventListener click (
   !lane-control.promote-tab-session
   !modal.render-session
  )
  !switch-tab-btn.addEventListener click (
-  ; to target-id !switch-input.value.trim
-  [ match
-   { [ propertyIs '' target-id ] : !set-error 'Enter a session ID to open in this tab' }
-   { true (
-    !set-error ''
-    !lane-control.switch-tab-session $target-id
-    ; set '' switch-input.value
-    !modal.render-session
-   ) }
-  ]
+  ; condition { and { propertyIs false lane-control.session-status-pending } { propertyIs false lane-control.session-dirty } } (
+   ; to target-id !switch-input.value.trim
+   [ match
+    { [ propertyIs '' target-id ] : !set-error 'Enter a session ID to open in this tab' }
+    { true (
+     !set-error ''
+     !lane-control.switch-tab-session $target-id
+     ; set '' switch-input.value
+     !modal.render-session
+    ) }
+   ]
+  )
  )
  !new-tab-btn.addEventListener click (
-  !set-error ''
-  !modal.close
-  [ match
-   { $lane-control.prompt-new-session : !lane-control.prompt-new-session true }
-   { true : (
-    !lane-control.new-tab-session
-    !modal.render-session
-   ) }
-  ]
+  ; condition { and { propertyIs false lane-control.session-status-pending } { propertyIs false lane-control.session-dirty } } (
+   !set-error ''
+   !modal.close
+   [ match
+    { $lane-control.prompt-new-session : !lane-control.prompt-new-session true }
+    { true : (
+     !lane-control.new-tab-session
+     !modal.render-session
+    ) }
+   ]
+  )
  )
 
+ !hist-draft-save-btn.addEventListener click (
+  !lane-control.save-session-draft
+  !modal.render-history-page
+ )
+ !hist-draft-fork-btn.addEventListener click (
+  !lane-control.fork-session
+  !modal.render-history-page
+ )
+ !hist-draft-abandon-btn.addEventListener click (
+  !lane-control.abandon-session-draft
+  !modal.render-history-page
+ )
  !hist-search.addEventListener input (
   ; set $hist-search.value modal.hist-query
   !modal.render-history-page
  )
  !hist-new-btn.addEventListener click (
-  !modal.close
-  [ match
-   { $lane-control.prompt-new-session : !lane-control.prompt-new-session false }
-   { true : !lane-control.new-session }
-  ]
+  ; condition { and { propertyIs false lane-control.session-status-pending } { propertyIs false lane-control.session-dirty } } (
+   !modal.close
+   [ match
+    { $lane-control.prompt-new-session : !lane-control.prompt-new-session false }
+    { true : !lane-control.new-session }
+   ]
+  )
  )
  !hist-fork-btn.addEventListener click (
   !lane-control.fork-session

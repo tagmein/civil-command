@@ -21,7 +21,24 @@
          { true : ; add '' $item.name }
         ]
         ; to clean-type !normalizePrimitiveType $item.type
-        ; to entry ; object { name $raw-name } { type $clean-type }
+        ; to is-secret-set [ match
+         { [ propertyIs secret clean-type ] : [ match
+          { [ propertyIs true item.secretSet ] : true }
+          { $item.secretId : [ propertyIsGreaterThan 0 item.secretId.length ] }
+          { true : false }
+         ] }
+         { true : false }
+        ]
+        ; to entry [ match
+         { $is-secret-set (
+          ; to sec-id [ match
+           { $item.secretId : ; add '' $item.secretId }
+           { true : '' }
+          ]
+          ; object { name $raw-name } { type $clean-type } { secretId $sec-id } { secretSet true }
+         ) }
+         { true : ; object { name $raw-name } { type $clean-type } }
+        ]
         !out.push $entry
        ) }
       ]
@@ -117,6 +134,19 @@
   ; set $entry.type type-el.value
   !type-td.appendChild $type-el
 
+  ; to secret-box !document.createElement div
+  ; set lane-input-secret-box secret-box.className
+  ; to secret-input-el !document.createElement input
+  ; assign $secret-input-el { type password } { className lane-input-secret-input } { placeholder 'Set secret value (once)…' } { spellcheck false } { autocomplete 'new-password' }
+  ; to secret-set-btn !document.createElement button
+  ; assign $secret-set-btn { type button } { className lane-input-secret-set } { textContent Set } { title 'Encrypt and save secret (set once, cannot reveal)' }
+  ; to secret-locked-el !document.createElement span
+  ; assign $secret-locked-el { className lane-input-secret-locked } { textContent '•••••••• (Set — cannot reveal)' } { title 'Secret is stored encrypted on disk and cannot be revealed' }
+  !secret-box.appendChild $secret-input-el
+  !secret-box.appendChild $secret-set-btn
+  !secret-box.appendChild $secret-locked-el
+  !type-td.appendChild $secret-box
+
   ; to act-td !document.createElement td
   ; set 'lane-input-cell lane-input-cell--actions' act-td.className
   ; to remove-btn !document.createElement button
@@ -131,10 +161,53 @@
    { el $tr }
    { name-el $name-el }
    { type-el $type-el }
+   { secret-box $secret-box }
+   { secret-input-el $secret-input-el }
+   { secret-set-btn $secret-set-btn }
+   { secret-locked-el $secret-locked-el }
    { remove-btn $remove-btn }
    { entry $entry }
    { index 0 }
   ]
+
+  ; to row.sync-secret-ui (
+   ; to is-secret [ propertyIs secret entry.type ]
+   ; to is-set [ match
+    { $is-secret : [ propertyIs true entry.secretSet ] }
+    { true : false }
+   ]
+   ; set [ ternary $is-secret false true ] secret-box.hidden
+   ; set [ ternary $is-set true false ] secret-input-el.hidden
+   ; set [ ternary $is-set true false ] secret-set-btn.hidden
+   ; set [ ternary $is-set false true ] secret-locked-el.hidden
+   ; set [ ternary $is-set true false ] type-el.disabled
+  )
+
+  ; to row.commit-secret (
+   ; to raw-secret $secret-input-el.value
+   ; set '' secret-input-el.value
+   [ match
+    { [ propertyIs true entry.secretSet ] : null }
+    { [ propertyIs '' raw-secret ] : null }
+    { true (
+     ; to res [ match
+      { $setLaneSecret : !setLaneSecret $data $view.lane.data $view.lane.id $entry.name $raw-secret $entry.secretId }
+      { true : ; object { ok true } { secretId 'sec-local' } { secretSet true } }
+     ]
+     [ match
+      { $res.ok (
+       ; set $res.secretId entry.secretId
+       ; set true entry.secretSet
+       !row.sync-secret-ui
+       !view.save
+      ) }
+     ]
+     $res
+    ) }
+   ]
+  )
+
+  !row.sync-secret-ui
 
   !name-el.addEventListener input (
    ; set $name-el.value entry.name
@@ -151,10 +224,31 @@
    )
   )
   !type-el.addEventListener change (
-   ; to clean-type !normalizePrimitiveType $type-el.value
-   ; set $clean-type entry.type
-   ; set $clean-type type-el.value
-   !view.save
+   [ match
+    { [ propertyIs true entry.secretSet ] : ; set secret type-el.value }
+    { true (
+     ; to clean-type !normalizePrimitiveType $type-el.value
+     ; set $clean-type entry.type
+     ; set $clean-type type-el.value
+     !row.sync-secret-ui
+     !view.save
+     [ match
+      { [ propertyIs secret clean-type ] : [ match
+       { $secret-input-el.focus : !secret-input-el.focus }
+      ] }
+     ]
+    ) }
+   ]
+  )
+  !secret-set-btn.addEventListener click : !row.commit-secret
+  !secret-input-el.addEventListener keydown (
+   ; to { ev } $argv
+   ; condition { propertyIs Enter ev.key } (
+    [ match
+     { $ev.preventDefault : !ev.preventDefault }
+    ]
+    !row.commit-secret
+   )
   )
   !remove-btn.addEventListener click : !view.remove-input $row.index
   $row
@@ -194,11 +288,18 @@
  )
 
  ; to view.remove-input (
-  -- Removes the assumed input row at the given index and saves
+  -- Removes the assumed input row at the given index, deletes any encrypted secret from disk, and saves
   ; to { index } $argv
   ; to row [ get view.rows $index ]
   [ match
    { $row (
+    [ match
+     { [ propertyIs secret row.entry.type ] : [ match
+      { $row.entry.secretId : [ match
+       { $deleteLaneSecret : !deleteLaneSecret $data $view.lane.data $view.lane.id $row.entry.secretId }
+      ] }
+     ] }
+    ]
     !row.el.remove
     !view.inputs.splice $index 1
     !view.rows.splice $index 1
@@ -209,18 +310,39 @@
  )
 
  ; to view.seed-env (
-  -- Seeds an execution environment object with default values for declared primitive inputs
+  -- Seeds an execution environment object with default values for declared primitive inputs and decrypted values for set secret inputs
   ; to { env } $argv
+  ; to secret-names {}
+  ; to secret-set-names {}
+  ; to secret-values {}
   ; each $view.inputs (
    ; to { entry } $argv
    ; to trimmed !entry.name.trim
    [ match
     { [ propertyIs '' trimmed ] : null }
+    { [ propertyIs secret entry.type ] (
+     !secret-names.push $trimmed
+     ; to val [ match
+      { [ propertyIs true entry.secretSet ] : [ match
+       { $resolveLaneSecret : !resolveLaneSecret $data $view.lane.data $view.lane.id $entry }
+       { true : '' }
+      ] }
+      { true : '' }
+     ]
+     ; to env $trimmed $val
+     ; condition { propertyIs true entry.secretSet } : !secret-set-names.push $trimmed
+     ; condition { propertyIsGreaterThan 0 val.length } : !secret-values.push $val
+    ) }
     { true (
      ; to val !defaultValueForType $entry.type
      ; to env $trimmed $val
     ) }
    ]
+  )
+  ; condition { propertyIsGreaterThan 0 secret-names.length } (
+   ; to env.__secretNames $secret-names
+   ; to env.__secretSetNames $secret-set-names
+   ; to env.__secretValues $secret-values
   )
   $env
  )

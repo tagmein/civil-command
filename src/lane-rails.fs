@@ -12,6 +12,8 @@
  ; to wrench-svg '<svg class="top-rail-icon-svg top-rail-icon-svg--preferences" viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"><path d="M8.6 3.3A2.1 2.1 0 0 1 5.7 5.5L2.5 8.7A0.85 0.85 0 0 1 1.3 7.5L4.5 4.3A2.1 2.1 0 0 1 6.7 1.4L5.6 2.5L7.5 4.4Z"></path></svg>'
  ; to prev-arrow-svg '<svg class="side-rail-nav-arrow" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 2.5L4 6L7.5 9.5"></path></svg>'
  ; to next-arrow-svg '<svg class="side-rail-nav-arrow" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 2.5L8 6L4.5 9.5"></path></svg>'
+ ; to restore-right-svg '<svg class="side-rail-restore-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 6H9.5M6.5 3L9.5 6L6.5 9"></path></svg>'
+ ; to restore-left-svg '<svg class="side-rail-restore-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 6H2.5M5.5 3L2.5 6L5.5 9"></path></svg>'
 
  ; to top-rail !document.createElement aside
  ; set top-rail top-rail.className
@@ -47,12 +49,19 @@
  !preferences-btn.setAttribute aria-haspopup menu
  !preferences-btn.setAttribute aria-expanded 'false'
 
+ ; to clock-btn !document.createElement button
+ ; assign $clock-btn { type button } { className 'top-rail-chip top-rail-clock' } { textContent '' } { title 'Current time & timezone' }
+ !clock-btn.setAttribute aria-label 'Current time and timezone'
+ !clock-btn.setAttribute aria-haspopup dialog
+ !clock-btn.setAttribute aria-expanded 'false'
+
  !top-rail.appendChild $fullscreen-btn
  !top-rail.appendChild $search-btn
  !top-rail.appendChild $session-btn
  !top-rail.appendChild $packages-btn
  !top-rail.appendChild $servers-btn
  !top-rail.appendChild $preferences-btn
+ !top-rail.appendChild $clock-btn
 
  ; to session-menu !document.createElement div
  ; assign $session-menu { className 'top-rail-menu top-rail-menu--session' } { hidden true }
@@ -66,16 +75,22 @@
  ; assign $session-dir-el { type button } { className top-rail-menu-dir } { textContent Default }
 
  ; to session-draft-row !document.createElement div
- ; assign $session-draft-row { className top-rail-menu-draft-row } { hidden true }
+ ; assign $session-draft-row { className workspace-session-draft } { hidden true }
+ ; to session-draft-label !document.createElement div
+ ; assign $session-draft-label { className workspace-session-draft-label } { textContent 'Unsaved version' }
+ ; to session-draft-actions !document.createElement div
+ ; set workspace-session-draft-actions session-draft-actions.className
  ; to session-save-btn !document.createElement button
- ; assign $session-save-btn { type button } { className 'top-rail-menu-chip top-rail-menu-chip--save' } { textContent Save }
+ ; assign $session-save-btn { type button } { className 'workspace-mini-btn workspace-mini-btn--save' } { textContent Save }
  ; to session-draft-fork-btn !document.createElement button
- ; assign $session-draft-fork-btn { type button } { className top-rail-menu-chip } { textContent Fork }
+ ; assign $session-draft-fork-btn { type button } { className workspace-mini-btn } { textContent Fork }
  ; to session-abandon-btn !document.createElement button
- ; assign $session-abandon-btn { type button } { className 'top-rail-menu-chip top-rail-menu-chip--danger' } { textContent Abandon }
- !session-draft-row.appendChild $session-save-btn
- !session-draft-row.appendChild $session-draft-fork-btn
- !session-draft-row.appendChild $session-abandon-btn
+ ; assign $session-abandon-btn { type button } { className 'workspace-mini-btn workspace-mini-btn--danger' } { textContent Abandon }
+ !session-draft-actions.appendChild $session-save-btn
+ !session-draft-actions.appendChild $session-draft-fork-btn
+ !session-draft-actions.appendChild $session-abandon-btn
+ !session-draft-row.appendChild $session-draft-label
+ !session-draft-row.appendChild $session-draft-actions
 
  ; to session-new-btn !document.createElement button
  ; assign $session-new-btn { type button } { className 'top-rail-menu-item top-rail-menu-item--primary' } { textContent '+ New session' }
@@ -93,6 +108,10 @@
  ; assign $session-history-btn { type button } { className top-rail-menu-item } { textContent 'Session history…' }
  !session-history-btn.setAttribute role menuitem
 
+ ; to session-copy-btn !document.createElement button
+ ; assign $session-copy-btn { type button } { className top-rail-menu-item } { textContent 'Copy session info for agent' }
+ !session-copy-btn.setAttribute role menuitem
+
  ; to session-recent-div !document.createElement div
  ; assign $session-recent-div { className top-rail-menu-divider } { hidden true }
 
@@ -109,6 +128,7 @@
  !session-menu.appendChild $session-fork-btn
  !session-menu.appendChild $session-manage-btn
  !session-menu.appendChild $session-history-btn
+ !session-menu.appendChild $session-copy-btn
  !session-menu.appendChild $session-recent-div
  !session-menu.appendChild $session-recent-title
  !session-menu.appendChild $session-recent-el
@@ -171,6 +191,118 @@
  !pref-menu.appendChild $pref-set-btn
  !pref-menu.appendChild $pref-create-btn
 
+ ; to chip-menu !document.createElement div
+ ; assign $chip-menu { className 'top-rail-menu top-rail-menu--chip' } { hidden true }
+ !chip-menu.setAttribute role dialog
+ !chip-menu.setAttribute aria-label 'Chip details'
+
+ ; to chip-menu-title-el !document.createElement div
+ ; assign $chip-menu-title-el { className top-rail-chip-menu-title } { textContent '' }
+
+ ; to chip-menu-synced-el !document.createElement div
+ ; assign $chip-menu-synced-el { className top-rail-chip-menu-synced } { textContent 'Last synced: Never' }
+
+ ; to chip-menu-actions-el !document.createElement div
+ ; set top-rail-chip-menu-actions chip-menu-actions-el.className
+
+ ; to chip-sync-btn !document.createElement button
+ ; assign $chip-sync-btn { type button } { className 'top-rail-chip-menu-btn top-rail-chip-menu-btn--sync' } { textContent 'Sync now' }
+
+ ; to chip-copy-btn !document.createElement button
+ ; assign $chip-copy-btn { type button } { className 'top-rail-chip-menu-btn top-rail-chip-menu-btn--copy' } { textContent Copy }
+
+ !chip-menu-actions-el.appendChild $chip-sync-btn
+ !chip-menu-actions-el.appendChild $chip-copy-btn
+ !chip-menu.appendChild $chip-menu-title-el
+ !chip-menu.appendChild $chip-menu-synced-el
+ !chip-menu.appendChild $chip-menu-actions-el
+
+ ; to clock-menu !document.createElement div
+ ; assign $clock-menu { className 'top-rail-menu top-rail-menu--clock' } { hidden true }
+ !clock-menu.setAttribute role dialog
+ !clock-menu.setAttribute aria-label 'Clock and timezone preferences'
+
+ ; to clock-header-el !document.createElement div
+ ; set top-rail-clock-header clock-header-el.className
+
+ ; to clock-full-time-el !document.createElement div
+ ; assign $clock-full-time-el { className top-rail-clock-full-time } { textContent '' }
+
+ ; to clock-active-tz-el !document.createElement div
+ ; assign $clock-active-tz-el { className top-rail-clock-active-tz } { textContent '' }
+
+ !clock-header-el.appendChild $clock-full-time-el
+ !clock-header-el.appendChild $clock-active-tz-el
+
+ ; to clock-prefs-el !document.createElement div
+ ; set top-rail-clock-prefs clock-prefs-el.className
+
+ ; to clock-hour-group !document.createElement div
+ ; set top-rail-clock-hour-group clock-hour-group.className
+ !clock-hour-group.setAttribute role group
+ !clock-hour-group.setAttribute aria-label 'Hour format'
+
+ ; to clock-12h-btn !document.createElement button
+ ; assign $clock-12h-btn { type button } { className 'top-rail-clock-hour-btn top-rail-clock-hour-btn--active' } { textContent '12h' } { title '12-hour clock' }
+ !clock-12h-btn.setAttribute aria-pressed 'true'
+
+ ; to clock-24h-btn !document.createElement button
+ ; assign $clock-24h-btn { type button } { className top-rail-clock-hour-btn } { textContent '24h' } { title '24-hour clock' }
+ !clock-24h-btn.setAttribute aria-pressed 'false'
+
+ !clock-hour-group.appendChild $clock-12h-btn
+ !clock-hour-group.appendChild $clock-24h-btn
+
+ ; to clock-seconds-label !document.createElement label
+ ; set top-rail-clock-seconds-toggle clock-seconds-label.className
+
+ ; to clock-seconds-check !document.createElement input
+ ; assign $clock-seconds-check { type checkbox } { className top-rail-clock-seconds-check } { checked true }
+ !clock-seconds-check.setAttribute aria-label 'Show seconds'
+
+ ; to clock-seconds-text !document.createElement span
+ ; assign $clock-seconds-text { className top-rail-clock-seconds-text } { textContent 'Show seconds' }
+
+ !clock-seconds-label.appendChild $clock-seconds-check
+ !clock-seconds-label.appendChild $clock-seconds-text
+
+ !clock-prefs-el.appendChild $clock-hour-group
+ !clock-prefs-el.appendChild $clock-seconds-label
+
+ ; to clock-search-wrap !document.createElement div
+ ; set top-rail-clock-search-wrap clock-search-wrap.className
+
+ ; to clock-search-input !document.createElement input
+ ; assign $clock-search-input { type search } { className top-rail-clock-search } { placeholder 'Filter timezones…' } { value '' }
+ !clock-search-input.setAttribute aria-label 'Filter timezones'
+ !clock-search-wrap.appendChild $clock-search-input
+
+ ; to clock-hint-el !document.createElement div
+ ; assign $clock-hint-el { className top-rail-clock-hint } { textContent '' }
+
+ ; to clock-list-el !document.createElement div
+ ; set top-rail-clock-list clock-list-el.className
+ !clock-list-el.setAttribute role listbox
+ !clock-list-el.setAttribute aria-label 'Available timezones'
+
+ ; to clock-empty-el !document.createElement div
+ ; assign $clock-empty-el { className top-rail-clock-empty } { textContent 'No matching timezones' } { hidden true }
+
+ ; to clock-footer-el !document.createElement div
+ ; assign $clock-footer-el { className top-rail-clock-footer } { hidden true }
+
+ ; to clock-manage-btn !document.createElement button
+ ; assign $clock-manage-btn { type button } { className 'top-rail-menu-item top-rail-menu-item--primary top-rail-clock-manage-btn' } { textContent 'Manage timezones in Preferences ↗' }
+ !clock-footer-el.appendChild $clock-manage-btn
+
+ !clock-menu.appendChild $clock-header-el
+ !clock-menu.appendChild $clock-prefs-el
+ !clock-menu.appendChild $clock-search-wrap
+ !clock-menu.appendChild $clock-hint-el
+ !clock-menu.appendChild $clock-list-el
+ !clock-menu.appendChild $clock-empty-el
+ !clock-menu.appendChild $clock-footer-el
+
  ; to left-rail !document.createElement aside
  ; set 'side-rail side-rail--left' left-rail.className
  !left-rail.setAttribute role region
@@ -195,9 +327,27 @@
  !prev-nav-menu.setAttribute aria-label 'Previous sessions'
  ; to prev-nav-title !document.createElement div
  ; assign $prev-nav-title { className side-rail-nav-title } { textContent Previous }
+ ; to prev-nav-draft !document.createElement div
+ ; assign $prev-nav-draft { className workspace-session-draft } { hidden true }
+ ; to prev-nav-draft-label !document.createElement div
+ ; assign $prev-nav-draft-label { className workspace-session-draft-label } { textContent 'Unsaved version' }
+ ; to prev-nav-draft-actions !document.createElement div
+ ; set workspace-session-draft-actions prev-nav-draft-actions.className
+ ; to prev-nav-save-btn !document.createElement button
+ ; assign $prev-nav-save-btn { type button } { className 'workspace-mini-btn workspace-mini-btn--save' } { textContent Save }
+ ; to prev-nav-fork-btn !document.createElement button
+ ; assign $prev-nav-fork-btn { type button } { className workspace-mini-btn } { textContent Fork }
+ ; to prev-nav-abandon-btn !document.createElement button
+ ; assign $prev-nav-abandon-btn { type button } { className 'workspace-mini-btn workspace-mini-btn--danger' } { textContent Abandon }
+ !prev-nav-draft-actions.appendChild $prev-nav-save-btn
+ !prev-nav-draft-actions.appendChild $prev-nav-fork-btn
+ !prev-nav-draft-actions.appendChild $prev-nav-abandon-btn
+ !prev-nav-draft.appendChild $prev-nav-draft-label
+ !prev-nav-draft.appendChild $prev-nav-draft-actions
  ; to prev-nav-list !document.createElement div
  ; set side-rail-nav-list prev-nav-list.className
  !prev-nav-menu.appendChild $prev-nav-title
+ !prev-nav-menu.appendChild $prev-nav-draft
  !prev-nav-menu.appendChild $prev-nav-list
  !prev-nav.appendChild $prev-nav-tab
  !prev-nav.appendChild $prev-nav-menu
@@ -227,9 +377,27 @@
  !next-nav-menu.setAttribute aria-label 'Next sessions'
  ; to next-nav-title !document.createElement div
  ; assign $next-nav-title { className side-rail-nav-title } { textContent Next }
+ ; to next-nav-draft !document.createElement div
+ ; assign $next-nav-draft { className workspace-session-draft } { hidden true }
+ ; to next-nav-draft-label !document.createElement div
+ ; assign $next-nav-draft-label { className workspace-session-draft-label } { textContent 'Unsaved version' }
+ ; to next-nav-draft-actions !document.createElement div
+ ; set workspace-session-draft-actions next-nav-draft-actions.className
+ ; to next-nav-save-btn !document.createElement button
+ ; assign $next-nav-save-btn { type button } { className 'workspace-mini-btn workspace-mini-btn--save' } { textContent Save }
+ ; to next-nav-fork-btn !document.createElement button
+ ; assign $next-nav-fork-btn { type button } { className workspace-mini-btn } { textContent Fork }
+ ; to next-nav-abandon-btn !document.createElement button
+ ; assign $next-nav-abandon-btn { type button } { className 'workspace-mini-btn workspace-mini-btn--danger' } { textContent Abandon }
+ !next-nav-draft-actions.appendChild $next-nav-save-btn
+ !next-nav-draft-actions.appendChild $next-nav-fork-btn
+ !next-nav-draft-actions.appendChild $next-nav-abandon-btn
+ !next-nav-draft.appendChild $next-nav-draft-label
+ !next-nav-draft.appendChild $next-nav-draft-actions
  ; to next-nav-list !document.createElement div
  ; set side-rail-nav-list next-nav-list.className
  !next-nav-menu.appendChild $next-nav-title
+ !next-nav-menu.appendChild $next-nav-draft
  !next-nav-menu.appendChild $next-nav-list
  !next-nav.appendChild $next-nav-tab
  !next-nav.appendChild $next-nav-menu
@@ -250,15 +418,22 @@
  !preview-frame.appendChild $preview-body
  !preview-el.appendChild $preview-frame
 
+ ; to restore-btn !document.createElement button
+ ; assign $restore-btn { type button } { className side-rail-restore } { hidden true } { title 'Restore lane' } { innerHTML $restore-right-svg }
+ !restore-btn.setAttribute aria-label 'Restore lane'
+
  [ match
   { $document.body (
    !document.body.appendChild $top-rail
    !document.body.appendChild $session-menu
    !document.body.appendChild $packages-menu
    !document.body.appendChild $pref-menu
+   !document.body.appendChild $chip-menu
+   !document.body.appendChild $clock-menu
    !document.body.appendChild $left-rail
    !document.body.appendChild $right-rail
    !document.body.appendChild $preview-el
+   !document.body.appendChild $restore-btn
   ) }
  ]
 
@@ -271,6 +446,8 @@
   { session-status-el $session-status-el }
   { session-dir-el $session-dir-el }
   { session-draft-row $session-draft-row }
+  { session-draft-label $session-draft-label }
+  { session-draft-actions $session-draft-actions }
   { session-save-btn $session-save-btn }
   { session-draft-fork-btn $session-draft-fork-btn }
   { session-abandon-btn $session-abandon-btn }
@@ -278,6 +455,7 @@
   { session-fork-btn $session-fork-btn }
   { session-manage-btn $session-manage-btn }
   { session-history-btn $session-history-btn }
+  { session-copy-btn $session-copy-btn }
   { session-recent-el $session-recent-el }
   { session-recent-els {} }
   { session-recent-items {} }
@@ -306,6 +484,12 @@
   { prev-nav-tab $prev-nav-tab }
   { prev-nav-count $prev-nav-count }
   { prev-nav-menu $prev-nav-menu }
+  { prev-nav-draft $prev-nav-draft }
+  { prev-nav-draft-label $prev-nav-draft-label }
+  { prev-nav-draft-actions $prev-nav-draft-actions }
+  { prev-nav-save-btn $prev-nav-save-btn }
+  { prev-nav-fork-btn $prev-nav-fork-btn }
+  { prev-nav-abandon-btn $prev-nav-abandon-btn }
   { prev-nav-list $prev-nav-list }
   { prev-nav-els {} }
   { prev-nav-items {} }
@@ -315,6 +499,12 @@
   { next-nav-tab $next-nav-tab }
   { next-nav-count $next-nav-count }
   { next-nav-menu $next-nav-menu }
+  { next-nav-draft $next-nav-draft }
+  { next-nav-draft-label $next-nav-draft-label }
+  { next-nav-draft-actions $next-nav-draft-actions }
+  { next-nav-save-btn $next-nav-save-btn }
+  { next-nav-fork-btn $next-nav-fork-btn }
+  { next-nav-abandon-btn $next-nav-abandon-btn }
   { next-nav-list $next-nav-list }
   { next-nav-els {} }
   { next-nav-items {} }
@@ -324,23 +514,141 @@
   { preview-frame $preview-frame }
   { preview-header $preview-header }
   { preview-body $preview-body }
+  { restore-btn $restore-btn }
   { left-items {} }
   { right-items {} }
   { by-id ; object }
   { preview-lane null }
+  { pinned-lane null }
+  { is-preview-pinned false }
+  { restore-fade-delay 25000 }
+  { restore-hide-delay 30000 }
+  { restore-fade-timer null }
+  { restore-hide-timer null }
+  { is-restore-fading false }
+  { is-restore-expired false }
+  { top-elements {} }
+  { top-element-nodes {} }
+  { top-order {} }
+  { top-hidden {} }
+  { top-chip-items {} }
+  { chip-menu $chip-menu }
+  { chip-menu-title-el $chip-menu-title-el }
+  { chip-menu-synced-el $chip-menu-synced-el }
+  { chip-menu-actions-el $chip-menu-actions-el }
+  { chip-sync-btn $chip-sync-btn }
+  { chip-copy-btn $chip-copy-btn }
+  { is-chip-menu-open false }
+  { active-chip-el null }
+  { active-chip-item null }
+  { active-chip-index -1 }
+  { clock-btn $clock-btn }
+  { clock-menu $clock-menu }
+  { clock-full-time-el $clock-full-time-el }
+  { clock-active-tz-el $clock-active-tz-el }
+  { clock-prefs-el $clock-prefs-el }
+  { clock-hour-group $clock-hour-group }
+  { clock-12h-btn $clock-12h-btn }
+  { clock-24h-btn $clock-24h-btn }
+  { clock-seconds-label $clock-seconds-label }
+  { clock-seconds-check $clock-seconds-check }
+  { clock-search-input $clock-search-input }
+  { clock-hint-el $clock-hint-el }
+  { clock-list-el $clock-list-el }
+  { clock-empty-el $clock-empty-el }
+  { clock-footer-el $clock-footer-el }
+  { clock-manage-btn $clock-manage-btn }
+  { clock-option-els {} }
+  { clock-options {} }
+  { clock-filtered-options {} }
+  { clock-timezones {} }
+  { clock-active-option null }
+  { clock-search-query '' }
+  { is-clock-open false }
+  { clock-timer null }
  ]
 
+ ; to min-lane-modal-width [ match
+  { [ propertyIsGreaterThan 0 minLaneModalWidth ] : $minLaneModalWidth }
+  { true : 480 }
+ ]
+ ; to min-lane-modal-height [ match
+  { [ propertyIsGreaterThan 0 minLaneModalHeight ] : $minLaneModalHeight }
+  { true : 420 }
+ ]
+ ; to remove-elem-attr (
+  -- Safely removes an attribute across real and mock DOM elements
+  ; to { el attr-name } $argv
+  [ match
+   { $el.removeAttribute : !el.removeAttribute $attr-name }
+   { $el.attributes (
+    [ match
+     { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $el.attributes $attr-name }
+    ]
+   ) }
+  ]
+ )
  ; to sync-preview-width (
-  -- Applies or clears lane width classes and custom properties on the floating preview containers
-  ; to { rendered } $argv
+  -- Applies or clears lane width, modal minimum dimensions, classes, and custom properties on the floating preview containers
+  ; to { rendered lane } $argv
+  ; to has-modal [ match
+   { [ propertyIs true lane.has-open-modal ] : true }
+   { true : false }
+  ]
+  ; to modal-min-w [ match
+   { [ and { $has-modal } { [ propertyIsGreaterThan 0 lane.modal-min-width ] } ] : $lane.modal-min-width }
+   { $has-modal : $min-lane-modal-width }
+   { true : null }
+  ]
   ; to has-width [ match
    { [ propertyIs null rendered ] : false }
    { [ propertyIs undefined rendered ] : false }
    { true : true }
   ]
+  ; to effective [ match
+   { $has-width (
+    [ match
+     { $modal-min-w : !window.Math.max $rendered $modal-min-w }
+     { true : $rendered }
+    ]
+   ) }
+   { true : null }
+  ]
   ; to px-str [ match
-   { $has-width : ; add $rendered px }
+   { $has-width : ; add $effective px }
    { true : '' }
+  ]
+  ; to min-px-str [ match
+   { $modal-min-w : ; add $modal-min-w px }
+   { $has-width : 100px }
+   { true : '' }
+  ]
+  ; to modal-min-w-str [ match
+   { $modal-min-w : ; add $modal-min-w px }
+   { true : '' }
+  ]
+  ; to modal-min-h-str [ match
+   { $has-modal : ; add $min-lane-modal-height px }
+   { true : '' }
+  ]
+  ; each { $preview-el $preview-frame $preview-header $preview-body } (
+   ; to { el } $argv
+   [ match
+    { $has-modal : !el.setAttribute data-modal-open 'true' }
+    { true : !remove-elem-attr $el data-modal-open }
+   ]
+  )
+  [ match
+   { $preview-el.style (
+    ; set $modal-min-w-str preview-el.style.minWidth
+    ; set $modal-min-h-str preview-el.style.minHeight
+   ) }
+  ]
+  [ match
+   { $preview-frame.style (
+    ; set $modal-min-w-str preview-frame.style.minWidth
+    ; set $modal-min-h-str preview-frame.style.minHeight
+   ) }
   ]
   ; set [ ternary $has-width 'side-rail-preview-header lane-header lane-header--sized' 'side-rail-preview-header lane-header' ] preview-header.className
   ; set [ ternary $has-width 'side-rail-preview-body lane-body lane-body--sized' 'side-rail-preview-body lane-body' ] preview-body.className
@@ -350,7 +658,7 @@
     { $box.style (
      ; set $px-str box.style.width
      ; set $px-str box.style.maxWidth
-     ; set [ ternary $has-width 100px '' ] box.style.minWidth
+     ; set $min-px-str box.style.minWidth
      [ match
       { $box.style.setProperty (
        [ match
@@ -367,6 +675,9 @@
     ) }
    ]
   )
+  [ match
+   { $preview-body.style : ; set $modal-min-h-str preview-body.style.minHeight }
+  ]
  )
 
  ; to restore-node (
@@ -391,12 +702,154 @@
   ]
  )
 
+ ; to is-node-inside (
+  -- Returns true when target equals root or is contained inside root
+  ; to { root target } $argv
+  [ match
+   { [ propertyIs $root target ] : true }
+   { $root.contains : !root.contains $target }
+   { true : false }
+  ]
+ )
+
+ ; to reset-rail-item-pin (
+  -- Resets pin state, class, and ARIA attributes on a rail item
+  ; to { item } $argv
+  [ match
+   { $item (
+    ; set false item.pinned
+    ; set side-rail-icon item.icon-el.className
+    !item.icon-el.setAttribute aria-pressed 'false'
+    !item.icon-el.setAttribute aria-expanded 'false'
+    !item.icon-el.setAttribute aria-label [ ; add 'Pin ' $item.lane.title ]
+   ) }
+  ]
+ )
+
+ ; to clear-restore-timers (
+  -- Cancels any scheduled 25s fade-start and 30s hide timers for the floating restore arrow button
+  [ match
+   { $rails.restore-fade-timer (
+    [ match
+     { $window.clearTimeout : !window.clearTimeout $rails.restore-fade-timer }
+    ]
+    ; set null rails.restore-fade-timer
+   ) }
+  ]
+  [ match
+   { $rails.restore-hide-timer (
+    [ match
+     { $window.clearTimeout : !window.clearTimeout $rails.restore-hide-timer }
+    ]
+    ; set null rails.restore-hide-timer
+   ) }
+  ]
+ )
+
+ ; to sync-restore-btn-class (
+  -- Syncs the floating restore button class list from active rail side, pin state, and 25s-30s fade state
+  ; to active-lane $rails.preview-lane
+  [ match
+   { $active-lane (
+    ; to active-item [ get rails.by-id $active-lane.id ]
+    ; to side [ match
+     { $active-item.side : $active-item.side }
+     { $restore-btn.getAttribute : !restore-btn.getAttribute data-rail-side }
+     { true : left }
+    ]
+    ; to base-cls ; add 'side-rail-restore side-rail-restore--' $side
+    ; to pin-cls [ ternary $rails.is-preview-pinned [ ; add $base-cls ' side-rail-restore--pinned' ] $base-cls ]
+    ; to full-cls [ ternary $rails.is-restore-fading [ ; add $pin-cls ' side-rail-restore--fading' ] $pin-cls ]
+    ; set $full-cls restore-btn.className
+   ) }
+   { true : ; set side-rail-restore restore-btn.className }
+  ]
+ )
+
+ ; to rails.activate-restore-btn (
+  -- Instantly enables the floating restore arrow button next to the rail icon and starts its 25s fade / 30s hide lifecycle
+  ; to { icon-el } $argv
+  !clear-restore-timers
+  ; to active-lane $rails.preview-lane
+  [ match
+   { $active-lane (
+    ; set false rails.is-restore-fading
+    ; set false rails.is-restore-expired
+    ; set false restore-btn.hidden
+    !sync-restore-btn-class
+    [ match
+     { $icon-el (
+      ; to desired-top [ match
+       { $icon-el.getBoundingClientRect (
+        ; to rect !icon-el.getBoundingClientRect
+        [ match
+         { [ propertyIsGreaterThanOrEqual 0 rect.top ] : $rect.top }
+         { true : 24 }
+        ]
+       ) }
+       { true : 24 }
+      ]
+      [ match
+       { $restore-btn.style : ; set [ ; add [ !window.Math.round $desired-top ] px ] restore-btn.style.top }
+      ]
+     ) }
+    ]
+    [ match
+     { $window.setTimeout (
+      ; to fade-t !window.setTimeout (
+       ; set null rails.restore-fade-timer
+       [ match
+        { $rails.preview-lane (
+         ; set true rails.is-restore-fading
+         !sync-restore-btn-class
+        ) }
+       ]
+      ) $rails.restore-fade-delay
+      ; set $fade-t rails.restore-fade-timer
+      ; to hide-t !window.setTimeout (
+       ; set null rails.restore-hide-timer
+       [ match
+        { $rails.preview-lane (
+         ; set false rails.is-restore-fading
+         ; set true rails.is-restore-expired
+         ; set true restore-btn.hidden
+         !sync-restore-btn-class
+        ) }
+       ]
+      ) $rails.restore-hide-delay
+      ; set $hide-t rails.restore-hide-timer
+     ) }
+    ]
+   ) }
+  ]
+ )
+
  ; to rails.hide-preview (
-  -- Hides the floating hover preview and returns the live lane DOM nodes back to their owning lane cells
+  -- Hides the floating hover/pinned preview and restore arrow button and returns live lane DOM nodes to their owning lane cells
+  !clear-restore-timers
+  ; to pinned $rails.pinned-lane
   ; to lane $rails.preview-lane
+  ; set null rails.pinned-lane
+  ; set false rails.is-preview-pinned
+  ; set false rails.is-restore-fading
+  ; set false rails.is-restore-expired
+  [ match
+   { $pinned (
+    ; to pinned-item [ get rails.by-id $pinned.id ]
+    !reset-rail-item-pin $pinned-item
+   ) }
+  ]
+  ; set side-rail-restore restore-btn.className
+  ; set true restore-btn.hidden
+  ; set 'Restore lane' restore-btn.title
+  !restore-btn.setAttribute aria-label 'Restore lane'
+  !restore-btn.setAttribute data-lane-id ''
+  !restore-btn.setAttribute data-rail-side ''
   [ match
    { $lane (
     ; set null rails.preview-lane
+    ; to active-item [ get rails.by-id $lane.id ]
+    !reset-rail-item-pin $active-item
     !restore-node $lane.element $lane.header-top $lane.header-resizer
     [ match
      { $lane.body (
@@ -411,24 +864,58 @@
       [ match
        { $lane.notebook.output-view.element : !restore-node $lane.body $lane.notebook.output-view.element $body-ref }
       ]
+      [ match
+       { $lane.open-modals (
+        ; each $lane.open-modals (
+         ; to { open-m } $argv
+         [ match
+          { $open-m.backdrop : !restore-node $lane.body $open-m.backdrop $body-ref }
+         ]
+        )
+       ) }
+      ]
      ) }
     ]
-    !sync-preview-width null
+    !sync-preview-width null null
     ; set side-rail-preview preview-el.className
     ; set true preview-el.hidden
+    !preview-el.setAttribute aria-hidden 'true'
    ) }
   ]
  )
 
+ ; to apply-pin-state (
+  -- Updates pinned state and classes on the active preview, floating restore button, and rail item without remounting DOM nodes
+  ; to { item is-pinned } $argv
+  ; to lane $item.lane
+  ; to side $item.side
+  ; set [ ternary $is-pinned $lane null ] rails.pinned-lane
+  ; set $is-pinned rails.is-preview-pinned
+  ; set $is-pinned item.pinned
+  ; set [ ternary $is-pinned 'side-rail-icon side-rail-icon--pinned' side-rail-icon ] item.icon-el.className
+  !item.icon-el.setAttribute aria-pressed [ ternary $is-pinned 'true' 'false' ]
+  !item.icon-el.setAttribute aria-expanded 'true'
+  !item.icon-el.setAttribute aria-label [ ; add [ ternary $is-pinned 'Unpin ' 'Pin ' ] $lane.title ]
+  ; to base-side-cls ; add 'side-rail-preview side-rail-preview--' $side
+  ; set [ ternary $is-pinned [ ; add $base-side-cls ' side-rail-preview--pinned' ] $base-side-cls ] preview-el.className
+  !preview-el.setAttribute aria-hidden [ ternary $is-pinned 'false' 'true' ]
+  !sync-restore-btn-class
+ )
+
  ; to rails.show-preview (
-  -- Shows a floating non-interactive preview of a minimized lane anchored next to its rail icon
-  ; to { lane icon-el side } $argv
+  -- Shows a floating preview of a minimized lane anchored next to its rail icon (interactive when pinned) plus its floating restore arrow button
+  ; to { lane icon-el side pinned } $argv
+  ; to is-pinned [ propertyIs true pinned ]
+  ; to has-lane-fs [ match
+   { $lane-control.fullscreen-lane : true }
+   { true : false }
+  ]
   [ match
    { $lane (
-    ; condition { propertyIs true lane.is-minimized } (
+    ; condition { and { propertyIs true lane.is-minimized } { propertyIs false has-lane-fs } } (
      !rails.hide-preview
      ; set $lane rails.preview-lane
-     !sync-preview-width $lane.rendered-width
+     !sync-preview-width $lane.rendered-width $lane
      [ match
       { $lane.header-top : !preview-header.appendChild $lane.header-top }
      ]
@@ -438,8 +925,33 @@
      [ match
       { $lane.notebook.output-view.element : !preview-body.appendChild $lane.notebook.output-view.element }
      ]
-     ; to side-cls ; add 'side-rail-preview side-rail-preview--' $side
-     ; set $side-cls preview-el.className
+     [ match
+      { $lane.open-modals (
+       ; each $lane.open-modals (
+        ; to { open-m } $argv
+        [ match
+         { $open-m.backdrop : !preview-body.appendChild $open-m.backdrop }
+        ]
+       )
+      ) }
+     ]
+     ; to restore-lbl ; add 'Restore ' $lane.title
+     ; to restore-svg [ ternary [ propertyIs left side ] $restore-right-svg $restore-left-svg ]
+     ; assign $restore-btn { title $restore-lbl } { innerHTML $restore-svg }
+     !restore-btn.setAttribute aria-label $restore-lbl
+     !restore-btn.setAttribute data-lane-id $lane.id
+     !restore-btn.setAttribute data-rail-side $side
+     ; to item [ get rails.by-id $lane.id ]
+     [ match
+      { $item : !apply-pin-state $item $is-pinned }
+      { true (
+       ; set [ ternary $is-pinned $lane null ] rails.pinned-lane
+       ; set $is-pinned rails.is-preview-pinned
+       ; to base-side-cls ; add 'side-rail-preview side-rail-preview--' $side
+       ; set [ ternary $is-pinned [ ; add $base-side-cls ' side-rail-preview--pinned' ] $base-side-cls ] preview-el.className
+       !preview-el.setAttribute aria-hidden [ ternary $is-pinned 'false' 'true' ]
+      ) }
+     ]
      ; set false preview-el.hidden
      ; to desired-top [ match
       { $icon-el.getBoundingClientRect (
@@ -472,13 +984,93 @@
      [ match
       { $preview-el.style : ; set [ ; add [ !window.Math.round $clamped-top ] px ] preview-el.style.top }
      ]
+     !rails.activate-restore-btn $icon-el
     )
    ) }
   ]
  )
 
+ ; to rails.pin (
+  -- Pins a minimized lane's popover open for interaction and displays its floating restore arrow button
+  ; to { id } $argv
+  ; to item [ get rails.by-id $id ]
+  [ match
+   { $item (
+    [ match
+     { [ propertyIs $item.lane rails.preview-lane ] (
+      !apply-pin-state $item true
+      !rails.activate-restore-btn $item.icon-el
+     ) }
+     { true : !rails.show-preview $item.lane $item.icon-el $item.side true }
+    ]
+    $item
+   ) }
+  ]
+ )
+
+ ; to rails.unpin (
+  -- Unpins and closes any currently pinned minimized lane popover
+  !rails.hide-preview
+ )
+
+ ; to rails.toggle-pin (
+  -- Toggles a minimized lane's popover between pinned open and closed
+  ; to { id } $argv
+  ; to item [ get rails.by-id $id ]
+  [ match
+   { $item (
+    ; to already-pinned [ propertyIs $item.lane rails.pinned-lane ]
+    [ match
+     { $already-pinned (
+      !rails.hide-preview
+      false
+     ) }
+     { true (
+      !rails.pin $id
+      true
+     ) }
+    ]
+   ) }
+  ]
+ )
+
+ !restore-btn.addEventListener mouseenter : !rails.activate-restore-btn
+ !restore-btn.addEventListener mouseleave (
+  ; to { ev } $argv
+  ; condition { propertyIs null rails.pinned-lane } (
+   ; to related [ match
+    { $ev.relatedTarget : $ev.relatedTarget }
+    { true : null }
+   ]
+   ; to active-item [ match
+    { $rails.preview-lane : [ get rails.by-id $rails.preview-lane.id ] }
+    { true : null }
+   ]
+   ; to to-icon [ match
+    { $related (
+     [ match
+      { $active-item : !is-node-inside $active-item.icon-el $related }
+      { true : false }
+     ]
+    ) }
+    { true : false }
+   ]
+   ; condition { propertyIs false to-icon } : !rails.hide-preview
+  )
+ )
+ !restore-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  ; to target-lane $rails.preview-lane
+  [ match
+   { $target-lane : !lane-control.restore $target-lane.id }
+  ]
+ )
+
  ; to rails.update (
-  -- Refreshes a minimized lane's rail icon initial and accessible labels after a title change
+  -- Refreshes a minimized lane's rail icon initial, accessible labels, and active preview width/restore labels
   ; to { lane } $argv
   [ match
    { $lane (
@@ -488,7 +1080,16 @@
       ; to initial !getLaneInitial $lane.title $lane.id
       ; set $initial item.icon-el.textContent
       ; set $lane.title item.icon-el.title
-      !item.icon-el.setAttribute aria-label [ ; add 'Restore ' $lane.title ]
+      ; to is-pinned [ propertyIs $lane rails.pinned-lane ]
+      !item.icon-el.setAttribute aria-label [ ; add [ ternary $is-pinned 'Unpin ' 'Pin ' ] $lane.title ]
+      [ match
+       { [ propertyIs $lane rails.preview-lane ] (
+        !sync-preview-width $lane.rendered-width $lane
+        ; to restore-lbl ; add 'Restore ' $lane.title
+        ; set $restore-lbl restore-btn.title
+        !restore-btn.setAttribute aria-label $restore-lbl
+       ) }
+      ]
      ) }
     ]
    ) }
@@ -544,17 +1145,43 @@
         ; assign $icon-el { type button } { className side-rail-icon } { textContent $initial } { title $lane.title }
         !icon-el.setAttribute data-lane-id $lane.id
         !icon-el.setAttribute data-rail-side $side
-        !icon-el.setAttribute aria-label [ ; add 'Restore ' $lane.title ]
-        !icon-el.addEventListener mouseenter : !rails.show-preview $lane $icon-el $side
-        !icon-el.addEventListener mouseleave (
-         ; condition { propertyIs $lane rails.preview-lane } : !rails.hide-preview
+        !icon-el.setAttribute aria-label [ ; add 'Pin ' $lane.title ]
+        !icon-el.setAttribute aria-pressed 'false'
+        !icon-el.setAttribute aria-expanded 'false'
+        !icon-el.addEventListener mouseenter (
+         [ match
+          { [ propertyIs null rails.pinned-lane ] : !rails.show-preview $lane $icon-el $side false }
+          { [ propertyIs $lane rails.pinned-lane ] : !rails.activate-restore-btn $icon-el }
+         ]
         )
-        !icon-el.addEventListener click : !lane-control.restore $lane.id
+        !icon-el.addEventListener mouseleave (
+         ; to { ev } $argv
+         ; condition { propertyIs null rails.pinned-lane } (
+          ; to related [ match
+           { $ev.relatedTarget : $ev.relatedTarget }
+           { true : null }
+          ]
+          ; to to-restore [ match
+           { $related : !is-node-inside $restore-btn $related }
+           { true : false }
+          ]
+          ; condition { propertyIs false to-restore } (
+           ; condition { propertyIs $lane rails.preview-lane } : !rails.hide-preview
+          )
+         )
+        )
+        !icon-el.addEventListener click (
+         ; to { ev } $argv
+         [ match
+          { $ev.stopPropagation : !ev.stopPropagation }
+         ]
+         !rails.toggle-pin $lane.id
+        )
         ; to target-rail [ ternary [ propertyIs left side ] $left-rail $right-rail ]
         ; to target-nav [ ternary [ propertyIs left side ] $prev-nav $next-nav ]
         ; to target-list [ ternary [ propertyIs left side ] $rails.left-items $rails.right-items ]
         !restore-node $target-rail $icon-el $target-nav
-        ; to item [ object { lane $lane } { side $side } { icon-el $icon-el } ]
+        ; to item [ object { lane $lane } { side $side } { icon-el $icon-el } { restore-btn $restore-btn } { pinned false } ]
         !target-list.push $item
         ; to rails.by-id $lane.id $item
         $item
@@ -569,6 +1196,12 @@
  ; to rails.clear (
   -- Clears all minimized rail icons and hides any active hover preview
   !rails.hide-preview
+  [ match
+   { $rails.close-chip-menu : !rails.close-chip-menu }
+  ]
+  [ match
+   { $rails.close-clock-menu : !rails.close-clock-menu }
+  ]
   ; while { propertyIsGreaterThan 0 rails.left-items.length } (
    ; to item !rails.left-items.pop
    !item.icon-el.remove
@@ -589,6 +1222,564 @@
   ]
  )
 
+ ; to resolve-clock-format-opts (
+  ; to raw-hr $lane-control.clock-hour-format
+  ; to hr-fmt [ match
+   { $normalizeClockHourFormat : !normalizeClockHourFormat $raw-hr $window.Intl }
+   { [ propertyIs '24h' raw-hr ] : '24h' }
+   { [ propertyIs '24' raw-hr ] : '24h' }
+   { true : '12h' }
+  ]
+  ; to raw-sec $lane-control.clock-show-seconds
+  ; to show-sec [ match
+   { $normalizeClockShowSeconds : !normalizeClockShowSeconds $raw-sec }
+   { [ propertyIs false raw-sec ] : false }
+   { [ propertyIs 'false' raw-sec ] : false }
+   { true : true }
+  ]
+  ; object { hourFormat $hr-fmt } { showSeconds $show-sec }
+ )
+
+ ; to resolve-clock-now (
+  ; to { raw-now } $argv
+  [ match
+   { [ propertyIs null raw-now ] : [ match { $window.Date.now : !window.Date.now } { true : 0 } ] }
+   { [ propertyIs undefined raw-now ] : [ match { $window.Date.now : !window.Date.now } { true : 0 } ] }
+   { true : $raw-now }
+  ]
+ )
+
+ ; to build-clock-options-fallback (
+  ; to { tz-list } $argv
+  ; to browser-tz [ match
+   { $getBrowserTimeZone : !getBrowserTimeZone $window.Intl }
+   { true : UTC }
+  ]
+  ; to b-lbl ; add 'Browser (' ; add $browser-tz ')'
+  ; to out {
+   [ object { id browser } { value browser } { timeZone $browser-tz } { label $b-lbl } { shortLabel $browser-tz } { offset UTC } { previewTime '' } { isBrowser true } { isUtc false } { isConfigured false } ]
+   [ object { id UTC } { value UTC } { timeZone UTC } { label UTC } { shortLabel UTC } { offset 'UTC+00:00' } { previewTime '' } { isBrowser false } { isUtc true } { isConfigured false } ]
+  }
+  ; to list [ match { [ !window.Array.isArray $tz-list ] : $tz-list } { true : {} } ]
+  ; each $list (
+   ; to { tz } $argv
+   ; to clean [ match { $tz.trim : !tz.trim } { true : '' } ]
+   ; to is-utc [ propertyIs UTC clean ]
+   ; condition { and { propertyIsGreaterThan 0 clean.length } { propertyIs false is-utc } } (
+    !out.push [ object { id $clean } { value $clean } { timeZone $clean } { label $clean } { shortLabel $clean } { offset '' } { previewTime '' } { isBrowser false } { isUtc false } { isConfigured true } ]
+   )
+  )
+  $out
+ )
+
+ ; to resolve-clock-options (
+  ; to { now-val } $argv
+  ; to fmt-opts !resolve-clock-format-opts
+  [ match
+   { $buildTopRailTimezoneOptions : !buildTopRailTimezoneOptions $rails.clock-timezones [ object { intl $window.Intl } { now $now-val } { hourFormat $fmt-opts.hourFormat } { showSeconds $fmt-opts.showSeconds } ] }
+   { true : !build-clock-options-fallback $rails.clock-timezones }
+  ]
+ )
+
+ ; to resolve-active-clock-opt (
+  ; to { opts } $argv
+  ; to raw-sel [ match
+   { $lane-control.clock-timezone : $lane-control.clock-timezone }
+   { true : browser }
+  ]
+  [ match
+   { $resolveActiveClockTimezone : !resolveActiveClockTimezone $raw-sel $opts $window.Intl }
+   { true (
+    ; to clean-sel [ match { $raw-sel.trim : !raw-sel.trim } { true : browser } ]
+    ; to found ; object { opt [ get opts 0 ] }
+    ; each $opts (
+     ; to { cand } $argv
+     ; condition { propertyIs $clean-sel cand.value } : ; set $cand found.opt
+    )
+    $found.opt
+   ) }
+  ]
+ )
+
+ ; to rails.sync-chip-menu (
+  -- Syncs the chip popover dropdown title and Last synced timestamp with the currently active chip
+  ; to item $rails.active-chip-item
+  [ match
+   { $item (
+    ; to lookup-row [ match
+     { $lane-control.get-top-rail-chip-row : !lane-control.get-top-rail-chip-row $item }
+     { true : null }
+    ]
+    ; to raw-title [ match
+     { $lookup-row.title : $lookup-row.title }
+     { $item.title : $item.title }
+     { $item.row.title : $item.row.title }
+     { $item.label : $item.label }
+     { $item.text : $item.text }
+     { $item.url : $item.url }
+     { true : Chip }
+    ]
+    ; to title-str ; add '' $raw-title
+    ; set $title-str chip-menu-title-el.textContent
+    ; set $title-str chip-menu-title-el.title
+    ; to raw-fetched [ match
+     { $lookup-row.fetched : $lookup-row.fetched }
+     { $item.fetched : $item.fetched }
+     { $item.row.fetched : $item.row.fetched }
+     { $item.lastSynced : $item.lastSynced }
+     { $item.syncedAt : $item.syncedAt }
+     { true : '' }
+    ]
+    ; to fmt-opts !resolve-clock-format-opts
+    ; to disp-opts [ match
+     { $lane-control.get-clock-display-options : !lane-control.get-clock-display-options }
+     { true (
+      ; to now-val !resolve-clock-now
+      ; to tz-opts !resolve-clock-options $now-val
+      ; to act-opt !resolve-active-clock-opt $tz-opts
+      [ object
+       { timeZone [ match { $act-opt.timeZone : $act-opt.timeZone } { true : UTC } ] }
+       { hourFormat $fmt-opts.hourFormat }
+       { showTimeZone true }
+       { intl $window.Intl }
+      ]
+     ) }
+    ]
+    ; to ts-opts ; object { timeZone $disp-opts.timeZone } { hourFormat $disp-opts.hourFormat } { showTimeZone true } { intl $window.Intl }
+    ; to ts-info [ match
+     { [ and $raw-fetched $formatLineTimestamp ] : !formatLineTimestamp $raw-fetched $ts-opts }
+     { true : ; object { known false } { display Never } { iso '' } }
+    ]
+    ; to synced-display [ match
+     { [ propertyIs true ts-info.known ] : $ts-info.display }
+     { $raw-fetched : ; add '' $raw-fetched }
+     { true : Never }
+    ]
+    ; to synced-txt ; add 'Last synced: ' $synced-display
+    ; set $synced-txt chip-menu-synced-el.textContent
+    ; set [ match { $ts-info.iso : $ts-info.iso } { true : $synced-display } ] chip-menu-synced-el.title
+   ) }
+  ]
+ )
+
+ ; to rails.close-chip-menu (
+  -- Closes the top-rail chip popover dropdown
+  ; set true chip-menu.hidden
+  ; set false rails.is-chip-menu-open
+  [ match
+   { $rails.active-chip-el (
+    ; set top-rail-chip rails.active-chip-el.className
+    [ match
+     { $rails.active-chip-el.setAttribute : !rails.active-chip-el.setAttribute aria-expanded 'false' }
+    ]
+   ) }
+  ]
+  ; set null rails.active-chip-el
+  ; set null rails.active-chip-item
+  ; set -1 rails.active-chip-index
+ )
+
+ ; to position-chip-menu (
+  -- Centers the chip popover dropdown horizontally beneath the target chip element
+  ; to { chip-el } $argv
+  [ match
+   { $chip-el.getBoundingClientRect (
+    ; to rect !chip-el.getBoundingClientRect
+    [ match
+     { [ propertyIsGreaterThan 0 rect.width ] (
+      ; to half ; divide $rect.width 2
+      ; to center-x !window.Math.round ; add $rect.left $half
+      [ match
+       { $chip-menu.style : ; set [ ; add $center-x px ] chip-menu.style.left }
+      ]
+     ) }
+    ]
+   ) }
+  ]
+ )
+
+ ; to rails.open-chip-menu (
+  -- Opens the chip popover dropdown anchored below the clicked top-rail chip
+  ; to { chip-el chip-item chip-idx } $argv
+  !rails.close-session-menu
+  !rails.close-packages-menu
+  !rails.close-preferences-menu
+  !rails.close-clock-menu
+  [ match
+   { $rails.active-chip-el (
+    ; set top-rail-chip rails.active-chip-el.className
+    [ match
+     { $rails.active-chip-el.setAttribute : !rails.active-chip-el.setAttribute aria-expanded 'false' }
+    ]
+   ) }
+  ]
+  ; set $chip-el rails.active-chip-el
+  ; set $chip-item rails.active-chip-item
+  ; set $chip-idx rails.active-chip-index
+  ; set true rails.is-chip-menu-open
+  ; set Copy chip-copy-btn.textContent
+  [ match
+   { $chip-el (
+    ; set 'top-rail-chip top-rail-chip--active' chip-el.className
+    [ match
+     { $chip-el.setAttribute : !chip-el.setAttribute aria-expanded 'true' }
+    ]
+    !position-chip-menu $chip-el
+   ) }
+  ]
+  !rails.sync-chip-menu
+  ; set false chip-menu.hidden
+ )
+
+ ; to rails.toggle-chip-menu (
+  -- Toggles the chip popover dropdown for a top-rail chip
+  ; to { chip-el chip-item chip-idx } $argv
+  [ match
+   { [ and $rails.is-chip-menu-open [ propertyIs $chip-el rails.active-chip-el ] ] : !rails.close-chip-menu }
+   { true : !rails.open-chip-menu $chip-el $chip-item $chip-idx }
+  ]
+ )
+
+ ; to attach-chip-interaction (
+  -- Wires popover dropdown click and keyboard interaction onto a top-rail chip element
+  ; to { span chip-obj chip-idx } $argv
+  !span.setAttribute role button
+  !span.setAttribute tabindex '0'
+  !span.setAttribute aria-haspopup dialog
+  !span.setAttribute aria-expanded 'false'
+  !span.addEventListener click (
+   ; to { ev } $argv
+   [ match
+    { $ev.stopPropagation : !ev.stopPropagation }
+   ]
+   !rails.toggle-chip-menu $span $chip-obj $chip-idx
+  )
+  !span.addEventListener keydown (
+   ; to { ev } $argv
+   ; to is-act [ match
+    { [ propertyIs Enter ev.key ] : true }
+    { [ propertyIs ' ' ev.key ] : true }
+    { true : false }
+   ]
+   ; condition { propertyIs true is-act } (
+    [ match
+     { $ev.preventDefault : !ev.preventDefault }
+    ]
+    [ match
+     { $ev.stopPropagation : !ev.stopPropagation }
+    ]
+    !rails.toggle-chip-menu $span $chip-obj $chip-idx
+   )
+  )
+  !rails.top-chip-items.push ; object { el $span } { item $chip-obj } { index $chip-idx }
+ )
+
+ ; to append-before-clock (
+  -- Inserts a top-rail chip before clock-btn so clock-btn always remains the final element on the far right of all chips
+  ; to { node } $argv
+  [ match
+   { $top-rail.insertBefore : !top-rail.insertBefore $node $clock-btn }
+   { true (
+    [ match
+     { $top-rail.children.indexOf (
+      ; to c-idx !top-rail.children.indexOf $clock-btn
+      ; condition { propertyIsGreaterThanOrEqual 0 c-idx } : !top-rail.children.splice $c-idx 1
+     ) }
+    ]
+    !top-rail.appendChild $node
+    !top-rail.appendChild $clock-btn
+   ) }
+  ]
+ )
+
+ ; to compute-chip-rail-id (
+  -- Computes a unique canonical chip:<id> key for a top-rail element
+  ; to { item idx seen-map } $argv
+  ; to base-id [ match
+   { $resolveTopRailElementId : !resolveTopRailElementId $item $idx }
+   { [ and $item $item.railId ] : ; add '' $item.railId }
+   { [ and $item $item.id ] ( ; to s ; add '' $item.id , [ ternary [ !s.startsWith 'chip:' ] $s [ ; add 'chip:' $s ] ] ) }
+   { [ and $item $item.title ] : ; add 'chip:' $item.title }
+   { [ and $item $item.trim ] : ; add 'chip:' $item }
+   { true : ; add 'chip:' $idx }
+  ]
+  ; to cand ; object { id $base-id } { n 2 }
+  ; while { get seen-map $cand.id } (
+   ; set [ ; add $base-id ; add '#' $cand.n ] cand.id
+   ; set [ ; add $cand.n 1 ] cand.n
+  )
+  ; to seen-map $cand.id true
+  $cand.id
+ )
+
+ ; to rails.apply-top-layout (
+  -- Applies interface.rails.top.order and interface.rails.top.hidden to all built-in top-rail controls, chips, and clock
+  ; to elem-specs {}
+  ; to node-by-id [ object
+   { fullscreen $fullscreen-btn }
+   { search $search-btn }
+   { session $session-btn }
+   { packages $packages-btn }
+   { servers $servers-btn }
+   { preferences $preferences-btn }
+   { clock $clock-btn }
+  ]
+  ; each $rails.top-element-nodes (
+   ; to { entry } $argv
+   ; to node-by-id $entry.id $entry.el
+   ; to item-hid [ match { [ and $entry.item [ propertyIs true entry.item.hidden ] ] : true } { true : false } ]
+   !elem-specs.push [ object { railId $entry.id } { hidden $item-hid } ]
+  )
+  ; to layout [ match
+   { $resolveTopRailLayout : !resolveTopRailLayout [ object { elements $elem-specs } { order $rails.top-order } { hidden $rails.top-hidden } ] }
+   { true (
+    ; to def-ids { fullscreen search session packages servers preferences }
+    ; each $elem-specs ( ; to { es } $argv , !def-ids.push $es.railId )
+    !def-ids.push clock
+    ; to valid-map ; object
+    ; each $def-ids ( ; to { did } $argv , ; to valid-map $did true )
+    ; to ord-ids {}
+    ; to placed ; object
+    [ match
+     { [ and [ !window.Array.isArray $rails.top-order ] [ propertyIsGreaterThan 0 rails.top-order.length ] ] (
+      ; each $rails.top-order (
+       ; to { raw-id } $argv
+       ; to cid [ match { $raw-id.trim : !raw-id.trim } { $raw-id : ; add '' $raw-id } { true : '' } ]
+       ; to alr [ ternary [ get placed $cid ] true false ]
+       ; condition { and { get valid-map $cid } { propertyIs false alr } } (
+        ; to placed $cid true
+        !ord-ids.push $cid
+       )
+      )
+      ; each $def-ids (
+       ; to { did } $argv
+       ; to alr-d [ ternary [ get placed $did ] true false ]
+       ; condition { propertyIs false alr-d } (
+        ; to placed $did true
+        !ord-ids.push $did
+       )
+      )
+     ) }
+     { true : ; set $def-ids ord-ids }
+    ]
+    ; to hid-ids {}
+    ; to hid-seen ; object
+    [ match
+     { [ !window.Array.isArray $rails.top-hidden ] (
+      ; each $rails.top-hidden (
+       ; to { rh } $argv
+       ; to ch [ match { $rh.trim : !rh.trim } { $rh : ; add '' $rh } { true : '' } ]
+       ; to alr-h [ ternary [ get hid-seen $ch ] true false ]
+       ; condition { and { propertyIsGreaterThan 0 ch.length } { propertyIs false alr-h } } (
+        ; to hid-seen $ch true
+        !hid-ids.push $ch
+       )
+      )
+     ) }
+    ]
+    ; each $elem-specs (
+     ; to { es } $argv
+     ; to alr-eh [ ternary [ get hid-seen $es.railId ] true false ]
+     ; condition { and { propertyIs true es.hidden } { propertyIs false alr-eh } } (
+      ; to hid-seen $es.railId true
+      !hid-ids.push $es.railId
+     )
+    )
+    ; object { orderedIds $ord-ids } { hiddenIds $hid-ids }
+   ) }
+  ]
+  ; to hidden-map ; object
+  ; each $layout.hiddenIds (
+   ; to { hid } $argv
+   ; to hidden-map $hid true
+  )
+  ; to all-ids { fullscreen search session packages servers preferences clock }
+  ; each $rails.top-element-nodes ( ; to { entry } $argv , !all-ids.push $entry.id )
+  ; each $all-ids (
+   ; to { aid } $argv
+   ; to node [ get node-by-id $aid ]
+   ; to is-hid [ ternary [ get hidden-map $aid ] true false ]
+   [ match
+    { $node : ; set $is-hid node.hidden }
+   ]
+  )
+  ; condition { and { get hidden-map session } { propertyIs true rails.is-session-open } } : !rails.close-session-menu
+  ; condition { and { get hidden-map packages } { propertyIs true rails.is-packages-open } } : !rails.close-packages-menu
+  ; condition { and { get hidden-map preferences } { propertyIs true rails.is-preferences-open } } : !rails.close-preferences-menu
+  ; condition { and { get hidden-map clock } { propertyIs true rails.is-clock-open } } : !rails.close-clock-menu
+  ; condition { and { propertyIs true rails.is-chip-menu-open } { $rails.active-chip-el } { propertyIs true rails.active-chip-el.hidden } } : !rails.close-chip-menu
+  ; each $layout.orderedIds (
+   ; to { oid } $argv
+   ; to node [ get node-by-id $oid ]
+   [ match
+    { $node (
+     [ match
+      { $top-rail.children.indexOf (
+       ; to prev-idx !top-rail.children.indexOf $node
+       ; condition { propertyIsGreaterThanOrEqual 0 prev-idx } : !top-rail.children.splice $prev-idx 1
+      ) }
+     ]
+     !top-rail.appendChild $node
+    ) }
+   ]
+  )
+  $layout
+ )
+
+ ; to rails.set-top-layout (
+  -- Updates top-rail item ordering and hidden item IDs and re-applies layout immediately
+  ; to { raw-order raw-hidden } $argv
+  ; to next-ord [ match
+   { $normalizeTopRailOrder : !normalizeTopRailOrder $raw-order }
+   { [ !window.Array.isArray $raw-order ] : $raw-order }
+   { true : {} }
+  ]
+  ; to next-hid [ match
+   { $normalizeTopRailHidden : !normalizeTopRailHidden $raw-hidden }
+   { [ !window.Array.isArray $raw-hidden ] : $raw-hidden }
+   { true : {} }
+  ]
+  ; set $next-ord rails.top-order
+  ; set $next-hid rails.top-hidden
+  !rails.apply-top-layout
+ )
+
+ ; to rails.set-top-elements (
+  -- Replaces custom elements rendered inside the top rail row and applies configured top-rail order and visibility
+  ; to { raw-elements } $argv
+  ; to was-chip-open $rails.is-chip-menu-open
+  ; to prev-chip-item $rails.active-chip-item
+  ; to prev-chip-idx $rails.active-chip-index
+  ; while { propertyIsGreaterThan 0 rails.top-elements.length } (
+   ; to prev-el !rails.top-elements.pop
+   [ match
+    { $prev-el.remove : !prev-el.remove }
+   ]
+   [ match
+    { $top-rail.children.indexOf (
+     ; to prev-idx !top-rail.children.indexOf $prev-el
+     ; condition { propertyIsGreaterThanOrEqual 0 prev-idx } : !top-rail.children.splice $prev-idx 1
+    ) }
+   ]
+  )
+  ; set 0 rails.top-element-nodes.length
+  ; set 0 rails.top-chip-items.length
+  ; to chip-id-seen ; object
+  ; to list [ match
+   { [ !window.Array.isArray $raw-elements ] : $raw-elements }
+   { true : {} }
+  ]
+  ; each $list (
+   ; to { item item-idx } $argv
+   [ match
+    { [ and $item $item.appendChild ] (
+     ; to rail-id !compute-chip-rail-id $item $item-idx $chip-id-seen
+     [ match { $item.setAttribute : !item.setAttribute data-rail-id $rail-id } ]
+     !append-before-clock $item
+     !rails.top-elements.push $item
+     !rails.top-element-nodes.push [ object { id $rail-id } { el $item } { item $item } ]
+    ) }
+    { [ and $item $item.trim ] (
+     ; to rail-id !compute-chip-rail-id $item $item-idx $chip-id-seen
+     ; to span !document.createElement span
+     ; assign $span { className top-rail-chip } { textContent $item }
+     [ match { $span.setAttribute : !span.setAttribute data-rail-id $rail-id } ]
+     ; to str-obj ; object { title $item } { text $item } { value $item } { fetched '' } { railId $rail-id }
+     !attach-chip-interaction $span $str-obj $item-idx
+     !append-before-clock $span
+     !rails.top-elements.push $span
+     !rails.top-element-nodes.push [ object { id $rail-id } { el $span } { item $str-obj } ]
+    ) }
+    { $item (
+     ; to raw-text [ match
+      { $item.text : $item.text }
+      { $item.label : $item.label }
+      { $item.value : $item.value }
+      { true : '' }
+     ]
+     ; to text-str ; add '' $raw-text
+     [ match
+      { [ propertyIs '' text-str ] : null }
+      { true (
+       ; to rail-id !compute-chip-rail-id $item $item-idx $chip-id-seen
+       ; to span !document.createElement span
+       ; assign $span { className top-rail-chip } { textContent $text-str }
+       [ match { $span.setAttribute : !span.setAttribute data-rail-id $rail-id } ]
+       ; to bg-color [ match
+        { $item.color : $item.color }
+        { $item.backgroundColor : $item.backgroundColor }
+        { true : '' }
+       ]
+       [ match
+        { $bg-color (
+         ; set $bg-color span.style.backgroundColor
+         ; set #ffffff span.style.color
+        ) }
+       ]
+       [ match
+        { $item.borderColor : ; set $item.borderColor span.style.borderColor }
+       ]
+       [ match
+        { $item.title : ; set $item.title span.title }
+       ]
+       !attach-chip-interaction $span $item $item-idx
+       !append-before-clock $span
+       !rails.top-elements.push $span
+       !rails.top-element-nodes.push [ object { id $rail-id } { el $span } { item $item } ]
+      ) }
+     ]
+    ) }
+   ]
+  )
+  !rails.apply-top-layout
+  ; condition { propertyIs true was-chip-open } (
+   ; to prev-url [ match
+    { $prev-chip-item.url.trim : !prev-chip-item.url.trim }
+    { true : '' }
+   ]
+   ; to prev-title [ match
+    { $prev-chip-item.title.trim : !prev-chip-item.title.trim }
+    { true : '' }
+   ]
+   ; to rebound ; object { entry null }
+   ; each $rails.top-chip-items (
+    ; to { entry } $argv
+    ; condition { propertyIs null rebound.entry } (
+     ; to cur-url [ match
+      { $entry.item.url.trim : !entry.item.url.trim }
+      { true : '' }
+     ]
+     ; to cur-title [ match
+      { $entry.item.title.trim : !entry.item.title.trim }
+      { true : '' }
+     ]
+     ; to hit [ match
+      { [ and { propertyIsGreaterThan 0 prev-url.length } { propertyIs $prev-url cur-url } ] : true }
+      { [ and { propertyIsGreaterThan 0 prev-title.length } { propertyIs $prev-title cur-title } ] : true }
+      { [ propertyIs $prev-chip-idx entry.index ] : true }
+      { true : false }
+     ]
+     ; condition { propertyIs true hit } : ; set $entry rebound.entry
+    )
+   )
+   [ match
+    { $rebound.entry (
+     ; set $rebound.entry.el rails.active-chip-el
+     ; set $rebound.entry.item rails.active-chip-item
+     ; set $rebound.entry.index rails.active-chip-index
+     ; set 'top-rail-chip top-rail-chip--active' rebound.entry.el.className
+     [ match
+      { $rebound.entry.el.setAttribute : !rebound.entry.el.setAttribute aria-expanded 'true' }
+     ]
+     !position-chip-menu $rebound.entry.el
+     !rails.sync-chip-menu
+    ) }
+    { true : !rails.close-chip-menu }
+   ]
+  )
+  $rails.top-elements
+ )
+
  ; to rails.sync-fullscreen (
   -- Syncs the top-rail fullscreen button icon and accessibility attributes with current fullscreen state
   ; to active !is-fullscreen
@@ -603,49 +1794,51 @@
  )
 
  ; to rails.toggle-fullscreen (
-  -- Toggles fullscreen on the root html element (document.documentElement) and syncs the corner icon
-  ; to active !is-fullscreen
-  ; try (
-   [ match
-    { $active (
-     [ match
-      { $document.exitFullscreen : !document.exitFullscreen }
-      { $document.webkitExitFullscreen : !document.webkitExitFullscreen }
-     ]
-    ) }
-    { true (
-     ; to root $document.documentElement
-     [ match
-      { $root (
-       [ match
-        { $root.requestFullscreen : !root.requestFullscreen }
-        { $root.webkitRequestFullscreen : !root.webkitRequestFullscreen }
-       ]
-      ) }
-     ]
-    ) }
-   ]
-  ) : null
+  -- Toggles fullscreen on the root html element (document.documentElement) and syncs the corner icon (requires exiting lane fullscreen first)
+  ; to has-lane-fs [ match
+   { $lane-control.fullscreen-lane : true }
+   { true : false }
+  ]
+  ; condition { propertyIs false has-lane-fs } (
+   ; to active !is-fullscreen
+   ; try (
+    [ match
+     { $active (
+      [ match
+       { $document.exitFullscreen : !document.exitFullscreen }
+       { $document.webkitExitFullscreen : !document.webkitExitFullscreen }
+      ]
+     ) }
+     { true (
+      ; to root $document.documentElement
+      [ match
+       { $root (
+        [ match
+         { $root.requestFullscreen : !root.requestFullscreen }
+         { $root.webkitRequestFullscreen : !root.webkitRequestFullscreen }
+        ]
+       ) }
+      ]
+     ) }
+    ]
+   ) : null
+  )
   !rails.sync-fullscreen
  )
 
- ; to is-node-inside (
-  -- Returns true when target equals root or is contained inside root
-  ; to { root target } $argv
-  [ match
-   { [ propertyIs $root target ] : true }
-   { $root.contains : !root.contains $target }
-   { true : false }
-  ]
- )
-
  ; to sync-session-btn-class (
-  ; to dirty [ propertyIs true lane-control.session-dirty ]
+  ; to pending [ propertyIs true lane-control.session-status-pending ]
+  ; to dirty [ and { propertyIs false pending } { propertyIs true lane-control.session-dirty } ]
   ; to base [ match
    { $rails.is-session-open : 'top-rail-icon top-rail-icon--session top-rail-icon--active' }
    { true : 'top-rail-icon top-rail-icon--session' }
   ]
-  ; set [ ternary $dirty [ ; add $base ' top-rail-icon--dirty' ] $base ] session-btn.className
+  ; to next-cls [ match
+   { $pending : ; add $base ' top-rail-icon--pending' }
+   { $dirty : ; add $base ' top-rail-icon--dirty' }
+   { true : $base }
+  ]
+  ; set $next-cls session-btn.className
  )
 
  ; to rails.sync-session-menu (
@@ -660,8 +1853,16 @@
    { $lane-control.session-meta.version : ; add v $lane-control.session-meta.version }
    { true : v1 }
   ]
-  ; to dirty [ propertyIs true lane-control.session-dirty ]
+  ; to pending [ propertyIs true lane-control.session-status-pending ]
+  ; to dirty [ and { propertyIs false pending } { propertyIs true lane-control.session-dirty } ]
+  ; to blocked [ match { $pending : true } { $dirty : true } { true : false } ]
+  ; to pending-lbl [ match
+   { [ propertyIs '' lane-control.session-status-label ] : 'Loading…' }
+   { $lane-control.session-status-label : $lane-control.session-status-label }
+   { true : 'Loading…' }
+  ]
   ; to status-txt [ match
+   { $pending : ; add $sname ; add ' · ' ; add $ver ; add ' (' ; add $pending-lbl ')' }
    { $dirty : ; add $sname ; add ' · ' ; add $ver '* (unsaved)' }
    { true : ; add $sname ; add ' · ' $ver }
   ]
@@ -685,7 +1886,12 @@
   ; set $dir-label session-dir-el.textContent
   ; set $dir-ttl session-dir-el.title
   ; set [ ternary $dir-confirmed top-rail-menu-dir 'top-rail-menu-dir top-rail-menu-dir--unconfirmed' ] session-dir-el.className
-  ; set [ ternary $dirty false true ] session-draft-row.hidden
+  ; set [ ternary $blocked false true ] session-draft-row.hidden
+  ; set [ ternary $pending 'workspace-session-draft workspace-session-draft--pending' workspace-session-draft ] session-draft-row.className
+  ; set [ ternary $pending $pending-lbl 'Unsaved version' ] session-draft-label.textContent
+  ; set $pending session-draft-actions.hidden
+  ; set $blocked session-new-btn.disabled
+  !session-new-btn.setAttribute aria-disabled [ ternary $blocked 'true' 'false' ]
   !sync-session-btn-class
 
   ; while { propertyIsGreaterThan 0 rails.session-recent-els.length } (
@@ -713,7 +1919,13 @@
       { true : 'Default (unconfirmed)' }
      ]
      ; to rbtn !document.createElement button
-     ; assign $rbtn { type button } { className 'top-rail-menu-item top-rail-menu-session-item' } { title [ ; add 'Switch to ' ; add $rec.id ; add ' (' ; add $rec-dir ')' ] }
+     ; to rbtn-title [ match
+      { $pending : ; add $pending-lbl ; add ' — wait before switching to ' ; add $rec.id ; add ' (' ; add $rec-dir ')' }
+      { $dirty : ; add 'Resolve unsaved version (Save, Fork, or Abandon) before switching to ' ; add $rec.id ; add ' (' ; add $rec-dir ')' }
+      { true : ; add 'Switch to ' ; add $rec.id ; add ' (' ; add $rec-dir ')' }
+     ]
+     ; assign $rbtn { type button } { className 'top-rail-menu-item top-rail-menu-session-item' } { title $rbtn-title } { disabled $blocked }
+     !rbtn.setAttribute aria-disabled [ ternary $blocked 'true' 'false' ]
      ; to rname !document.createElement span
      ; assign $rname { className top-rail-menu-session-name } { textContent $rec-name }
      ; to rdir !document.createElement span
@@ -722,10 +1934,12 @@
      !rbtn.appendChild $rdir
      !rbtn.setAttribute role menuitem
      !rbtn.addEventListener click (
-      !rails.close-session-menu
-      [ match
-       { $lane-control.switch-session : !lane-control.switch-session $rec.id }
-      ]
+      ; condition { and { propertyIs false lane-control.session-status-pending } { propertyIs false lane-control.session-dirty } } (
+       !rails.close-session-menu
+       [ match
+        { $lane-control.switch-session : !lane-control.switch-session $rec.id }
+       ]
+      )
      )
      !session-recent-el.appendChild $rbtn
      !rails.session-recent-els.push $rbtn
@@ -750,6 +1964,8 @@
   -- Opens the Sessions dropdown menu anchored under the session button
   !rails.close-packages-menu
   !rails.close-preferences-menu
+  !rails.close-chip-menu
+  !rails.close-clock-menu
   [ match
    { $lane-control.ensure-session : !lane-control.ensure-session }
   ]
@@ -844,6 +2060,8 @@
   -- Opens the Packages dropdown menu anchored under the packages button
   !rails.close-session-menu
   !rails.close-preferences-menu
+  !rails.close-chip-menu
+  !rails.close-clock-menu
   [ match
    { $lane-control.ensure-session : !lane-control.ensure-session }
   ]
@@ -911,6 +2129,8 @@
   -- Refreshes and opens the preferences dropdown menu anchored under the wrench button
   !rails.close-session-menu
   !rails.close-packages-menu
+  !rails.close-chip-menu
+  !rails.close-clock-menu
   [ match
    { $lane-control.load-catalog : !lane-control.load-catalog }
   ]
@@ -996,25 +2216,42 @@
  )
 
  ; to render-nav-side (
-  -- Syncs one side rail's centered session arrow tab and flyout list with currently available destinations
-  ; to { side sessions nav-el tab-el count-el list-el els-store items-store close-fn } $argv
+  -- Syncs one side rail's centered session arrow tab, unsaved-version block, and flyout list with currently available destinations
+  ; to { side sessions nav-el tab-el count-el draft-el draft-lbl-el draft-acts-el list-el els-store items-store close-fn } $argv
   ; while { propertyIsGreaterThan 0 els-store.length } (
    ; to old-el !els-store.pop
    !old-el.remove
   )
   ; set 0 items-store.length
 
+  ; to pending [ propertyIs true lane-control.session-status-pending ]
+  ; to dirty [ and { propertyIs false pending } { propertyIs true lane-control.session-dirty } ]
+  ; to blocked [ match { $pending : true } { $dirty : true } { true : false } ]
+  ; to pending-lbl [ match
+   { [ propertyIs '' lane-control.session-status-label ] : 'Loading…' }
+   { $lane-control.session-status-label : $lane-control.session-status-label }
+   { true : 'Loading…' }
+  ]
   ; to list [ match { $sessions : $sessions } { true : {} } ]
   ; to count $list.length
   [ match
    { [ propertyIs 0 count ] (
     !close-fn
     ; set true nav-el.hidden
+    ; set true draft-el.hidden
     ; set '' count-el.textContent
     ; set true count-el.hidden
    ) }
    { true (
     ; set false nav-el.hidden
+    ; set [ ternary $blocked false true ] draft-el.hidden
+    ; set [ ternary $pending 'workspace-session-draft workspace-session-draft--pending' workspace-session-draft ] draft-el.className
+    [ match
+     { $draft-lbl-el : ; set [ ternary $pending $pending-lbl 'Unsaved version' ] draft-lbl-el.textContent }
+    ]
+    [ match
+     { $draft-acts-el : ; set $pending draft-acts-el.hidden }
+    ]
     ; to label-prefix [ ternary [ propertyIs left side ] 'Previous sessions' 'Next sessions' ]
     ; to label-txt ; add $label-prefix ; add ' (' ; add $count ')'
     ; set $label-txt tab-el.title
@@ -1033,9 +2270,16 @@
       { true : '' }
      ]
      ; to btn !document.createElement button
-     ; assign $btn { type button } { className side-rail-nav-item } { title [ ; add 'Switch to ' ; add $display-name ; add ' (' ; add $item.id ')' ] }
+     ; to btn-cls [ ternary $blocked 'side-rail-nav-item side-rail-nav-item--disabled' side-rail-nav-item ]
+     ; to btn-title [ match
+      { $pending : ; add $pending-lbl ; add ' — wait before switching to ' ; add $display-name ; add ' (' ; add $item.id ')' }
+      { $dirty : ; add 'Resolve unsaved version (Save, Fork, or Abandon) before switching to ' ; add $display-name ; add ' (' ; add $item.id ')' }
+      { true : ; add 'Switch to ' ; add $display-name ; add ' (' ; add $item.id ')' }
+     ]
+     ; assign $btn { type button } { className $btn-cls } { title $btn-title } { disabled $blocked }
      !btn.setAttribute role menuitem
      !btn.setAttribute data-session-id $item.id
+     !btn.setAttribute aria-disabled [ ternary $blocked 'true' 'false' ]
      ; to name-el !document.createElement span
      ; assign $name-el { className side-rail-nav-item-name } { textContent $display-name }
      !btn.appendChild $name-el
@@ -1047,10 +2291,12 @@
      ; assign $meta-el { className side-rail-nav-item-meta } { textContent $meta-txt }
      !btn.appendChild $meta-el
      !btn.addEventListener click (
-      !rails.close-session-nav
-      [ match
-       { $lane-control.switch-session : !lane-control.switch-session $item.id }
-      ]
+      ; condition { and { propertyIs false lane-control.session-status-pending } { propertyIs false lane-control.session-dirty } } (
+       !rails.close-session-nav
+       [ match
+        { $lane-control.switch-session : !lane-control.switch-session $item.id }
+       ]
+      )
      )
      !list-el.appendChild $btn
      !els-store.push $btn
@@ -1062,20 +2308,335 @@
 
  ; to rails.sync-session-nav (
   -- Updates the left (Previous) and right (Next) centered rail arrow tabs from available linked sessions
-  !render-nav-side left $lane-control.available-previous-sessions $prev-nav $prev-nav-tab $prev-nav-count $prev-nav-list $rails.prev-nav-els $rails.prev-nav-items $rails.close-prev-nav
-  !render-nav-side right $lane-control.available-next-sessions $next-nav $next-nav-tab $next-nav-count $next-nav-list $rails.next-nav-els $rails.next-nav-items $rails.close-next-nav
+  !render-nav-side left $lane-control.available-previous-sessions $prev-nav $prev-nav-tab $prev-nav-count $prev-nav-draft $prev-nav-draft-label $prev-nav-draft-actions $prev-nav-list $rails.prev-nav-els $rails.prev-nav-items $rails.close-prev-nav
+  !render-nav-side right $lane-control.available-next-sessions $next-nav $next-nav-tab $next-nav-count $next-nav-draft $next-nav-draft-label $next-nav-draft-actions $next-nav-list $rails.next-nav-els $rails.next-nav-items $rails.close-next-nav
+ )
+
+ ; to format-clock-display (
+  ; to { now-val active-opt } $argv
+  ; to fmt-opts !resolve-clock-format-opts
+  [ match
+   { $formatTopRailClock : !formatTopRailClock $now-val $active-opt $window.Intl $fmt-opts }
+   { true (
+    ; to tz-lbl [ match { $active-opt.shortLabel : $active-opt.shortLabel } { $active-opt.timeZone : $active-opt.timeZone } { true : UTC } ]
+    ; to dt [ match
+     { $window.Reflect.construct : !window.Reflect.construct $window.Date { $now-val } }
+     { true : null }
+    ]
+    ; to iso [ match { $dt.toISOString : !dt.toISOString } { true : '1970-01-01T00:00:00.000Z' } ]
+    ; to end-idx [ ternary $fmt-opts.showSeconds 19 16 ]
+    ; to hhmmss !iso.slice 11 $end-idx
+    ; to chip-txt ; add $hhmmss ; add ' ' $tz-lbl
+    ; object { chipText $chip-txt } { fullText $chip-txt } { timeZone $active-opt.timeZone } { label $active-opt.label } { shortZone $tz-lbl } { offset [ match { $active-opt.offset : $active-opt.offset } { true : UTC } ] } { hourFormat $fmt-opts.hourFormat } { showSeconds $fmt-opts.showSeconds } { iso $iso }
+   ) }
+  ]
+ )
+
+ ; to position-clock-menu (
+  -- Positions the clock dropdown beneath clock-btn while clamping inside viewport edges
+  [ match
+   { $clock-btn.getBoundingClientRect (
+    ; to rect !clock-btn.getBoundingClientRect
+    [ match
+     { [ propertyIsGreaterThan 0 rect.width ] (
+      ; to half ; divide $rect.width 2
+      ; to raw-x !window.Math.round ; add $rect.left $half
+      ; to vw [ match { [ propertyIsGreaterThan 0 window.innerWidth ] : $window.innerWidth } { true : 0 } ]
+      ; to clamped-x [ match
+       { [ propertyIsGreaterThan 360 vw ] (
+        ; to max-x ; subtract $vw 176
+        ; to min-x 176
+        ; to hi !window.Math.min $raw-x $max-x
+        !window.Math.max $min-x $hi
+       ) }
+       { true : $raw-x }
+      ]
+      [ match
+       { $clock-menu.style : ; set [ ; add $clamped-x px ] clock-menu.style.left }
+      ]
+     ) }
+    ]
+   ) }
+  ]
+ )
+
+ ; to rails.render-clock-options (
+  -- Renders the searchable, selectable timezone list inside the top-rail clock popover
+  ; to { raw-now } $argv
+  ; to now-val !resolve-clock-now $raw-now
+  ; to opts !resolve-clock-options $now-val
+  ; set $opts rails.clock-options
+  ; to active-opt !resolve-active-clock-opt $opts
+  ; set $active-opt rails.clock-active-option
+
+  ; while { propertyIsGreaterThan 0 rails.clock-option-els.length } (
+   ; to prev-entry !rails.clock-option-els.pop
+   [ match
+    { $prev-entry.btn.remove : !prev-entry.btn.remove }
+   ]
+  )
+
+  ; to query [ match { $rails.clock-search-query : $rails.clock-search-query } { true : '' } ]
+  ; to filtered [ match
+   { $filterTimezoneOptions : !filterTimezoneOptions $opts $query }
+   { true (
+    ; to q-trim [ match { $query.trim ( ; to t !query.trim , !t.toLowerCase ) } { true : '' } ]
+    [ match
+     { [ propertyIs '' q-trim ] : $opts }
+     { true (
+      ; to f-out {}
+      ; each $opts (
+       ; to { o } $argv
+       ; to hay ; add [ match { $o.label : $o.label } { true : '' } ] ; add ' ' [ match { $o.timeZone : $o.timeZone } { true : '' } ]
+       ; to hay-low !hay.toLowerCase
+       ; to is-hit !hay-low.includes $q-trim
+       ; condition { propertyIs true is-hit } : !f-out.push $o
+      )
+      $f-out
+     ) }
+    ]
+   ) }
+  ]
+  ; set $filtered rails.clock-filtered-options
+
+  ; to cfg-count $rails.clock-timezones.length
+  ; to hint-txt [ match
+   { [ propertyIs 0 cfg-count ] : 'Browser & UTC only (none in Preferences)' }
+   { [ propertyIs 1 cfg-count ] : 'Browser, UTC + 1 timezone from Preferences' }
+   { true : ; add 'Browser, UTC + ' ; add $cfg-count ' timezones from Preferences' }
+  ]
+  ; set $hint-txt clock-hint-el.textContent
+
+  ; to has-pref [ match { $lane-control.preferences-lane-id : true } { true : false } ]
+  ; set [ ternary $has-pref false true ] clock-footer-el.hidden
+
+  ; to has-matches [ propertyIsGreaterThan 0 filtered.length ]
+  ; set [ ternary $has-matches true false ] clock-empty-el.hidden
+  ; set [ ternary $has-matches false true ] clock-list-el.hidden
+
+  ; each $filtered (
+   ; to { opt } $argv
+   ; to is-sel [ propertyIs $active-opt.value opt.value ]
+   ; to btn !document.createElement button
+   ; to cls [ ternary $is-sel 'top-rail-clock-option top-rail-clock-option--active' top-rail-clock-option ]
+   ; assign $btn { type button } { className $cls } { title $opt.timeZone }
+   !btn.setAttribute role option
+   !btn.setAttribute aria-selected [ ternary $is-sel 'true' 'false' ]
+   !btn.setAttribute data-timezone $opt.value
+
+   ; to dot-el !document.createElement span
+   ; assign $dot-el { className top-rail-clock-option-dot } { textContent [ ternary $is-sel '●' '○' ] }
+
+   ; to name-el !document.createElement span
+   ; assign $name-el { className top-rail-clock-option-name } { textContent $opt.label }
+
+   ; to meta-txt [ match
+    { [ and $opt.previewTime $opt.offset ] : ; add $opt.previewTime ; add ' · ' $opt.offset }
+    { $opt.offset : $opt.offset }
+    { true : $opt.shortLabel }
+   ]
+   ; to meta-el !document.createElement span
+   ; assign $meta-el { className top-rail-clock-option-meta } { textContent $meta-txt }
+
+   !btn.appendChild $dot-el
+   !btn.appendChild $name-el
+   !btn.appendChild $meta-el
+   !btn.addEventListener click (
+    ; to { ev } $argv
+    [ match
+     { $ev.stopPropagation : !ev.stopPropagation }
+    ]
+    !rails.select-clock-timezone $opt.value
+   )
+   !clock-list-el.appendChild $btn
+   !rails.clock-option-els.push ; object { opt $opt } { btn $btn } { dot-el $dot-el } { name-el $name-el } { meta-el $meta-el }
+  )
+  $filtered
+ )
+
+ ; to rails.sync-clock-prefs-ui (
+  -- Syncs the 12h/24h buttons and Show seconds checkbox inside the clock popover
+  ; to fmt-opts !resolve-clock-format-opts
+  ; to is-12 [ propertyIs '12h' fmt-opts.hourFormat ]
+  ; to is-24 [ propertyIs '24h' fmt-opts.hourFormat ]
+  ; set [ ternary $is-12 'top-rail-clock-hour-btn top-rail-clock-hour-btn--active' top-rail-clock-hour-btn ] clock-12h-btn.className
+  ; set [ ternary $is-24 'top-rail-clock-hour-btn top-rail-clock-hour-btn--active' top-rail-clock-hour-btn ] clock-24h-btn.className
+  !clock-12h-btn.setAttribute aria-pressed [ ternary $is-12 'true' 'false' ]
+  !clock-24h-btn.setAttribute aria-pressed [ ternary $is-24 'true' 'false' ]
+  ; set $fmt-opts.showSeconds clock-seconds-check.checked
+  $fmt-opts
+ )
+
+ ; to rails.sync-clock (
+  -- Updates the top-rail clock button text, tooltip, and open popover live header/previews
+  ; to { raw-now } $argv
+  !rails.sync-clock-prefs-ui
+  ; to now-val !resolve-clock-now $raw-now
+  ; to opts !resolve-clock-options $now-val
+  ; set $opts rails.clock-options
+  ; to active-opt !resolve-active-clock-opt $opts
+  ; set $active-opt rails.clock-active-option
+  ; to fmt !format-clock-display $now-val $active-opt
+  ; set $fmt.chipText clock-btn.textContent
+  ; to btn-ttl ; add $fmt.fullText ; add ' — ' $fmt.label
+  ; set $btn-ttl clock-btn.title
+  !clock-btn.setAttribute aria-label [ ; add 'Current time: ' $btn-ttl ]
+  ; condition { propertyIs true rails.is-clock-open } (
+   ; set $fmt.fullText clock-full-time-el.textContent
+   ; to sub-txt [ match
+    { $fmt.offset : ; add $fmt.label ; add ' · ' $fmt.offset }
+    { true : $fmt.label }
+   ]
+   ; set $sub-txt clock-active-tz-el.textContent
+   ; to opt-by-val ; object
+   ; each $opts (
+    ; to { o } $argv
+    ; to opt-by-val $o.value $o
+   )
+   ; each $rails.clock-option-els (
+    ; to { entry } $argv
+    ; to fresh [ get opt-by-val $entry.opt.value ]
+    [ match
+     { $fresh (
+      ; to m-txt [ match
+       { [ and $fresh.previewTime $fresh.offset ] : ; add $fresh.previewTime ; add ' · ' $fresh.offset }
+       { $fresh.offset : $fresh.offset }
+       { true : $fresh.shortLabel }
+      ]
+      ; set $m-txt entry.meta-el.textContent
+     ) }
+    ]
+   )
+  )
+  $fmt
+ )
+
+ ; to rails.set-timezones (
+  -- Updates the list of configured timezone names from preferences.timezones and refreshes the clock
+  ; to { raw-timezones } $argv
+  ; to clean-list [ match
+   { $extractTimezoneNames : !extractTimezoneNames $raw-timezones $window.Intl }
+   { [ !window.Array.isArray $raw-timezones ] (
+    ; to out {}
+    ; to seen ; object
+    ; each $raw-timezones (
+     ; to { item } $argv
+     ; to nm [ match { $item.trim : !item.trim } { $item.name.trim : !item.name.trim } { true : '' } ]
+     ; to dup [ ternary [ get seen $nm ] true false ]
+     ; condition { and { propertyIsGreaterThan 0 nm.length } { propertyIs false dup } } (
+      ; to seen $nm true
+      !out.push $nm
+     )
+    )
+    $out
+   ) }
+   { true : {} }
+  ]
+  ; set $clean-list rails.clock-timezones
+  !rails.sync-clock
+  ; condition { propertyIs true rails.is-clock-open } : !rails.render-clock-options
+  ; condition { propertyIs true rails.is-chip-menu-open } : !rails.sync-chip-menu
+  $clean-list
+ )
+
+ ; to rails.close-clock-menu (
+  -- Closes the top-rail clock & timezone selector popover
+  ; set true clock-menu.hidden
+  ; set false rails.is-clock-open
+  ; set 'top-rail-chip top-rail-clock' clock-btn.className
+  !clock-btn.setAttribute aria-expanded 'false'
+ )
+
+ ; to rails.open-clock-menu (
+  -- Refreshes preferences timezones and opens the searchable timezone selector popover under clock-btn
+  !rails.close-session-menu
+  !rails.close-packages-menu
+  !rails.close-preferences-menu
+  !rails.close-chip-menu
+  [ match
+   { $lane-control.sync-preferences-timezones : !lane-control.sync-preferences-timezones }
+  ]
+  ; set '' rails.clock-search-query
+  ; set '' clock-search-input.value
+  ; set true rails.is-clock-open
+  ; set 'top-rail-chip top-rail-clock top-rail-chip--active' clock-btn.className
+  !clock-btn.setAttribute aria-expanded 'true'
+  !rails.sync-clock
+  !rails.render-clock-options
+  !position-clock-menu
+  ; set false clock-menu.hidden
+  [ match
+   { $clock-search-input.focus : !clock-search-input.focus }
+  ]
+ )
+
+ ; to rails.toggle-clock-menu (
+  -- Toggles the top-rail clock & timezone selector popover open or closed
+  [ match
+   { $rails.is-clock-open : !rails.close-clock-menu }
+   { true : !rails.open-clock-menu }
+  ]
+ )
+
+ ; to rails.select-clock-timezone (
+  -- Selects an active timezone for the top-rail clock, persists it, and closes the popover
+  ; to { tz-val } $argv
+  [ match
+   { $lane-control.set-clock-timezone : !lane-control.set-clock-timezone $tz-val }
+   { true (
+    ; set $tz-val lane-control.clock-timezone
+    !rails.sync-clock
+    ; condition { propertyIs true rails.is-chip-menu-open } : !rails.sync-chip-menu
+   ) }
+  ]
+  !rails.close-clock-menu
+  $tz-val
+ )
+
+ ; to rails.set-clock-hour-format (
+  -- Updates 12h/24h preference from the clock popover without closing the popover
+  ; to { hr-fmt } $argv
+  [ match
+   { $lane-control.set-clock-hour-format : !lane-control.set-clock-hour-format $hr-fmt }
+   { true (
+    ; set $hr-fmt lane-control.clock-hour-format
+    !rails.sync-clock
+    ; condition { propertyIs true rails.is-clock-open } : !rails.render-clock-options
+    ; condition { propertyIs true rails.is-chip-menu-open } : !rails.sync-chip-menu
+   ) }
+  ]
+  $hr-fmt
+ )
+
+ ; to rails.set-clock-show-seconds (
+  -- Updates Show seconds preference from the clock popover without closing the popover
+  ; to { show-sec } $argv
+  ; to clean-sec [ ternary $show-sec true false ]
+  [ match
+   { $lane-control.set-clock-show-seconds : !lane-control.set-clock-show-seconds $clean-sec }
+   { true (
+    ; set $clean-sec lane-control.clock-show-seconds
+    !rails.sync-clock
+    ; condition { propertyIs true rails.is-clock-open } : !rails.render-clock-options
+   ) }
+  ]
+  $clean-sec
  )
 
  !fullscreen-btn.addEventListener click (
   !rails.close-preferences-menu
   !rails.close-session-menu
   !rails.close-packages-menu
+  !rails.close-chip-menu
+  !rails.close-clock-menu
   !rails.toggle-fullscreen
  )
  !search-btn.addEventListener click (
   !rails.close-preferences-menu
   !rails.close-session-menu
   !rails.close-packages-menu
+  !rails.close-chip-menu
+  !rails.close-clock-menu
   [ match
    { $lane-control.lane-modal.open : !lane-control.lane-modal.open }
   ]
@@ -1088,19 +2649,82 @@
   !rails.toggle-session-menu
  )
  !session-save-btn.addEventListener click (
-  !rails.close-session-menu
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
   [ match
    { $lane-control.save-session-draft : !lane-control.save-session-draft }
   ]
  )
  !session-draft-fork-btn.addEventListener click (
-  !rails.close-session-menu
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
   [ match
    { $lane-control.fork-session : !lane-control.fork-session }
   ]
  )
  !session-abandon-btn.addEventListener click (
-  !rails.close-session-menu
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  [ match
+   { $lane-control.abandon-session-draft : !lane-control.abandon-session-draft }
+  ]
+ )
+ !prev-nav-save-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  [ match
+   { $lane-control.save-session-draft : !lane-control.save-session-draft }
+  ]
+ )
+ !prev-nav-fork-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  [ match
+   { $lane-control.fork-session : !lane-control.fork-session }
+  ]
+ )
+ !prev-nav-abandon-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  [ match
+   { $lane-control.abandon-session-draft : !lane-control.abandon-session-draft }
+  ]
+ )
+ !next-nav-save-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  [ match
+   { $lane-control.save-session-draft : !lane-control.save-session-draft }
+  ]
+ )
+ !next-nav-fork-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  [ match
+   { $lane-control.fork-session : !lane-control.fork-session }
+  ]
+ )
+ !next-nav-abandon-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
   [ match
    { $lane-control.abandon-session-draft : !lane-control.abandon-session-draft }
   ]
@@ -1117,11 +2741,13 @@
   ]
  )
  !session-new-btn.addEventListener click (
-  !rails.close-session-menu
-  [ match
-   { $lane-control.prompt-new-session : !lane-control.prompt-new-session false }
-   { $lane-control.new-session : !lane-control.new-session }
-  ]
+  ; condition { and { propertyIs false lane-control.session-status-pending } { propertyIs false lane-control.session-dirty } } (
+   !rails.close-session-menu
+   [ match
+    { $lane-control.prompt-new-session : !lane-control.prompt-new-session false }
+    { $lane-control.new-session : !lane-control.new-session }
+   ]
+  )
  )
  !session-fork-btn.addEventListener click (
   !rails.close-session-menu
@@ -1139,6 +2765,12 @@
   !rails.close-session-menu
   [ match
    { $lane-control.session-modal.open-history : !lane-control.session-modal.open-history }
+  ]
+ )
+ !session-copy-btn.addEventListener click (
+  !rails.close-session-menu
+  [ match
+   { $lane-control.copy-agent-context : !lane-control.copy-agent-context }
   ]
  )
  !packages-btn.addEventListener click (
@@ -1170,8 +2802,118 @@
   !rails.close-preferences-menu
   !rails.close-session-menu
   !rails.close-packages-menu
+  !rails.close-chip-menu
+  !rails.close-clock-menu
   [ match
    { $lane-control.servers-modal.open : !lane-control.servers-modal.open servers }
+  ]
+ )
+ !clock-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  !rails.toggle-clock-menu
+ )
+ !clock-12h-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  !rails.set-clock-hour-format '12h'
+ )
+ !clock-24h-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  !rails.set-clock-hour-format '24h'
+ )
+ !clock-seconds-check.addEventListener change (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  !rails.set-clock-show-seconds $clock-seconds-check.checked
+ )
+ !clock-search-input.addEventListener input (
+  ; set $clock-search-input.value rails.clock-search-query
+  !rails.render-clock-options
+ )
+ !clock-search-input.addEventListener keydown (
+  ; to { ev } $argv
+  [ match
+   { [ propertyIs Enter ev.key ] (
+    [ match
+     { $ev.preventDefault : !ev.preventDefault }
+    ]
+    ; condition { propertyIsGreaterThan 0 rails.clock-filtered-options.length } (
+     ; to first-opt [ get rails.clock-filtered-options 0 ]
+     !rails.select-clock-timezone $first-opt.value
+    )
+   ) }
+   { [ propertyIs Escape ev.key ] (
+    [ match
+     { $ev.stopPropagation : !ev.stopPropagation }
+    ]
+    !rails.close-clock-menu
+   ) }
+  ]
+ )
+ !clock-manage-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  !rails.close-clock-menu
+  [ match
+   { $lane-control.open-preferences-timezones-view : !lane-control.open-preferences-timezones-view }
+   { $lane-control.open-preferences-lane : !lane-control.open-preferences-lane }
+  ]
+ )
+ !chip-sync-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  ; to item $rails.active-chip-item
+  [ match
+   { $item (
+    ; set true chip-sync-btn.disabled
+    ; set 'Syncing…' chip-sync-btn.textContent
+    ; try (
+     [ match
+      { $lane-control.sync-top-rail-chip : !lane-control.sync-top-rail-chip $item }
+     ]
+    ) : null
+    ; set false chip-sync-btn.disabled
+    ; set 'Sync now' chip-sync-btn.textContent
+    !rails.sync-chip-menu
+   ) }
+  ]
+ )
+ !chip-copy-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  ; to item $rails.active-chip-item
+  [ match
+   { $item (
+    ; to row-obj [ match
+     { $lane-control.get-top-rail-chip-row : !lane-control.get-top-rail-chip-row $item }
+     { $item.row : $item.row }
+     { true : $item }
+    ]
+    ; to json-txt [ match
+     { $window.JSON.stringify : !window.JSON.stringify $row-obj null 2 }
+     { true : ; add '' $row-obj }
+    ]
+    [ match
+     { $window.navigator.clipboard.writeText : !window.navigator.clipboard.writeText $json-txt }
+    ]
+    ; set 'Copied!' chip-copy-btn.textContent
+   ) }
   ]
  )
  !preferences-btn.addEventListener click (
@@ -1290,6 +3032,32 @@
       ; condition { propertyIs false in-pbtn } : !rails.close-packages-menu
      )
     )
+    ; condition { propertyIs true rails.is-chip-menu-open } (
+     ; to in-cmenu [ match
+      { $target : !is-node-inside $chip-menu $target }
+      { true : false }
+     ]
+     ; to in-cbtn [ match
+      { [ and { $target } { $rails.active-chip-el } ] : !is-node-inside $rails.active-chip-el $target }
+      { true : false }
+     ]
+     ; condition { propertyIs false in-cmenu } (
+      ; condition { propertyIs false in-cbtn } : !rails.close-chip-menu
+     )
+    )
+    ; condition { propertyIs true rails.is-clock-open } (
+     ; to in-kmenu [ match
+      { $target : !is-node-inside $clock-menu $target }
+      { true : false }
+     ]
+     ; to in-kbtn [ match
+      { $target : !is-node-inside $clock-btn $target }
+      { true : false }
+     ]
+     ; condition { propertyIs false in-kmenu } (
+      ; condition { propertyIs false in-kbtn } : !rails.close-clock-menu
+     )
+    )
     ; condition { propertyIs true rails.is-prev-nav-open } (
      ; to in-prev-nav [ match
       { $target : !is-node-inside $prev-nav $target }
@@ -1315,10 +3083,20 @@
      ; condition { propertyIs true rails.is-preferences-open } : !rails.close-preferences-menu
      ; condition { propertyIs true rails.is-session-open } : !rails.close-session-menu
      ; condition { propertyIs true rails.is-packages-open } : !rails.close-packages-menu
+     ; condition { propertyIs true rails.is-chip-menu-open } : !rails.close-chip-menu
+     ; condition { propertyIs true rails.is-clock-open } : !rails.close-clock-menu
      ; condition { propertyIs true rails.is-prev-nav-open } : !rails.close-prev-nav
      ; condition { propertyIs true rails.is-next-nav-open } : !rails.close-next-nav
     )
    )
+  ) }
+ ]
+ [ match
+  { $window.setInterval (
+   ; to c-timer !window.setInterval (
+    !rails.sync-clock
+   ) 1000
+   ; set $c-timer rails.clock-timer
   ) }
  ]
  !rails.sync-fullscreen
@@ -1326,6 +3104,7 @@
  !rails.sync-packages-menu
  !rails.sync-preferences-menu
  !rails.sync-session-nav
+ !rails.sync-clock
 
  $rails
 )

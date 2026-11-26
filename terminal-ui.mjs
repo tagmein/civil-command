@@ -6,6 +6,33 @@ const SENTINEL_PREFIXES = [
  '__CC_UNDEPLOY_OK__',
 ]
 
+const LOGS_FOLLOW_MARKER = '__CC_LOGS_FOLLOW__'
+export const NEW_LOG_HIGHLIGHT_HOLD_MS = 30000
+export const NEW_LOG_HIGHLIGHT_FADE_MS = 30000
+export const NEW_LOG_HIGHLIGHT_TOTAL_MS = NEW_LOG_HIGHLIGHT_HOLD_MS + NEW_LOG_HIGHLIGHT_FADE_MS
+const NEW_LOG_HIGHLIGHT_MAX_ALPHA = 0.16
+
+export function computeNewLogHighlightAlpha(elapsedMs) {
+ const elapsed = Number(elapsedMs)
+ if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed >= NEW_LOG_HIGHLIGHT_TOTAL_MS) {
+  return 0
+ }
+ if (elapsed <= NEW_LOG_HIGHLIGHT_HOLD_MS) {
+  return NEW_LOG_HIGHLIGHT_MAX_ALPHA
+ }
+ const fadeProgress = (elapsed - NEW_LOG_HIGHLIGHT_HOLD_MS) / NEW_LOG_HIGHLIGHT_FADE_MS
+ return Math.max(0, NEW_LOG_HIGHLIGHT_MAX_ALPHA * (1 - fadeProgress))
+}
+
+export function formatNewLogHighlightBg(elapsedMs) {
+ const alpha = computeNewLogHighlightAlpha(elapsedMs)
+ if (alpha <= 0) {
+  return ''
+ }
+ const rounded = Math.round(alpha * 10000) / 10000
+ return `rgba(255, 255, 255, ${rounded})`
+}
+
 const ANSI_STRIP_RE = /\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g
 
 const FG_COLOR_NAMES = [
@@ -187,7 +214,9 @@ function stylesEqual(a, b) {
 }
 
 function makeEmptyRow() {
- return []
+ const row = []
+ row.highlightAt = null
+ return row
 }
 
 function rowToText(row) {
@@ -227,10 +256,12 @@ export function createTerminalBuffer({
  cols = 100,
  rows = 28,
  maxScrollback = 2000,
+ now = () => Date.now(),
 } = {}) {
  let curCols = Math.max(10, Math.trunc(Number(cols) || 100))
  let curRows = Math.max(4, Math.trunc(Number(rows) || 28))
  const scrollLimit = Math.max(50, Math.trunc(Number(maxScrollback) || 2000))
+ const getNow = typeof now === 'function' ? now : () => Date.now()
 
  let scrollback = []
  let screen = Array.from({ length: curRows }, makeEmptyRow)
@@ -240,6 +271,7 @@ export function createTerminalBuffer({
  let savedPrimary = null
  let style = defaultStyle()
  let pendingEsc = ''
+ let highlightNewLines = false
 
  function ensureRow(r) {
   while (screen.length <= r) {
@@ -273,6 +305,9 @@ export function createTerminalBuffer({
    lineFeed()
   }
   const row = ensureRow(cursorRow)
+  if (highlightNewLines && row.length === 0 && row.highlightAt == null) {
+   row.highlightAt = getNow()
+  }
   while (row.length < cursorCol) {
    row.push({ ch: ' ', style: defaultStyle() })
   }
@@ -543,6 +578,21 @@ export function createTerminalBuffer({
   return getRows().map(row => rowToSpans(row))
  }
 
+ function getRenderLineObjects() {
+  return getRows().map(row => ({
+   spans: rowToSpans(row),
+   highlightAt: row && typeof row.highlightAt === 'number' ? row.highlightAt : null,
+  }))
+ }
+
+ function setHighlightNewLines(enabled) {
+  highlightNewLines = Boolean(enabled)
+ }
+
+ function isHighlightingNewLines() {
+  return highlightNewLines
+ }
+
  function plainText() {
   return getRows().map(rowToText).join('\n')
  }
@@ -584,6 +634,9 @@ export function createTerminalBuffer({
   clear,
   getRows,
   getRenderLines,
+  getRenderLineObjects,
+  setHighlightNewLines,
+  isHighlightingNewLines,
   plainText,
   getState: () => ({
    cols: curCols,
@@ -591,6 +644,7 @@ export function createTerminalBuffer({
    cursorRow,
    cursorCol,
    scrollbackCount: scrollback.length,
+   highlightNewLines,
   }),
  }
 }
@@ -644,9 +698,11 @@ export function mountTerminalView(container, options = {}) {
  const doc = options.document || (container && container.ownerDocument) || globalThis.document
  const win = options.window || (doc && doc.defaultView) || globalThis.window
  const WsCtor = options.WebSocketCtor || (win && win.WebSocket) || globalThis.WebSocket
+ const getNow = typeof options.now === 'function' ? options.now : () => Date.now()
  const buffer = createTerminalBuffer({
   cols: options.cols || 100,
   rows: options.rows || 28,
+  now: getNow,
  })
 
  const screenEl = doc.createElement('div')
@@ -663,15 +719,116 @@ export function mountTerminalView(container, options = {}) {
  let disconnected = false
  let renderPending = false
  let sentinelTail = ''
+ let followMarkerCarry = ''
+ let fadeTimer = null
+ let renderedLineMeta = []
+
+ function stopFadeTimer() {
+  if (fadeTimer !== null) {
+   const clearFn = (win && typeof win.clearTimeout === 'function') ? win.clearTimeout.bind(win) : clearTimeout
+   clearFn(fadeTimer)
+   fadeTimer = null
+  }
+ }
+
+ function clearLineHighlightStyle(lineEl) {
+  lineEl.className = 'cc-term-line'
+  if (lineEl.style) {
+   if (typeof lineEl.style.removeProperty === 'function') {
+    lineEl.style.removeProperty('background-color')
+    lineEl.style.removeProperty('animation-delay')
+   }
+   else {
+    delete lineEl.style.backgroundColor
+    delete lineEl.style.animationDelay
+   }
+  }
+  if (typeof lineEl.removeAttribute === 'function') {
+   lineEl.removeAttribute('data-highlight-elapsed')
+  }
+ }
+
+ function applyLineHighlightStyle(lineEl, elapsed) {
+  const bg = formatNewLogHighlightBg(elapsed)
+  lineEl.className = 'cc-term-line cc-term-line--new'
+  if (lineEl.style) {
+   lineEl.style.backgroundColor = bg
+   lineEl.style.animationDelay = `-${(elapsed / 1000).toFixed(3)}s`
+  }
+  if (typeof lineEl.setAttribute === 'function') {
+   lineEl.setAttribute('data-highlight-elapsed', String(Math.round(elapsed)))
+  }
+ }
+
+ function scheduleFadeCleanup(minRemainingMs) {
+  stopFadeTimer()
+  if (!Number.isFinite(minRemainingMs) || disconnected) {
+   return
+  }
+  const delayMs = Math.max(16, Math.ceil(minRemainingMs))
+  const setTimerFn = (win && typeof win.setTimeout === 'function') ? win.setTimeout.bind(win) : setTimeout
+  fadeTimer = setTimerFn(() => {
+   fadeTimer = null
+   if (!disconnected) {
+    syncHighlightsNow()
+   }
+  }, delayMs)
+ }
+
+ function syncHighlightsNow() {
+  stopFadeTimer()
+  if (renderedLineMeta.length === 0) {
+   return
+  }
+  const nowMs = getNow()
+  const nextActive = []
+  let minRemainingMs = Infinity
+  for (let i = 0; i < renderedLineMeta.length; i++) {
+   const item = renderedLineMeta[i]
+   const elapsed = Math.max(0, nowMs - item.highlightAt)
+   if (elapsed < NEW_LOG_HIGHLIGHT_TOTAL_MS) {
+    applyLineHighlightStyle(item.el, elapsed)
+    nextActive.push(item)
+    const remaining = NEW_LOG_HIGHLIGHT_TOTAL_MS - elapsed
+    if (remaining < minRemainingMs) {
+     minRemainingMs = remaining
+    }
+   }
+   else {
+    clearLineHighlightStyle(item.el)
+   }
+  }
+  renderedLineMeta = nextActive
+  scheduleFadeCleanup(minRemainingMs)
+ }
 
  function renderNow() {
   renderPending = false
+  stopFadeTimer()
   clearElementChildren(screenEl)
-  const lines = buffer.getRenderLines()
-  for (let i = 0; i < lines.length; i++) {
+  renderedLineMeta = []
+  const lineObjs = buffer.getRenderLineObjects()
+  const nowMs = getNow()
+  let minRemainingMs = Infinity
+  for (let i = 0; i < lineObjs.length; i++) {
+   const { spans, highlightAt } = lineObjs[i]
    const lineEl = doc.createElement('div')
-   lineEl.className = 'cc-term-line'
-   const spans = lines[i]
+   let isHighlighted = false
+   if (typeof highlightAt === 'number') {
+    const elapsed = Math.max(0, nowMs - highlightAt)
+    if (elapsed < NEW_LOG_HIGHLIGHT_TOTAL_MS) {
+     isHighlighted = true
+     applyLineHighlightStyle(lineEl, elapsed)
+     renderedLineMeta.push({ el: lineEl, highlightAt })
+     const remaining = NEW_LOG_HIGHLIGHT_TOTAL_MS - elapsed
+     if (remaining < minRemainingMs) {
+      minRemainingMs = remaining
+     }
+    }
+   }
+   if (!isHighlighted) {
+    lineEl.className = 'cc-term-line'
+   }
    if (spans.length === 0) {
     lineEl.textContent = ' '
    }
@@ -688,6 +845,7 @@ export function mountTerminalView(container, options = {}) {
   if (typeof screenEl.scrollHeight === 'number') {
    screenEl.scrollTop = screenEl.scrollHeight
   }
+  scheduleFadeCleanup(minRemainingMs)
  }
 
  function scheduleRender() {
@@ -744,8 +902,54 @@ export function mountTerminalView(container, options = {}) {
   sentinelTail = endedWithNl ? '' : (lines[lines.length - 1] + (hasTrailingCr ? '\r' : ''))
  }
 
+ function writeWithFollowMarkerDetection(rawChunk) {
+  if (buffer.isHighlightingNewLines()) {
+   buffer.write(rawChunk)
+   return
+  }
+  const combined = followMarkerCarry + String(rawChunk ?? '')
+  followMarkerCarry = ''
+  const idx = combined.indexOf(LOGS_FOLLOW_MARKER)
+  if (idx !== -1) {
+   const before = combined.slice(0, idx)
+   let after = combined.slice(idx + LOGS_FOLLOW_MARKER.length)
+   if (after.startsWith('\r\n')) {
+    after = after.slice(2)
+   }
+   else if (after.startsWith('\n') || after.startsWith('\r')) {
+    after = after.slice(1)
+   }
+   if (before.length > 0) {
+    buffer.write(before)
+   }
+   buffer.setHighlightNewLines(true)
+   if (after.length > 0) {
+    buffer.write(after)
+   }
+   return
+  }
+  let holdLen = 0
+  const maxCheck = Math.min(combined.length, LOGS_FOLLOW_MARKER.length - 1)
+  for (let len = maxCheck; len > 0; len--) {
+   if (LOGS_FOLLOW_MARKER.startsWith(combined.slice(combined.length - len))) {
+    holdLen = len
+    break
+   }
+  }
+  if (holdLen > 0) {
+   const toWrite = combined.slice(0, combined.length - holdLen)
+   followMarkerCarry = combined.slice(combined.length - holdLen)
+   if (toWrite.length > 0) {
+    buffer.write(toWrite)
+   }
+  }
+  else {
+   buffer.write(combined)
+  }
+ }
+
  function feedOutput(chunk) {
-  buffer.write(chunk)
+  writeWithFollowMarkerDetection(chunk)
   scanSentinels(chunk)
   scheduleRender()
  }
@@ -777,6 +981,8 @@ export function mountTerminalView(container, options = {}) {
  }
 
  function clear() {
+  stopFadeTimer()
+  renderedLineMeta = []
   buffer.clear()
   scheduleRender()
  }
@@ -792,6 +998,7 @@ export function mountTerminalView(container, options = {}) {
    return
   }
   disconnected = true
+  stopFadeTimer()
   if (ws && typeof ws.close === 'function') {
    try {
     ws.close()
@@ -874,6 +1081,11 @@ export function mountTerminalView(container, options = {}) {
     }
    }
    else if (msg.type === 'status') {
+    if (followMarkerCarry.length > 0 && !buffer.isHighlightingNewLines()) {
+     buffer.write(followMarkerCarry)
+     followMarkerCarry = ''
+     scheduleRender()
+    }
     if (sentinelTail.trim().length > 0) {
      scanSentinels('', true)
     }
@@ -916,6 +1128,8 @@ export function mountTerminalView(container, options = {}) {
   element: screenEl,
   buffer,
   feedOutput,
+  renderNow,
+  syncHighlightsNow,
   sendInput,
   sendCtrlC,
   resize,

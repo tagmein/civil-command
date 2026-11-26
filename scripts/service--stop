@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE_NAME="civil-command.service"
+UID_NUM="$(id -u)"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/${UID_NUM}}"
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -S "${XDG_RUNTIME_DIR}/bus" ]; then
+ export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+fi
+
+systemctl --user stop "${SERVICE_NAME}"
+STATE="$(systemctl --user is-active "${SERVICE_NAME}" 2>/dev/null || true)"
+echo "Stopped ${SERVICE_NAME} (state: ${STATE:-inactive})"

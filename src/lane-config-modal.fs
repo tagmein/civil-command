@@ -73,8 +73,22 @@
  ; to http-feat-desc !document.createElement div
  ; assign $http-feat-desc { className lane-config-feature-desc } { textContent 'Enable the Server tab to simulate HTTP requests and deploy this lane as a backend API' }
 
+ ; to cron-feat-row !document.createElement label
+ ; set cc-checkbox-label cron-feat-row.className
+ ; to cron-30m-check !document.createElement input
+ ; assign $cron-30m-check { type checkbox }
+ !cron-30m-check.setAttribute data-feature runEvery30Minutes
+ ; to cron-feat-txt !document.createElement span
+ ; assign $cron-feat-txt { textContent 'Run every 30 minutes' }
+ !cron-feat-row.appendChild $cron-30m-check
+ !cron-feat-row.appendChild $cron-feat-txt
+ ; to cron-feat-desc !document.createElement div
+ ; assign $cron-feat-desc { className lane-config-feature-desc } { textContent 'Automatically evaluate this lane on a 30-minute singleton schedule (and update top rail elements when used for Preferences)' }
+
  ; to footer !document.createElement div
  ; set lane-config-footer footer.className
+ ; to copy-agent-btn !document.createElement button
+ ; assign $copy-agent-btn { type button } { className 'lane-modal-action lane-config-reset-btn' } { textContent 'Copy Info' } { title 'Copy session & lane context for an agent' }
  ; to cancel-btn !document.createElement button
  ; assign $cancel-btn { type button } { className 'lane-modal-action lane-config-btn--cancel' } { textContent Cancel }
  ; to save-btn !document.createElement button
@@ -99,6 +113,9 @@
  !feat-field-wrap.appendChild $feat-label
  !feat-field-wrap.appendChild $http-feat-row
  !feat-field-wrap.appendChild $http-feat-desc
+ !feat-field-wrap.appendChild $cron-feat-row
+ !feat-field-wrap.appendChild $cron-feat-desc
+ !footer.appendChild $copy-agent-btn
  !footer.appendChild $cancel-btn
  !footer.appendChild $save-btn
  !form.appendChild $field-wrap
@@ -124,6 +141,9 @@
   { pkg-select $pkg-select }
   { pkg-option-els {} }
   { http-server-check $http-server-check }
+  { cron-30m-check $cron-30m-check }
+  { copy-agent-btn $copy-agent-btn }
+  { copy-timer null }
   { close-btn $close-btn }
   { cancel-btn $cancel-btn }
   { save-btn $save-btn }
@@ -142,80 +162,101 @@
  ; to modal.close (
   -- Closes the lane configuration modal without saving
   ; condition { propertyIs true modal.is-open } (
+   ; to prev-lane $modal.lane
    ; set false modal.is-open
    ; set null modal.lane
    !backdrop.remove
+   [ match
+    { [ and { $prev-lane } { $lane-control.unmount-lane-modal } ] : !lane-control.unmount-lane-modal $prev-lane $modal }
+   ]
   )
  )
 
  ; to modal.save (
-  -- Saves configured lane changes (Title, Width, and Path) and closes the modal
+  -- Saves configured lane changes (Title, Width, Path, Package, and Features) and closes the modal
   ; to lane $modal.lane
   [ match
    { $lane (
-    ; to trimmed !title-input.value.trim
-    ; to next-title [ match
-     { [ propertyIs '' trimmed ] : $lane.title }
-     { true : $trimmed }
-    ]
-    !lane-control.rename $lane.id $next-title
-    ; to raw-width !width-input.value.trim
-    ; to next-width [ match
-     { [ propertyIs '' raw-width ] : null }
-     { true (
-      ; to parsed !normalizeLaneWidth $raw-width
-      [ match
-       { [ propertyIs null parsed ] : $lane.width }
-       { true : $parsed }
-      ]
-     ) }
-    ]
     [ match
-     { [ propertyIs $lane.width next-width ] : null }
-     { true : !lane-control.set-width $lane.id $next-width }
+     { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Saving…' }
     ]
-    ; to raw-path !path-input.value.trim
-    ; to cur-path [ match
-     { [ propertyIs undefined lane.path ] : null }
-     { true : $lane.path }
-    ]
-    ; to next-path [ match
-     { [ propertyIs '' raw-path ] : null }
-     { true (
-      ; to parsed-path !normalizeLanePath $raw-path
-      [ match
-       { [ propertyIs null parsed-path ] : $cur-path }
-       { true : $parsed-path }
-      ]
-     ) }
-    ]
+    ; try (
+     ; to trimmed !title-input.value.trim
+     ; to next-title [ match
+      { [ propertyIs '' trimmed ] : $lane.title }
+      { true : $trimmed }
+     ]
+     !lane-control.rename $lane.id $next-title
+     ; to raw-width !width-input.value.trim
+     ; to next-width [ match
+      { [ propertyIs '' raw-width ] : null }
+      { true (
+       ; to parsed !normalizeLaneWidth $raw-width
+       [ match
+        { [ propertyIs null parsed ] : $lane.width }
+        { true : $parsed }
+       ]
+      ) }
+     ]
+     [ match
+      { [ propertyIs $lane.width next-width ] : null }
+      { true : !lane-control.set-width $lane.id $next-width }
+     ]
+     ; to raw-path !path-input.value.trim
+     ; to cur-path [ match
+      { [ propertyIs undefined lane.path ] : null }
+      { true : $lane.path }
+     ]
+     ; to next-path [ match
+      { [ propertyIs '' raw-path ] : null }
+      { true (
+       ; to parsed-path !normalizeLanePath $raw-path
+       [ match
+        { [ propertyIs null parsed-path ] : $cur-path }
+        { true : $parsed-path }
+       ]
+      ) }
+     ]
+     [ match
+      { [ propertyIs $cur-path next-path ] : null }
+      { $lane-control.set-path : !lane-control.set-path $lane.id $next-path }
+     ]
+     ; to cur-pkg [ match
+      { $lane.package-id : $lane.package-id }
+      { true : default }
+     ]
+     ; to next-pkg [ match
+      { $pkg-select.value : $pkg-select.value }
+      { true : $cur-pkg }
+     ]
+     [ match
+      { [ propertyIs $cur-pkg next-pkg ] : null }
+      { $lane-control.move-lane-package : !lane-control.move-lane-package $lane.id $next-pkg }
+     ]
+     ; to cur-http [ match
+      { [ propertyIs true lane.features.httpServer ] : true }
+      { true : false }
+     ]
+     ; to next-http [ match
+      { [ propertyIs true http-server-check.checked ] : true }
+      { true : false }
+     ]
+     ; to cur-cron [ match
+      { [ propertyIs true lane.features.runEvery30Minutes ] : true }
+      { true : false }
+     ]
+     ; to next-cron [ match
+      { [ propertyIs true cron-30m-check.checked ] : true }
+      { true : false }
+     ]
+     ; to features-unchanged [ and { propertyIs $cur-http next-http } { propertyIs $cur-cron next-cron } ]
+     [ match
+      { [ propertyIs true features-unchanged ] : null }
+      { $lane-control.set-features : !lane-control.set-features $lane.id [ object { httpServer $next-http } { runEvery30Minutes $next-cron } ] }
+     ]
+    ) : null
     [ match
-     { [ propertyIs $cur-path next-path ] : null }
-     { $lane-control.set-path : !lane-control.set-path $lane.id $next-path }
-    ]
-    ; to cur-pkg [ match
-     { $lane.package-id : $lane.package-id }
-     { true : default }
-    ]
-    ; to next-pkg [ match
-     { $pkg-select.value : $pkg-select.value }
-     { true : $cur-pkg }
-    ]
-    [ match
-     { [ propertyIs $cur-pkg next-pkg ] : null }
-     { $lane-control.move-lane-package : !lane-control.move-lane-package $lane.id $next-pkg }
-    ]
-    ; to cur-http [ match
-     { [ propertyIs true lane.features.httpServer ] : true }
-     { true : false }
-    ]
-    ; to next-http [ match
-     { [ propertyIs true http-server-check.checked ] : true }
-     { true : false }
-    ]
-    [ match
-     { [ propertyIs $cur-http next-http ] : null }
-     { $lane-control.set-features : !lane-control.set-features $lane.id [ object { httpServer $next-http } ] }
+     { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
     ]
     !modal.close
    ) }
@@ -227,6 +268,11 @@
   ; to { lane } $argv
   [ match
    { $lane (
+    ; condition { propertyIs true modal.is-open } (
+     [ match
+      { [ and { $modal.lane } { $lane-control.unmount-lane-modal } ] : !lane-control.unmount-lane-modal $modal.lane $modal }
+     ]
+    )
     ; set $lane modal.lane
     ; set $lane.id id-el.textContent
     ; set $lane.title title-input.value
@@ -278,11 +324,23 @@
      { true : false }
     ]
     ; set $cur-http http-server-check.checked
+    ; to cur-cron [ match
+     { [ propertyIs true lane.features.runEvery30Minutes ] : true }
+     { true : false }
+    ]
+    ; set $cur-cron cron-30m-check.checked
+    ; set 'Copy Info' copy-agent-btn.textContent
     !sync-reset-buttons
-    ; condition { propertyIs false modal.is-open } (
-     ; set true modal.is-open
-     !document.body.appendChild $backdrop
-    )
+    ; set true modal.is-open
+    [ match
+     { $lane-control.mount-lane-modal : !lane-control.mount-lane-modal $lane $modal }
+     { $lane.body.appendChild (
+      !backdrop.setAttribute data-lane-modal 'true'
+      ; set 'lane-modal-backdrop lane-config-backdrop lane-modal-backdrop--lane' backdrop.className
+      !lane.body.appendChild $backdrop
+     ) }
+     { $document.body.appendChild : !document.body.appendChild $backdrop }
+    ]
     [ match
      { $title-input.focus : !title-input.focus }
     ]
@@ -308,6 +366,24 @@
   !sync-reset-buttons
   [ match
    { $path-input.focus : !path-input.focus }
+  ]
+ )
+ !copy-agent-btn.addEventListener click (
+  [ match
+   { $lane-control.copy-agent-context : !lane-control.copy-agent-context $modal.lane }
+  ]
+  ; set Copied copy-agent-btn.textContent
+  [ match
+   { $window.setTimeout (
+    [ match
+     { $modal.copy-timer : !window.clearTimeout $modal.copy-timer }
+    ]
+    ; to next-timer !window.setTimeout (
+     ; set 'Copy Info' copy-agent-btn.textContent
+     ; set null modal.copy-timer
+    ) 1200
+    ; set $next-timer modal.copy-timer
+   ) }
   ]
  )
  !close-btn.addEventListener click $modal.close

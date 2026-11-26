@@ -145,6 +145,93 @@ function parseBodyPayload(rawBody, body, headers) {
  return { body: rawText, rawBody: rawText }
 }
 
+function normalizeClientIpToken(raw) {
+ if (raw === null || raw === undefined) {
+  return ''
+ }
+ let token = String(raw).trim()
+ if (!token) {
+  return ''
+ }
+ if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
+  token = token.slice(1, -1).trim()
+ }
+ if (/^::ffff:/i.test(token)) {
+  token = token.slice(7).trim()
+ }
+ if (token.startsWith('[') && token.includes(']')) {
+  const closeIdx = token.indexOf(']')
+  token = token.slice(1, closeIdx).trim()
+ }
+ else if (/^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(token)) {
+  token = token.split(':')[0]
+ }
+ if (token.toLowerCase() === 'unknown') {
+  return ''
+ }
+ return token
+}
+
+export function resolveRequestIp(options = {}) {
+ const rawHeaders = options && options.headers && typeof options.headers === 'object'
+  ? options.headers
+  : {}
+ const headers = normalizeHeaders(rawHeaders)
+
+ if (options && typeof options.ip === 'string' && options.ip.trim()) {
+  const direct = normalizeClientIpToken(options.ip)
+  if (direct) {
+   return direct
+  }
+ }
+
+ const cfIp = headers['cf-connecting-ip']
+ if (cfIp) {
+  const first = normalizeClientIpToken(String(cfIp).split(',')[0])
+  if (first) {
+   return first
+  }
+ }
+
+ const xff = headers['x-forwarded-for']
+ if (xff) {
+  for (const part of String(xff).split(',')) {
+   const candidate = normalizeClientIpToken(part)
+   if (candidate) {
+    return candidate
+   }
+  }
+ }
+
+ const realIp = headers['x-real-ip'] || headers['true-client-ip'] || headers['x-client-ip']
+ if (realIp) {
+  const first = normalizeClientIpToken(String(realIp).split(',')[0])
+  if (first) {
+   return first
+  }
+ }
+
+ const forwarded = headers['forwarded']
+ if (forwarded) {
+  const match = /\bfor=([^;,\s]+)/i.exec(String(forwarded))
+  if (match && match[1]) {
+   const parsed = normalizeClientIpToken(match[1])
+   if (parsed) {
+    return parsed
+   }
+  }
+ }
+
+ if (options && typeof options.remoteAddress === 'string' && options.remoteAddress.trim()) {
+  const remote = normalizeClientIpToken(options.remoteAddress)
+  if (remote) {
+   return remote
+  }
+ }
+
+ return ''
+}
+
 export function buildRequestObject(options = {}) {
  const method = String(options.method || 'GET').trim().toUpperCase() || 'GET'
  const rawTarget = options.url !== undefined && options.url !== null
@@ -180,6 +267,11 @@ export function buildRequestObject(options = {}) {
    : {}),
  }
  const headers = normalizeHeaders(options.headers)
+ const ip = resolveRequestIp({
+  headers,
+  ip: options.ip,
+  remoteAddress: options.remoteAddress,
+ })
  const { body, rawBody } = parseBodyPayload(options.rawBody, options.body, headers)
  const params = options.params && typeof options.params === 'object' && !Array.isArray(options.params)
   ? { ...options.params }
@@ -195,6 +287,7 @@ export function buildRequestObject(options = {}) {
   query,
   queryString: parsedQueryStr,
   headers,
+  ip,
   body,
   rawBody,
   params,
@@ -570,8 +663,11 @@ export async function simulateLaneRequest({
    console: capturedConsole,
    data: laneData,
    Math,
+   Number,
    JSON,
    Date,
+   Array,
+   fetch: (...args) => (typeof globalThis.fetch === 'function' ? globalThis.fetch(...args) : null),
    importLane: typeof importLaneFn === 'function' ? importLaneFn : () => undefined,
    respond: createResponseHelper(),
    ...(reqForRun ? { req: reqForRun } : {}),

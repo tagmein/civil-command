@@ -1,3 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec node --max-old-space-size=512 --test field.test.mjs "$@"
+shopt -s nullglob
+has_file=0
+for arg in "$@"; do
+ if [[ "$arg" == *.mjs ]]; then
+  has_file=1
+  break
+ fi
+done
+if [[ "$has_file" -eq 1 ]]; then
+ exec node --max-old-space-size=512 --test "$@"
+fi
+files=(field.test.mjs field.*.test.mjs)
+exec node --max-old-space-size=512 --test --test-concurrency=4 "${files[@]}" "$@"

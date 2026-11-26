@@ -362,6 +362,153 @@ export async function syncLaneToRemoteCivilMemory({ url, basePath = '', bundle }
  return postDeployJson('/api/deploy/kv/sync', { url, basePath, bundle })
 }
 
+const clientResyncQueues = new Map()
+
+function enqueueClientResync(key, fn) {
+ const cleanKey = String(key || '__default__')
+ const prev = clientResyncQueues.get(cleanKey) || Promise.resolve()
+ const next = prev.then(fn, fn)
+ const tracked = next.finally(() => {
+  if (clientResyncQueues.get(cleanKey) === tracked) {
+   clientResyncQueues.delete(cleanKey)
+  }
+ })
+ clientResyncQueues.set(cleanKey, tracked)
+ return next
+}
+
+export async function resyncDeployedLane(payload = {}) {
+ const dep = payload && payload.deployment && typeof payload.deployment === 'object' ? payload.deployment : null
+ const queueKey = String((dep && (dep.id || dep.slug || dep.laneId)) || payload.laneId || '__default__')
+ return enqueueClientResync(queueKey, async () => {
+  const direct = await postDeployJson('/api/deploy/resync', payload)
+  if (direct && (direct.ok || direct.status !== 404)) {
+   return direct
+  }
+  const srv = payload && payload.server && typeof payload.server === 'object' ? payload.server : null
+  const bundle = payload && payload.bundle && typeof payload.bundle === 'object' ? payload.bundle : null
+  if (!srv || !srv.host || !dep || !bundle) {
+   if (dep && dep.civilMemoryUrl && bundle) {
+    return syncLaneToRemoteCivilMemory({
+     url: dep.civilMemoryUrl,
+     basePath: dep.dataBasePath || '',
+     bundle,
+    })
+   }
+   return direct
+  }
+  const started = await startDeployTerminalSession({
+   action: 'deploy-lane',
+   server: srv,
+   deployment: dep,
+   syncBundle: bundle,
+   subtitle: `${srv.user || 'root'}@${srv.host} · ${dep.slug || dep.laneId || ''}`,
+  })
+  if (!started || !started.ok || !started.wsPath) {
+   return started || direct
+  }
+  const WsCtor = globalThis.WebSocket
+  if (typeof WsCtor !== 'function') {
+   return { ok: true, deployedAt: new Date().toISOString(), publicUrl: dep.publicUrl || '' }
+  }
+  const wsBase = origin.replace(/^http/i, 'ws')
+  const wsUrl = started.wsPath.startsWith('ws://') || started.wsPath.startsWith('wss://')
+   ? started.wsPath
+   : `${wsBase}${started.wsPath.startsWith('/') ? '' : '/'}${started.wsPath}`
+  return new Promise(resolve => {
+   let outputText = ''
+   let deployData = null
+   let settled = false
+   const ws = new WsCtor(wsUrl)
+   const finish = result => {
+    if (settled) {
+     return
+    }
+    settled = true
+    try { ws.close() } catch {}
+    resolve(result)
+   }
+   const scanOutput = () => {
+    const lines = outputText.split(/\r?\n/)
+    for (let i = lines.length - 1; i >= 0; i--) {
+     const line = lines[i]
+     const idx = line.indexOf('__CC_DEPLOY_OK__')
+     if (idx !== -1) {
+      const rawJson = line.slice(idx + '__CC_DEPLOY_OK__'.length).trim()
+      try {
+       deployData = JSON.parse(rawJson)
+      }
+      catch {
+       deployData = { ok: true }
+      }
+      break
+     }
+    }
+   }
+   const onMsg = ev => {
+    const raw = ev && ev.data !== undefined ? ev.data : ev
+    let msg
+    try { msg = typeof raw === 'string' ? JSON.parse(raw) : raw } catch { return }
+    if (!msg || typeof msg !== 'object') {
+     return
+    }
+    if (msg.type === 'output' && typeof msg.data === 'string') {
+     outputText += msg.data
+     scanOutput()
+    }
+    else if (msg.type === 'status' && msg.status === 'exited') {
+     scanOutput()
+     const nowIso = new Date().toISOString()
+     if (deployData || msg.exitCode === 0) {
+      finish({
+       ok: true,
+       slug: (deployData && deployData.slug) || dep.slug || '',
+       laneId: (deployData && deployData.laneId) || dep.laneId || payload.laneId || '',
+       port: (deployData && deployData.port) || dep.port || 4100,
+       publicUrl: (deployData && deployData.publicUrl) || dep.publicUrl || '',
+       deployedAt: (deployData && deployData.deployedAt) || nowIso,
+       syncedAt: (deployData && deployData.deployedAt) || nowIso,
+      })
+     }
+     else {
+      finish({
+       ok: false,
+       error: `Remote deploy exited with code ${msg.exitCode}`,
+      })
+     }
+    }
+   }
+   if (typeof ws.addEventListener === 'function') {
+    ws.addEventListener('message', onMsg)
+    ws.addEventListener('error', () => finish({ ok: false, error: 'WebSocket deploy connection failed' }))
+    ws.addEventListener('close', () => {
+     scanOutput()
+     const nowIso = new Date().toISOString()
+     if (deployData) {
+      finish({
+       ok: true,
+       slug: deployData.slug || dep.slug || '',
+       laneId: deployData.laneId || dep.laneId || payload.laneId || '',
+       port: deployData.port || dep.port || 4100,
+       publicUrl: deployData.publicUrl || dep.publicUrl || '',
+       deployedAt: deployData.deployedAt || nowIso,
+       syncedAt: deployData.deployedAt || nowIso,
+      })
+     }
+     else {
+      finish({ ok: false, error: 'Deploy session closed before completion' })
+     }
+    })
+   }
+   else {
+    ws.onmessage = onMsg
+    ws.onerror = () => finish({ ok: false, error: 'WebSocket deploy connection failed' })
+    ws.onclose = () => finish({ ok: Boolean(deployData), deployedAt: new Date().toISOString(), publicUrl: dep.publicUrl || '' })
+   }
+  })
+ })
+}
+
 export async function proxyDeployRequest({ url, method = 'GET', headers = {}, body = '' } = {}) {
  return postDeployJson('/api/deploy/proxy', { url, method, headers, body })
 }
@@ -373,3 +520,41 @@ export async function startDeployTerminalSession(payload = {}) {
 export async function killDeployTerminalSession(sessionId) {
  return postDeployJson('/api/deploy/terminal/kill', { sessionId })
 }
+
+export function subscribeAgentEvents(onEvent, win = globalThis) {
+ if (typeof onEvent !== 'function') {
+  return () => {}
+ }
+ const EventSourceCtor = (win && win.EventSource) || globalThis.EventSource
+ if (typeof EventSourceCtor !== 'function') {
+  return () => {}
+ }
+ let es
+ try {
+  es = new EventSourceCtor(`${origin}/api/agent/events`)
+ }
+ catch {
+  return () => {}
+ }
+ es.onmessage = ev => {
+  if (!ev || !ev.data) {
+   return
+  }
+  try {
+   const parsed = JSON.parse(ev.data)
+   if (parsed && typeof parsed === 'object') {
+    onEvent(parsed)
+   }
+  }
+  catch {
+   // ignore malformed event
+  }
+ }
+ return () => {
+  try {
+   es.close()
+  }
+  catch {}
+ }
+}
+

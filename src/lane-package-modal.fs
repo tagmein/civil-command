@@ -137,9 +137,27 @@
  ; set lane-page-column pkg-sessions-col.className
  ; to pkg-sessions-hdr !document.createElement div
  ; assign $pkg-sessions-hdr { className lane-config-label } { textContent 'Sessions with this package open' }
+ ; to pkg-sessions-draft !document.createElement div
+ ; assign $pkg-sessions-draft { className workspace-session-draft } { hidden true }
+ ; to pkg-draft-text !document.createElement div
+ ; assign $pkg-draft-text { className workspace-session-draft-label } { textContent 'Unsaved version' }
+ ; to pkg-draft-btns !document.createElement div
+ ; set workspace-session-draft-actions pkg-draft-btns.className
+ ; to pkg-draft-save-btn !document.createElement button
+ ; assign $pkg-draft-save-btn { type button } { className 'workspace-mini-btn workspace-mini-btn--save' } { textContent Save }
+ ; to pkg-draft-fork-btn !document.createElement button
+ ; assign $pkg-draft-fork-btn { type button } { className workspace-mini-btn } { textContent Fork }
+ ; to pkg-draft-abandon-btn !document.createElement button
+ ; assign $pkg-draft-abandon-btn { type button } { className 'workspace-mini-btn workspace-mini-btn--danger' } { textContent Abandon }
+ !pkg-draft-btns.appendChild $pkg-draft-save-btn
+ !pkg-draft-btns.appendChild $pkg-draft-fork-btn
+ !pkg-draft-btns.appendChild $pkg-draft-abandon-btn
+ !pkg-sessions-draft.appendChild $pkg-draft-text
+ !pkg-sessions-draft.appendChild $pkg-draft-btns
  ; to pkg-sessions-list !document.createElement div
  ; set lane-modal-list pkg-sessions-list.className
  !pkg-sessions-col.appendChild $pkg-sessions-hdr
+ !pkg-sessions-col.appendChild $pkg-sessions-draft
  !pkg-sessions-col.appendChild $pkg-sessions-list
 
  ; to pkg-lanes-col !document.createElement div
@@ -188,6 +206,12 @@
   { pkg-detail-id $pkg-detail-id }
   { pkg-set-active-btn $pkg-set-active-btn }
   { pkg-close-btn $pkg-close-btn }
+  { pkg-sessions-draft $pkg-sessions-draft }
+  { pkg-draft-text $pkg-draft-text }
+  { pkg-draft-btns $pkg-draft-btns }
+  { pkg-draft-save-btn $pkg-draft-save-btn }
+  { pkg-draft-fork-btn $pkg-draft-fork-btn }
+  { pkg-draft-abandon-btn $pkg-draft-abandon-btn }
   { pkg-sessions-list $pkg-sessions-list }
   { pkg-lanes-list $pkg-lanes-list }
   { selected-pkg-id '' }
@@ -327,6 +351,18 @@
   !modal.pkg-pill-els.push $open-pkg-btn
 
   ; to cur-pkg $selected-pkg.item
+  ; to pending [ propertyIs true lane-control.session-status-pending ]
+  ; to dirty [ and { propertyIs false pending } { propertyIs true lane-control.session-dirty } ]
+  ; to blocked [ match { $pending : true } { $dirty : true } { true : false } ]
+  ; to pending-lbl [ match
+   { [ propertyIs '' lane-control.session-status-label ] : 'Loading…' }
+   { $lane-control.session-status-label : $lane-control.session-status-label }
+   { true : 'Loading…' }
+  ]
+  ; set [ ternary $blocked false true ] pkg-sessions-draft.hidden
+  ; set [ ternary $pending 'workspace-session-draft workspace-session-draft--pending' workspace-session-draft ] pkg-sessions-draft.className
+  ; set [ ternary $pending $pending-lbl 'Unsaved version' ] pkg-draft-text.textContent
+  ; set $pending pkg-draft-btns.hidden
   [ match
    { $cur-pkg (
     ; set false pkg-detail.hidden
@@ -377,10 +413,13 @@
         ) }
         { true (
          ; to sw-btn !document.createElement button
-         ; assign $sw-btn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent Switch }
+         ; assign $sw-btn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent Switch } { disabled $blocked }
+         !sw-btn.setAttribute aria-disabled [ ternary $blocked 'true' 'false' ]
          !sw-btn.addEventListener click (
-          !lane-control.switch-session $s.id
-          !modal.close
+          ; condition { and { propertyIs false lane-control.session-status-pending } { propertyIs false lane-control.session-dirty } } (
+           !lane-control.switch-session $s.id
+           !modal.close
+          )
          )
          !acts.appendChild $sw-btn
         ) }
@@ -389,7 +428,7 @@
        !row.appendChild $acts
        !pkg-sessions-list.appendChild $row
        !modal.pkg-session-els.push $row
-       !modal.pkg-session-items.push ; object { session $s } { el $row }
+       !modal.pkg-session-items.push ; object { session $s } { el $row } { switch-btn [ match { $is-cur : null } { true : $sw-btn } ] }
       )
      ) }
     ]
@@ -430,8 +469,16 @@
          ; to obtn !document.createElement button
          ; assign $obtn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent Open }
          !obtn.addEventListener click (
-          !lane-control.open $l.id
-          !lane-control.update-url
+          [ match
+           { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Loading…' }
+          ]
+          ; try (
+           !lane-control.open $l.id
+           !lane-control.update-url
+          ) : null
+          [ match
+           { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
+          ]
           !modal.close
          )
          !acts.appendChild $obtn
@@ -560,6 +607,18 @@
   ]
  )
 
+ !pkg-draft-save-btn.addEventListener click (
+  !lane-control.save-session-draft
+  !modal.render-packages-page
+ )
+ !pkg-draft-fork-btn.addEventListener click (
+  !lane-control.fork-session
+  !modal.render-packages-page
+ )
+ !pkg-draft-abandon-btn.addEventListener click (
+  !lane-control.abandon-session-draft
+  !modal.render-packages-page
+ )
  !pkg-set-active-btn.addEventListener click (
   ; condition { propertyIsGreaterThan 0 modal.selected-pkg-id.length } (
    !lane-control.set-active-package $modal.selected-pkg-id

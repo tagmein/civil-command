@@ -15,6 +15,7 @@ const APP_SHELL = [
  '/field.mjs',
  '/data.mjs',
  '/storage.mjs',
+ '/story.mjs',
  '/lane-http.mjs',
  '/terminal-ui.mjs',
  '/src/main.fs',
@@ -38,6 +39,7 @@ const APP_SHELL = [
  '/src/lane-server.fs',
  '/src/lane-servers-modal.fs',
  '/src/lane-session-modal.fs',
+ '/src/lane-story.fs',
  '/src/lane-terminal-modal.fs',
 ]
 

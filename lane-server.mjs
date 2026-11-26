@@ -16,9 +16,31 @@ import {
  createResponseHelper,
  detectLaneHandlers,
  executeLaneHttpRequest,
+ resolveRequestIp,
 } from './lane-http.mjs'
 
 const MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024
+
+export { resolveRequestIp }
+
+export function formatRequestLogLine({
+ slug = '',
+ laneId = '',
+ method = 'GET',
+ path = '/',
+ status = 200,
+ durationMs = 0,
+ ip = '',
+} = {}) {
+ const label = String(slug || laneId || 'lane').trim() || 'lane'
+ const cleanMethod = String(method || 'GET').trim().toUpperCase() || 'GET'
+ const cleanPath = String(path || '/').trim() || '/'
+ const cleanStatus = Number.isFinite(Number(status)) ? Math.trunc(Number(status)) : 200
+ const cleanDuration = Math.max(0, Math.round(Number(durationMs) || 0))
+ const cleanIp = String(ip || '').trim()
+ const ipPart = cleanIp ? ` ip=${cleanIp}` : ''
+ return `[civil-lane:${label}] ${cleanMethod} ${cleanPath} -> ${cleanStatus} (${cleanDuration}ms)${ipPart}`
+}
 
 export function normalizeCivilMemoryBaseUrl(rawUrl) {
  const trimmed = String(rawUrl || '').trim()
@@ -105,6 +127,10 @@ export function createLaneHttpServer(config = {}, opts = {}) {
  }
  const cors = config.cors !== false
  const includeImports = Boolean(config.includeImports)
+ const logger = opts.logger || console
+ const logRequests = opts.logRequests !== undefined
+  ? Boolean(opts.logRequests)
+  : config.logRequests !== false
  const normalizedUrl = config.civilMemoryUrl
   ? normalizeCivilMemoryBaseUrl(config.civilMemoryUrl)
   : ''
@@ -125,6 +151,28 @@ export function createLaneHttpServer(config = {}, opts = {}) {
  let startupError = null
  let handlersInfo = { hasHandlers: false, methods: [], handlers: {} }
  let loadedAt = null
+
+ function logRequest(entry) {
+  const line = formatRequestLogLine({
+   slug: config.slug,
+   laneId,
+   ...entry,
+  })
+  if (typeof opts.onRequestLog === 'function') {
+   try {
+    opts.onRequestLog({
+     slug: config.slug || '',
+     laneId,
+     ...entry,
+     line,
+    })
+   }
+   catch {}
+  }
+  if (logRequests && logger && typeof logger.log === 'function') {
+   logger.log(line)
+  }
+ }
 
  async function evaluateLane(targetId, { req = null, stack = new Set(), requireExists = false } = {}) {
   const laneData = rootKv.namespace(targetId)
@@ -172,11 +220,14 @@ export function createLaneHttpServer(config = {}, opts = {}) {
   }
 
   const env = {
-   console,
+   console: logger,
    data: laneData,
    Math,
+   Number,
    JSON,
    Date,
+   Array,
+   fetch: (...args) => (typeof globalThis.fetch === 'function' ? globalThis.fetch(...args) : null),
    importLane,
    respond: createResponseHelper(),
    ...(req ? { req } : {}),
@@ -261,17 +312,39 @@ export function createLaneHttpServer(config = {}, opts = {}) {
  }
 
  const server = http.createServer(async (req, res) => {
+  const startMs = Date.now()
   const reqMethod = String(req.method || 'GET').toUpperCase()
   const rawUrl = req.url || '/'
   const pathname = rawUrl.split('?')[0]
+  const clientIp = resolveRequestIp({
+   headers: req.headers,
+   remoteAddress: req.socket && req.socket.remoteAddress,
+  })
 
   if (pathname === '/_cc/health' && reqMethod === 'GET') {
-   return sendJsonResponse(res, 200, getStatus())
+   sendJsonResponse(res, 200, getStatus())
+   logRequest({
+    method: reqMethod,
+    path: rawUrl,
+    status: 200,
+    durationMs: Date.now() - startMs,
+    ip: clientIp,
+   })
+   return
   }
 
   if (pathname === '/_cc/reload' && reqMethod === 'POST') {
    const status = await reload()
-   return sendJsonResponse(res, status.ok ? 200 : 500, status)
+   const code = status.ok ? 200 : 500
+   sendJsonResponse(res, code, status)
+   logRequest({
+    method: reqMethod,
+    path: rawUrl,
+    status: code,
+    durationMs: Date.now() - startMs,
+    ip: clientIp,
+   })
+   return
   }
 
   let rawBody = ''
@@ -281,7 +354,15 @@ export function createLaneHttpServer(config = {}, opts = {}) {
    }
    catch (err) {
     const code = err && err.status ? err.status : 400
-    return sendJsonResponse(res, code, { error: err && err.message ? err.message : 'Invalid request body' })
+    sendJsonResponse(res, code, { error: err && err.message ? err.message : 'Invalid request body' })
+    logRequest({
+     method: reqMethod,
+     path: rawUrl,
+     status: code,
+     durationMs: Date.now() - startMs,
+     ip: clientIp,
+    })
+    return
    }
   }
 
@@ -296,6 +377,8 @@ export function createLaneHttpServer(config = {}, opts = {}) {
    basePath: effectiveBasePath,
    headers: req.headers,
    rawBody,
+   ip: clientIp,
+   remoteAddress: req.socket && req.socket.remoteAddress,
   })
 
   const runFreshLane = async freshReq => {
@@ -307,6 +390,10 @@ export function createLaneHttpServer(config = {}, opts = {}) {
    return evaluated
   }
 
+  if (handlersInfo.hasHandlers) {
+   await reload()
+  }
+
   const result = await executeLaneHttpRequest({
    req: reqObj,
    laneState: startupState,
@@ -316,6 +403,15 @@ export function createLaneHttpServer(config = {}, opts = {}) {
 
   res.writeHead(result.status, result.headers)
   res.end(result.bodyText)
+
+  const loggedPath = reqObj.queryString ? `${reqObj.path}?${reqObj.queryString}` : reqObj.path
+  logRequest({
+   method: reqMethod,
+   path: loggedPath,
+   status: result.status,
+   durationMs: Date.now() - startMs,
+   ip: clientIp,
+  })
  })
 
  return {
