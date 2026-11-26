@@ -14,10 +14,20 @@ import {
  agentMutateLaneTable,
  resolveAgentRootKv,
 } from './agent-api.mjs'
+import { resolveAgentRemoteOptions } from './agent-remote.mjs'
 import { startMcpStdioServer } from './mcp.mjs'
 
 function isCliFlagToken(token) {
  return typeof token === 'string' && token.startsWith('--') && token.length > 2 && !/^\s/.test(token.slice(2))
+}
+
+function setFlag(flags, key, value) {
+ if (Object.hasOwn(flags, key)) {
+  flags[key] = Array.isArray(flags[key]) ? [...flags[key], value] : [flags[key], value]
+ }
+ else {
+  flags[key] = value
+ }
 }
 
 function parseCliArgs(argv) {
@@ -28,19 +38,17 @@ function parseCliArgs(argv) {
   if (isCliFlagToken(token)) {
    const eqIdx = token.indexOf('=')
    if (eqIdx !== -1) {
-    const k = token.slice(2, eqIdx)
-    const v = token.slice(eqIdx + 1)
-    flags[k] = v
+    setFlag(flags, token.slice(2, eqIdx), token.slice(eqIdx + 1))
    }
    else {
     const k = token.slice(2)
     const next = argv[i + 1]
     if (next !== undefined && !isCliFlagToken(String(next))) {
-     flags[k] = String(next)
+     setFlag(flags, k, String(next))
      i += 1
     }
     else {
-     flags[k] = true
+     setFlag(flags, k, true)
     }
    }
   }
@@ -51,11 +59,11 @@ function parseCliArgs(argv) {
  return { positional, flags }
 }
 
-async function notifyRunningServer(serverOrigin, eventPayload) {
+async function notifyRunningServer(serverOrigin, eventPayload, headers = {}) {
  try {
   await fetch(`${serverOrigin}/api/agent/notify`, {
    method: 'POST',
-   headers: { 'Content-Type': 'application/json' },
+   headers: { 'Content-Type': 'application/json', ...headers },
    body: JSON.stringify(eventPayload),
   })
  }
@@ -88,10 +96,19 @@ Usage:
   ./cc deployments [--ping] [--session <idOrName>]
   ./cc mcp
 
+Remote Host Flags:
+  --host <origin>        Remote Civil Command origin (e.g. https://example.com); API is <origin>/api/data
+  --url <dataUrl>        Explicit KV endpoint, overriding --host (default: ${DEFAULT_AGENT_DATA_URL})
+  --user <username>      HTTP Basic auth username (or CC_USER)
+  --password <password>  HTTP Basic auth password (or CC_PASSWORD)
+  --token <token>        Bearer token auth, overrides Basic auth (or CC_TOKEN)
+  --header 'Name: value' Extra request header; repeatable
+  Credentials can also be embedded in --host / --url as https://user:pass@host.
+  Environment: CC_HOST, CC_DATA_URL, CC_USER, CC_PASSWORD, CC_TOKEN.
+
 Global Flags:
   --session <idOrName>   Target session by ID or name (defaults to most recently updated session)
   --dir <basePath>       Explicit data directory basePath override
-  --url <dataUrl>        Custom KV endpoint (default: ${DEFAULT_AGENT_DATA_URL})
 `)
 }
 
@@ -104,17 +121,17 @@ async function main() {
   return
  }
 
- const baseUrl = typeof flags.url === 'string' && flags.url.trim()
-  ? flags.url.trim()
-  : (process.env.CC_DATA_URL || DEFAULT_AGENT_DATA_URL)
- const serverOrigin = new URL(baseUrl).origin
+ const { baseUrl, headers, serverOrigin } = resolveAgentRemoteOptions(flags, process.env, {
+  defaultDataUrl: DEFAULT_AGENT_DATA_URL,
+ })
+ const notify = eventPayload => notifyRunningServer(serverOrigin, eventPayload, headers)
 
  if (cmd === 'mcp') {
-  startMcpStdioServer({ baseUrl })
+  startMcpStdioServer({ baseUrl, headers })
   return
  }
 
- const rootKv = resolveAgentRootKv({ baseUrl })
+ const rootKv = resolveAgentRootKv({ baseUrl, headers })
  const sessionId = typeof flags.session === 'string' ? flags.session : ''
  const dataDir = typeof flags.dir === 'string' ? flags.dir : undefined
 
@@ -173,7 +190,7 @@ async function main() {
    httpRequest,
   })
   if (out.ok) {
-   await notifyRunningServer(serverOrigin, {
+   await notify({
     type: 'lane-updated',
     laneId: out.laneId,
     action: 'eval',
@@ -195,7 +212,7 @@ async function main() {
    packageId: typeof flags.package === 'string' ? flags.package : undefined,
   })
   if (out.ok) {
-   await notifyRunningServer(serverOrigin, {
+   await notify({
     type: 'lane-created',
     sessionId: sessionId || null,
     laneId: out.laneId,
@@ -235,7 +252,7 @@ async function main() {
    features,
   })
   if (out.ok && out.lane) {
-   await notifyRunningServer(serverOrigin, {
+   await notify({
     type: 'lane-updated',
     laneId: out.lane.id,
     action: 'configure',
@@ -260,7 +277,7 @@ async function main() {
    text,
   })
   if (out.ok) {
-   await notifyRunningServer(serverOrigin, {
+   await notify({
     type: 'lane-updated',
     laneId: out.laneId,
     action: 'set-line',
@@ -282,7 +299,7 @@ async function main() {
    text,
   })
   if (out.ok) {
-   await notifyRunningServer(serverOrigin, {
+   await notify({
     type: 'lane-updated',
     laneId: out.laneId,
     action: 'append-line',
@@ -306,7 +323,7 @@ async function main() {
    text,
   })
   if (out.ok) {
-   await notifyRunningServer(serverOrigin, {
+   await notify({
     type: 'lane-updated',
     laneId: out.laneId,
     action: 'insert-line',
@@ -330,7 +347,7 @@ async function main() {
    lineNumber: !isLineId ? Number(lineTarget) : undefined,
   })
   if (out.ok) {
-   await notifyRunningServer(serverOrigin, {
+   await notify({
     type: 'lane-updated',
     laneId: out.laneId,
     action: 'delete-line',
@@ -365,7 +382,7 @@ async function main() {
    lines,
   })
   if (out.ok) {
-   await notifyRunningServer(serverOrigin, {
+   await notify({
     type: 'lane-updated',
     laneId: out.laneId,
     action: 'replace-script',
@@ -391,7 +408,7 @@ async function main() {
    values,
   })
   if (out.ok) {
-   await notifyRunningServer(serverOrigin, {
+   await notify({
     type: 'lane-updated',
     laneId: out.laneId,
     action: 'add-row',
@@ -418,7 +435,7 @@ async function main() {
    values,
   })
   if (out.ok) {
-   await notifyRunningServer(serverOrigin, {
+   await notify({
     type: 'lane-updated',
     laneId: out.laneId,
     action: 'update-row',
@@ -446,7 +463,7 @@ async function main() {
    value: value !== undefined && String(value).length > 0 ? String(value) : undefined,
   })
   if (out.ok) {
-   await notifyRunningServer(serverOrigin, {
+   await notify({
     type: 'lane-updated',
     laneId: out.laneId,
     action: 'set-input',
@@ -468,7 +485,7 @@ async function main() {
    name,
   })
   if (out.ok) {
-   await notifyRunningServer(serverOrigin, {
+   await notify({
     type: 'lane-updated',
     laneId: out.laneId,
     action: 'delete-input',
@@ -493,7 +510,7 @@ async function main() {
    columns,
   })
   if (out.ok) {
-   await notifyRunningServer(serverOrigin, {
+   await notify({
     type: 'lane-updated',
     laneId: out.laneId,
     action: 'create-table',
@@ -517,7 +534,7 @@ async function main() {
    rowId,
   })
   if (out.ok) {
-   await notifyRunningServer(serverOrigin, {
+   await notify({
     type: 'lane-updated',
     laneId: out.laneId,
     action: 'delete-row',

@@ -125,6 +125,7 @@ export function resolveAgentRootKv(rootKvOrOptions = null) {
   baseUrl,
   basePath: opts.basePath || null,
   switchable: true,
+  headers: opts.headers || null,
  })
 }
 

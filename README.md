@@ -36,6 +36,22 @@ node start
 
 Open [http://localhost:8080](http://localhost:8080) in your browser.
 
+### Use `./cc` Against a Remote Host
+
+The agent CLI works with the same KV and agent APIs as the browser app, so it can target a remote Civil Command origin with HTTP Basic or Bearer auth:
+
+```bash
+export CC_USER='agent@example.com' CC_PASSWORD='secret'
+./cc sessions --host https://civil.example.com
+./cc lane 'Bench 1' --host https://civil.example.com --session Scratch
+./cc eval 'Bench 1' --host https://civil.example.com --session Scratch
+```
+
+- `--host <origin>` derives `<origin>/api/data?mode=disk` (a lane route path in the URL is ignored). Use `--url` for an explicit KV endpoint instead.
+- `--user` / `--password` (or `CC_USER` / `CC_PASSWORD`) send HTTP Basic auth; `--token` (or `CC_TOKEN`) sends Bearer auth; credentials may also be embedded as `https://user:pass@host`.
+- `--header 'Name: value'` adds custom headers and can be repeated.
+- `--host`, `--url`, and credentials can be supplied via `CC_HOST`, `CC_DATA_URL`, `CC_USER`, `CC_PASSWORD`, and `CC_TOKEN`. `./cc mcp` uses the same settings.
+
 ### Run the Tests
 
 ```bash

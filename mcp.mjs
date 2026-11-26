@@ -6,12 +6,15 @@ import {
  handleMcpJsonRpc,
  resolveAgentRootKv,
 } from './agent-api.mjs'
+import { resolveAgentRemoteOptions } from './agent-remote.mjs'
 
 export function startMcpStdioServer(options = {}) {
  const input = options.input || process.stdin
  const output = options.output || process.stdout
- const baseUrl = options.baseUrl || process.env.CC_DATA_URL || DEFAULT_AGENT_DATA_URL
- const rootKv = resolveAgentRootKv(options.rootKv || { baseUrl })
+ const remote = resolveAgentRemoteOptions({}, process.env, { defaultDataUrl: DEFAULT_AGENT_DATA_URL })
+ const baseUrl = options.baseUrl || remote.baseUrl
+ const headers = options.headers || remote.headers
+ const rootKv = resolveAgentRootKv(options.rootKv || { baseUrl, headers })
 
  const rl = readline.createInterface({
   input,

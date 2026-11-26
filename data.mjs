@@ -47,10 +47,18 @@ export function httpKV({
  basePath = null,
  defaultRoot = null,
  switchable = false,
+ headers = null,
  _clientsByPath = null,
 }) {
  const clientsByPath = _clientsByPath || new Map()
  const cleanBasePath = normalizeDataDir(basePath)
+ const requestHeaders = headers && typeof headers === 'object' ? headers : null
+ const withHeaders = init => {
+  if (!requestHeaders) {
+   return init
+  }
+  return { ...(init || {}), headers: { ...requestHeaders, ...((init && init.headers) || {}) } }
+ }
 
  const getOrCreateRootClient = targetPath => {
   const norm = normalizeDataDir(targetPath)
@@ -65,6 +73,7 @@ export function httpKV({
     namespace: '',
     basePath: null,
     switchable: false,
+    headers: requestHeaders,
     _clientsByPath: clientsByPath,
    })
   }
@@ -74,6 +83,7 @@ export function httpKV({
    basePath: norm,
    defaultRoot: def,
    switchable: false,
+   headers: requestHeaders,
    _clientsByPath: clientsByPath,
   })
   return created
@@ -152,6 +162,7 @@ export function httpKV({
     root: client.root,
     basePath: cleanBasePath,
     defaultRoot: client.defaultRoot,
+    headers: requestHeaders,
     _clientsByPath: clientsByPath,
    })
   },
@@ -163,6 +174,7 @@ export function httpKV({
     root: client.root,
     basePath: cleanBasePath,
     defaultRoot: client.defaultRoot,
+    headers: requestHeaders,
     _clientsByPath: clientsByPath,
    })
   },
@@ -171,7 +183,7 @@ export function httpKV({
    const url = new URL(effectiveBaseUrl)
    url.searchParams.set('key', qualify(key))
    const finalUrl = url.toString()
-   const resp = await fetch(finalUrl)
+   const resp = await fetch(finalUrl, withHeaders())
 
    // treat not found as null
    if (resp.status === 404) {
@@ -193,10 +205,10 @@ export function httpKV({
    url.searchParams.set('key', qualify(key))
    const finalUrl = url.toString()
    const method = 'POST'
-   const resp = await fetch(finalUrl, {
+   const resp = await fetch(finalUrl, withHeaders({
     method,
     body: value,
-   })
+   }))
 
    if (!resp.ok) {
     const responseText = await resp.text()
@@ -211,7 +223,7 @@ export function httpKV({
    url.searchParams.set('key', qualify(key))
    const finalUrl = url.toString()
    const method = 'DELETE'
-   const resp = await fetch(finalUrl, { method })
+   const resp = await fetch(finalUrl, withHeaders({ method }))
 
    // treat not found as idempotent delete
    if (resp.status === 404) {
