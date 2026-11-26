@@ -5,6 +5,11 @@ const path = require('path')
 
 const rootDir = path.resolve('.')
 const indexPath = path.join(rootDir, 'index.html')
+
+// Optional startup flag; CC_KV_CHUNK_BYTES (or browser global) works too.
+const kvChunkArg = process.argv.find(arg => arg.startsWith('--kv-chunk-bytes='))
+if (kvChunkArg) process.env.CC_KV_CHUNK_BYTES = kvChunkArg.slice('--kv-chunk-bytes='.length)
+
 const fsApiPromise = import('./fs-api.mjs')
 const deployApiPromise = import('./deploy-api.mjs')
 const agentApiPromise = import('./agent-api.mjs')

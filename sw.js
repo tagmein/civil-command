@@ -1,5 +1,5 @@
 const CACHE_PREFIX = 'civil-command-'
-const CACHE_NAME = `${CACHE_PREFIX}v1`
+const CACHE_NAME = `${CACHE_PREFIX}v2`
 
 const APP_SHELL = [
  '/',
@@ -14,6 +14,7 @@ const APP_SHELL = [
  '/icons/icon.svg',
  '/field.mjs',
  '/data.mjs',
+ '/kv-config.mjs',
  '/storage.mjs',
  '/story.mjs',
  '/lane-http.mjs',

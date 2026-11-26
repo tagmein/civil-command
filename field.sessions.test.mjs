@@ -7,7 +7,10 @@ import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import {
  DATA_RUNTIME_ENV,
+ DEFAULT_KV_CHUNK_BYTES,
  DEFAULT_PACKAGE_ID,
+ KV_CHUNK_BYTES_ENV_VAR,
+ KV_CHUNK_BYTES_GLOBAL,
  MAX_KV_VALUE_BYTES,
  MCP_TOOLS,
  PRIMITIVE_TYPES,
@@ -38,6 +41,7 @@ import {
  formatAgentPrompt,
  formatDataDirLabel,
  formatImportLine,
+ getKvChunkBytes,
  handleAgentApiRequest,
  handleFsApiRequest,
  handleMcpJsonRpc,
@@ -61,6 +65,7 @@ import {
  loadLaneSecretRecord,
  loadLaneTables,
  normalizeDataDir,
+ normalizeKvChunkBytes,
  normalizePrimitiveType,
  normalizeSessionLinkIds,
  packageLaneKey,
@@ -72,6 +77,7 @@ import {
  registerLaneInPackage,
  renameSession,
  resolveImportValue,
+ resolveKvChunkBytes,
  resolveScopeColumns,
  resolveSessionLinks,
  runLines,
@@ -80,6 +86,7 @@ import {
  scriptLineKey,
  sessionMetaKey,
  sessionModalSource,
+ setKvChunkBytes,
  setLaneSecret,
  setSessionDataDir,
  setSessionLinks,
@@ -92,7 +99,54 @@ import {
  writePagedIds,
 } from './field.fixtures.mjs'
 
-test('data.mjs httpKV hashNamespace and real diskKV directory layout enforce <= 1024b per file without collisions', async () => {
+test('kv-config: 16 KiB default, env/startup/global overrides, and validation', async () => {
+ assert.equal(DEFAULT_KV_CHUNK_BYTES, 16384)
+ assert.equal(KV_CHUNK_BYTES_ENV_VAR, 'CC_KV_CHUNK_BYTES')
+ assert.equal(KV_CHUNK_BYTES_GLOBAL, 'CC_KV_CHUNK_BYTES')
+ assert.equal(normalizeKvChunkBytes('32768'), 32768)
+ assert.equal(normalizeKvChunkBytes(' 4096 '), 4096)
+ assert.equal(normalizeKvChunkBytes('0'), null)
+ assert.equal(normalizeKvChunkBytes('not-a-number'), null)
+ assert.equal(resolveKvChunkBytes({ envValue: null, globalValue: null }), DEFAULT_KV_CHUNK_BYTES)
+ assert.equal(resolveKvChunkBytes({ envValue: '2048', globalValue: null }), 2048)
+ assert.equal(resolveKvChunkBytes({ envValue: '2048', globalValue: '4096' }), 4096)
+
+ const originalEnv = process.env[KV_CHUNK_BYTES_ENV_VAR]
+ const hasGlobal = Object.hasOwn(globalThis, KV_CHUNK_BYTES_GLOBAL)
+ const originalGlobal = globalThis[KV_CHUNK_BYTES_GLOBAL]
+ try {
+  if (hasGlobal) delete globalThis[KV_CHUNK_BYTES_GLOBAL]
+  process.env[KV_CHUNK_BYTES_ENV_VAR] = '20480'
+  const fromEnv = await import(`./kv-config.mjs?env=${Date.now()}`)
+  assert.equal(fromEnv.MAX_KV_VALUE_BYTES, 20480)
+  globalThis[KV_CHUNK_BYTES_GLOBAL] = '12288'
+  const fromGlobal = await import(`./kv-config.mjs?global=${Date.now() + 1}`)
+  assert.equal(fromGlobal.MAX_KV_VALUE_BYTES, 12288)
+ }
+ finally {
+  if (originalEnv === undefined) delete process.env[KV_CHUNK_BYTES_ENV_VAR]
+  else process.env[KV_CHUNK_BYTES_ENV_VAR] = originalEnv
+  if (hasGlobal) globalThis[KV_CHUNK_BYTES_GLOBAL] = originalGlobal
+  else delete globalThis[KV_CHUNK_BYTES_GLOBAL]
+ }
+
+ const previous = getKvChunkBytes()
+ try {
+  assert.equal(setKvChunkBytes(8192), 8192)
+  assert.equal(getKvChunkBytes(), 8192)
+  assert.equal(MAX_KV_VALUE_BYTES, 8192)
+  const chunks = splitUtf8Chunks('x'.repeat(9000))
+  assert.equal(chunks.length, 2)
+  assert.equal(utf8ByteLength(chunks[0]), 8192)
+  assert.throws(() => setKvChunkBytes('bad'), RangeError)
+  assert.equal(getKvChunkBytes(), 8192)
+ }
+ finally {
+  setKvChunkBytes(previous)
+ }
+})
+
+test('data.mjs httpKV hashNamespace and real diskKV directory layout enforce configured chunk bytes per file without collisions', async () => {
  // 1. httpKV URL key construction & idempotent 404 delete
  const requests = []
  const origFetch = globalThis.fetch
@@ -196,11 +250,11 @@ test('data.mjs httpKV hashNamespace and real diskKV directory layout enforce <= 
   await laneData.set('title', 'Disk Layout Test')
   await registerLaneInPackage(disk, laneId, 'Disk Layout Test', createdPkg.pkg.id)
 
-  // Seed exempt .inputs key (> 1024 bytes explicitly allowed only for .inputs)
+  // Seed exempt .inputs key (large values explicitly allowed only for .inputs)
   const bigInputs = Array.from({ length: 40 }, (_, i) => ({ name: `inp_${i}`, type: 'string', value: 'v'.repeat(30) }))
   await laneData.set('inputs', JSON.stringify(bigInputs))
 
-  // Add 2 tables with wide columns and large (> 1024b) multi-byte row payload
+  // Add 2 tables with wide columns and a multi-byte row payload larger than one chunk
   const t1 = {
    id: 't1',
    name: 'items',
@@ -216,14 +270,15 @@ test('data.mjs httpKV hashNamespace and real diskKV directory layout enforce <= 
   await addLaneTable(disk, laneData, laneId, t1, ['t1'])
   await addLaneTable(disk, laneData, laneId, t2, ['t1', 't2'])
 
-  const bigEmojiRow = { id: 'r_big', values: { c0: '🚀'.repeat(450), c1: 'a'.repeat(500) } }
+  const bigEmojiValue = '🚀'.repeat(Math.ceil(MAX_KV_VALUE_BYTES * 2 / 4))
+  const bigEmojiRow = { id: 'r_big', values: { c0: bigEmojiValue, c1: 'a'.repeat(MAX_KV_VALUE_BYTES) } }
   t1.rows.push(bigEmojiRow)
   await addTableRow(disk, laneData, laneId, 't1', bigEmojiRow, ['r_big'])
 
-  // Save script lines including > 1500 byte line
+  // Save script lines including a chunked line
   await saveLaneScript(disk, laneData, laneId, [
    '; to a 1',
-   `-- ${'x'.repeat(1600)}`,
+   `-- ${'x'.repeat(MAX_KV_VALUE_BYTES * 2)}`,
    '; to b ; add $a 2',
   ], memWindow)
 
@@ -266,18 +321,18 @@ test('data.mjs httpKV hashNamespace and real diskKV directory layout enforce <= 
   // Reload from diskKV to verify integrity
   const loadedTables = await loadLaneTables(disk, laneData, laneId)
   assert.equal(loadedTables.length, 2)
-  assert.equal(loadedTables[0].rows[0].values.c0, '🚀'.repeat(450))
+  assert.equal(loadedTables[0].rows[0].values.c0, bigEmojiValue)
   const loadedScript = await loadLaneScript(disk, laneData, laneId, memWindow)
   assert.equal(loadedScript.records.length, 3)
-  assert.equal(loadedScript.records[1].text, `-- ${'x'.repeat(1600)}`)
+  assert.equal(loadedScript.records[1].text, `-- ${'x'.repeat(MAX_KV_VALUE_BYTES * 2)}`)
  }
  finally {
   await fs.rm(tempDir, { recursive: true, force: true })
  }
 })
 
-test('storage.mjs chunking, multi-byte UTF-8 splitting, and paged ID indexes stay <= 1024 bytes', async () => {
- const emojiText = '🧪'.repeat(600) + 'hello' + 'あ'.repeat(400)
+test('storage.mjs chunking, multi-byte UTF-8 splitting, and paged ID indexes stay within configured chunk bytes', async () => {
+ const emojiText = '🧪'.repeat(Math.ceil(MAX_KV_VALUE_BYTES * 2 / 4)) + 'hello' + 'あ'.repeat(Math.ceil(MAX_KV_VALUE_BYTES / 3))
  const chunks = splitUtf8Chunks(emojiText, MAX_KV_VALUE_BYTES)
  assert.ok(chunks.length > 2)
  for (const ch of chunks) {
@@ -304,7 +359,7 @@ test('storage.mjs chunking, multi-byte UTF-8 splitting, and paged ID indexes sta
  }
  assert.equal(await kvGetChunked(kv, 'k1'), bigPayload)
 
- // Shrink <= 1024 bytes deletes old chunk keys
+ // Shrink to a single small value deletes old chunk keys
  await kvSetChunked(kv, 'k1', 'small-value')
  assert.equal(store.get('k1'), 'small-value')
  assert.equal(store.has('k1.chunks/0'), false)
@@ -318,13 +373,13 @@ test('storage.mjs chunking, multi-byte UTF-8 splitting, and paged ID indexes sta
  assert.equal(await kvGetChunked(kv, 'k1'), null)
 
  // Paged ID indexes (100 long IDs -> multiple pages, incremental write skip, shrink & delete cleanup)
- const ids = Array.from({ length: 100 }, (_, i) => `long-item-identifier-segment-${String(i).padStart(4, '0')}`)
+ const ids = Array.from({ length: 100 }, (_, i) => `long-item-identifier-segment-${String(i).padStart(4, '0')}-${'x'.repeat(Math.ceil(MAX_KV_VALUE_BYTES / 8))}`)
  await writePagedIds(kv, 'items', ids)
  const pageKeysBefore = Array.from(store.keys()).filter(k => k.startsWith('items-pages/'))
  assert.ok(pageKeysBefore.length >= 3)
  for (const [k, val] of store.entries()) {
   if (k.startsWith('items')) {
-   assert.ok(utf8ByteLength(val) <= MAX_KV_VALUE_BYTES, `${k} exceeded 1024 bytes`)
+   assert.ok(utf8ByteLength(val) <= MAX_KV_VALUE_BYTES, `${k} exceeded ${MAX_KV_VALUE_BYTES} bytes`)
   }
  }
  const readBack = await readPagedIds(kv, 'items')

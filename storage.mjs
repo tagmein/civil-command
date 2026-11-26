@@ -1,5 +1,15 @@
 import { formatDataDirLabel, normalizeDataDir } from './data.mjs'
 import {
+ DEFAULT_KV_CHUNK_BYTES,
+ KV_CHUNK_BYTES_ENV_VAR,
+ KV_CHUNK_BYTES_GLOBAL,
+ MAX_KV_VALUE_BYTES,
+ getKvChunkBytes,
+ normalizeKvChunkBytes,
+ resolveKvChunkBytes,
+ setKvChunkBytes,
+} from './kv-config.mjs'
+import {
  coerceDataValue,
  defaultDataValue,
  formatTimestampWithZone,
@@ -14,7 +24,16 @@ import {
 
 export { formatDataDirLabel, normalizeDataDir }
 
-export const MAX_KV_VALUE_BYTES = 1024
+export {
+ DEFAULT_KV_CHUNK_BYTES,
+ KV_CHUNK_BYTES_ENV_VAR,
+ KV_CHUNK_BYTES_GLOBAL,
+ MAX_KV_VALUE_BYTES,
+ getKvChunkBytes,
+ normalizeKvChunkBytes,
+ resolveKvChunkBytes,
+ setKvChunkBytes,
+}
 export const DEFAULT_PACKAGE_ID = 'default'
 export const DEFAULT_PACKAGE_NAME = 'Default'
 export const SESSION_STORAGE_KEY = 'civil-command.session'

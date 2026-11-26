@@ -20,6 +20,7 @@ import {
  exportModalSource,
  field,
  formatImportLine,
+ getKvChunkBytes,
  hasImportCycle,
  laneServerSource,
  laneServersModalSource,
@@ -39,9 +40,10 @@ import {
  runLines,
  runTransportedScripts,
  sessionModalSource,
+ setKvChunkBytes,
 } from './field.fixtures.mjs'
 
-test('story.mjs: 4-tier hierarchical civil-memory indices, <= 1024B disk files, heading classification, date ranges & bucket queries', async () => {
+test('story.mjs: 4-tier hierarchical civil-memory indices, configured-size disk files, heading classification, date ranges & bucket queries', async () => {
  const nowMs = Date.parse('2026-11-26T17:09:19.000Z')
  const tz = 'America/New_York'
 
@@ -66,7 +68,7 @@ test('story.mjs: 4-tier hierarchical civil-memory indices, <= 1024B disk files, 
  assert.equal(arch2023.label, 'Archives')
  assert.equal(arch2023.year, 2023)
 
- // 2. Real diskKV layout under os.tmpdir() enforcing <= 1024B per file
+ // 2. Real diskKV layout under os.tmpdir() enforcing the configured chunk bytes per file
  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-story-disk-'))
  function createDiskKV(baseDir) {
   const encodeSeg = seg => encodeURIComponent(String(seg))
@@ -128,6 +130,10 @@ test('story.mjs: 4-tier hierarchical civil-memory indices, <= 1024B disk files, 
   return makeClient()
  }
 
+ // Story snapshots cap individual values, so exercise chunking with a small
+ // writer limit and restore the normal default afterwards.
+ const originalChunkBytes = getKvChunkBytes()
+ setKvChunkBytes(2048)
  try {
   const diskKv = createDiskKV(tempDir)
   const laneId = 'lane.story.1'
@@ -324,6 +330,7 @@ test('story.mjs: 4-tier hierarchical civil-memory indices, <= 1024B disk files, 
   assert.ok(splitDetail.exports[0].content.includes('E'.repeat(50)))
  }
  finally {
+  setKvChunkBytes(originalChunkBytes)
   await fs.rm(tempDir, { recursive: true, force: true })
  }
 })
