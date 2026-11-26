@@ -189,6 +189,13 @@ All saved Lane Source code across Civil Command is **guaranteed to be parseable 
   ; to lane !scope.mount $id $title $lane-data
   ; set [ !data.get session ] state session
   ```
+- **`!` invokes methods/functions only; it never assigns properties.** Use `set` (value-first) or `to` (target-first) for DOM, style, and state property writes:
+  ```fs
+  ; set 'Bench: alpha-beta-gamma' card.textContent
+  ; set left element.style.textAlign
+  ; to scope.lanes {}
+  ```
+  `!card.textContent '…'` compiles to `invoke` and fails at runtime with `… is not a function` because `textContent` is a string property, not a method. Headless `eval` queues `send` packets without executing them, so this mistake only surfaces when the packet runs in the browser `View` output.
 - **Use `:` whenever the last block of a block or line is a single-statement `( will )`** — it automatically closes at `}`, `]`, `)`, `,`, or `\n`:
   ```fs
   ; to element [ match
