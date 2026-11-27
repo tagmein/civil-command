@@ -2237,6 +2237,11 @@
   ]
   ; set $status-txt session-status-el.textContent
   ; set $status-ttl session-status-el.title
+  ; to dirs-disabled [ match
+   { $lane-control.is-session-dirs-disabled : !lane-control.is-session-dirs-disabled }
+   { [ propertyIs true lane-control.session-dirs-disabled ] : true }
+   { true : false }
+  ]
   ; to dir-confirmed [ propertyIs true lane-control.session-data-dir-confirmed ]
   ; to dir-label [ match
    { $lane-control.format-data-dir-label : !lane-control.format-data-dir-label $lane-control.session-data-dir $dir-confirmed }
@@ -2251,6 +2256,7 @@
   ; set $dir-label session-dir-el.textContent
   ; set $dir-ttl session-dir-el.title
   ; set [ ternary $dir-confirmed top-rail-menu-dir 'top-rail-menu-dir top-rail-menu-dir--unconfirmed' ] session-dir-el.className
+  ; set $dirs-disabled session-dir-el.hidden
   ; set [ ternary $blocked false true ] session-draft-row.hidden
   ; set [ ternary $pending 'workspace-session-draft workspace-session-draft--pending' workspace-session-draft ] session-draft-row.className
   ; set [ ternary $pending $pending-lbl 'Unsaved version' ] session-draft-label.textContent
@@ -2285,8 +2291,15 @@
      ]
      ; to rbtn !document.createElement button
      ; to rbtn-title [ match
-      { $pending : ; add $pending-lbl ; add ' — wait before switching to ' ; add $rec.id ; add ' (' ; add $rec-dir ')' }
-      { $dirty : ; add 'Resolve unsaved version (Save, Fork, or Abandon) before switching to ' ; add $rec.id ; add ' (' ; add $rec-dir ')' }
+      { $pending : [ match
+       { $dirs-disabled : ; add $pending-lbl ; add ' — wait before switching to ' $rec.id }
+       { true : ; add $pending-lbl ; add ' — wait before switching to ' ; add $rec.id ; add ' (' ; add $rec-dir ')' }
+      ] }
+      { $dirty : [ match
+       { $dirs-disabled : ; add 'Resolve unsaved version (Save, Fork, or Abandon) before switching to ' $rec.id }
+       { true : ; add 'Resolve unsaved version (Save, Fork, or Abandon) before switching to ' ; add $rec.id ; add ' (' ; add $rec-dir ')' }
+      ] }
+      { $dirs-disabled : ; add 'Switch to ' $rec.id }
       { true : ; add 'Switch to ' ; add $rec.id ; add ' (' ; add $rec-dir ')' }
      ]
      ; assign $rbtn { type button } { className 'top-rail-menu-item top-rail-menu-session-item' } { title $rbtn-title } { disabled $blocked }
@@ -2296,7 +2309,7 @@
      ; to rdir !document.createElement span
      ; assign $rdir { className top-rail-menu-session-dir } { textContent $rec-dir }
      !rbtn.appendChild $rname
-     !rbtn.appendChild $rdir
+     ; condition { propertyIs false dirs-disabled } : !rbtn.appendChild $rdir
      !rbtn.setAttribute role menuitem
      !rbtn.addEventListener click (
       ; condition { and { propertyIs false lane-control.session-status-pending } { propertyIs false lane-control.session-dirty } } (
@@ -2625,10 +2638,16 @@
     ; set [ ternary $show-count [ ; add '' $count ] '' ] count-el.textContent
     ; set [ ternary $show-count false true ] count-el.hidden
 
+    ; to dirs-disabled [ match
+     { $lane-control.is-session-dirs-disabled : !lane-control.is-session-dirs-disabled }
+     { [ propertyIs true lane-control.session-dirs-disabled ] : true }
+     { true : false }
+    ]
     ; each $list (
      ; to { item } $argv
      ; to display-name [ match { $item.name : $item.name } { true : $item.id } ]
      ; to dir-lbl [ match
+      { $dirs-disabled : '' }
       { $lane-control.format-data-dir-label : !lane-control.format-data-dir-label $item.dataDir $item.dataDirConfirmed }
       { $item.dataDir : $item.dataDir }
       { [ propertyIs true item.dataDirConfirmed ] : Default }
@@ -3096,8 +3115,13 @@
  )
  !session-dir-el.addEventListener click (
   !rails.close-session-menu
+  ; to dirs-disabled [ match
+   { $lane-control.is-session-dirs-disabled : !lane-control.is-session-dirs-disabled }
+   { [ propertyIs true lane-control.session-dirs-disabled ] : true }
+   { true : false }
+  ]
   [ match
-   { [ propertyIs false lane-control.session-data-dir-confirmed ] (
+   { [ and { propertyIs false dirs-disabled } { propertyIs false lane-control.session-data-dir-confirmed } ] (
     [ match
      { $lane-control.dir-modal.open-confirm : !lane-control.dir-modal.open-confirm }
     ]

@@ -1,9 +1,14 @@
 import {
+ SESSION_DIRS_DISABLED_ENV_VAR,
+ SESSION_DIRS_DISABLED_GLOBAL,
  SESSION_TOKEN_HEADER,
  TOKEN_BOOTSTRAP_HEADER,
  attenuateKv,
  formatDataDirLabel,
+ isSessionDirsDisabled,
  normalizeDataDir,
+ normalizeSessionDirsDisabled,
+ stripDiskModeQueryParams,
 } from './data.mjs'
 import {
  DEFAULT_KV_CHUNK_BYTES,
@@ -36,11 +41,16 @@ import {
 } from './field.mjs'
 
 export {
+ SESSION_DIRS_DISABLED_ENV_VAR,
+ SESSION_DIRS_DISABLED_GLOBAL,
  SESSION_TOKEN_HEADER,
  TOKEN_BOOTSTRAP_HEADER,
  attenuateKv,
  formatDataDirLabel,
+ isSessionDirsDisabled,
  normalizeDataDir,
+ normalizeSessionDirsDisabled,
+ stripDiskModeQueryParams,
 }
 
 export {
@@ -86,6 +96,9 @@ export function resolveRegistryKv(rootKv) {
 }
 
 export function resolveSessionKv(rootKv, dataDir) {
+ if (isSessionDirsDisabled(rootKv)) {
+  return unwrapKv(rootKv)
+ }
  const cleanDir = normalizeDataDir(dataDir)
  if (rootKv && typeof rootKv === 'object' && typeof rootKv.withBasePath === 'function') {
   return unwrapKv(rootKv.withBasePath(cleanDir))
@@ -94,6 +107,9 @@ export function resolveSessionKv(rootKv, dataDir) {
 }
 
 export function activateSessionKv(rootKv, dataDir) {
+ if (isSessionDirsDisabled(rootKv)) {
+  return unwrapKv(rootKv)
+ }
  const cleanDir = normalizeDataDir(dataDir)
  if (rootKv && typeof rootKv === 'object' && typeof rootKv.setBasePath === 'function') {
   return unwrapKv(rootKv.setBasePath(cleanDir))
@@ -1791,11 +1807,16 @@ async function refreshRecentSessionsMeta(registryKv, local) {
  if (!registryKv || current.length === 0) {
   return current
  }
+ const dirsDisabled = isSessionDirsDisabled(registryKv)
  const rawMetas = await mapConcurrent(current, CONCURRENCY_LIMIT, item => kvGetChunked(registryKv, sessionMetaKey(item.id)))
  let changed = false
  const next = current.map((item, idx) => {
   const raw = rawMetas[idx]
   if (isMissingValue(raw)) {
+   if (dirsDisabled && (item.dataDir !== null || !item.dataDirConfirmed)) {
+    changed = true
+    return { ...item, dataDir: null, dataDirConfirmed: true }
+   }
    return item
   }
   try {
@@ -1804,8 +1825,8 @@ async function refreshRecentSessionsMeta(registryKv, local) {
     return item
    }
    const nextName = meta.name && String(meta.name).trim() ? String(meta.name).trim() : item.name
-   const nextDir = normalizeDataDir(meta.dataDir)
-   const nextConfirmed = meta.dataDirConfirmed === true || Boolean(nextDir)
+   const nextDir = dirsDisabled ? null : normalizeDataDir(meta.dataDir)
+   const nextConfirmed = dirsDisabled ? true : (meta.dataDirConfirmed === true || Boolean(nextDir))
    if (nextName !== item.name || nextDir !== item.dataDir || nextConfirmed !== item.dataDirConfirmed) {
     changed = true
     return {
@@ -2147,8 +2168,9 @@ export async function listPackageSessions(rootKv, packageId) {
   }
   const laneIds = Array.isArray(meta.laneIds) ? meta.laneIds.map(String) : []
   const pathname = normalizeSessionPathname(meta.pathname, laneIds)
-  const dataDir = normalizeDataDir(meta.dataDir)
-  const dataDirConfirmed = meta.dataDirConfirmed === true || Boolean(dataDir)
+  const dirsDisabled = isSessionDirsDisabled(rootKv)
+  const dataDir = dirsDisabled ? null : normalizeDataDir(meta.dataDir)
+  const dataDirConfirmed = dirsDisabled ? true : (meta.dataDirConfirmed === true || Boolean(dataDir))
   return {
    id: String(meta.id || sid),
    name: meta.name ? String(meta.name) : `Session ${sid.slice(0, 8)}`,
@@ -2369,9 +2391,14 @@ async function loadOrCreateSessionRecord(rootKv, sessionId, defaultName = '', op
  }
 
  const now = new Date().toISOString()
+ const dirsDisabled = isSessionDirsDisabled(rootKv)
  let dataDir
  let dataDirConfirmed
- if (meta) {
+ if (dirsDisabled) {
+  dataDir = null
+  dataDirConfirmed = true
+ }
+ else if (meta) {
   dataDir = normalizeDataDir(meta.dataDir)
   dataDirConfirmed = meta.dataDirConfirmed === true || Boolean(dataDir)
  }
@@ -2506,32 +2533,36 @@ async function buildSessionState(rootKv, win, browserSessionId, activeSessionId,
  const proxyRoot = getProxyKvRoot(rootKv)
  let proxySessionGrants = null
  if (proxyRoot) {
-  proxyRoot.setActiveSession(activeSessionId, opts && opts.dataDir !== undefined ? opts.dataDir : undefined)
+  const initialDirsDisabled = isSessionDirsDisabled(rootKv)
+  const preDir = initialDirsDisabled ? null : (opts && opts.dataDir !== undefined ? opts.dataDir : undefined)
+  proxyRoot.setActiveSession(activeSessionId, preDir)
   const preRes = await proxyRoot.fetchVaultApi('session', {
    method: 'POST',
    sessionId: activeSessionId,
-   basePath: opts && opts.dataDir !== undefined ? opts.dataDir : null,
+   basePath: initialDirsDisabled ? null : (opts && opts.dataDir !== undefined ? opts.dataDir : null),
    body: {
     sessionId: activeSessionId,
-    basePath: opts && opts.dataDir !== undefined ? normalizeDataDir(opts.dataDir) : null,
+    basePath: initialDirsDisabled ? null : (opts && opts.dataDir !== undefined ? normalizeDataDir(opts.dataDir) : null),
    },
   })
   if (preRes && preRes.ok && preRes.data && Array.isArray(preRes.data.openPackageIds)) {
    proxySessionGrants = new Set(preRes.data.openPackageIds.map(String))
   }
  }
+ const dirsDisabled = isSessionDirsDisabled(rootKv)
  const registryKv = resolveRegistryKv(rootKv)
  const loaded = await loadOrCreateSessionRecord(rootKv, activeSessionId, defaultName, opts)
- const sessionKv = activateSessionKv(rootKv, loaded.meta.dataDir)
+ const sessionKv = activateSessionKv(rootKv, dirsDisabled ? null : loaded.meta.dataDir)
  if (proxyRoot) {
-  proxyRoot.setActiveSession(activeSessionId, loaded.meta.dataDir)
+  const dirArg = dirsDisabled ? null : loaded.meta.dataDir
+  proxyRoot.setActiveSession(activeSessionId, dirArg)
   const dirRes = await proxyRoot.fetchVaultApi('session', {
    method: 'POST',
    sessionId: activeSessionId,
-   basePath: loaded.meta.dataDir,
+   basePath: dirArg,
    body: {
     sessionId: activeSessionId,
-    basePath: loaded.meta.dataDir,
+    basePath: dirArg,
    },
   })
   if (dirRes && dirRes.ok && dirRes.data && Array.isArray(dirRes.data.openPackageIds)) {
@@ -2939,12 +2970,17 @@ export async function forkSession(rootKv, win, sourceSessionId, opts = {}) {
  const forkName = opts.name !== undefined && opts.name !== null && String(opts.name).trim()
   ? String(opts.name).trim()
   : `${baseName} (Fork)`
- const forkDataDir = opts.dataDir !== undefined
-  ? normalizeDataDir(opts.dataDir)
-  : (srcLoaded ? normalizeDataDir(srcLoaded.meta.dataDir) : null)
- const forkDataDirConfirmed = opts.dataDirConfirmed !== undefined
-  ? (Boolean(opts.dataDirConfirmed) || Boolean(forkDataDir))
-  : (srcLoaded ? (Boolean(srcLoaded.meta.dataDirConfirmed) || Boolean(forkDataDir)) : Boolean(forkDataDir))
+ const dirsDisabled = isSessionDirsDisabled(rootKv)
+ const forkDataDir = dirsDisabled
+  ? null
+  : (opts.dataDir !== undefined
+   ? normalizeDataDir(opts.dataDir)
+   : (srcLoaded ? normalizeDataDir(srcLoaded.meta.dataDir) : null))
+ const forkDataDirConfirmed = dirsDisabled
+  ? true
+  : (opts.dataDirConfirmed !== undefined
+   ? (Boolean(opts.dataDirConfirmed) || Boolean(forkDataDir))
+   : (srcLoaded ? (Boolean(srcLoaded.meta.dataDirConfirmed) || Boolean(forkDataDir)) : Boolean(forkDataDir)))
  const targetSessionKv = resolveSessionKv(rootKv, forkDataDir)
  await ensureDefaultPackage(targetSessionKv)
  const now = new Date().toISOString()
@@ -3000,6 +3036,14 @@ export async function setSessionDataDir(rootKv, win, sessionId, opts = {}) {
  const cleanId = String(sessionId || '').trim()
  if (!cleanId) {
   return { ok: false, error: 'Session ID is required', session: null }
+ }
+ if (isSessionDirsDisabled(rootKv)) {
+  const existing = await loadOrCreateSessionRecord(rootKv, cleanId)
+  return {
+   ok: false,
+   error: 'Session directory selection is disabled on this server',
+   session: existing,
+  }
  }
  const registryKv = resolveRegistryKv(rootKv)
  const existing = await loadOrCreateSessionRecord(rootKv, cleanId)
@@ -4725,7 +4769,9 @@ export function formatAgentContext(options = {}) {
  else if (sessionName) {
   lines.push(`Session: ${sessionName}`)
  }
- lines.push(`Data Directory (basePath): ${dirLabel}`)
+ if (opts.sessionDirsDisabled !== true) {
+  lines.push(`Data Directory (basePath): ${dirLabel}`)
+ }
  if (openPackages.length > 0) {
   const pkgLabels = openPackages
    .map(pkg => {
@@ -4825,6 +4871,10 @@ export function formatAgentPrompt(contextOrOptions = {}) {
 
 export async function inspectSessionForAgent(rootKv, options = {}) {
  const opts = options && typeof options === 'object' ? options : {}
+ const dirsDisabled = isSessionDirsDisabled(rootKv)
+ if (dirsDisabled && opts.dataDir !== undefined && normalizeDataDir(opts.dataDir) !== null) {
+  throw Object.assign(new Error('Session directory selection is disabled on this server'), { status: 403 })
+ }
  const registryKv = resolveRegistryKv(rootKv)
  const defaultPkgSessions = registryKv ? await listPackageSessions(registryKv, DEFAULT_PACKAGE_ID) : { sessions: [] }
  const sessions = Array.isArray(defaultPkgSessions && defaultPkgSessions.sessions) ? defaultPkgSessions.sessions : []
@@ -4839,12 +4889,12 @@ export async function inspectSessionForAgent(rootKv, options = {}) {
     try {
      const meta = JSON.parse(rawMeta)
      if (meta && typeof meta === 'object') {
-      const dataDir = normalizeDataDir(meta.dataDir)
+      const dataDir = dirsDisabled ? null : normalizeDataDir(meta.dataDir)
       matchedSession = {
        id: String(meta.id || rawSessionId),
        name: meta.name ? String(meta.name) : rawSessionId,
        dataDir,
-       dataDirConfirmed: meta.dataDirConfirmed === true || Boolean(dataDir),
+       dataDirConfirmed: dirsDisabled ? true : (meta.dataDirConfirmed === true || Boolean(dataDir)),
        version: Number.isInteger(meta.version) && meta.version > 0 ? meta.version : 1,
        updatedAt: meta.updatedAt || meta.createdAt || null,
       }
@@ -4860,9 +4910,11 @@ export async function inspectSessionForAgent(rootKv, options = {}) {
   matchedSession = sessions[0]
  }
 
- const resolvedDataDir = opts.dataDir !== undefined
-  ? normalizeDataDir(opts.dataDir)
-  : (matchedSession ? normalizeDataDir(matchedSession.dataDir) : null)
+ const resolvedDataDir = dirsDisabled
+  ? null
+  : (opts.dataDir !== undefined
+   ? normalizeDataDir(opts.dataDir)
+   : (matchedSession ? normalizeDataDir(matchedSession.dataDir) : null))
  const sessionKv = resolveSessionKv(rootKv, resolvedDataDir)
 
  let sessionRecord = null

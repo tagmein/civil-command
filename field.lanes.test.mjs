@@ -3058,7 +3058,7 @@ test('PWA manifest, Civil icon assets, index.html metadata, server MIME types, a
  await Promise.all(waitPromises)
  assert.equal(skipWaitingCalled, true)
  const srcFiles = (await fs.readdir(new URL('./src', rootUrl))).filter(f => f.endsWith('.fs'))
- const activeCache = cacheStorage.get('civil-command-v3')
+ const activeCache = cacheStorage.get('civil-command-v4')
  assert.ok(activeCache.has('/kv-config.mjs'), 'sw.js APP_SHELL should precache /kv-config.mjs')
  assert.ok(activeCache.has('/sandbox.mjs'), 'sw.js APP_SHELL should precache /sandbox.mjs')
  assert.ok(activeCache.has('/source-worker.mjs'), 'sw.js APP_SHELL should precache /source-worker.mjs')
@@ -3072,7 +3072,7 @@ test('PWA manifest, Civil icon assets, index.html metadata, server MIME types, a
  await Promise.all(activatePromises)
  assert.equal(clientsClaimCalled, true)
  assert.equal(cacheStorage.has('civil-command-v0'), false)
- assert.equal(cacheStorage.has('civil-command-v3'), true)
+ assert.equal(cacheStorage.has('civil-command-v4'), true)
 
  // Fetch bypasses /api/data and non-GET requests
  let apiIntercepted = false

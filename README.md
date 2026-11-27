@@ -45,7 +45,8 @@ Machine-specific server settings can be placed in a `.env.local` file next to `s
 | `HOST` / `CC_HOST` | all interfaces | Address for `server.listen`; use `127.0.0.1` to expose the app only on loopback. |
 | `PORT` / `CC_PORT` | `8080` | HTTP listen port. |
 | `CC_ALLOWED_HOSTS` | loopback hosts | Extra `Host`/`Origin` hosts accepted by the security boundary (comma-separated), e.g. a public reverse-proxy hostname. |
-| `CC_DATA_BACKEND_URL` | `http://localhost:3333/?mode=disk` | KV backend URL used by the `/api/data` proxy. |
+| `CC_DATA_BACKEND_URL` | `http://localhost:3333/?mode=disk` (or `http://localhost:3333/` when `CC_DISABLE_SESSION_DIRS=1`) | KV backend URL used by the `/api/data` proxy. |
+| `CC_DISABLE_SESSION_DIRS` | `false` | Set to `1`/`true` when `civil-memory` runs in single-directory mode (only `?key=` supported): disables per-session directory selection/UI, blocks `/api/fs/*` and `basePath` overrides (`403`), and strips `mode`/`modeOptions.*` query params. |
 | `CC_KEEP_ALIVE_TIMEOUT_MS` | Node default | HTTP keep-alive timeout; useful for long-lived SSE/WebSocket sessions. |
 | `CC_HEADERS_TIMEOUT_MS` | Node default | Request header timeout; must exceed `CC_KEEP_ALIVE_TIMEOUT_MS`. |
 | `CC_LISTEN_BACKLOG` | `511` | Listen backlog. |

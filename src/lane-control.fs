@@ -49,6 +49,7 @@
  { session-overridden false }
  { session-data-dir null }
  { session-data-dir-confirmed false }
+ { session-dirs-disabled false }
  { session-meta ; object }
  { open-package-ids {} }
  { open-packages {} }
@@ -341,6 +342,19 @@
   { true : 'Default (unconfirmed)' }
  ]
 )
+; to scope.is-session-dirs-disabled (
+ -- Returns true when per-session directory selection is disabled on the server/client
+ ; to from-helper [ match
+  { $isSessionDirsDisabled : !isSessionDirsDisabled $data }
+  { [ propertyIs true data.sessionDirsDisabled ] : true }
+  { true : false }
+ ]
+ [ match
+  { [ propertyIs true from-helper ] : true }
+  { [ propertyIs true scope.session-dirs-disabled ] : true }
+  { true : false }
+ ]
+)
 ; to scope.apply-session-state (
  -- Updates full session state and saved baseline on scope from storage session helper results
  ; to { sess } $argv
@@ -349,16 +363,20 @@
    ; set $sess.sessionId scope.session-id
    ; set $sess.browserSessionId scope.browser-session-id
    ; set [ ternary $sess.isOverridden true false ] scope.session-overridden
+   ; to dirs-disabled !scope.is-session-dirs-disabled
+   ; set $dirs-disabled scope.session-dirs-disabled
    ; to raw-dir [ match
     { [ propertyIs undefined sess.meta.dataDir ] : $sess.dataDir }
     { true : $sess.meta.dataDir }
    ]
    ; to norm-dir [ match
+    { [ propertyIs true dirs-disabled ] : null }
     { $normalizeDataDir : !normalizeDataDir $raw-dir }
     { $raw-dir : $raw-dir }
     { true : null }
    ]
    ; to dir-confirmed [ match
+    { [ propertyIs true dirs-disabled ] : true }
     { [ propertyIs true sess.meta.dataDirConfirmed ] : true }
     { [ propertyIs true sess.dataDirConfirmed ] : true }
     { $norm-dir : true }
@@ -488,8 +506,9 @@
 ; to maybe-prompt-confirm (
  -- Prompts data directory selection when switching to an unconfirmed session
  ; to { prev-info } $argv
+ ; to dirs-disabled !scope.is-session-dirs-disabled
  [ match
-  { [ propertyIs false scope.session-data-dir-confirmed ] (
+  { [ and { propertyIs false dirs-disabled } { propertyIs false scope.session-data-dir-confirmed } ] (
    [ match
     { $prev-info.id : !dir-modal.open-confirm [ object { previous-session-id $prev-info.id } { previous-was-tab $prev-info.was-tab } ] }
     { true : !dir-modal.open-confirm }
@@ -516,11 +535,18 @@
  $res
 )
 ; to scope.prompt-new-session (
- -- Opens the computer directory picker modal in Create Session mode (or prompts unsaved version resolution in Sessions modal when dirty or pending)
+ -- Opens the computer directory picker modal in Create Session mode (or creates directly when directory selection is disabled)
  ; to { tab-only } $argv
+ ; to dirs-disabled !scope.is-session-dirs-disabled
  [ match
   { [ propertyIs true scope.session-status-pending ] : null }
   { [ propertyIs true scope.session-dirty ] : !session-modal.open-switch-session }
+  { [ propertyIs true dirs-disabled ] (
+   [ match
+    { $tab-only : !scope.new-tab-session '' null true }
+    { true : !scope.new-session '' null true }
+   ]
+  ) }
   { true : !dir-modal.open-create [ object { tab-only [ ternary $tab-only true false ] } ] }
  ]
 )
@@ -536,8 +562,9 @@
   !refresh-after-session-change true
  ) : null
  !scope.end-session-status-pending
+ ; to dirs-disabled !scope.is-session-dirs-disabled
  [ match
-  { [ propertyIs false scope.session-data-dir-confirmed ] : !dir-modal.open-confirm }
+  { [ and { propertyIs false dirs-disabled } { propertyIs false scope.session-data-dir-confirmed } ] : !dir-modal.open-confirm }
  ]
  $sess
 )
@@ -568,8 +595,9 @@
   !refresh-after-session-change true
  ) : null
  !scope.end-session-status-pending
+ ; to dirs-disabled !scope.is-session-dirs-disabled
  [ match
-  { [ propertyIs false scope.session-data-dir-confirmed ] : !dir-modal.open-confirm }
+  { [ and { propertyIs false dirs-disabled } { propertyIs false scope.session-data-dir-confirmed } ] : !dir-modal.open-confirm }
  ]
  $sess
 )
@@ -1103,6 +1131,7 @@
   { [ and { $sb.laneId } { $scope.get-lane-title } ] : !scope.get-lane-title $sb.laneId }
   { true : '' }
  ]
+ ; to dirs-disabled !scope.is-session-dirs-disabled
  [ match
   { $formatAgentContext (
    !formatAgentContext [ object
@@ -1110,6 +1139,7 @@
     { sessionName $sname }
     { dataDir $scope.session-data-dir }
     { dataDirConfirmed $dir-confirmed }
+    { sessionDirsDisabled $dirs-disabled }
     { openPackages $scope.open-packages }
     { openPackageIds $scope.open-package-ids }
     { activePackageId $scope.active-package-id }
@@ -1126,7 +1156,10 @@
   ) }
   { true (
    ; to dir-label !scope.format-data-dir-label $scope.session-data-dir $dir-confirmed
-   ; to base ; add 'Civil Command Agent Context\nSession: ' ; add $sname ; add ' (' ; add $sid ; add ')\nData Directory (basePath): ' $dir-label
+   ; to base [ match
+    { $dirs-disabled : ; add 'Civil Command Agent Context\nSession: ' ; add $sname ; add ' (' ; add $sid ')' }
+    { true : ; add 'Civil Command Agent Context\nSession: ' ; add $sname ; add ' (' ; add $sid ; add ')\nData Directory (basePath): ' $dir-label }
+   ]
    ; to with-lane [ match
     { $lane-id : ; add $base ; add '\nLane: ' ; add $lane-title ; add ' (' ; add $lane-id ')' }
     { true : $base }
@@ -1249,8 +1282,9 @@
 
    !sess-name-btn.addEventListener click : !session-modal.open-switch-session
    !sess-dir-btn.addEventListener click (
+    ; to dirs-disabled !scope.is-session-dirs-disabled
     [ match
-     { [ propertyIs false scope.session-data-dir-confirmed ] : !dir-modal.open-confirm }
+     { [ and { propertyIs false dirs-disabled } { propertyIs false scope.session-data-dir-confirmed } ] : !dir-modal.open-confirm }
      { true : !session-modal.open-switch-session }
     ]
    )
@@ -1352,6 +1386,7 @@
    ]
    ; set $meta-line summary.sess-id-el.textContent
    ; set [ match { $sid : $sid } { true : '' } ] summary.sess-id-el.title
+   ; to dirs-disabled !scope.is-session-dirs-disabled
    ; to dir-confirmed [ propertyIs true scope.session-data-dir-confirmed ]
    ; to dir-label !scope.format-data-dir-label $scope.session-data-dir $dir-confirmed
    ; to dir-title [ match
@@ -1361,6 +1396,7 @@
    ; set $dir-label summary.sess-dir-btn.textContent
    ; set $dir-title summary.sess-dir-btn.title
    ; set [ ternary $dir-confirmed workspace-session-dir 'workspace-session-dir workspace-session-dir--unconfirmed' ] summary.sess-dir-btn.className
+   ; set $dirs-disabled summary.sess-dir-btn.hidden
    ; to show-draft [ match { $pending : true } { $dirty : true } { true : false } ]
    ; set [ ternary $show-draft false true ] summary.draft-box.hidden
    ; set [ ternary $pending 'workspace-session-draft workspace-session-draft--pending' workspace-session-draft ] summary.draft-box.className
@@ -6775,8 +6811,9 @@
  [ match
   { $subscribeAgentEvents : !subscribeAgentEvents $scope.handle-agent-event $window }
  ]
+ ; to dirs-disabled !scope.is-session-dirs-disabled
  [ match
-  { [ propertyIs false scope.session-data-dir-confirmed ] : !dir-modal.open-confirm }
+  { [ and { propertyIs false dirs-disabled } { propertyIs false scope.session-data-dir-confirmed } ] : !dir-modal.open-confirm }
  ]
 )
 !console.log $scope

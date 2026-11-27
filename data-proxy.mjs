@@ -8,7 +8,9 @@ import {
  TOKEN_BOOTSTRAP_HEADER,
  buildDataUrl,
  httpKV,
+ isSessionDirsDisabled,
  normalizeDataDir,
+ stripDiskModeQueryParams,
 } from './data.mjs'
 import {
  hasJsonContentType,
@@ -318,7 +320,11 @@ function requestBackendBuffer(backendUrl, method, bodyBuf, contentType = '') {
 }
 
 export function createDataProxyHandler(options = {}) {
- const backendBaseUrl = options.backendBaseUrl || 'http://127.0.0.1:3333/?mode=disk'
+ const sessionDirsDisabled = options.disableSessionDirs !== undefined
+  ? Boolean(options.disableSessionDirs)
+  : isSessionDirsDisabled(null, { useEnv: true })
+ const rawBackendBaseUrl = options.backendBaseUrl || (sessionDirsDisabled ? 'http://127.0.0.1:3333/' : 'http://127.0.0.1:3333/?mode=disk')
+ const backendBaseUrl = sessionDirsDisabled ? stripDiskModeQueryParams(rawBackendBaseUrl) : rawBackendBaseUrl
  const secretStore = options.secretStore || createServerSecretStore()
  const safeExternalFetch = typeof options.externalFetch === 'function'
   ? options.externalFetch
@@ -330,11 +336,12 @@ export function createDataProxyHandler(options = {}) {
   baseUrl: backendBaseUrl,
   switchable: true,
   proxyCapabilities: false,
+  disableSessionDirs: sessionDirsDisabled,
  })
  bindSecretStoreToKv(backendRootKv, secretStore)
 
  function getBoundSessionKv(basePath) {
-  return bindSecretStoreToKv(resolveSessionKv(backendRootKv, basePath), secretStore)
+  return bindSecretStoreToKv(resolveSessionKv(backendRootKv, sessionDirsDisabled ? null : basePath), secretStore)
  }
 
  async function executeAuthorizedExternalFetch(body) {
@@ -601,7 +608,7 @@ export function createDataProxyHandler(options = {}) {
 
  async function handlePackageOpenAction(authCtx, body, fallbackDir) {
   const cleanSid = String((body && body.sessionId) || '').trim()
-  const reqDir = normalizeDataDir(body && body.basePath !== undefined ? body.basePath : fallbackDir)
+  const reqDir = sessionDirsDisabled ? null : normalizeDataDir(body && body.basePath !== undefined ? body.basePath : fallbackDir)
   if (!cleanSid) {
    return { status: 400, payload: { ok: false, error: 'sessionId is required to open a package' } }
   }
@@ -614,7 +621,7 @@ export function createDataProxyHandler(options = {}) {
    const status = opened.needsPassphrase ? 403 : 404
    return { status, payload: opened }
   }
-  const effectiveDir = opened.sessionState ? normalizeDataDir(opened.sessionState.dataDir) : reqDir
+  const effectiveDir = sessionDirsDisabled ? null : (opened.sessionState ? normalizeDataDir(opened.sessionState.dataDir) : reqDir)
   const sessionKv = getBoundSessionKv(effectiveDir)
   const nextGrantSet = new Set([...authCtx.effectivePkgs, opened.pkg.id])
   const grantedPkgs = await computeSessionGrantedPackages(
@@ -638,6 +645,7 @@ export function createDataProxyHandler(options = {}) {
     sessionState: filteredState,
     sessionId: cleanSid,
     basePath: effectiveDir,
+    sessionDirsDisabled: Boolean(sessionDirsDisabled),
     token,
    },
   }
@@ -646,12 +654,12 @@ export function createDataProxyHandler(options = {}) {
  async function handlePackageCloseAction(authCtx, body, fallbackDir) {
   const cleanSid = String((body && body.sessionId) || '').trim()
   const cleanPkgId = String((body && body.packageId) || '').trim()
-  const reqDir = normalizeDataDir(body && body.basePath !== undefined ? body.basePath : fallbackDir)
+  const reqDir = sessionDirsDisabled ? null : normalizeDataDir(body && body.basePath !== undefined ? body.basePath : fallbackDir)
   if (!cleanSid || !cleanPkgId) {
    return { status: 400, payload: { ok: false, error: 'sessionId and packageId are required' } }
   }
   const updatedState = await closePackageInSession(backendRootKv, cleanSid, cleanPkgId)
-  const effectiveDir = normalizeDataDir(updatedState.dataDir)
+  const effectiveDir = sessionDirsDisabled ? null : normalizeDataDir(updatedState.dataDir)
   const sessionKv = getBoundSessionKv(effectiveDir)
   const remainingSet = new Set([...authCtx.effectivePkgs].filter(pid => pid !== cleanPkgId))
   const grantedPkgs = await computeSessionGrantedPackages(
@@ -674,6 +682,7 @@ export function createDataProxyHandler(options = {}) {
     sessionState: filteredState,
     sessionId: cleanSid,
     basePath: effectiveDir,
+    sessionDirsDisabled: Boolean(sessionDirsDisabled),
     token,
    },
   }
@@ -695,7 +704,7 @@ export function createDataProxyHandler(options = {}) {
     meta = null
    }
   }
-  const resolvedDir = meta ? normalizeDataDir(meta.dataDir) : normalizeDataDir(fallbackBasePath)
+  const resolvedDir = sessionDirsDisabled ? null : (meta ? normalizeDataDir(meta.dataDir) : normalizeDataDir(fallbackBasePath))
   const sessionKv = getBoundSessionKv(resolvedDir)
   await ensureDefaultPackage(sessionKv)
   const pkgIdx = await readPagedIds(sessionKv, sessionPackagesBase(cleanSid))
@@ -723,7 +732,7 @@ export function createDataProxyHandler(options = {}) {
     }
     const body = await readJsonBody(req)
     const rawSid = body.sessionId ? String(body.sessionId).trim() : ''
-    const requestedDir = normalizeDataDir(body.basePath)
+    const requestedDir = sessionDirsDisabled ? null : normalizeDataDir(body.basePath)
 
     if (!rawSid) {
      const token = createCapabilityToken({
@@ -736,15 +745,18 @@ export function createDataProxyHandler(options = {}) {
       ok: true,
       sessionId: null,
       basePath: requestedDir,
+      sessionDirsDisabled: Boolean(sessionDirsDisabled),
       openPackageIds: [DEFAULT_PACKAGE_ID],
       token,
      })
     }
 
     const summary = await loadSessionSummary(rawSid, requestedDir)
-    const effectiveDir = body.basePath !== undefined && (!summary.meta || !summary.meta.dataDirConfirmed)
-     ? requestedDir
-     : summary.dataDir
+    const effectiveDir = sessionDirsDisabled
+     ? null
+     : (body.basePath !== undefined && (!summary.meta || !summary.meta.dataDirConfirmed)
+      ? requestedDir
+      : summary.dataDir)
 
     let prevGranted = null
     const existingTok = extractRequestToken(req)
@@ -779,6 +791,7 @@ export function createDataProxyHandler(options = {}) {
      ok: true,
      sessionId: rawSid,
      basePath: effectiveDir,
+     sessionDirsDisabled: Boolean(sessionDirsDisabled),
      openPackageIds: grantedPkgs,
      token,
     })
@@ -789,7 +802,11 @@ export function createDataProxyHandler(options = {}) {
      return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
     }
     const body = await readJsonBody(req)
-    const reqDir = normalizeDataDir(body.basePath)
+    const rawReqDir = normalizeDataDir(body.basePath)
+    if (sessionDirsDisabled && rawReqDir !== null) {
+     return sendJson(res, 403, { ok: false, error: 'Session directory selection is disabled on this server' })
+    }
+    const reqDir = sessionDirsDisabled ? null : rawReqDir
     const authCtx = resolveRequestAuth(req, reqDir, false)
     if (!authCtx.ok) {
      return sendJson(res, authCtx.status, { ok: false, error: authCtx.error })
@@ -830,7 +847,7 @@ export function createDataProxyHandler(options = {}) {
     }
     const body = await readJsonBody(req)
     const cleanSid = String(body.sessionId || '').trim()
-    const reqDir = normalizeDataDir(body.basePath)
+    const reqDir = sessionDirsDisabled ? null : normalizeDataDir(body.basePath)
     const authCtx = resolveRequestAuth(req, reqDir, true)
     if (!authCtx.ok) {
      return sendJson(res, authCtx.status, { ok: false, error: authCtx.error })
@@ -839,7 +856,7 @@ export function createDataProxyHandler(options = {}) {
      name: body.name,
      passphrase: body.passphrase,
     })
-    const effectiveDir = created.sessionState ? normalizeDataDir(created.sessionState.dataDir) : reqDir
+    const effectiveDir = sessionDirsDisabled ? null : (created.sessionState ? normalizeDataDir(created.sessionState.dataDir) : reqDir)
     const sessionKv = getBoundSessionKv(effectiveDir)
     const prevSet = new Set([...authCtx.effectivePkgs, created.pkg.id])
     const grantedPkgs = await computeSessionGrantedPackages(
@@ -861,6 +878,7 @@ export function createDataProxyHandler(options = {}) {
      sessionState: filteredState,
      sessionId: cleanSid || authCtx.claims.sid,
      basePath: effectiveDir,
+     sessionDirsDisabled: Boolean(sessionDirsDisabled),
      token,
     })
    }
@@ -870,7 +888,7 @@ export function createDataProxyHandler(options = {}) {
      return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
     }
     const body = await readJsonBody(req)
-    const reqDir = normalizeDataDir(body.basePath)
+    const reqDir = sessionDirsDisabled ? null : normalizeDataDir(body.basePath)
     const authCtx = resolveRequestAuth(req, reqDir, true)
     if (!authCtx.ok) {
      return sendJson(res, authCtx.status, { ok: false, error: authCtx.error })
@@ -884,7 +902,7 @@ export function createDataProxyHandler(options = {}) {
      return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
     }
     const body = await readJsonBody(req)
-    const reqDir = normalizeDataDir(body.basePath)
+    const reqDir = sessionDirsDisabled ? null : normalizeDataDir(body.basePath)
     const authCtx = resolveRequestAuth(req, reqDir, true)
     if (!authCtx.ok) {
      return sendJson(res, authCtx.status, { ok: false, error: authCtx.error })
@@ -895,7 +913,11 @@ export function createDataProxyHandler(options = {}) {
 
    if (pathname === '/api/vault/secret') {
     if (method === 'GET') {
-     const reqDir = normalizeDataDir(url.searchParams.get('basePath'))
+     const rawReqDir = normalizeDataDir(url.searchParams.get('basePath'))
+     if (sessionDirsDisabled && rawReqDir !== null) {
+      return sendJson(res, 403, { ok: false, error: 'Session directory selection is disabled on this server' })
+     }
+     const reqDir = sessionDirsDisabled ? null : rawReqDir
      const cleanLaneId = String(url.searchParams.get('laneId') || '').trim()
      const cleanSecretId = String(url.searchParams.get('secretId') || '').trim()
      const authCtx = resolveRequestAuth(req, reqDir, false)
@@ -928,7 +950,11 @@ export function createDataProxyHandler(options = {}) {
       return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
      }
      const body = await readJsonBody(req)
-     const reqDir = normalizeDataDir(body.basePath)
+     const rawReqDir = normalizeDataDir(body.basePath)
+     if (sessionDirsDisabled && rawReqDir !== null) {
+      return sendJson(res, 403, { ok: false, error: 'Session directory selection is disabled on this server' })
+     }
+     const reqDir = sessionDirsDisabled ? null : rawReqDir
      const cleanLaneId = String(body.laneId || '').trim()
      const authCtx = resolveRequestAuth(req, reqDir, false)
      if (!authCtx.ok) {
@@ -954,7 +980,11 @@ export function createDataProxyHandler(options = {}) {
       return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
      }
      const body = await readJsonBody(req)
-     const reqDir = normalizeDataDir(body.basePath)
+     const rawReqDir = normalizeDataDir(body.basePath)
+     if (sessionDirsDisabled && rawReqDir !== null) {
+      return sendJson(res, 403, { ok: false, error: 'Session directory selection is disabled on this server' })
+     }
+     const reqDir = sessionDirsDisabled ? null : rawReqDir
      const cleanLaneId = String(body.laneId || '').trim()
      const cleanSecretId = String(body.secretId || '').trim()
      const authCtx = resolveRequestAuth(req, reqDir, false)
@@ -977,7 +1007,11 @@ export function createDataProxyHandler(options = {}) {
      return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
     }
     const body = await readJsonBody(req)
-    const reqDir = normalizeDataDir(body.basePath)
+    const rawReqDir = normalizeDataDir(body.basePath)
+    if (sessionDirsDisabled && rawReqDir !== null) {
+     return sendJson(res, 403, { ok: false, error: 'Session directory selection is disabled on this server' })
+    }
+    const reqDir = sessionDirsDisabled ? null : rawReqDir
     const cleanLaneId = String(body.laneId || '').trim()
     const cleanSecretId = String(body.secretId || '').trim()
     const authCtx = resolveRequestAuth(req, reqDir, false)
@@ -1002,7 +1036,11 @@ export function createDataProxyHandler(options = {}) {
      return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
     }
     const body = await readJsonBody(req)
-    const reqDir = normalizeDataDir(body.basePath)
+    const rawReqDir = normalizeDataDir(body.basePath)
+    if (sessionDirsDisabled && rawReqDir !== null) {
+     return sendJson(res, 403, { ok: false, error: 'Session directory selection is disabled on this server' })
+    }
+    const reqDir = sessionDirsDisabled ? null : rawReqDir
     const authCtx = resolveRawTokenAuth(extractRequestToken(req), reqDir, true, true)
     if (!authCtx.ok) {
      const extraHeaders = authCtx.needsBootstrap
@@ -1063,7 +1101,7 @@ export function createDataProxyHandler(options = {}) {
    return { ok: false, status: 400, needsBootstrap: false, error: 'Invalid KV key' }
   }
 
-  const normDir = normalizeDataDir(requestedBasePath)
+  const normDir = sessionDirsDisabled ? null : normalizeDataDir(requestedBasePath)
   const allowRegistryFallback =
    classified.kind === 'session-meta' ||
    classified.kind === 'session-packages' ||
@@ -1208,6 +1246,9 @@ export function createDataProxyHandler(options = {}) {
   }
 
   const requestedBasePath = normalizeDataDir(url.searchParams.get('modeOptions.disk.basePath'))
+  if (sessionDirsDisabled && requestedBasePath !== null) {
+   return sendJson(res, 403, { ok: false, error: 'Session directory selection is disabled on this server' })
+  }
   const rawToken = extractRequestToken(req)
   let bodyBuf = null
   let bodyReadError = null
@@ -1277,10 +1318,12 @@ export function createDataProxyHandler(options = {}) {
     }
    }
 
-   const targetUrl = new URL(buildDataUrl(backendBaseUrl, requestedBasePath))
-   for (const [paramKey, paramVal] of url.searchParams.entries()) {
-    targetUrl.searchParams.set(paramKey, paramVal)
-   }
+   const targetUrl = new URL(
+    buildDataUrl(backendBaseUrl, sessionDirsDisabled ? null : requestedBasePath, {
+     disableSessionDirs: sessionDirsDisabled,
+    })
+   )
+   targetUrl.searchParams.set('key', rawKey)
    const upstream = await requestBackendBuffer(targetUrl.toString(), method, bodyBuf, 'text/plain;charset=UTF-8')
    let responseBody = upstream.body
    if ((method === 'GET' || method === 'HEAD') && upstream.statusCode === 200 && classified.kind === 'package-meta') {
@@ -1306,7 +1349,7 @@ export function createDataProxyHandler(options = {}) {
   const encodeSeg = seg => encodeURIComponent(String(seg)).replace(/\./g, '%2E')
 
   const getOrCreateRootClient = targetPath => {
-   const norm = normalizeDataDir(targetPath)
+   const norm = sessionDirsDisabled ? null : normalizeDataDir(targetPath)
    const key = norm === null ? '__default__' : norm
    if (clientsByPath.has(key)) {
     return clientsByPath.get(key)
@@ -1318,7 +1361,7 @@ export function createDataProxyHandler(options = {}) {
   }
 
   function createScopedClient({ namespace = '', basePath = null, root = null, defaultRoot = null }) {
-   const cleanBasePath = normalizeDataDir(basePath)
+   const cleanBasePath = sessionDirsDisabled ? null : normalizeDataDir(basePath)
    const isHash = namespace.includes('#')
    const qualify = key => {
     if (isHash) {
@@ -1351,11 +1394,12 @@ export function createDataProxyHandler(options = {}) {
     const cleanSub = String(subpath || '').replace(/^\/+/, '')
     const query = vaultOpts && vaultOpts.query && typeof vaultOpts.query === 'object' ? vaultOpts.query : {}
     const body = vaultOpts && vaultOpts.body && typeof vaultOpts.body === 'object' ? vaultOpts.body : {}
-    const targetDir = normalizeDataDir(
+    const rawTargetDir = normalizeDataDir(
      vaultOpts && vaultOpts.basePath !== undefined
       ? vaultOpts.basePath
       : (body.basePath !== undefined ? body.basePath : (query.basePath !== undefined ? query.basePath : cleanBasePath))
     )
+    const targetDir = sessionDirsDisabled ? null : rawTargetDir
 
     if (cleanSub === 'session' && method === 'POST') {
      const rawSid = body.sessionId ? String(body.sessionId).trim() : ''
@@ -1371,12 +1415,15 @@ export function createDataProxyHandler(options = {}) {
         ok: true,
         sessionId: null,
         basePath: targetDir,
+        sessionDirsDisabled: Boolean(sessionDirsDisabled),
         openPackageIds: [DEFAULT_PACKAGE_ID],
        },
       }
      }
      const summary = await loadSessionSummary(rawSid, targetDir)
-     const effectiveDir = body.basePath !== undefined && (!summary.meta || !summary.meta.dataDirConfirmed) ? targetDir : summary.dataDir
+     const effectiveDir = sessionDirsDisabled
+      ? null
+      : (body.basePath !== undefined && (!summary.meta || !summary.meta.dataDirConfirmed) ? targetDir : summary.dataDir)
      const prevGranted = authCtx.claims.sid === rawSid ? authCtx.effectivePkgs : null
      const targetSessionKv = getBoundSessionKv(effectiveDir)
      if (effectiveDir !== summary.dataDir) {
@@ -1395,6 +1442,7 @@ export function createDataProxyHandler(options = {}) {
        ok: true,
        sessionId: rawSid,
        basePath: effectiveDir,
+       sessionDirsDisabled: Boolean(sessionDirsDisabled),
        openPackageIds: grantedPkgs,
       },
      }
@@ -1433,6 +1481,9 @@ export function createDataProxyHandler(options = {}) {
     }
 
     if (cleanSub === 'secret') {
+     if (sessionDirsDisabled && rawTargetDir !== null) {
+      return { ok: false, status: 403, data: { ok: false, error: 'Session directory selection is disabled on this server' } }
+     }
      const authCtx = resolveRawTokenAuth(currentToken, targetDir, false, true)
      if (!authCtx.ok) {
       return { ok: false, status: authCtx.status, data: { ok: false, error: authCtx.error } }
@@ -1486,6 +1537,9 @@ export function createDataProxyHandler(options = {}) {
     }
 
     if (cleanSub === 'resolve' && method === 'POST') {
+     if (sessionDirsDisabled && rawTargetDir !== null) {
+      return { ok: false, status: 403, data: { ok: false, error: 'Session directory selection is disabled on this server' } }
+     }
      const authCtx = resolveRawTokenAuth(currentToken, targetDir, false, true)
      if (!authCtx.ok) {
       return { ok: false, status: authCtx.status, data: { ok: false, error: authCtx.error } }
@@ -1510,6 +1564,9 @@ export function createDataProxyHandler(options = {}) {
     }
 
     if (cleanSub === 'fetch' && method === 'POST') {
+     if (sessionDirsDisabled && rawTargetDir !== null) {
+      return { ok: false, status: 403, data: { ok: false, error: 'Session directory selection is disabled on this server' } }
+     }
      const authCtx = resolveRawTokenAuth(currentToken, targetDir, true, true)
      if (!authCtx.ok) {
       return { ok: false, status: authCtx.status, data: { ok: false, error: authCtx.error } }
@@ -1523,6 +1580,7 @@ export function createDataProxyHandler(options = {}) {
 
    const client = {
     isProxyBacked: true,
+    sessionDirsDisabled: Boolean(sessionDirsDisabled),
     prefix: namespace,
     basePath: cleanBasePath,
     root: null,
@@ -1609,11 +1667,12 @@ export function createDataProxyHandler(options = {}) {
   let activeClient = defaultClient
   return {
    isProxyBacked: true,
+   sessionDirsDisabled: Boolean(sessionDirsDisabled),
    get prefix() {
     return activeClient.prefix
    },
    get basePath() {
-    return activeClient.basePath
+    return sessionDirsDisabled ? null : activeClient.basePath
    },
    get root() {
     return activeClient
@@ -1669,6 +1728,7 @@ export function createDataProxyHandler(options = {}) {
  return {
   secretStore,
   backendRootKv,
+  sessionDirsDisabled: Boolean(sessionDirsDisabled),
   createAuthorizedRootKv,
   handleDataProxyRequest,
   handleVaultApiRequest,

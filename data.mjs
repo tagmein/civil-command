@@ -364,7 +364,10 @@ export function withKvTriggers(kv, triggers = true) {
     return curPrefix
    },
    get basePath() {
-    return rawClient.basePath ?? null
+    return rawClient.sessionDirsDisabled ? null : (rawClient.basePath ?? null)
+   },
+   get sessionDirsDisabled() {
+    return Boolean(rawClient.sessionDirsDisabled)
    },
    get root() {
     return resolveRootWriter()
@@ -518,7 +521,77 @@ export function attenuateKv(kv) {
  return Object.freeze(wrapper)
 }
 
-export function buildDataUrl(baseUrl, basePath = null) {
+export const SESSION_DIRS_DISABLED_ENV_VAR = 'CC_DISABLE_SESSION_DIRS'
+export const SESSION_DIRS_DISABLED_GLOBAL = 'CC_DISABLE_SESSION_DIRS'
+
+export function normalizeSessionDirsDisabled(raw) {
+ if (raw === undefined || raw === null) {
+  return null
+ }
+ if (typeof raw === 'boolean') {
+  return raw
+ }
+ if (typeof raw === 'number') {
+  return Number.isFinite(raw) ? raw !== 0 : null
+ }
+ if (typeof raw === 'string') {
+  const lower = raw.trim().toLowerCase()
+  if (!lower) {
+   return null
+  }
+  if (lower === '1' || lower === 'true' || lower === 'yes' || lower === 'on') {
+   return true
+  }
+  if (lower === '0' || lower === 'false' || lower === 'no' || lower === 'off') {
+   return false
+  }
+ }
+ return null
+}
+
+export function isSessionDirsDisabled(kv = null, options = {}) {
+ if (options && typeof options.disableSessionDirs === 'boolean') {
+  return options.disableSessionDirs
+ }
+ if (kv && typeof kv === 'object') {
+  if (typeof kv.sessionDirsDisabled === 'boolean') {
+   return kv.sessionDirsDisabled
+  }
+  if (kv.root && typeof kv.root.sessionDirsDisabled === 'boolean') {
+   return kv.root.sessionDirsDisabled
+  }
+ }
+ const globalVal = typeof globalThis !== 'undefined' ? globalThis[SESSION_DIRS_DISABLED_GLOBAL] : undefined
+ const normGlobal = normalizeSessionDirsDisabled(globalVal)
+ if (normGlobal !== null) {
+  return normGlobal
+ }
+ if (!options || options.useEnv !== false) {
+  const envVal = typeof process !== 'undefined' && process && process.env
+   ? process.env[SESSION_DIRS_DISABLED_ENV_VAR]
+   : undefined
+  const normEnv = normalizeSessionDirsDisabled(envVal)
+  if (normEnv !== null) {
+   return normEnv
+  }
+ }
+ return false
+}
+
+export function stripDiskModeQueryParams(rawUrl) {
+ const url = new URL(rawUrl)
+ for (const key of Array.from(url.searchParams.keys())) {
+  if (key === 'mode' || key === 'modeOptions' || key.startsWith('modeOptions.')) {
+   url.searchParams.delete(key)
+  }
+ }
+ return url.toString()
+}
+
+export function buildDataUrl(baseUrl, basePath = null, options = {}) {
+ if (options && options.disableSessionDirs) {
+  return stripDiskModeQueryParams(baseUrl)
+ }
  const url = new URL(baseUrl)
  const clean = normalizeDataDir(basePath)
  if (clean !== null) {
@@ -560,18 +633,19 @@ export function httpKV({
  sessionToken = '',
  proxyCapabilities = false,
  proactiveToken = false,
+ disableSessionDirs = undefined,
  _compiledTriggers = null,
  _triggerQueues = null,
  _clientsByPath = null,
  _tokenStore = null,
 }) {
  const clientsByPath = _clientsByPath || new Map()
- const cleanBasePath = normalizeDataDir(basePath)
  const requestHeaders = headers && typeof headers === 'object' ? headers : null
  const compiledTriggers = _compiledTriggers || normalizeTriggerRules(triggers, { defaultEnabled: false })
  const triggerQueues = _triggerQueues || (compiledTriggers.length > 0 ? new Map() : null)
  const apiOrigin = resolveApiOrigin(baseUrl)
  const isProxyBacked = Boolean(proxyCapabilities && apiOrigin)
+ const explicitDisableDirs = normalizeSessionDirsDisabled(disableSessionDirs)
  const tokenStore = _tokenStore || {
   bySessionAndPath: new Map(),
   byPath: new Map(),
@@ -579,7 +653,19 @@ export function httpKV({
   activeSessionId: '',
   fallbackToken: typeof sessionToken === 'string' ? sessionToken.trim() : '',
   vaultUnavailable: false,
+  sessionDirsDisabled: explicitDisableDirs !== null
+   ? explicitDisableDirs
+   : (normalizeSessionDirsDisabled(typeof globalThis !== 'undefined' ? globalThis[SESSION_DIRS_DISABLED_GLOBAL] : undefined) ??
+    normalizeSessionDirsDisabled(typeof process !== 'undefined' && process && process.env ? process.env[SESSION_DIRS_DISABLED_ENV_VAR] : undefined)),
+  sessionDirsDisabledPinned: explicitDisableDirs !== null,
  }
+ if (explicitDisableDirs !== null) {
+  tokenStore.sessionDirsDisabled = explicitDisableDirs
+  tokenStore.sessionDirsDisabledPinned = true
+ }
+ const getSessionDirsDisabled = () => Boolean(tokenStore.sessionDirsDisabled)
+ const cleanBasePath = getSessionDirsDisabled() ? null : normalizeDataDir(basePath)
+ const effectiveDir = () => (getSessionDirsDisabled() ? null : cleanBasePath)
 
  const setSessionToken = (token, opts = null) => {
   const cleanTok = token === null || token === undefined ? '' : String(token).trim()
@@ -588,10 +674,10 @@ export function httpKV({
    ? String(opts.sessionId).trim()
    : ''
   const hasDir = hasOpts && opts.basePath !== undefined
-  const slot = hasDir ? tokenSlotForPath(opts.basePath) : null
+  const slot = hasDir ? tokenSlotForPath(getSessionDirsDisabled() ? null : opts.basePath) : null
   if (sid) {
    tokenStore.activeSessionId = sid
-   const targetSlot = slot || tokenSlotForPath(cleanBasePath)
+   const targetSlot = slot || tokenSlotForPath(effectiveDir())
    if (cleanTok) {
     tokenStore.bySessionAndPath.set(`${sid}::${targetSlot}`, cleanTok)
    }
@@ -617,7 +703,7 @@ export function httpKV({
   const sid = sessionId === null || sessionId === undefined ? '' : String(sessionId).trim()
   tokenStore.activeSessionId = sid
   if (sid && dir !== undefined) {
-   const slot = tokenSlotForPath(dir)
+   const slot = tokenSlotForPath(getSessionDirsDisabled() ? null : dir)
    const cached = tokenStore.bySessionAndPath.get(`${sid}::${slot}`)
    if (cached) {
     tokenStore.byPath.set(slot, cached)
@@ -625,8 +711,9 @@ export function httpKV({
   }
  }
 
- const getSessionToken = (dir = cleanBasePath) => {
-  const slot = tokenSlotForPath(dir)
+ const getSessionToken = (dir = undefined) => {
+  const resolvedDir = getSessionDirsDisabled() ? null : (dir === undefined ? cleanBasePath : dir)
+  const slot = tokenSlotForPath(resolvedDir)
   if (tokenStore.activeSessionId) {
    const bySess = tokenStore.bySessionAndPath.get(`${tokenStore.activeSessionId}::${slot}`)
    if (bySess) {
@@ -654,7 +741,7 @@ export function httpKV({
   return tokenStore.fallbackToken || ''
  }
 
- const withHeaders = (init, dir = cleanBasePath) => {
+ const withHeaders = (init, dir = undefined) => {
   const tok = getSessionToken(dir)
   if (!requestHeaders && !tok) {
    return init
@@ -674,7 +761,9 @@ export function httpKV({
    throw new Error('Vault API requires an /api/data HTTP origin')
   }
   const method = opts && opts.method ? String(opts.method).toUpperCase() : 'POST'
-  const targetDir = opts && opts.basePath !== undefined ? normalizeDataDir(opts.basePath) : cleanBasePath
+  const targetDir = getSessionDirsDisabled()
+   ? null
+   : (opts && opts.basePath !== undefined ? normalizeDataDir(opts.basePath) : cleanBasePath)
   const sid = opts && opts.sessionId ? String(opts.sessionId).trim() : tokenStore.activeSessionId
   const cleanSub = String(subpath || '').replace(/^\/+/, '')
   const url = new URL(`${apiOrigin}/api/vault/${cleanSub}`)
@@ -688,7 +777,11 @@ export function httpKV({
   const reqInit = { method }
   if (method !== 'GET' && method !== 'HEAD') {
    reqInit.headers = { 'Content-Type': 'application/json' }
-   reqInit.body = JSON.stringify(opts && opts.body !== undefined ? opts.body : {})
+   const rawBody = opts && opts.body !== undefined ? opts.body : {}
+   const finalBody = getSessionDirsDisabled() && rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody) && Object.hasOwn(rawBody, 'basePath')
+    ? { ...rawBody, basePath: null }
+    : rawBody
+   reqInit.body = JSON.stringify(finalBody)
   }
   const resp = await fetch(url.toString(), withHeaders(reqInit, targetDir))
   let parsed = null
@@ -698,10 +791,13 @@ export function httpKV({
   catch {
    parsed = null
   }
+  if (parsed && typeof parsed === 'object' && typeof parsed.sessionDirsDisabled === 'boolean' && !tokenStore.sessionDirsDisabledPinned) {
+   tokenStore.sessionDirsDisabled = parsed.sessionDirsDisabled
+  }
   if (parsed && typeof parsed === 'object' && typeof parsed.token === 'string' && parsed.token.trim()) {
    setSessionToken(parsed.token, {
     sessionId: parsed.sessionId || sid || undefined,
-    basePath: parsed.basePath !== undefined ? parsed.basePath : targetDir,
+    basePath: getSessionDirsDisabled() ? null : (parsed.basePath !== undefined ? parsed.basePath : targetDir),
    })
   }
   return {
@@ -712,16 +808,17 @@ export function httpKV({
  }
 
  const bootstrapPathToken = dir => {
-  const slot = tokenSlotForPath(dir)
+  const effectiveTarget = getSessionDirsDisabled() ? null : dir
+  const slot = tokenSlotForPath(effectiveTarget)
   if (tokenStore.inFlightBootstrap.has(slot)) {
    return tokenStore.inFlightBootstrap.get(slot)
   }
   const p = fetchVaultApi('session', {
    method: 'POST',
-   basePath: dir,
+   basePath: effectiveTarget,
    body: {
     sessionId: tokenStore.activeSessionId || undefined,
-    basePath: dir,
+    basePath: effectiveTarget,
    },
   })
    .then(res => {
@@ -739,10 +836,13 @@ export function httpKV({
  }
 
  const performKvFetch = async (finalUrl, init) => {
-  if (isProxyBacked && proactiveToken && !tokenStore.vaultUnavailable && !getSessionToken(cleanBasePath)) {
-   await bootstrapPathToken(cleanBasePath)
+  const curDir = effectiveDir()
+  if (isProxyBacked && proactiveToken && !tokenStore.vaultUnavailable && !getSessionToken(curDir)) {
+   await bootstrapPathToken(curDir)
   }
-  const resp = await fetch(finalUrl, withHeaders(init, cleanBasePath))
+  const reqDir = effectiveDir()
+  const reqUrl = getSessionDirsDisabled() ? stripDiskModeQueryParams(finalUrl) : finalUrl
+  const resp = await fetch(reqUrl, withHeaders(init, reqDir))
   if (
    resp &&
    resp.status === 401 &&
@@ -753,11 +853,13 @@ export function httpKV({
   ) {
    setSessionToken('', {
     sessionId: tokenStore.activeSessionId || undefined,
-    basePath: cleanBasePath,
+    basePath: effectiveDir(),
    })
-   const minted = await bootstrapPathToken(cleanBasePath)
+   const minted = await bootstrapPathToken(effectiveDir())
    if (minted) {
-    return fetch(finalUrl, withHeaders(init, cleanBasePath))
+    const retryDir = effectiveDir()
+    const retryUrl = getSessionDirsDisabled() ? stripDiskModeQueryParams(finalUrl) : finalUrl
+    return fetch(retryUrl, withHeaders(init, retryDir))
    }
   }
   return resp
@@ -789,9 +891,10 @@ export function httpKV({
   if (!isProxyBacked) {
    return fetch(rawUrl, init)
   }
-  if (!tokenStore.vaultUnavailable && !getSessionToken(cleanBasePath)) {
-   await bootstrapPathToken(cleanBasePath)
+  if (!tokenStore.vaultUnavailable && !getSessionToken(effectiveDir())) {
+   await bootstrapPathToken(effectiveDir())
   }
+  const activeDir = effectiveDir()
   const opts = init && typeof init === 'object' ? init : {}
   const method = opts.method !== undefined && opts.method !== null
    ? String(opts.method).trim().toUpperCase() || 'GET'
@@ -800,7 +903,7 @@ export function httpKV({
   const payload = {
    url: String(rawUrl ?? ''),
    method,
-   basePath: cleanBasePath,
+   basePath: activeDir,
   }
   if (headers) {
    payload.headers = headers
@@ -810,20 +913,20 @@ export function httpKV({
   }
   let res = await fetchVaultApi('fetch', {
    method: 'POST',
-   basePath: cleanBasePath,
+   basePath: activeDir,
    body: payload,
   })
   if (res && res.status === 401 && !tokenStore.vaultUnavailable) {
    setSessionToken('', {
     sessionId: tokenStore.activeSessionId || undefined,
-    basePath: cleanBasePath,
+    basePath: effectiveDir(),
    })
-   const minted = await bootstrapPathToken(cleanBasePath)
+   const minted = await bootstrapPathToken(effectiveDir())
    if (minted) {
     res = await fetchVaultApi('fetch', {
      method: 'POST',
-     basePath: cleanBasePath,
-     body: payload,
+     basePath: effectiveDir(),
+     body: { ...payload, basePath: effectiveDir() },
     })
    }
   }
@@ -849,7 +952,7 @@ export function httpKV({
  }
 
  const getOrCreateRootClient = targetPath => {
-  const norm = normalizeDataDir(targetPath)
+  const norm = getSessionDirsDisabled() ? null : normalizeDataDir(targetPath)
   const key = norm === null ? '__default__' : norm
   if (clientsByPath.has(key)) {
    return clientsByPath.get(key)
@@ -864,6 +967,7 @@ export function httpKV({
     headers: requestHeaders,
     proxyCapabilities,
     proactiveToken,
+    disableSessionDirs: explicitDisableDirs !== null ? explicitDisableDirs : undefined,
     _compiledTriggers: compiledTriggers,
     _triggerQueues: triggerQueues,
     _clientsByPath: clientsByPath,
@@ -879,6 +983,7 @@ export function httpKV({
    headers: requestHeaders,
    proxyCapabilities,
    proactiveToken,
+   disableSessionDirs: explicitDisableDirs !== null ? explicitDisableDirs : undefined,
    _compiledTriggers: compiledTriggers,
    _triggerQueues: triggerQueues,
    _clientsByPath: clientsByPath,
@@ -893,24 +998,27 @@ export function httpKV({
   return {
    apiOrigin,
    isProxyBacked,
+   get sessionDirsDisabled() {
+    return getSessionDirsDisabled()
+   },
    get prefix() {
     return activeClient.prefix
    },
    get basePath() {
-    return activeClient.basePath
+    return getSessionDirsDisabled() ? null : activeClient.basePath
    },
    get root() {
     return activeClient
    },
    defaultRoot: defaultClient,
    getActiveClient() {
-    return activeClient
+    return getSessionDirsDisabled() ? defaultClient : activeClient
    },
    setSessionToken,
    getSessionToken: dir => getSessionToken(dir === undefined ? activeClient.basePath : dir),
    setActiveSession,
    fetchVaultApi: (subpath, opts = {}) => fetchVaultApi(subpath, {
-    basePath: activeClient.basePath,
+    basePath: effectiveDir(),
     ...(opts || {}),
    }),
    externalFetch: (rawUrl, init) => activeClient.externalFetch(rawUrl, init),
@@ -939,7 +1047,9 @@ export function httpKV({
   }
  }
 
- const effectiveBaseUrl = buildDataUrl(baseUrl, cleanBasePath)
+ const effectiveBaseUrl = buildDataUrl(baseUrl, cleanBasePath, {
+  disableSessionDirs: getSessionDirsDisabled(),
+ })
  const isHash = namespace.includes('#')
  const qualify = key => {
   if (isHash) {
@@ -951,8 +1061,13 @@ export function httpKV({
  const client = {
   apiOrigin,
   isProxyBacked,
+  get sessionDirsDisabled() {
+   return getSessionDirsDisabled()
+  },
   prefix: namespace,
-  basePath: cleanBasePath,
+  get basePath() {
+   return getSessionDirsDisabled() ? null : cleanBasePath
+  },
   root: root || null,
   defaultRoot: defaultRoot || null,
 
@@ -976,11 +1091,12 @@ export function httpKV({
     baseUrl,
     namespace: nextNamespace,
     root: client.root,
-    basePath: cleanBasePath,
+    basePath: effectiveDir(),
     defaultRoot: client.defaultRoot,
     headers: requestHeaders,
     proxyCapabilities,
     proactiveToken,
+    disableSessionDirs: explicitDisableDirs !== null ? explicitDisableDirs : undefined,
     _compiledTriggers: compiledTriggers,
     _triggerQueues: triggerQueues,
     _clientsByPath: clientsByPath,
@@ -993,11 +1109,12 @@ export function httpKV({
     baseUrl,
     namespace: `${encodeSegment(name)}#`,
     root: client.root,
-    basePath: cleanBasePath,
+    basePath: effectiveDir(),
     defaultRoot: client.defaultRoot,
     headers: requestHeaders,
     proxyCapabilities,
     proactiveToken,
+    disableSessionDirs: explicitDisableDirs !== null ? explicitDisableDirs : undefined,
     _compiledTriggers: compiledTriggers,
     _triggerQueues: triggerQueues,
     _clientsByPath: clientsByPath,
@@ -1006,7 +1123,11 @@ export function httpKV({
   },
 
   async get(key) {
-   const url = new URL(effectiveBaseUrl)
+   const url = new URL(
+    getSessionDirsDisabled()
+     ? stripDiskModeQueryParams(effectiveBaseUrl)
+     : effectiveBaseUrl
+   )
    url.searchParams.set('key', qualify(key))
    const finalUrl = url.toString()
    const resp = await performKvFetch(finalUrl)
@@ -1018,8 +1139,9 @@ export function httpKV({
 
    if (!resp.ok) {
     const responseText = await resp.text()
+    const errUrl = getSessionDirsDisabled() ? stripDiskModeQueryParams(finalUrl) : finalUrl
     throw new Error(
-     `GET ${finalUrl}: HTTP ${resp.status}: ${resp.statusText}: ${responseText}`
+     `GET ${errUrl}: HTTP ${resp.status}: ${resp.statusText}: ${responseText}`
     )
    }
 
@@ -1028,7 +1150,11 @@ export function httpKV({
 
   async set(key, value, opts = null) {
    const fullKey = qualify(key)
-   const url = new URL(effectiveBaseUrl)
+   const url = new URL(
+    getSessionDirsDisabled()
+     ? stripDiskModeQueryParams(effectiveBaseUrl)
+     : effectiveBaseUrl
+   )
    url.searchParams.set('key', fullKey)
    const finalUrl = url.toString()
    const method = 'POST'
@@ -1040,8 +1166,9 @@ export function httpKV({
 
    if (!resp.ok) {
     const responseText = await resp.text()
+    const errUrl = getSessionDirsDisabled() ? stripDiskModeQueryParams(finalUrl) : finalUrl
     throw new Error(
-     `${method} ${finalUrl}: HTTP ${resp.status}: ${resp.statusText}: ${responseText}`
+     `${method} ${errUrl}: HTTP ${resp.status}: ${resp.statusText}: ${responseText}`
     )
    }
 
@@ -1059,7 +1186,11 @@ export function httpKV({
 
   async delete(key, opts = null) {
    const fullKey = qualify(key)
-   const url = new URL(effectiveBaseUrl)
+   const url = new URL(
+    getSessionDirsDisabled()
+     ? stripDiskModeQueryParams(effectiveBaseUrl)
+     : effectiveBaseUrl
+   )
    url.searchParams.set('key', fullKey)
    const finalUrl = url.toString()
    const method = 'DELETE'
@@ -1072,8 +1203,9 @@ export function httpKV({
 
    if (!resp.ok) {
     const responseText = await resp.text()
+    const errUrl = getSessionDirsDisabled() ? stripDiskModeQueryParams(finalUrl) : finalUrl
     throw new Error(
-     `${method} ${finalUrl}: HTTP ${resp.status}: ${resp.statusText}: ${responseText}`
+     `${method} ${errUrl}: HTTP ${resp.status}: ${resp.statusText}: ${responseText}`
     )
    }
 

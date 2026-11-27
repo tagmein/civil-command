@@ -2,6 +2,7 @@ import { constants as fsConstants } from 'node:fs'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { isSessionDirsDisabled } from './data.mjs'
 import { verifyApiSessionToken } from './data-proxy.mjs'
 import { hasJsonContentType, isAllowedLocalOrigin } from './http-security.mjs'
 import { getDefaultServerSecretStore } from './storage.mjs'
@@ -585,6 +586,13 @@ export async function handleFsApiRequest(req, res, opts = {}) {
   if (!authRes.ok) {
    return sendJson(res, authRes.status, { ok: false, error: authRes.error }, authRes.headers)
   }
+ }
+
+ const dirsDisabled = opts.disableSessionDirs !== undefined
+  ? Boolean(opts.disableSessionDirs)
+  : isSessionDirsDisabled(null, { useEnv: true })
+ if (dirsDisabled) {
+  return sendJson(res, 403, { ok: false, error: 'Session directory selection is disabled on this server' })
  }
 
  const url = new URL(req.url || '/', 'http://localhost')

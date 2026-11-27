@@ -22,7 +22,7 @@ import {
  validateFieldScriptLine,
  validateFieldScriptLines,
 } from './field.mjs'
-import { attenuateKv, formatDataDirLabel, httpKV, normalizeDataDir } from './data.mjs'
+import { attenuateKv, formatDataDirLabel, httpKV, isSessionDirsDisabled, normalizeDataDir } from './data.mjs'
 import { verifyApiSessionToken } from './data-proxy.mjs'
 import { hasJsonContentType, isAllowedLocalOrigin } from './http-security.mjs'
 import {
@@ -203,11 +203,13 @@ function resolveCatalogLaneId(catalog, rawQuery) {
 export async function agentListSessions(rootKv, options = {}) {
  const kv = resolveAgentRootKv(rootKv)
  const registryKv = resolveRegistryKv(kv)
+ const sessionDirsDisabled = isSessionDirsDisabled(kv)
  const res = await listPackageSessions(registryKv, options.packageId || DEFAULT_PACKAGE_ID)
  const sessions = Array.isArray(res && res.sessions) ? res.sessions : []
  return {
   ok: true,
   packageId: res.packageId || DEFAULT_PACKAGE_ID,
+  sessionDirsDisabled,
   count: sessions.length,
   activeSession: sessions[0] || null,
   sessions,
@@ -246,6 +248,7 @@ export async function agentResolveSessionAndLane(rootKv, options = {}) {
 
 export async function agentGetSession(rootKv, options = {}) {
  const resolved = await agentResolveSessionAndLane(rootKv, options)
+ const sessionDirsDisabled = isSessionDirsDisabled(resolved.rootKv)
  const active = resolved.activeSession
  const openLaneIds = active && Array.isArray(active.laneIds) ? active.laneIds : []
  const catalogById = new Map(resolved.catalog.map(item => [item.id, item]))
@@ -255,6 +258,7 @@ export async function agentGetSession(rootKv, options = {}) {
   sessionName: active ? active.name : '',
   dataDir: resolved.dataDir,
   dataDirConfirmed: active ? active.dataDirConfirmed : Boolean(resolved.dataDir),
+  sessionDirsDisabled,
   openPackages: resolved.openPackages,
   openPackageIds: resolved.openPackageIds,
   activePackageId: active ? active.activePackageId : '',
@@ -266,6 +270,7 @@ export async function agentGetSession(rootKv, options = {}) {
   activeSession: active,
   dataDir: resolved.dataDir,
   dataDirLabel: formatDataDirLabel(resolved.dataDir, active ? active.dataDirConfirmed : Boolean(resolved.dataDir)),
+  sessionDirsDisabled,
   openPackages: resolved.openPackages,
   openPackageIds: resolved.openPackageIds,
   openLanes,
@@ -316,11 +321,13 @@ export async function agentGetLane(rootKv, options = {}) {
  )
  const cleanFormattedTables = formattedTables.filter(Boolean)
  const active = resolved.activeSession
+ const sessionDirsDisabled = isSessionDirsDisabled(resolved.rootKv)
  const contextText = formatAgentContext({
   sessionId: active ? active.id : '',
   sessionName: active ? active.name : '',
   dataDir: resolved.dataDir,
   dataDirConfirmed: active ? active.dataDirConfirmed : Boolean(resolved.dataDir),
+  sessionDirsDisabled,
   openPackages: resolved.openPackages,
   openPackageIds: resolved.openPackageIds,
   activePackageId: active ? active.activePackageId : '',
@@ -2410,7 +2417,9 @@ export async function handleMcpJsonRpc(rootKv, message, options = {}) {
      uri: `civil://sessions/${encodeURIComponent(s.id)}`,
      name: `Session: ${s.name} (${s.id})`,
      mimeType: 'application/json',
-     description: `Data directory: ${s.dataDir || 'Default'} · ${s.laneCount} lane(s)`,
+     description: sessList.sessionDirsDisabled
+      ? `${s.laneCount} lane(s)`
+      : `Data directory: ${s.dataDir || 'Default'} · ${s.laneCount} lane(s)`,
     })),
    ]
    return {

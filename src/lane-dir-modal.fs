@@ -730,46 +730,82 @@
  ; to modal.open-create (
   -- Opens the computer directory picker in Create Session mode
   ; to { opts } $argv
-  ; set create modal.mode
-  ; set [ ternary $opts.tab-only true false ] modal.tab-only
-  ; set null modal.previous-session-id
-  ; set false modal.previous-was-tab
-  ; set [ match { $opts.on-complete : $opts.on-complete } { true : null } ] modal.on-complete
-  ; to ttl [ match
-   { $modal.tab-only : 'New Tab Session — Choose Data Directory' }
-   { true : 'New Session — Choose Data Directory' }
+  ; to dirs-disabled [ match
+   { $lane-control.is-session-dirs-disabled : !lane-control.is-session-dirs-disabled }
+   { [ propertyIs true lane-control.session-dirs-disabled ] : true }
+   { true : false }
   ]
-  ; set $ttl heading-el.textContent
-  ; set 'Pick a permanent folder on your computer or attached disk where session data will be written, or choose Default.' subtitle-el.textContent
-  ; set true notice-el.hidden
-  ; set false name-field.hidden
-  ; set [ match { $opts.name : $opts.name } { true : '' } ] name-input.value
-  ; set 'Use Default' default-btn.textContent
-  ; set 'Create Here' select-btn.textContent
-  !open-shared $opts.initial-path
+  [ match
+   { $dirs-disabled (
+    ; to is-tab [ ternary $opts.tab-only true false ]
+    ; to sess-name [ match
+     { $opts.name.trim : !opts.name.trim }
+     { $opts.name : ; add '' $opts.name }
+     { true : '' }
+    ]
+    ; to cb $opts.on-complete
+    ; to res [ match
+     { $is-tab : !lane-control.new-tab-session $sess-name null true }
+     { true : !lane-control.new-session $sess-name null true }
+    ]
+    [ match
+     { $cb : !$cb $res }
+    ]
+    $res
+   ) }
+   { true (
+    ; set create modal.mode
+    ; set [ ternary $opts.tab-only true false ] modal.tab-only
+    ; set null modal.previous-session-id
+    ; set false modal.previous-was-tab
+    ; set [ match { $opts.on-complete : $opts.on-complete } { true : null } ] modal.on-complete
+    ; to ttl [ match
+     { $modal.tab-only : 'New Tab Session — Choose Data Directory' }
+     { true : 'New Session — Choose Data Directory' }
+    ]
+    ; set $ttl heading-el.textContent
+    ; set 'Pick a permanent folder on your computer or attached disk where session data will be written, or choose Default.' subtitle-el.textContent
+    ; set true notice-el.hidden
+    ; set false name-field.hidden
+    ; set [ match { $opts.name : $opts.name } { true : '' } ] name-input.value
+    ; set 'Use Default' default-btn.textContent
+    ; set 'Create Here' select-btn.textContent
+    !open-shared $opts.initial-path
+   ) }
+  ]
  )
 
  ; to modal.open-confirm (
   -- Opens the computer directory picker in Confirm mode for an unconfirmed session
   ; to { opts } $argv
-  ; set confirm modal.mode
-  ; set false modal.tab-only
-  ; set [ match { $opts.previous-session-id : $opts.previous-session-id } { true : null } ] modal.previous-session-id
-  ; set [ ternary $opts.previous-was-tab true false ] modal.previous-was-tab
-  ; set [ match { $opts.on-complete : $opts.on-complete } { true : null } ] modal.on-complete
-  ; to sess-name [ match
-   { $lane-control.session-meta.name : $lane-control.session-meta.name }
-   { $lane-control.session-id : $lane-control.session-id }
-   { true : Session }
+  ; to dirs-disabled [ match
+   { $lane-control.is-session-dirs-disabled : !lane-control.is-session-dirs-disabled }
+   { [ propertyIs true lane-control.session-dirs-disabled ] : true }
+   { true : false }
   ]
-  ; set 'Select Data Directory' heading-el.textContent
-  ; set 'Permanent storage directory selection is required for every session.' subtitle-el.textContent
-  ; set [ ; add 'Session "' ; add $sess-name '" does not have a permanent data directory selected yet. Confirm Default or pick a folder on your computer or attached disk.' ] notice-el.textContent
-  ; set false notice-el.hidden
-  ; set true name-field.hidden
-  ; set 'Confirm Default' default-btn.textContent
-  ; set 'Use This Directory' select-btn.textContent
-  !open-shared $opts.initial-path
+  [ match
+   { $dirs-disabled : null }
+   { true (
+    ; set confirm modal.mode
+    ; set false modal.tab-only
+    ; set [ match { $opts.previous-session-id : $opts.previous-session-id } { true : null } ] modal.previous-session-id
+    ; set [ ternary $opts.previous-was-tab true false ] modal.previous-was-tab
+    ; set [ match { $opts.on-complete : $opts.on-complete } { true : null } ] modal.on-complete
+    ; to sess-name [ match
+     { $lane-control.session-meta.name : $lane-control.session-meta.name }
+     { $lane-control.session-id : $lane-control.session-id }
+     { true : Session }
+    ]
+    ; set 'Select Data Directory' heading-el.textContent
+    ; set 'Permanent storage directory selection is required for every session.' subtitle-el.textContent
+    ; set [ ; add 'Session "' ; add $sess-name '" does not have a permanent data directory selected yet. Confirm Default or pick a folder on your computer or attached disk.' ] notice-el.textContent
+    ; set false notice-el.hidden
+    ; set true name-field.hidden
+    ; set 'Confirm Default' default-btn.textContent
+    ; set 'Use This Directory' select-btn.textContent
+    !open-shared $opts.initial-path
+   ) }
+  ]
  )
 
  !pathbar.addEventListener submit (

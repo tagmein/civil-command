@@ -289,6 +289,7 @@
   { active-id-box $active-id-box }
   { copy-agent-btn $copy-agent-btn }
   { copy-timer null }
+  { active-dir-row $active-dir-row }
   { active-dir-box $active-dir-box }
   { active-dir-btn $active-dir-btn }
   { rename-input $rename-input }
@@ -539,6 +540,11 @@
   ]
   ; to id-txt ; add $cur-id ; add ' · ' $ver
   ; set [ match { $overridden : ; add $id-txt ' (tab override)' } { true : $id-txt } ] active-id-box.textContent
+  ; to dirs-disabled [ match
+   { $lane-control.is-session-dirs-disabled : !lane-control.is-session-dirs-disabled }
+   { [ propertyIs true lane-control.session-dirs-disabled ] : true }
+   { true : false }
+  ]
   ; to dir-confirmed [ propertyIs true lane-control.session-data-dir-confirmed ]
   ; to dir-label [ match
    { $lane-control.format-data-dir-label : !lane-control.format-data-dir-label $lane-control.session-data-dir $dir-confirmed }
@@ -552,7 +558,8 @@
   ]
   ; set $dir-display active-dir-box.textContent
   ; set $dir-label active-dir-box.title
-  ; set $dir-confirmed active-dir-btn.hidden
+  ; set $dirs-disabled active-dir-row.hidden
+  ; set [ match { $dirs-disabled : true } { true : $dir-confirmed } ] active-dir-btn.hidden
   ; set $cur-name rename-input.value
   ; set [ ternary $blocked false true ] draft-field.hidden
   ; set [ ternary $pending 'workspace-session-draft workspace-session-draft--pending lane-session-draft-banner' 'workspace-session-draft lane-session-draft-banner' ] draft-field.className
@@ -594,7 +601,7 @@
    ; assign $dir-sub { className lane-session-item-dir } { textContent [ ; add 'Dir: ' $rec-dir ] } { title $rec-dir }
    !info.appendChild $nm
    !info.appendChild $id-sub
-   !info.appendChild $dir-sub
+   ; condition { propertyIs false dirs-disabled } : !info.appendChild $dir-sub
 
    ; to acts !document.createElement div
    ; set lane-modal-item-actions acts.className
@@ -662,6 +669,11 @@
   )
   ; set 0 modal.hist-items.length
 
+  ; to dirs-disabled [ match
+   { $lane-control.is-session-dirs-disabled : !lane-control.is-session-dirs-disabled }
+   { [ propertyIs true lane-control.session-dirs-disabled ] : true }
+   { true : false }
+  ]
   ; to entries !readSessionHistory $window
   ; to q-trimmed !modal.hist-query.trim
   ; to q !q-trimmed.toLowerCase
@@ -669,6 +681,7 @@
   ; each $entries (
    ; to { item } $argv
    ; to dir-str [ match
+    { $dirs-disabled : '' }
     { $item.dataDir : $item.dataDir }
     { true : Default }
    ]
@@ -732,7 +745,7 @@
      ; assign $sub-el { className lane-modal-item-id } { textContent $sub-txt }
      !info.appendChild $nm
      !info.appendChild $time-el
-     !info.appendChild $dir-el
+     ; condition { propertyIs false dirs-disabled } : !info.appendChild $dir-el
      !info.appendChild $sub-el
 
      ; to acts !document.createElement div
@@ -790,8 +803,13 @@
 
  !active-dir-btn.addEventListener click (
   !modal.close
+  ; to dirs-disabled [ match
+   { $lane-control.is-session-dirs-disabled : !lane-control.is-session-dirs-disabled }
+   { [ propertyIs true lane-control.session-dirs-disabled ] : true }
+   { true : false }
+  ]
   [ match
-   { $lane-control.dir-modal.open-confirm : !lane-control.dir-modal.open-confirm }
+   { [ and { propertyIs false dirs-disabled } { $lane-control.dir-modal.open-confirm } ] : !lane-control.dir-modal.open-confirm }
   ]
  )
  !copy-agent-btn.addEventListener click (
