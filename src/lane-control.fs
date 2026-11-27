@@ -2821,10 +2821,12 @@
       ) }
      ]
      ; to lane-title !scope.get-lane-title $clean-lane
-     ; to deploy-status [ match
-      { $getLaneDeployStatus : !getLaneDeployStatus $data $data $clean-lane }
-      { true : null }
-     ]
+     ; to deploy-status ; try (
+      [ match
+       { $getLaneDeployStatus : !getLaneDeployStatus $data $data $clean-lane }
+       { true : null }
+      ]
+     ) : null
      ; to out ; object
      ; assign $out $write-res [ object
       { laneId $clean-lane }
@@ -3046,10 +3048,12 @@
         { [ propertyIs false opts.changed ] : true }
         { true : false }
        ]
-       ; to prior-ds [ match
-        { [ and { $is-idle-check } { $getLaneDeployStatus } ] : !getLaneDeployStatus $data $data $clean-target }
-        { true : null }
-       ]
+       ; to prior-ds ; try (
+        [ match
+         { [ and { $is-idle-check } { $getLaneDeployStatus } ] : !getLaneDeployStatus $data $data $clean-target }
+         { true : null }
+        ]
+       ) : null
        ; to already-synced [ match
         { [ and { $is-idle-check } { [ propertyIs true prior-ds.deployed ] } { [ propertyIs false prior-ds.hasChanges ] } ] : true }
         { true : false }
@@ -3058,14 +3062,18 @@
         { $already-synced : ; object { ok true } { skipped true } { status 'up-to-date' } { laneId $clean-target } }
         { true (
          ; to target-title !scope.get-lane-title $clean-target
-         ; to dep [ match
-          { $loadLaneDeployment : !loadLaneDeployment $data $clean-target }
-          { true : null }
-         ]
-         ; to servers [ match
-          { $loadDeployServers : !loadDeployServers $data }
-          { true : {} }
-         ]
+         ; to dep ; try (
+          [ match
+           { $loadLaneDeployment : !loadLaneDeployment $data $clean-target }
+           { true : null }
+          ]
+         ) : null
+         ; to servers ; try (
+          [ match
+           { $loadDeployServers : !loadDeployServers $data }
+           { true : {} }
+          ]
+         ) : {}
          ; to found-srv ; object { srv null }
          [ match
           { $dep.serverId (
@@ -4835,9 +4843,23 @@
   ; to routes !parseLaneRoutes $location.pathname
   ; each $routes (
    ; to { route } $argv
-   !scope.open $route.id $route.tab $route.subroute
+   ; try (
+    !scope.open $route.id $route.tab $route.subroute
+   ) (
+    ; to { err } $argv
+    [ match
+     { $console.error : !console.error 'Failed to open lane:' $route.id $err }
+    ]
+    null
+   )
   )
- ) : null
+ ) (
+  ; to { err } $argv
+  [ match
+   { $console.error : !console.error 'Failed to sync lanes:' $err }
+  ]
+  null
+ )
  !scope.end-session-status-pending
 )
 ; to scope.load-preferences-lane (
@@ -6222,7 +6244,13 @@
   !window.addEventListener popstate $scope.sync
   !window.addEventListener beforeunload $scope.handle-before-unload
   !scope.sync
- ) : null
+ ) (
+  ; to { err } $argv
+  [ match
+   { $console.error : !console.error 'Failed to initialize session:' $err }
+  ]
+  null
+ )
  !scope.end-session-status-pending
  [ match
   { $rails.sync-preferences-menu : !rails.sync-preferences-menu }

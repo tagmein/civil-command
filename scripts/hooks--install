@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+chmod +x "${REPO_DIR}/.githooks/pre-commit"
+git -C "${REPO_DIR}" config core.hooksPath .githooks
+if [ -d "${REPO_DIR}/.git/hooks" ] && [ ! -f "${REPO_DIR}/.git/hooks/pre-commit" ]; then
+ cp "${REPO_DIR}/.githooks/pre-commit" "${REPO_DIR}/.git/hooks/pre-commit"
+ chmod +x "${REPO_DIR}/.git/hooks/pre-commit"
+fi
+echo "Installed git hooks path: $(git -C "${REPO_DIR}" config --get core.hooksPath)"

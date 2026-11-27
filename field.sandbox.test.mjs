@@ -60,6 +60,7 @@ import {
  exportModalSource,
  field,
  formatImportLine,
+ getLaneDeployStatus,
  handleAgentApiRequest,
  handleDeployApiRequest,
  handleDeployUpgrade,
@@ -81,6 +82,8 @@ import {
  laneStorySource,
  laneTerminalModalSource,
  lineInfoModalSource,
+ loadDeployServers,
+ loadLaneDeployments,
  loadLaneScript,
  loadLaneSecretRecord,
  normalizePrimitiveType,
@@ -98,6 +101,7 @@ import {
  runLines,
  runLinesInWorker,
  runTransportedScripts,
+ saveLaneDeployment,
  saveLaneScript,
  sessionModalSource,
  setLaneSecret,
@@ -2923,6 +2927,54 @@ test('data-proxy sends text/plain Content-Type to civil-memory, httpKV proactive
   await dirClient.delete('empty-val')
   assert.equal(dataStatuses.some(s => s.statusCode === 401), false, `Unexpected 401s: ${JSON.stringify(dataStatuses)}`)
   assert.equal(dataStatuses.some(s => s.statusCode >= 500), false, `Unexpected 500s: ${JSON.stringify(dataStatuses)}`)
+
+  // 2b. Global deploy#* registry reads/writes succeed under a custom dataDir session token,
+  // while non-registry cross-dir keys and lane-scoped deploy#* reads still return 403
+  assert.deepEqual(await loadLaneDeployments(client, 'lane-1'), [])
+  assert.deepEqual(await loadDeployServers(client), [])
+  const savedDep = await saveLaneDeployment(client, {
+   laneId: 'lane-1',
+   slug: 'ledger-svc',
+   port: 4125,
+  })
+  assert.ok(savedDep && savedDep.id)
+  const loadedDeps = await loadLaneDeployments(client, 'lane-1')
+  assert.equal(loadedDeps.length, 1)
+  assert.equal(loadedDeps[0].slug, 'ledger-svc')
+  const depStatus = await getLaneDeployStatus(client, dirClient, 'lane-1')
+  assert.ok(depStatus && depStatus.deployment && depStatus.deployment.slug === 'ledger-svc')
+  assert.equal(dataStatuses.some(s => s.statusCode === 403 || s.statusCode === 401), false, `Unexpected 401/403: ${JSON.stringify(dataStatuses)}`)
+
+  const dirOnlyTok = createCapabilityToken({
+   sessionId: sessState.sessionId,
+   basePath: '/tmp/test-civil-dir',
+   packages: [DEFAULT_PACKAGE_ID],
+  }, secretStore)
+  const dirDeployIdxRes = await fetch(`${proxyOrigin}/api/data?mode=disk&key=deploy%23deployments-index`, {
+   headers: { [SESSION_TOKEN_HEADER]: dirOnlyTok },
+  })
+  assert.equal(dirDeployIdxRes.status, 200)
+  const dirNonRegNullRes = await fetch(`${proxyOrigin}/api/data?mode=disk&key=lanes%23lane-1%2Ftitle`, {
+   headers: { [SESSION_TOKEN_HEADER]: dirOnlyTok },
+  })
+  assert.equal(dirNonRegNullRes.status, 403)
+  const dirOtherDirRes = await fetch(`${proxyOrigin}/api/data?mode=disk&modeOptions.disk.basePath=%2Ftmp%2Fother-dir&key=lanes%23lane-1%2Ftitle`, {
+   headers: { [SESSION_TOKEN_HEADER]: dirOnlyTok },
+  })
+  assert.equal(dirOtherDirRes.status, 403)
+
+  const savedSessTok = client.getSessionToken('/tmp/test-civil-dir')
+  const laneTokRes = await client.fetchVaultApi('lane-token', {
+   method: 'POST',
+   basePath: '/tmp/test-civil-dir',
+   body: { lanes: ['lane-1'], basePath: '/tmp/test-civil-dir' },
+  })
+  const laneOnlyTok = laneTokRes.data.token
+  client.setSessionToken(savedSessTok, { sessionId: sessState.sessionId, basePath: '/tmp/test-civil-dir' })
+  const laneDeployDenied = await fetch(`${proxyOrigin}/api/data?mode=disk&key=deploy%23deployments-index`, {
+   headers: { [SESSION_TOKEN_HEADER]: laneOnlyTok },
+  })
+  assert.equal(laneDeployDenied.status, 403)
 
   // 3. externalFetch proxies external HTTPS requests through /api/vault/fetch (avoiding browser CORS)
   const extResp = await client.externalFetch('https://data.nateferrero.com/beacon/balance')

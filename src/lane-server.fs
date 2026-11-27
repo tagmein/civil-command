@@ -1094,26 +1094,34 @@
  )
 
  ; to load-known-deployments (
-  [ match
-   { $loadLaneDeployments : !loadLaneDeployments $data $lane.id }
-   { $loadDeployments (
-    ; to all-deps !loadDeployments $data
-    ; to matched {}
-    ; each $all-deps (
-     ; to { d } $argv
-     ; condition { propertyIs $lane.id d.laneId } : !matched.push $d
-    )
-    $matched
-   ) }
-   { $loadLaneDeployment (
-    ; to single !loadLaneDeployment $data $lane.id
-    [ match
-     { $single : { $single } }
-     { true : {} }
-    ]
-   ) }
-   { true : {} }
-  ]
+  ; try (
+   [ match
+    { $loadLaneDeployments : !loadLaneDeployments $data $lane.id }
+    { $loadDeployments (
+     ; to all-deps !loadDeployments $data
+     ; to matched {}
+     ; each $all-deps (
+      ; to { d } $argv
+      ; condition { propertyIs $lane.id d.laneId } : !matched.push $d
+     )
+     $matched
+    ) }
+    { $loadLaneDeployment (
+     ; to single !loadLaneDeployment $data $lane.id
+     [ match
+      { $single : { $single } }
+      { true : {} }
+     ]
+    ) }
+    { true : {} }
+   ]
+  ) (
+   ; to { err } $argv
+   [ match
+    { $console.warn : !console.warn 'Failed to load lane deployments:' $err }
+   ]
+   {}
+  )
  )
 
  ; to view.refresh-deployments (
@@ -1533,10 +1541,18 @@
   !srv-select.appendChild $none-opt
   !view.server-option-els.push $none-opt
 
-  ; to servers [ match
-   { $loadDeployServers : !loadDeployServers $data }
-   { true : {} }
-  ]
+  ; to servers ; try (
+   [ match
+    { $loadDeployServers : !loadDeployServers $data }
+    { true : {} }
+   ]
+  ) (
+   ; to { err } $argv
+   [ match
+    { $console.warn : !console.warn 'Failed to load deploy servers:' $err }
+   ]
+   {}
+  )
   ; set $servers view.servers
   ; each $servers (
    ; to { s } $argv
@@ -1588,11 +1604,18 @@
   -- Loads persisted deployment configurations and server list for this lane
   ; to deps !load-known-deployments
   ; set $deps view.deployments
-  ; to dep [ match
-   { $loadLaneDeployment : !loadLaneDeployment $data $lane.id }
-   { [ propertyIsGreaterThan 0 deps.length ] : [ get deps [ ; subtract $deps.length 1 ] ] }
-   { true : null }
-  ]
+  ; to dep ; try (
+   [ match
+    { $loadLaneDeployment : !loadLaneDeployment $data $lane.id }
+    { [ propertyIsGreaterThan 0 deps.length ] : [ get deps [ ; subtract $deps.length 1 ] ] }
+    { true : null }
+   ]
+  ) (
+   [ match
+    { [ propertyIsGreaterThan 0 deps.length ] : [ get deps [ ; subtract $deps.length 1 ] ] }
+    { true : null }
+   ]
+  )
   ; set $dep view.deployment
   [ match
    { $dep (
@@ -1674,7 +1697,15 @@
  !status-btn.addEventListener click : !service-action-flow status
  !undeploy-btn.addEventListener click $undeploy-flow
 
- !view.load
+ ; try (
+  !view.load
+ ) (
+  ; to { err } $argv
+  [ match
+   { $console.warn : !console.warn 'Failed to initialize lane server view:' $err }
+  ]
+  null
+ )
  $view
 )
 $scope

@@ -1775,10 +1775,12 @@
          { $lane-control.get-lane-title : !lane-control.get-lane-title $t.laneId }
          { true : $t.laneId }
         ]
-        ; to ds [ match
-         { $getLaneDeployStatus : !getLaneDeployStatus $data $data $t.laneId }
-         { true : null }
-        ]
+        ; to ds ; try (
+         [ match
+          { $getLaneDeployStatus : !getLaneDeployStatus $data $data $t.laneId }
+          { true : null }
+         ]
+        ) : null
         !list.push [ object
          { laneId $t.laneId }
          { laneTitle $lane-title }

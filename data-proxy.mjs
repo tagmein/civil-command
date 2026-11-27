@@ -1029,7 +1029,7 @@ export function createDataProxyHandler(options = {}) {
   bodyText = undefined,
   readBodyText = null,
   allowUnlockedAnyDir = false,
-  allowDeployRegistryFallback = false,
+  allowDeployRegistryFallback = true,
  }) {
   if (isForbiddenDirectKvKey(rawKey)) {
    return {
@@ -1210,7 +1210,7 @@ export function createDataProxyHandler(options = {}) {
     }
    },
    allowUnlockedAnyDir: false,
-   allowDeployRegistryFallback: false,
+   allowDeployRegistryFallback: true,
   })
 
   if (bodyReadError) {
