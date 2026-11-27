@@ -15,6 +15,7 @@ import {
  resolveImportValue,
 } from './field.mjs'
 import {
+ attenuateKv,
  httpKV,
  laneTriggerKey,
 } from './data.mjs'
@@ -757,7 +758,7 @@ export function createLaneHttpServer(config = {}, opts = {}) {
 
   const env = {
    console: logger,
-   data: rootKv.namespace(unit.id),
+   data: attenuateKv(rootKv.namespace(unit.id)),
    fetch: externalFetch,
    importLane,
    ...(req ? { req } : {}),

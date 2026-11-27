@@ -3164,7 +3164,7 @@
  )
  ; to env [ object
   { console $console }
-  { data $target-data }
+  { data [ match { $attenuateKv : !attenuateKv $target-data } { true : $target-data } ] }
   { Math $window.Math }
   { Number $window.Number }
   { JSON $window.JSON }

@@ -640,6 +640,53 @@ function createCapturingConsole(logs, delegate = globalThis.console) {
  }
 }
 
+function attenuateSimLaneData(kv) {
+ if (!kv || typeof kv !== 'object' || typeof kv.get !== 'function') {
+  return null
+ }
+ const assertKey = (raw, label) => {
+  const s = raw === null || raw === undefined ? '' : String(raw)
+  if (!s || s.includes('#') || s.includes('\0')) {
+   throw new Error(`Invalid ${label} in attenuated KV client`)
+  }
+  return s
+ }
+ const privateKv = kv
+ const wrapper = Object.create(null)
+ wrapper.get = k => privateKv.get(assertKey(k, 'KV key'))
+ wrapper.set = (k, v) => {
+  const cleanK = assertKey(k, 'KV key')
+  if (typeof privateKv.set !== 'function') {
+   throw new Error('Attenuated KV client is read-only')
+  }
+  return privateKv.set(cleanK, v === null || v === undefined ? '' : String(v))
+ }
+ wrapper.delete = k => {
+  const cleanK = assertKey(k, 'KV key')
+  if (typeof privateKv.delete === 'function') {
+   return privateKv.delete(cleanK)
+  }
+  if (typeof privateKv.set === 'function') {
+   return privateKv.set(cleanK, '')
+  }
+  return Promise.resolve()
+ }
+ wrapper.namespace = name => {
+  const cleanName = assertKey(name, 'KV namespace')
+  const child = typeof privateKv.namespace === 'function'
+   ? privateKv.namespace(cleanName)
+   : {
+    get: k => privateKv.get(`${cleanName}.${assertKey(k, 'KV key')}`),
+    set: (k, v) => privateKv.set(`${cleanName}.${assertKey(k, 'KV key')}`, v),
+    delete: k => (typeof privateKv.delete === 'function'
+     ? privateKv.delete(`${cleanName}.${assertKey(k, 'KV key')}`)
+     : privateKv.set(`${cleanName}.${assertKey(k, 'KV key')}`, '')),
+   }
+  return attenuateSimLaneData(child)
+ }
+ return Object.freeze(wrapper)
+}
+
 export async function simulateLaneRequest({
  lines = [],
  inputs = [],
@@ -657,11 +704,12 @@ export async function simulateLaneRequest({
  const capturedConsole = createCapturingConsole(logs)
  const requestObj = buildRequestObject(req)
  const cleanLines = Array.isArray(lines) ? lines : []
+ const safeLaneData = attenuateSimLaneData(laneData)
 
  const buildInitialState = reqForRun => {
   const env = {
    console: capturedConsole,
-   data: laneData,
+   data: safeLaneData,
    Math,
    Number,
    JSON,

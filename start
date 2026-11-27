@@ -13,6 +13,16 @@ if (kvChunkArg) process.env.CC_KV_CHUNK_BYTES = kvChunkArg.slice('--kv-chunk-byt
 const fsApiPromise = import('./fs-api.mjs')
 const deployApiPromise = import('./deploy-api.mjs')
 const agentApiPromise = import('./agent-api.mjs')
+const dataProxyPromise = import('./data-proxy.mjs').then(({
+ createDataProxyHandler,
+ createFileBackedServerSecretStore,
+}) => {
+ const secretStore = createFileBackedServerSecretStore()
+ return createDataProxyHandler({
+  backendBaseUrl: 'http://localhost:3333/?mode=disk',
+  secretStore,
+ })
+})
 
 const mimeTypes = {
  '.html': 'text/html; charset=utf-8',
@@ -75,8 +85,10 @@ const server = http.createServer((req, res) => {
  }
 
  if (reqPathname === '/api/mcp' || reqPathname === '/api/agent' || reqPathname.startsWith('/api/agent/')) {
-  return agentApiPromise
-   .then(({ handleAgentApiRequest }) => handleAgentApiRequest(req, res))
+  return Promise.all([agentApiPromise, dataProxyPromise])
+   .then(([{ handleAgentApiRequest }, { backendRootKv }]) =>
+    handleAgentApiRequest(req, res, { rootKv: backendRootKv })
+   )
    .catch(err => {
     if (!res.headersSent) {
      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
@@ -85,28 +97,39 @@ const server = http.createServer((req, res) => {
    })
  }
 
- if (req.url.startsWith('/api/data')) {
-  const p = http.request({
-   hostname: 'localhost',
-   port: 3333,
-   path: req.url.replace('/api/data', '/'),
-   method: req.method,
-   headers: req.headers,
-  }, r => {
-   res.writeHead(r.statusCode, r.headers)
-   r.pipe(res)
-  })
-  p.on('error', err => {
-   res.writeHead(502)
-   res.end('Bad gateway: ' + err.message)
-  })
-  return req.pipe(p)
+ if (reqPathname === '/api/vault' || reqPathname.startsWith('/api/vault/')) {
+  return dataProxyPromise
+   .then(({ handleVaultApiRequest }) => handleVaultApiRequest(req, res))
+   .catch(err => {
+    if (!res.headersSent) {
+     res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
+    }
+    res.end(JSON.stringify({ ok: false, error: err && err.message ? err.message : 'Vault API error' }))
+   })
+ }
+
+ if (reqPathname === '/api/data' || reqPathname.startsWith('/api/data/')) {
+  return dataProxyPromise
+   .then(({ handleDataProxyRequest }) => handleDataProxyRequest(req, res))
+   .catch(err => {
+    if (!res.headersSent) {
+     res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' })
+    }
+    res.end('Bad gateway: ' + (err && err.message ? err.message : 'Proxy error'))
+   })
  }
 
  const reqPath = (req.url === '/' ? '/index.html' : req.url.split('?')[0])
  const filePath = path.resolve(rootDir, '.' + reqPath)
 
- if (!filePath.startsWith(rootDir + path.sep) && filePath !== rootDir) {
+ const vaultKeyFilePath = process.env.CC_VAULT_KEY_FILE
+  ? path.resolve(process.env.CC_VAULT_KEY_FILE)
+  : null
+ if (
+  (!filePath.startsWith(rootDir + path.sep) && filePath !== rootDir) ||
+  (vaultKeyFilePath && filePath === vaultKeyFilePath) ||
+  reqPath.split('/').some(seg => seg.startsWith('.') && seg !== '.')
+ ) {
   res.writeHead(403)
   return res.end('Forbidden')
  }

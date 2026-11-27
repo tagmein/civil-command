@@ -3,32 +3,47 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import fsSync from 'node:fs'
 import fs from 'node:fs/promises'
+import http from 'node:http'
+import os from 'node:os'
 import path from 'node:path'
 import vm from 'node:vm'
 import {
+ CAPABILITY_TOKEN_PREFIX,
  DATA_RUNTIME_ENV,
+ DEFAULT_PACKAGE_ID,
  FORBIDDEN_PROPERTY_KEYS,
  OUTPUT_PROTOCOL,
  OUTPUT_RPC_METHODS,
  PRIMITIVE_TYPES,
  SECRET_MASK,
+ SESSION_TOKEN_HEADER,
  SOURCE_WORKER_PROTOCOL,
+ TOKEN_BOOTSTRAP_HEADER,
  agentCreateLane,
  agentEvalLane,
  agentMutateLaneInput,
+ attenuateKv,
+ bindSecretStoreToKv,
  buildNodePermissionExecArgs,
  buildSandboxedOutputSrcdoc,
+ closePackageInSession,
+ createCapabilityToken,
+ createDataProxyHandler,
+ createFileBackedServerSecretStore,
  createIdleTracker,
  createLaneHttpServer,
  createMaskedSecretValue,
  createNewSession,
+ createPackage,
  createSafeExternalFetch,
  createSandboxedOutputHost,
+ createServerSecretStore,
  createSourceWorkerRunner,
  createTransport,
  decodeWireState,
  decodeWireValue,
  defaultValueForType,
+ deleteLaneSecret,
  describeValue,
  detectLaneHandlers,
  dirModalSource,
@@ -36,26 +51,37 @@ import {
  encodeKeySegment,
  encodeWireState,
  encodeWireValue,
+ ensureVaultMasterKey,
  exportDeployModalSource,
  exportModalSource,
  field,
  formatImportLine,
  hasImportCycle,
+ httpKV,
+ initSessionState,
  isBlockedIpAddress,
+ isForbiddenDirectKvKey,
  isMaskedSecretValue,
  isThenable,
+ laneSecretKey,
  listScopeEntries,
  laneServerSource,
  laneServersModalSource,
  laneStorySource,
  laneTerminalModalSource,
  lineInfoModalSource,
+ loadLaneScript,
+ loadLaneSecretRecord,
  normalizePrimitiveType,
+ openPackageInSession,
+ packageMetaKey,
  packageModalSource,
  parse,
  parseImportLine,
  queryLaneStories,
+ registerLaneInPackage,
  resolveImportValue,
+ resolveLaneSecret,
  resolveScopeColumns,
  resolveScopePath,
  runLines,
@@ -69,6 +95,8 @@ import {
  validateOutputRpcRequest,
  validateSourceFetchUrl,
  validateSourceWorkerRpcRequest,
+ vaultMasterKey,
+ verifyCapabilityToken,
 } from './field.fixtures.mjs'
 
 test('index.html removes globalThis.main and wires sandboxed iframe + Web Worker runners; sw.js precaches isolation modules', async () => {
@@ -1694,5 +1722,500 @@ test('field.mjs language runtime & prototype hardening: null-prototype scopes, f
  }
  finally {
   disposeIdleSourceWorkers()
+ }
+})
+
+function createSwitchableMemoryBackendKv() {
+ const storesByDir = new Map()
+ const getStore = dir => {
+  const slot = dir === null || dir === undefined ? '__default__' : String(dir)
+  if (!storesByDir.has(slot)) {
+   storesByDir.set(slot, new Map())
+  }
+  return storesByDir.get(slot)
+ }
+
+ const makeClient = (namespace = '', basePath = null, rootRef = null, defaultRootRef = null) => {
+  const isHash = namespace.includes('#')
+  const qualify = k => (
+   isHash
+    ? (namespace.endsWith('#') ? `${namespace}${k}` : `${namespace}/${k}`)
+    : (namespace ? `${namespace}.${k}` : String(k))
+  )
+  const store = getStore(basePath)
+  const client = {
+   prefix: namespace,
+   basePath,
+   root: rootRef || null,
+   defaultRoot: defaultRootRef || null,
+   getActiveClient() {
+    return client
+   },
+   withBasePath(nextPath) {
+    const clean = nextPath === null || nextPath === undefined || String(nextPath).trim() === ''
+     ? null
+     : String(nextPath).trim()
+    return makeClient('', clean, null, defaultClient)
+   },
+   namespace(name) {
+    const nextNs = isHash ? qualify(encodeKeySegment(name)) : qualify(name)
+    return makeClient(nextNs, basePath, client.root, client.defaultRoot)
+   },
+   hashNamespace(name) {
+    return makeClient(`${encodeKeySegment(name)}#`, basePath, client.root, client.defaultRoot)
+   },
+   async get(key) {
+    const full = qualify(key)
+    return store.has(full) ? store.get(full) : null
+   },
+   async set(key, value) {
+    store.set(qualify(key), String(value))
+   },
+   async delete(key) {
+    store.delete(qualify(key))
+   },
+  }
+  if (!client.root) {
+   client.root = client
+  }
+  if (!client.defaultRoot) {
+   client.defaultRoot = basePath === null ? client : defaultClient
+  }
+  return client
+ }
+
+ const defaultClient = makeClient('', null, null, null)
+ let activeClient = defaultClient
+ const router = {
+  storesByDir,
+  get prefix() {
+   return activeClient.prefix
+  },
+  get basePath() {
+   return activeClient.basePath
+  },
+  get root() {
+   return activeClient
+  },
+  defaultRoot: defaultClient,
+  getActiveClient() {
+   return activeClient
+  },
+  withBasePath(nextPath) {
+   return defaultClient.withBasePath(nextPath)
+  },
+  setBasePath(nextPath) {
+   activeClient = defaultClient.withBasePath(nextPath)
+   return activeClient
+  },
+  namespace(name) {
+   return activeClient.namespace(name)
+  },
+  hashNamespace(name) {
+   return activeClient.hashNamespace(name)
+  },
+  get(key) {
+   return activeClient.get(key)
+  },
+  set(key, value) {
+   return activeClient.set(key, value)
+  },
+  delete(key) {
+   return activeClient.delete(key)
+  },
+ }
+ return router
+}
+
+test('attenuateKv wraps env.data in a frozen null-prototype capability object without root/defaultRoot/withBasePath/hashNamespace', async () => {
+ const rawBackend = createSwitchableMemoryBackendKv()
+ const laneRaw = rawBackend.namespace('lane-att-1')
+ const wrapped = attenuateKv(laneRaw)
+
+ assert.ok(wrapped)
+ assert.equal(Object.getPrototypeOf(wrapped), null)
+ assert.equal(Object.isFrozen(wrapped), true)
+ assert.deepEqual(
+  Object.getOwnPropertyNames(wrapped).sort(),
+  ['delete', 'get', 'namespace', 'set']
+ )
+ assert.deepEqual(Object.getOwnPropertySymbols(wrapped), [])
+ assert.equal(wrapped.root, undefined)
+ assert.equal(wrapped.defaultRoot, undefined)
+ assert.equal(wrapped.withBasePath, undefined)
+ assert.equal(wrapped.setBasePath, undefined)
+ assert.equal(wrapped.hashNamespace, undefined)
+ assert.equal(wrapped.getActiveClient, undefined)
+ assert.equal(wrapped.prefix, undefined)
+ assert.equal(wrapped.basePath, undefined)
+
+ // Nested namespace returns another frozen null-prototype wrapper
+ const sub = wrapped.namespace('cache')
+ assert.equal(Object.getPrototypeOf(sub), null)
+ assert.equal(Object.isFrozen(sub), true)
+ assert.deepEqual(Object.getOwnPropertyNames(sub).sort(), ['delete', 'get', 'namespace', 'set'])
+ assert.equal(sub.root, undefined)
+ assert.equal(sub.hashNamespace, undefined)
+
+ await wrapped.set('hits', '3')
+ await sub.set('item', 'ok')
+ assert.equal(await wrapped.get('hits'), '3')
+ assert.equal(await sub.get('item'), 'ok')
+ assert.equal(rawBackend.storesByDir.get('__default__').get('lane-att-1.hits'), '3')
+ assert.equal(rawBackend.storesByDir.get('__default__').get('lane-att-1.cache.item'), 'ok')
+ await sub.delete('item')
+ assert.equal(await sub.get('item'), null)
+
+ // Hash-namespace escape & null-byte / empty keys are rejected
+ assert.throws(() => wrapped.get('vault#master-key'), /Invalid KV key/)
+ assert.throws(() => wrapped.set('lanes#other/script', 'x'), /Invalid KV key/)
+ assert.throws(() => wrapped.delete('packages#default/meta'), /Invalid KV key/)
+ assert.throws(() => wrapped.namespace('sessions#s1'), /Invalid KV namespace/)
+ assert.throws(() => wrapped.get(''), /Invalid KV key/)
+ assert.throws(() => wrapped.get('bad\0key'), /Invalid KV key/)
+
+ // Verify both in-process FieldScript and isolated Worker env.data expose only the attenuated capability interface
+ const inProcOut = await runLines(
+  [
+   '; to rRoot $data.root',
+   '; to rDefaultRoot $data.defaultRoot',
+   '; to rWithBase $data.withBasePath',
+   '; to rHashNs $data.hashNamespace',
+   "; to hashEscape [ ; try ( !data.get 'vault#master-key' ) : 'blocked-hash' ]",
+   '!data.set counter 9',
+   '; to counterVal !data.get counter',
+  ],
+  { initialState: { data: wrapped } }
+ )
+ assert.equal(inProcOut.state.rRoot, undefined)
+ assert.equal(inProcOut.state.rDefaultRoot, undefined)
+ assert.equal(inProcOut.state.rWithBase, undefined)
+ assert.equal(inProcOut.state.rHashNs, undefined)
+ assert.equal(inProcOut.state.hashEscape, 'blocked-hash')
+ assert.equal(inProcOut.state.counterVal, '9')
+
+ try {
+  const workerOut = await runLinesInWorker(
+   [
+    '; to wRoot $data.root',
+    '; to wDefaultRoot $data.defaultRoot',
+    '; to wWithBase $data.withBasePath',
+    '; to wHashNs $data.hashNamespace',
+    "; to wHashEscape [ ; try ( !data.get 'vault#master-key' ) : 'worker-blocked-hash' ]",
+    '; to sub !data.namespace metrics',
+    '!sub.set count 12',
+    '; to subVal !sub.get count',
+   ],
+   { initialState: { data: laneRaw } }
+  )
+  assert.equal(workerOut.state.wRoot, undefined)
+  assert.equal(workerOut.state.wDefaultRoot, undefined)
+  assert.equal(workerOut.state.wWithBase, undefined)
+  assert.equal(workerOut.state.wHashNs, undefined)
+  assert.equal(workerOut.state.wHashEscape, 'worker-blocked-hash')
+  assert.equal(workerOut.state.subVal, '12')
+ }
+ finally {
+  disposeIdleSourceWorkers()
+ }
+})
+
+test('server-only secret store removes vault#master-key & passphrase hashes from KV and enforces lane/package session tokens at /api/data proxy', async () => {
+ const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-vault-proxy-'))
+ const vaultFile = path.join(tmpDir, 'secrets', 'vault-secrets.json')
+ const backendKv = createSwitchableMemoryBackendKv()
+ let proxyServer = null
+
+ try {
+  // 1. File-backed server secret store uses 0o700 dir + 0o600 file permissions and survives restarts
+  const secretStore = createFileBackedServerSecretStore({ filePath: vaultFile, useEnv: false })
+  const masterHex1 = secretStore.getMasterKeyHex()
+  assert.match(masterHex1, /^[0-9a-f]{64}$/)
+  const fileStat = await fs.stat(vaultFile)
+  const dirStat = await fs.stat(path.dirname(vaultFile))
+  assert.equal(fileStat.mode & 0o777, 0o600, 'Vault secret file must be 0o600')
+  assert.equal(dirStat.mode & 0o777, 0o700, 'Vault secret directory must be 0o700')
+
+  const reloadedStore = createFileBackedServerSecretStore({ filePath: vaultFile, useEnv: false })
+  assert.equal(reloadedStore.getMasterKeyHex(), masterHex1, 'Reloaded server secret store must keep identical master key')
+
+  // Legacy vault#master-key migration deletes vault#master-key from KV after importing into a fresh server store
+  const legacyKv = createSwitchableMemoryBackendKv()
+  const legacyHex = 'ab'.repeat(32)
+  await legacyKv.set(vaultMasterKey(), legacyHex)
+  const migrationStore = createServerSecretStore({ useEnv: false })
+  bindSecretStoreToKv(legacyKv, migrationStore)
+  const migratedHex = await ensureVaultMasterKey(legacyKv)
+  assert.equal(migratedHex, legacyHex)
+  assert.equal(await legacyKv.get(vaultMasterKey()), null, 'Legacy vault#master-key must be deleted from KV')
+
+  // 2. Start live loopback HTTP server running handleVaultApiRequest (/api/vault/*) and handleDataProxyRequest (/api/data)
+  const proxy = createDataProxyHandler({
+   backendKv,
+   secretStore,
+   setAsDefaultStore: false,
+  })
+  proxyServer = http.createServer((req, res) => {
+   const pathname = (req.url || '/').split('?')[0]
+   if (pathname === '/api/vault' || pathname.startsWith('/api/vault/')) {
+    return proxy.handleVaultApiRequest(req, res)
+   }
+   if (pathname === '/api/data' || pathname.startsWith('/api/data/')) {
+    return proxy.handleDataProxyRequest(req, res)
+   }
+   res.writeHead(404)
+   res.end('Not found')
+  })
+  await new Promise(resolve => proxyServer.listen(0, '127.0.0.1', resolve))
+  const { port } = proxyServer.address()
+  const proxyOrigin = `http://127.0.0.1:${port}`
+  const proxyDataUrl = `${proxyOrigin}/api/data?mode=disk`
+
+  assert.equal(isForbiddenDirectKvKey('vault#master-key'), true)
+  assert.equal(isForbiddenDirectKvKey('lanes#lane-1/secrets/sec-1'), true)
+
+  // Session A (browser client 1) creates a passphrase-protected VaultPkg, registers lockedLane, and stores a set-once secret
+  const clientA = httpKV({ baseUrl: proxyDataUrl, switchable: true, proxyCapabilities: true })
+  const winA = {}
+  const sessA = await initSessionState(clientA, winA)
+  const tokenA0 = clientA.getSessionToken()
+  assert.ok(tokenA0.startsWith(CAPABILITY_TOKEN_PREFIX))
+
+  const createdPkg = await createPackage(clientA, sessA.sessionId, {
+   name: 'VaultPkg',
+   passphrase: 'correct-horse-battery',
+  }, winA)
+  assert.equal(createdPkg.ok, true)
+  const vaultPkgId = createdPkg.pkg.id
+
+  // Verify raw KV package metadata NEVER contains passphraseHash or passphraseSalt
+  const rawStoredPkgMeta = JSON.parse(backendKv.storesByDir.get('__default__').get(packageMetaKey(vaultPkgId)))
+  assert.equal(rawStoredPkgMeta.hasPassphrase, true)
+  assert.equal(Object.hasOwn(rawStoredPkgMeta, 'passphraseHash'), false)
+  assert.equal(Object.hasOwn(rawStoredPkgMeta, 'passphraseSalt'), false)
+
+  const lockedLaneId = 'lane-vault-99'
+  const publicLaneId = 'lane-public-1'
+  await registerLaneInPackage(clientA, lockedLaneId, 'Classified Ops', vaultPkgId)
+  await clientA.namespace(lockedLaneId).set('title', 'Classified Ops')
+  await saveLaneScript(clientA, clientA.namespace(lockedLaneId), lockedLaneId, ['; to classifiedCode 9001'])
+
+  await registerLaneInPackage(clientA, publicLaneId, 'Public Board', DEFAULT_PACKAGE_ID)
+  await clientA.namespace(publicLaneId).set('title', 'Public Board')
+  await saveLaneScript(clientA, clientA.namespace(publicLaneId), publicLaneId, ['; to publicVal 42'])
+
+  const rawSecretValue = 'sk_live_TopSecretVaultValue_999'
+  const secretSet = await setLaneSecret(
+   clientA,
+   clientA.namespace(lockedLaneId),
+   lockedLaneId,
+   'apiKey',
+   rawSecretValue
+  )
+  assert.equal(secretSet.ok, true)
+  assert.ok(secretSet.secretId.startsWith('sec-'))
+
+  // Client A (with VaultPkg unlocked) can resolve the secret via /api/vault/resolve, while /api/vault/secret metadata omits ciphertext
+  const resolvedByA = await resolveLaneSecret(
+   clientA,
+   clientA.namespace(lockedLaneId),
+   lockedLaneId,
+   { type: 'secret', secretId: secretSet.secretId, secretSet: true }
+  )
+  assert.equal(resolvedByA, rawSecretValue)
+  const metaForA = await loadLaneSecretRecord(clientA, clientA.namespace(lockedLaneId), lockedLaneId, secretSet.secretId)
+  assert.equal(metaForA.secretSet, true)
+  assert.equal(metaForA.ciphertext, undefined, 'Proxy secret metadata endpoint must never expose raw ciphertext')
+
+  // Verify backend KV never had vault#master-key written and plaintext secret never appears anywhere in backend KV
+  assert.equal(backendKv.storesByDir.get('__default__').has('vault#master-key'), false)
+  for (const [, val] of backendKv.storesByDir.get('__default__').entries()) {
+   assert.ok(!String(val).includes(rawSecretValue))
+   assert.ok(!String(val).includes(masterHex1))
+  }
+
+  // 3. Even if a legacy vault#master-key existed on disk AND Client A presents a valid unlocked token, /api/data unconditionally blocks vault#master-key and lanes#*/secrets/*
+  backendKv.storesByDir.get('__default__').set('vault#master-key', 'deadbeef'.repeat(8))
+  const tokenAUnlocked = clientA.getSessionToken()
+  const vaultProbe = await fetch(`${proxyDataUrl}&key=${encodeURIComponent('vault#master-key')}`, {
+   headers: { [SESSION_TOKEN_HEADER]: tokenAUnlocked },
+  })
+  assert.equal(vaultProbe.status, 403)
+  backendKv.storesByDir.get('__default__').delete('vault#master-key')
+
+  const secretKeyProbe = await fetch(
+   `${proxyDataUrl}&key=${encodeURIComponent(laneSecretKey(lockedLaneId, secretSet.secretId))}`,
+   { headers: { [SESSION_TOKEN_HEADER]: tokenAUnlocked } }
+  )
+  assert.equal(secretKeyProbe.status, 403)
+
+  // 4. Unauthenticated, tampered, expired, and wrong-directory capability tokens are rejected at /api/data
+  const noTokResp = await fetch(`${proxyDataUrl}&key=${encodeURIComponent(`${publicLaneId}.title`)}`)
+  assert.equal(noTokResp.status, 401)
+  assert.equal(noTokResp.headers.get(TOKEN_BOOTSTRAP_HEADER), '/api/vault/session')
+
+  const tamperedToken = `${tokenAUnlocked.slice(0, -4)}ffff`
+  const tamperedResp = await fetch(`${proxyDataUrl}&key=${encodeURIComponent(`${publicLaneId}.title`)}`, {
+   headers: { [SESSION_TOKEN_HEADER]: tamperedToken },
+  })
+  assert.equal(tamperedResp.status, 401)
+
+  const expiredToken = createCapabilityToken({
+   sessionId: sessA.sessionId,
+   basePath: null,
+   packages: [DEFAULT_PACKAGE_ID],
+   iat: Date.now() - 10_000,
+   exp: Date.now() - 1,
+  }, secretStore)
+  assert.equal(verifyCapabilityToken(expiredToken, secretStore).ok, false)
+  const expiredResp = await fetch(`${proxyDataUrl}&key=${encodeURIComponent(`${publicLaneId}.title`)}`, {
+   headers: { [SESSION_TOKEN_HEADER]: expiredToken },
+  })
+  assert.equal(expiredResp.status, 401)
+
+  const wrongDirResp = await fetch(
+   `${proxyDataUrl}&modeOptions.disk.basePath=${encodeURIComponent('/tmp/other-workspace')}&key=${encodeURIComponent(`${publicLaneId}.title`)}`,
+   { headers: { [SESSION_TOKEN_HEADER]: tokenAUnlocked } }
+  )
+  assert.equal(wrongDirResp.status, 403)
+
+  // 5. Session B (ununlocked session) cannot read/write lockedLane, VaultPkg lanes, self-inject VaultPkg, or resolve lockedLane secrets via /api/data or /api/vault/*
+  const clientB = httpKV({ baseUrl: proxyDataUrl, switchable: true, proxyCapabilities: true })
+  const winB = {}
+  const sessB = await initSessionState(clientB, winB)
+  const tokenBLocked = clientB.getSessionToken()
+  assert.deepEqual(sessB.openPackageIds, [DEFAULT_PACKAGE_ID])
+
+  // Public lane in Default package IS accessible to Session B
+  assert.equal(await clientB.namespace(publicLaneId).get('title'), 'Public Board')
+
+  // Package ownership & sanitized package meta ARE readable so UI can display Locked Lane prompt without leaking hash/salt
+  const ownerPkgResp = await fetch(
+   `${proxyDataUrl}&key=${encodeURIComponent(`lanes#${encodeKeySegment(lockedLaneId)}/package`)}`,
+   { headers: { [SESSION_TOKEN_HEADER]: tokenBLocked } }
+  )
+  assert.equal(ownerPkgResp.status, 200)
+  assert.equal(await ownerPkgResp.text(), vaultPkgId)
+
+  const pkgMetaResp = await fetch(
+   `${proxyDataUrl}&key=${encodeURIComponent(packageMetaKey(vaultPkgId))}`,
+   { headers: { [SESSION_TOKEN_HEADER]: tokenBLocked } }
+  )
+  assert.equal(pkgMetaResp.status, 200)
+  const pkgMetaJson = JSON.parse(await pkgMetaResp.text())
+  assert.equal(pkgMetaJson.name, 'VaultPkg')
+  assert.equal(pkgMetaJson.hasPassphrase, true)
+  assert.equal(pkgMetaJson.passphraseHash, undefined)
+  assert.equal(pkgMetaJson.passphraseSalt, undefined)
+
+  // Direct /api/data bypass attempts using Session B's valid token MUST all return 403 Forbidden
+  const bypassTargets = [
+   ['GET', `lanes#${encodeKeySegment(lockedLaneId)}/script-index`, null],
+   ['GET', `${lockedLaneId}.title`, null],
+   ['POST', `${lockedLaneId}.title`, 'Pwned Title'],
+   ['DELETE', `${lockedLaneId}.title`, null],
+   ['GET', `stories#${encodeKeySegment(lockedLaneId)}/idx/root`, null],
+   ['GET', `packages#${encodeKeySegment(vaultPkgId)}/lanes-index`, null],
+   ['POST', `lanes#${encodeKeySegment(lockedLaneId)}/package`, DEFAULT_PACKAGE_ID],
+   ['POST', `sessions#${encodeKeySegment(sessB.sessionId)}/packages-index`, JSON.stringify([DEFAULT_PACKAGE_ID, vaultPkgId])],
+  ]
+  for (const [method, key, body] of bypassTargets) {
+   const r = await fetch(`${proxyDataUrl}&key=${encodeURIComponent(key)}`, {
+    method,
+    headers: { [SESSION_TOKEN_HEADER]: tokenBLocked },
+    ...(body !== null ? { body } : {}),
+   })
+   assert.equal(r.status, 403, `Expected 403 at /api/data proxy for ${method} ${key}`)
+  }
+
+  // Attempting to resolve lockedLane's secret from Session B is rejected by /api/vault/resolve (returns empty string)
+  const blockedSecretResolve = await resolveLaneSecret(
+   clientB,
+   clientB.namespace(lockedLaneId),
+   lockedLaneId,
+   { type: 'secret', secretId: secretSet.secretId, secretSet: true }
+  )
+  assert.equal(blockedSecretResolve, '')
+
+  // Wrong passphrase fails unlock at /api/vault/package/open and keeps /api/data blocked
+  const badOpen = await openPackageInSession(clientB, sessB.sessionId, {
+   packageId: vaultPkgId,
+   passphrase: 'wrong-passphrase',
+  }, winB)
+  assert.equal(badOpen.ok, false)
+  assert.equal(badOpen.needsPassphrase, true)
+  await assert.rejects(() => clientB.namespace(lockedLaneId).get('title'), /HTTP 403/)
+
+  // Correct passphrase unlocks VaultPkg on the server, mints upgraded capability token, and enables access
+  const goodOpen = await openPackageInSession(clientB, sessB.sessionId, {
+   packageId: vaultPkgId,
+   passphrase: 'correct-horse-battery',
+  }, winB)
+  assert.equal(goodOpen.ok, true)
+  const preCloseTokenB = clientB.getSessionToken()
+  assert.equal(await clientB.namespace(lockedLaneId).get('title'), 'Classified Ops')
+  const loadedLockedScript = await loadLaneScript(clientB, clientB.namespace(lockedLaneId), lockedLaneId)
+  assert.equal(loadedLockedScript.records[0].text, '; to classifiedCode 9001')
+  assert.equal(
+   await resolveLaneSecret(clientB, clientB.namespace(lockedLaneId), lockedLaneId, {
+    type: 'secret',
+    secretId: secretSet.secretId,
+    secretSet: true,
+   }),
+   rawSecretValue
+  )
+
+  // 6. Closing VaultPkg downgrades Session B's token AND revokes preCloseTokenB at the HTTP proxy layer
+  await closePackageInSession(clientB, sessB.sessionId, vaultPkgId)
+  await assert.rejects(() => clientB.namespace(lockedLaneId).get('title'), /HTTP 403/)
+  const replayResp = await fetch(`${proxyDataUrl}&key=${encodeURIComponent(`${lockedLaneId}.title`)}`, {
+   headers: { [SESSION_TOKEN_HEADER]: preCloseTokenB },
+  })
+  assert.equal(replayResp.status, 403, 'Replaying a pre-close session token must be rejected after package close')
+
+  //Meanwhile Session A's independent grant for VaultPkg remains valid!
+  assert.equal(await clientA.namespace(lockedLaneId).get('title'), 'Classified Ops')
+
+  // 7. Lane-scoped capability token (/api/vault/lane-token) permits ONLY the specified laneId
+  const laneTokRes = await clientA.fetchVaultApi('lane-token', {
+   method: 'POST',
+   body: { lanes: [publicLaneId] },
+  })
+  // Restore Client A's session token (fetchVaultApi returned lane token)
+  const laneOnlyToken = laneTokRes.data.token
+  clientA.setSessionToken(tokenAUnlocked, { sessionId: sessA.sessionId, basePath: null })
+
+  const allowedLaneRead = await fetch(`${proxyDataUrl}&key=${encodeURIComponent(`${publicLaneId}.title`)}`, {
+   headers: { [SESSION_TOKEN_HEADER]: laneOnlyToken },
+  })
+  assert.equal(allowedLaneRead.status, 200)
+  assert.equal(await allowedLaneRead.text(), 'Public Board')
+
+  const blockedOtherLane = await fetch(`${proxyDataUrl}&key=${encodeURIComponent(`${lockedLaneId}.title`)}`, {
+   headers: { [SESSION_TOKEN_HEADER]: laneOnlyToken },
+  })
+  assert.equal(blockedOtherLane.status, 403)
+
+  const blockedPkgReassign = await fetch(
+   `${proxyDataUrl}&key=${encodeURIComponent(`lanes#${encodeKeySegment(publicLaneId)}/package`)}`,
+   { headers: { [SESSION_TOKEN_HEADER]: laneOnlyToken } }
+  )
+  assert.equal(blockedPkgReassign.status, 403)
+
+  const blockedWorkspaceKey = await fetch(`${proxyDataUrl}&key=clock-timezone`, {
+   headers: { [SESSION_TOKEN_HEADER]: laneOnlyToken },
+  })
+  assert.equal(blockedWorkspaceKey.status, 403)
+
+  // Deleting secret via Client A removes it cleanly
+  const delSec = await deleteLaneSecret(clientA, clientA.namespace(lockedLaneId), lockedLaneId, secretSet.secretId)
+  assert.equal(delSec.ok, true)
+  assert.equal(await loadLaneSecretRecord(clientA, clientA.namespace(lockedLaneId), lockedLaneId, secretSet.secretId), null)
+ }
+ finally {
+  if (proxyServer) {
+   await new Promise(resolve => proxyServer.close(resolve))
+  }
+  await fs.rm(tmpDir, { recursive: true, force: true })
  }
 })

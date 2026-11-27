@@ -292,6 +292,14 @@ function callHostRpc(runId, method, params, lineContext) {
  })
 }
 
+function assertWorkerKvSegment(raw, label) {
+ const str = raw === null || raw === undefined ? '' : String(raw)
+ if (!str || str.includes('#') || str.includes('\0')) {
+  throw new Error(`Invalid ${label} in attenuated KV client`)
+ }
+ return str
+}
+
 function createWorkerDataProxy(runId, lineContext, prefix = '') {
  const joinPrefix = sub => {
   const cleanSub = String(sub ?? '').trim()
@@ -300,25 +308,31 @@ function createWorkerDataProxy(runId, lineContext, prefix = '') {
   }
   return prefix ? `${prefix}.${cleanSub}` : cleanSub
  }
- return Object.freeze({
-  get(key) {
-   return callHostRpc(runId, 'data.get', { prefix, key: String(key ?? '') }, lineContext)
-  },
-  set(key, value) {
-   return callHostRpc(runId, 'data.set', {
-    prefix,
-    key: String(key ?? ''),
-    value: value === null || value === undefined ? '' : String(value),
-   }, lineContext)
-  },
-  delete(key) {
-   return callHostRpc(runId, 'data.delete', { prefix, key: String(key ?? '') }, lineContext)
-  },
-  namespace(...parts) {
-   const sub = parts.map(p => String(p ?? '').trim()).filter(Boolean).join('.')
-   return createWorkerDataProxy(runId, lineContext, joinPrefix(sub))
-  },
- })
+ const proxy = Object.create(null)
+ proxy.get = key => {
+  const cleanKey = assertWorkerKvSegment(key, 'KV key')
+  return callHostRpc(runId, 'data.get', { prefix, key: cleanKey }, lineContext)
+ }
+ proxy.set = (key, value) => {
+  const cleanKey = assertWorkerKvSegment(key, 'KV key')
+  return callHostRpc(runId, 'data.set', {
+   prefix,
+   key: cleanKey,
+   value: value === null || value === undefined ? '' : String(value),
+  }, lineContext)
+ }
+ proxy.delete = key => {
+  const cleanKey = assertWorkerKvSegment(key, 'KV key')
+  return callHostRpc(runId, 'data.delete', { prefix, key: cleanKey }, lineContext)
+ }
+ proxy.namespace = (...parts) => {
+  const cleanParts = parts.map(p => assertWorkerKvSegment(p, 'KV namespace').trim()).filter(Boolean)
+  if (cleanParts.length === 0) {
+   throw new Error('Invalid KV namespace in attenuated KV client')
+  }
+  return createWorkerDataProxy(runId, lineContext, joinPrefix(cleanParts.join('.')))
+ }
+ return Object.freeze(proxy)
 }
 
 function createWorkerFetchProxy(runId, lineContext) {

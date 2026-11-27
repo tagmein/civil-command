@@ -924,7 +924,7 @@
     )
     ; to env [ object
      { console $console }
-     { data $nb.lane.data }
+     { data [ match { $attenuateKv : !attenuateKv $nb.lane.data } { true : $nb.lane.data } ] }
      { Math $window.Math }
      { Number $window.Number }
      { JSON $window.JSON }

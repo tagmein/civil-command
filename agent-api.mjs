@@ -18,7 +18,7 @@ import {
  validateFieldScriptLine,
  validateFieldScriptLines,
 } from './field.mjs'
-import { formatDataDirLabel, httpKV, normalizeDataDir } from './data.mjs'
+import { attenuateKv, formatDataDirLabel, httpKV, normalizeDataDir } from './data.mjs'
 import {
  DEFAULT_PACKAGE_ID,
  addLaneTable,
@@ -130,6 +130,7 @@ export function resolveAgentRootKv(rootKvOrOptions = null) {
   basePath: opts.basePath || null,
   switchable: true,
   headers: opts.headers || null,
+  proxyCapabilities: opts.proxyCapabilities !== false,
  })
 }
 
@@ -427,7 +428,7 @@ export async function agentEvalLane(rootKv, options = {}) {
    : null
   const env = {
    console: mockConsole,
-   data: laneData,
+   data: attenuateKv(laneData),
    Math,
    Number,
    JSON,

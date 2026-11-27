@@ -1,4 +1,10 @@
-import { formatDataDirLabel, normalizeDataDir } from './data.mjs'
+import {
+ SESSION_TOKEN_HEADER,
+ TOKEN_BOOTSTRAP_HEADER,
+ attenuateKv,
+ formatDataDirLabel,
+ normalizeDataDir,
+} from './data.mjs'
 import {
  DEFAULT_KV_CHUNK_BYTES,
  KV_CHUNK_BYTES_ENV_VAR,
@@ -24,7 +30,13 @@ import {
  validateFieldScriptLines,
 } from './field.mjs'
 
-export { formatDataDirLabel, normalizeDataDir }
+export {
+ SESSION_TOKEN_HEADER,
+ TOKEN_BOOTSTRAP_HEADER,
+ attenuateKv,
+ formatDataDirLabel,
+ normalizeDataDir,
+}
 
 export {
  DEFAULT_KV_CHUNK_BYTES,
@@ -2182,11 +2194,65 @@ async function loadOrCreateSessionRecord(rootKv, sessionId, defaultName = '', op
  }
 }
 
+function getProxyKvRoot(rootKv) {
+ if (!rootKv || typeof rootKv !== 'object') {
+  return null
+ }
+ if (rootKv.isProxyBacked && typeof rootKv.fetchVaultApi === 'function') {
+  return rootKv
+ }
+ if (rootKv.root && rootKv.root.isProxyBacked && typeof rootKv.root.fetchVaultApi === 'function') {
+  return rootKv.root
+ }
+ return null
+}
+
 async function buildSessionState(rootKv, win, browserSessionId, activeSessionId, defaultName = '', opts = {}) {
+ const proxyRoot = getProxyKvRoot(rootKv)
+ let proxySessionGrants = null
+ if (proxyRoot) {
+  proxyRoot.setActiveSession(activeSessionId, opts && opts.dataDir !== undefined ? opts.dataDir : undefined)
+  const preRes = await proxyRoot.fetchVaultApi('session', {
+   method: 'POST',
+   sessionId: activeSessionId,
+   basePath: opts && opts.dataDir !== undefined ? opts.dataDir : null,
+   body: {
+    sessionId: activeSessionId,
+    basePath: opts && opts.dataDir !== undefined ? normalizeDataDir(opts.dataDir) : null,
+   },
+  })
+  if (preRes && preRes.ok && preRes.data && Array.isArray(preRes.data.openPackageIds)) {
+   proxySessionGrants = new Set(preRes.data.openPackageIds.map(String))
+  }
+ }
  const registryKv = resolveRegistryKv(rootKv)
  const loaded = await loadOrCreateSessionRecord(rootKv, activeSessionId, defaultName, opts)
  const sessionKv = activateSessionKv(rootKv, loaded.meta.dataDir)
+ if (proxyRoot) {
+  proxyRoot.setActiveSession(activeSessionId, loaded.meta.dataDir)
+  const dirRes = await proxyRoot.fetchVaultApi('session', {
+   method: 'POST',
+   sessionId: activeSessionId,
+   basePath: loaded.meta.dataDir,
+   body: {
+    sessionId: activeSessionId,
+    basePath: loaded.meta.dataDir,
+   },
+  })
+  if (dirRes && dirRes.ok && dirRes.data && Array.isArray(dirRes.data.openPackageIds)) {
+   proxySessionGrants = new Set(dirRes.data.openPackageIds.map(String))
+  }
+ }
  await migrateLegacyCatalog(sessionKv)
+ const effectiveOpenPackageIds = proxySessionGrants
+  ? loaded.openPackageIds.filter(pid => proxySessionGrants.has(pid))
+  : loaded.openPackageIds
+ const effectiveOpenPackages = proxySessionGrants
+  ? loaded.openPackages.filter(pkg => pkg && proxySessionGrants.has(pkg.id))
+  : loaded.openPackages
+ const effectiveActivePackageId = effectiveOpenPackageIds.includes(loaded.activePackageId)
+  ? loaded.activePackageId
+  : (effectiveOpenPackageIds[0] || DEFAULT_PACKAGE_ID)
  const { local } = getWebStoragePair(win)
  await refreshRecentSessionsMeta(registryKv, local)
  writeRecentSession(local, browserSessionId)
@@ -2202,7 +2268,7 @@ async function buildSessionState(rootKv, win, browserSessionId, activeSessionId,
   activeSessionId,
   loaded.meta.name,
   countPathnameLanes(loaded.pathname, loaded.laneIds),
-  loaded.openPackageIds.length,
+  effectiveOpenPackageIds.length,
   loaded.meta.dataDir,
   loaded.meta.dataDirConfirmed,
  )
@@ -2219,9 +2285,9 @@ async function buildSessionState(rootKv, win, browserSessionId, activeSessionId,
   previousSessionIds: loaded.previousSessionIds,
   nextSessionIds: loaded.nextSessionIds,
   tableDisplayOptions: loaded.tableDisplayOptions,
-  openPackageIds: loaded.openPackageIds,
-  openPackages: loaded.openPackages,
-  activePackageId: loaded.activePackageId,
+  openPackageIds: effectiveOpenPackageIds,
+  openPackages: effectiveOpenPackages,
+  activePackageId: effectiveActivePackageId,
   recentSessions,
   sessionHistory,
  }
@@ -2653,6 +2719,15 @@ export async function setSessionDataDir(rootKv, win, sessionId, opts = {}) {
  const nextDir = normalizeDataDir(opts.dataDir)
  const prevDir = normalizeDataDir(existing.meta.dataDir)
  const dirChanged = nextDir !== prevDir
+ const proxyRoot = getProxyKvRoot(rootKv)
+ if (proxyRoot) {
+  await proxyRoot.fetchVaultApi('session', {
+   method: 'POST',
+   sessionId: cleanId,
+   basePath: nextDir,
+   body: { sessionId: cleanId, basePath: nextDir },
+  })
+ }
  const sessionKv = activateSessionKv(rootKv, nextDir)
  await ensureDefaultPackage(sessionKv)
 
@@ -2730,22 +2805,52 @@ export async function setSessionDataDir(rootKv, win, sessionId, opts = {}) {
 
 export async function createPackage(rootKv, sessionId, opts = {}, win = null) {
  const cleanSessionId = String(sessionId || '').trim()
- const loaded = cleanSessionId ? await loadOrCreateSessionRecord(rootKv, cleanSessionId) : null
- const sessionKv = loaded ? resolveSessionKv(rootKv, loaded.meta.dataDir) : unwrapKv(rootKv)
  const rawName = opts && opts.name !== undefined && opts.name !== null ? String(opts.name).trim() : ''
  const name = rawName || 'Untitled Package'
  const passphrase = opts && opts.passphrase !== undefined && opts.passphrase !== null ? String(opts.passphrase) : ''
+ const proxyRoot = getProxyKvRoot(rootKv)
+ if (proxyRoot) {
+  const loadedForDir = cleanSessionId ? await loadOrCreateSessionRecord(rootKv, cleanSessionId) : null
+  const targetDir = loadedForDir ? loadedForDir.meta.dataDir : proxyRoot.basePath
+  const apiRes = await proxyRoot.fetchVaultApi('package/create', {
+   method: 'POST',
+   sessionId: cleanSessionId,
+   basePath: targetDir,
+   body: {
+    sessionId: cleanSessionId,
+    basePath: targetDir,
+    name,
+    passphrase,
+   },
+  })
+  if (!apiRes || !apiRes.ok || !apiRes.data || !apiRes.data.ok) {
+   throw new Error((apiRes && apiRes.data && apiRes.data.error) || 'Failed to create package')
+  }
+  return {
+   ok: true,
+   pkg: apiRes.data.pkg,
+   sessionState: apiRes.data.sessionState,
+  }
+ }
+ const loaded = cleanSessionId ? await loadOrCreateSessionRecord(rootKv, cleanSessionId) : null
+ const dataDir = loaded ? loaded.meta.dataDir : null
+ const sessionKv = loaded ? resolveSessionKv(rootKv, dataDir) : unwrapKv(rootKv)
  const pkgId = generateId('pkg', win)
  const now = new Date().toISOString()
  const hasPassphrase = passphrase.length > 0
- const passphraseSalt = hasPassphrase ? generateSalt(win) : null
- const passphraseHash = hasPassphrase ? await hashPassphrase(passphrase, passphraseSalt, win) : null
+ if (hasPassphrase) {
+  const passphraseSalt = generateSalt(win)
+  const passphraseHash = await hashPassphrase(passphrase, passphraseSalt, win)
+  const secretStore = resolveServerSecretStore(rootKv)
+  secretStore.setPackageVerifier(dataDir, pkgId, {
+   salt: passphraseSalt,
+   hash: passphraseHash,
+  })
+ }
  const meta = {
   id: pkgId,
   name,
   hasPassphrase,
-  passphraseSalt,
-  passphraseHash,
   createdAt: now,
   updatedAt: now,
  }
@@ -2764,14 +2869,43 @@ export async function createPackage(rootKv, sessionId, opts = {}, win = null) {
 }
 
 export async function openPackageInSession(rootKv, sessionId, opts = {}, win = null) {
- const registryKv = resolveRegistryKv(rootKv)
  const cleanSessionId = String(sessionId || '').trim()
- const loaded = await loadOrCreateSessionRecord(rootKv, cleanSessionId)
- const sessionKv = resolveSessionKv(rootKv, loaded.meta.dataDir)
  const rawPkgId = opts && opts.packageId !== undefined && opts.packageId !== null ? String(opts.packageId).trim() : ''
  const packageId = rawPkgId || DEFAULT_PACKAGE_ID
  const passphrase = opts && opts.passphrase !== undefined && opts.passphrase !== null ? String(opts.passphrase) : ''
  const setActive = opts && opts.setActive !== undefined ? Boolean(opts.setActive) : true
+ const proxyRoot = getProxyKvRoot(rootKv)
+ if (proxyRoot) {
+  const loadedForDir = await loadOrCreateSessionRecord(rootKv, cleanSessionId)
+  const targetDir = loadedForDir.meta.dataDir
+  const apiRes = await proxyRoot.fetchVaultApi('package/open', {
+   method: 'POST',
+   sessionId: cleanSessionId,
+   basePath: targetDir,
+   body: {
+    sessionId: cleanSessionId,
+    basePath: targetDir,
+    packageId,
+    passphrase,
+    setActive,
+   },
+  })
+  if (apiRes && apiRes.data && typeof apiRes.data === 'object') {
+   const { token: _tok, ...rest } = apiRes.data
+   return rest
+  }
+  return {
+   ok: false,
+   needsPassphrase: false,
+   packageName: '',
+   error: 'Failed to open package',
+  }
+ }
+
+ const registryKv = resolveRegistryKv(rootKv)
+ const loaded = await loadOrCreateSessionRecord(rootKv, cleanSessionId)
+ const dataDir = loaded.meta.dataDir
+ const sessionKv = resolveSessionKv(rootKv, dataDir)
 
  if (packageId === DEFAULT_PACKAGE_ID) {
   await ensureDefaultPackage(sessionKv)
@@ -2786,6 +2920,17 @@ export async function openPackageInSession(rootKv, sessionId, opts = {}, win = n
   }
  }
  if (rawMeta.hasPassphrase) {
+  const secretStore = resolveServerSecretStore(rootKv)
+  let verifier = secretStore.getPackageVerifier(dataDir, packageId)
+  if (!verifier && rawMeta.passphraseHash) {
+   verifier = {
+    salt: rawMeta.passphraseSalt || '',
+    hash: String(rawMeta.passphraseHash),
+   }
+   secretStore.setPackageVerifier(dataDir, packageId, verifier)
+   const scrubbedMeta = sanitizePackageMeta(rawMeta)
+   await kvSetChunked(sessionKv, packageMetaKey(packageId), JSON.stringify(scrubbedMeta))
+  }
   if (!passphrase) {
    return {
     ok: false,
@@ -2794,8 +2939,7 @@ export async function openPackageInSession(rootKv, sessionId, opts = {}, win = n
     error: 'Passphrase required to open this package',
    }
   }
-  const actualHash = await hashPassphrase(passphrase, rawMeta.passphraseSalt || '', win)
-  if (actualHash !== rawMeta.passphraseHash) {
+  if (!verifier || !verifier.hash) {
    return {
     ok: false,
     needsPassphrase: true,
@@ -2803,6 +2947,16 @@ export async function openPackageInSession(rootKv, sessionId, opts = {}, win = n
     error: 'Incorrect passphrase',
    }
   }
+  const actualHash = await hashPassphrase(passphrase, verifier.salt || '', win)
+  if (!timingSafeEqualStr(actualHash, verifier.hash)) {
+   return {
+    ok: false,
+    needsPassphrase: true,
+    packageName: rawMeta.name || packageId,
+    error: 'Incorrect passphrase',
+   }
+  }
+  secretStore.clearPackageRevocation(cleanSessionId, dataDir, packageId)
  }
 
  const nextIds = loaded.openPackageIds.includes(packageId)
@@ -2824,11 +2978,32 @@ export async function openPackageInSession(rootKv, sessionId, opts = {}, win = n
 }
 
 export async function closePackageInSession(rootKv, sessionId, packageId) {
- const registryKv = resolveRegistryKv(rootKv)
  const cleanSessionId = String(sessionId || '').trim()
  const cleanPkgId = String(packageId || '').trim()
+ const proxyRoot = getProxyKvRoot(rootKv)
+ if (proxyRoot) {
+  const loadedForDir = await loadOrCreateSessionRecord(rootKv, cleanSessionId)
+  const targetDir = loadedForDir.meta.dataDir
+  const apiRes = await proxyRoot.fetchVaultApi('package/close', {
+   method: 'POST',
+   sessionId: cleanSessionId,
+   basePath: targetDir,
+   body: {
+    sessionId: cleanSessionId,
+    basePath: targetDir,
+    packageId: cleanPkgId,
+   },
+  })
+  if (apiRes && apiRes.ok && apiRes.data && apiRes.data.sessionState) {
+   return apiRes.data.sessionState
+  }
+  throw new Error((apiRes && apiRes.data && apiRes.data.error) || 'Failed to close package')
+ }
+ const registryKv = resolveRegistryKv(rootKv)
  const loaded = await loadOrCreateSessionRecord(rootKv, cleanSessionId)
  const sessionKv = resolveSessionKv(rootKv, loaded.meta.dataDir)
+ const secretStore = resolveServerSecretStore(rootKv)
+ secretStore.revokePackageGrant(cleanSessionId, loaded.meta.dataDir, cleanPkgId)
  const nextIds = loaded.openPackageIds.filter(id => id !== cleanPkgId)
  await writePagedIds(sessionKv, sessionPackagesBase(cleanSessionId), nextIds)
  await removeSessionFromPackageIndex(sessionKv, cleanPkgId, cleanSessionId)
@@ -4295,7 +4470,488 @@ export async function inspectSessionForAgent(rootKv, options = {}) {
  }
 }
 
-// ---------- Encrypted Set-Once Secret Inputs ----------
+// ---------- Server-Only Secret Store, Capability Tokens & Set-Once Secret Inputs ----------
+
+export const CAPABILITY_TOKEN_PREFIX = 'cc_tok.'
+export const DEFAULT_CAPABILITY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000
+
+const isNodeServerRuntime = Boolean(
+ typeof process !== 'undefined' &&
+ process &&
+ process.versions &&
+ process.versions.node
+)
+
+function timingSafeEqualStr(a, b) {
+ const sa = String(a ?? '')
+ const sb = String(b ?? '')
+ if (sa.length === 0 || sa.length !== sb.length) {
+  return false
+ }
+ let diff = 0
+ for (let i = 0; i < sa.length; i++) {
+  diff |= sa.charCodeAt(i) ^ sb.charCodeAt(i)
+ }
+ return diff === 0
+}
+
+export function hmacSha256Bytes(rawKeyBytes, messageBytes) {
+ const blockSize = 64
+ let keyBlock = rawKeyBytes instanceof Uint8Array
+  ? rawKeyBytes
+  : utf8Encoder.encode(String(rawKeyBytes ?? ''))
+ if (keyBlock.length > blockSize) {
+  keyBlock = sha256Bytes(keyBlock)
+ }
+ const paddedKey = new Uint8Array(blockSize)
+ paddedKey.set(keyBlock, 0)
+ const oKeyPad = new Uint8Array(blockSize)
+ const iKeyPad = new Uint8Array(blockSize)
+ for (let i = 0; i < blockSize; i++) {
+  oKeyPad[i] = paddedKey[i] ^ 0x5c
+  iKeyPad[i] = paddedKey[i] ^ 0x36
+ }
+ const msg = messageBytes instanceof Uint8Array
+  ? messageBytes
+  : utf8Encoder.encode(String(messageBytes ?? ''))
+ const inner = new Uint8Array(blockSize + msg.length)
+ inner.set(iKeyPad, 0)
+ inner.set(msg, blockSize)
+ const innerDigest = sha256Bytes(inner)
+ const outer = new Uint8Array(blockSize + innerDigest.length)
+ outer.set(oKeyPad, 0)
+ outer.set(innerDigest, blockSize)
+ return sha256Bytes(outer)
+}
+
+export function hmacSha256Hex(rawKeyBytes, message) {
+ return bytesToHex(hmacSha256Bytes(rawKeyBytes, message))
+}
+
+const BASE64URL_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+
+function encodeBase64Url(text) {
+ const bytes = utf8Encoder.encode(String(text ?? ''))
+ let out = ''
+ for (let i = 0; i < bytes.length; i += 3) {
+  const b0 = bytes[i]
+  const has1 = i + 1 < bytes.length
+  const has2 = i + 2 < bytes.length
+  const b1 = has1 ? bytes[i + 1] : 0
+  const b2 = has2 ? bytes[i + 2] : 0
+  const n = (b0 << 16) | (b1 << 8) | b2
+  out += BASE64URL_ALPHABET[(n >> 18) & 63]
+  out += BASE64URL_ALPHABET[(n >> 12) & 63]
+  if (has1) {
+   out += BASE64URL_ALPHABET[(n >> 6) & 63]
+  }
+  if (has2) {
+   out += BASE64URL_ALPHABET[n & 63]
+  }
+ }
+ return out
+}
+
+function decodeBase64Url(encoded) {
+ const clean = String(encoded ?? '').trim().replace(/=+$/, '')
+ if (!clean || !/^[A-Za-z0-9_-]+$/.test(clean) || clean.length % 4 === 1) {
+  return null
+ }
+ const out = []
+ for (let i = 0; i < clean.length; i += 4) {
+  const c0 = BASE64URL_ALPHABET.indexOf(clean[i])
+  const c1 = BASE64URL_ALPHABET.indexOf(clean[i + 1])
+  const c2 = i + 2 < clean.length ? BASE64URL_ALPHABET.indexOf(clean[i + 2]) : -1
+  const c3 = i + 3 < clean.length ? BASE64URL_ALPHABET.indexOf(clean[i + 3]) : -1
+  if (c0 < 0 || c1 < 0) {
+   return null
+  }
+  const n = (c0 << 18) | (c1 << 12) | ((c2 >= 0 ? c2 : 0) << 6) | (c3 >= 0 ? c3 : 0)
+  out.push((n >> 16) & 0xff)
+  if (c2 >= 0) {
+   out.push((n >> 8) & 0xff)
+  }
+  if (c3 >= 0) {
+   out.push(n & 0xff)
+  }
+ }
+ try {
+  return utf8Decoder.decode(new Uint8Array(out))
+ }
+ catch {
+  return null
+ }
+}
+
+function secretDirKey(basePath) {
+ const norm = normalizeDataDir(basePath)
+ return norm === null ? '__default__' : norm
+}
+
+function isValidMasterKeyHex(raw) {
+ return typeof raw === 'string' && /^[0-9a-fA-F]{64,}$/.test(raw.trim())
+}
+
+export function createServerSecretStore(options = {}) {
+ if (!isNodeServerRuntime) {
+  throw new Error('Server secret store is only available in server environments')
+ }
+ const initialSnapshot = options && options.snapshot && typeof options.snapshot === 'object'
+  ? options.snapshot
+  : null
+ const onPersist = options && typeof options.onPersist === 'function' ? options.onPersist : null
+ const envMaster = options && options.useEnv !== false && process.env && isValidMasterKeyHex(process.env.CC_VAULT_MASTER_KEY)
+  ? process.env.CC_VAULT_MASTER_KEY.trim().toLowerCase()
+  : ''
+ const providedMaster = options && isValidMasterKeyHex(options.masterKeyHex)
+  ? options.masterKeyHex.trim().toLowerCase()
+  : (initialSnapshot && isValidMasterKeyHex(initialSnapshot.masterKeyHex)
+   ? initialSnapshot.masterKeyHex.trim().toLowerCase()
+   : '')
+
+ let masterKeyHex = envMaster || providedMaster || bytesToHex(randomBytes(32))
+ let canAdoptLegacyKey = !envMaster && !providedMaster
+ const packageVerifiers = new Map()
+ const revokedGrants = new Map()
+
+ if (initialSnapshot && initialSnapshot.packageVerifiers && typeof initialSnapshot.packageVerifiers === 'object') {
+  for (const [k, v] of Object.entries(initialSnapshot.packageVerifiers)) {
+   if (v && typeof v === 'object' && typeof v.hash === 'string') {
+    packageVerifiers.set(k, {
+     salt: typeof v.salt === 'string' ? v.salt : '',
+     hash: v.hash,
+    })
+   }
+  }
+ }
+ if (initialSnapshot && initialSnapshot.revokedGrants && typeof initialSnapshot.revokedGrants === 'object') {
+  for (const [k, ts] of Object.entries(initialSnapshot.revokedGrants)) {
+   const num = Number(ts)
+   if (Number.isFinite(num) && num > 0) {
+    revokedGrants.set(k, Math.trunc(num))
+   }
+  }
+ }
+
+ const buildSnapshot = () => ({
+  v: 1,
+  masterKeyHex,
+  packageVerifiers: Object.fromEntries(packageVerifiers.entries()),
+  revokedGrants: Object.fromEntries(revokedGrants.entries()),
+ })
+
+ const persistNow = () => {
+  if (onPersist) {
+   onPersist(buildSnapshot())
+  }
+ }
+
+ const store = Object.create(null)
+ store.getMasterKeyHex = () => {
+  canAdoptLegacyKey = false
+  return masterKeyHex
+ }
+ store.importLegacyMasterKey = legacyHex => {
+  if (canAdoptLegacyKey && isValidMasterKeyHex(legacyHex)) {
+   masterKeyHex = legacyHex.trim().toLowerCase()
+   canAdoptLegacyKey = false
+   persistNow()
+   return true
+  }
+  return false
+ }
+ store.getSigningKeyBytes = () => hmacSha256Bytes(
+  hexToBytes(masterKeyHex),
+  utf8Encoder.encode('civil-command:capability-signing-v1')
+ )
+ store.setPackageVerifier = (basePath, packageId, verifier) => {
+  const cleanPkg = String(packageId || '').trim()
+  if (!cleanPkg || !verifier || typeof verifier.hash !== 'string' || !verifier.hash) {
+   return
+  }
+  packageVerifiers.set(`${secretDirKey(basePath)}::${cleanPkg}`, {
+   salt: typeof verifier.salt === 'string' ? verifier.salt : '',
+   hash: verifier.hash,
+  })
+  persistNow()
+ }
+ store.getPackageVerifier = (basePath, packageId) => {
+  const cleanPkg = String(packageId || '').trim()
+  if (!cleanPkg) {
+   return null
+  }
+  return packageVerifiers.get(`${secretDirKey(basePath)}::${cleanPkg}`) || null
+ }
+ store.hasPackageVerifier = (basePath, packageId) => Boolean(store.getPackageVerifier(basePath, packageId))
+ store.revokePackageGrant = (sessionId, basePath, packageId, tsMs = Date.now()) => {
+  const cleanSid = String(sessionId || '').trim()
+  const cleanPkg = String(packageId || '').trim()
+  if (!cleanSid || !cleanPkg) {
+   return
+  }
+  revokedGrants.set(`${cleanSid}::${secretDirKey(basePath)}::${cleanPkg}`, Math.trunc(Number(tsMs) || Date.now()))
+  persistNow()
+ }
+ store.clearPackageRevocation = (sessionId, basePath, packageId) => {
+  const cleanSid = String(sessionId || '').trim()
+  const cleanPkg = String(packageId || '').trim()
+  if (!cleanSid || !cleanPkg) {
+   return
+  }
+  if (revokedGrants.delete(`${cleanSid}::${secretDirKey(basePath)}::${cleanPkg}`)) {
+   persistNow()
+  }
+ }
+ store.isPackageGrantRevoked = (sessionId, basePath, packageId, tokenIatMs) => {
+  const cleanSid = String(sessionId || '').trim()
+  const cleanPkg = String(packageId || '').trim()
+  if (!cleanSid || !cleanPkg) {
+   return false
+  }
+  const revokedAt = revokedGrants.get(`${cleanSid}::${secretDirKey(basePath)}::${cleanPkg}`)
+  if (revokedAt === undefined) {
+   return false
+  }
+  return Number(tokenIatMs) <= revokedAt
+ }
+ store.exportSnapshot = buildSnapshot
+ return Object.freeze(store)
+}
+
+let defaultServerSecretStore = null
+const kvSecretStores = new WeakMap()
+
+export function getDefaultServerSecretStore() {
+ if (!isNodeServerRuntime) {
+  throw new Error('Server secret store is only available in server environments')
+ }
+ if (!defaultServerSecretStore) {
+  defaultServerSecretStore = createServerSecretStore()
+ }
+ return defaultServerSecretStore
+}
+
+export function setDefaultServerSecretStore(store) {
+ if (!isNodeServerRuntime) {
+  throw new Error('Server secret store is only available in server environments')
+ }
+ defaultServerSecretStore = store
+ return defaultServerSecretStore
+}
+
+export function bindSecretStoreToKv(rootKv, store) {
+ if (rootKv && typeof rootKv === 'object' && store) {
+  kvSecretStores.set(rootKv, store)
+  const unwrapped = unwrapKv(rootKv)
+  if (unwrapped && typeof unwrapped === 'object') {
+   kvSecretStores.set(unwrapped, store)
+  }
+  if (rootKv.defaultRoot && typeof rootKv.defaultRoot === 'object') {
+   kvSecretStores.set(rootKv.defaultRoot, store)
+  }
+ }
+ return rootKv
+}
+
+function resolveServerSecretStore(rootKv) {
+ if (rootKv && typeof rootKv === 'object') {
+  const direct = kvSecretStores.get(rootKv)
+  if (direct) {
+   return direct
+  }
+  const unwrapped = unwrapKv(rootKv)
+  if (unwrapped && typeof unwrapped === 'object' && kvSecretStores.has(unwrapped)) {
+   return kvSecretStores.get(unwrapped)
+  }
+  if (rootKv.defaultRoot && typeof rootKv.defaultRoot === 'object' && kvSecretStores.has(rootKv.defaultRoot)) {
+   return kvSecretStores.get(rootKv.defaultRoot)
+  }
+ }
+ return getDefaultServerSecretStore()
+}
+
+export function createCapabilityToken(claims = {}, secretStore = null) {
+ const store = secretStore || getDefaultServerSecretStore()
+ const now = Number.isFinite(Number(claims.iat)) ? Math.trunc(Number(claims.iat)) : Date.now()
+ const ttl = Number.isFinite(Number(claims.ttlMs)) && Number(claims.ttlMs) > 0
+  ? Math.trunc(Number(claims.ttlMs))
+  : DEFAULT_CAPABILITY_TOKEN_TTL_MS
+ const exp = Number.isFinite(Number(claims.exp)) ? Math.trunc(Number(claims.exp)) : (now + ttl)
+ const payload = {
+  v: 1,
+  sid: claims.sessionId ? String(claims.sessionId).trim() : null,
+  dir: claims.basePath === undefined ? null : normalizeDataDir(claims.basePath),
+  pkgs: Array.isArray(claims.packages)
+   ? Array.from(new Set(claims.packages.map(p => String(p || '').trim()).filter(Boolean)))
+   : [DEFAULT_PACKAGE_ID],
+  lanes: Array.isArray(claims.lanes)
+   ? Array.from(new Set(claims.lanes.map(l => String(l || '').trim()).filter(Boolean)))
+   : null,
+  allowUnlocked: Boolean(claims.allowUnlocked),
+  iat: now,
+  exp,
+ }
+ const payloadB64 = encodeBase64Url(JSON.stringify(payload))
+ const sigHex = hmacSha256Hex(store.getSigningKeyBytes(), payloadB64)
+ return `${CAPABILITY_TOKEN_PREFIX}${payloadB64}.${sigHex}`
+}
+
+export function verifyCapabilityToken(rawToken, secretStore = null, nowMs = Date.now()) {
+ const store = secretStore || getDefaultServerSecretStore()
+ const str = typeof rawToken === 'string' ? rawToken.trim() : ''
+ if (!str.startsWith(CAPABILITY_TOKEN_PREFIX)) {
+  return { ok: false, error: 'Malformed capability token' }
+ }
+ const body = str.slice(CAPABILITY_TOKEN_PREFIX.length)
+ const dotIdx = body.lastIndexOf('.')
+ if (dotIdx <= 0 || dotIdx === body.length - 1) {
+  return { ok: false, error: 'Malformed capability token' }
+ }
+ const payloadB64 = body.slice(0, dotIdx)
+ const sigHex = body.slice(dotIdx + 1)
+ const expectedSig = hmacSha256Hex(store.getSigningKeyBytes(), payloadB64)
+ if (!timingSafeEqualStr(sigHex.toLowerCase(), expectedSig.toLowerCase())) {
+  return { ok: false, error: 'Invalid capability token signature' }
+ }
+ const decoded = decodeBase64Url(payloadB64)
+ if (!decoded) {
+  return { ok: false, error: 'Malformed capability token payload' }
+ }
+ let parsed = null
+ try {
+  parsed = JSON.parse(decoded)
+ }
+ catch {
+  return { ok: false, error: 'Malformed capability token JSON' }
+ }
+ if (!parsed || typeof parsed !== 'object' || parsed.v !== 1) {
+  return { ok: false, error: 'Unsupported capability token version' }
+ }
+ if (!Number.isFinite(Number(parsed.exp)) || Number(parsed.exp) <= Number(nowMs)) {
+  return { ok: false, error: 'Capability token has expired' }
+ }
+ return {
+  ok: true,
+  claims: {
+   v: 1,
+   sid: typeof parsed.sid === 'string' && parsed.sid.trim() ? parsed.sid.trim() : null,
+   dir: parsed.dir === undefined ? null : normalizeDataDir(parsed.dir),
+   pkgs: Array.isArray(parsed.pkgs) ? parsed.pkgs.map(String).filter(Boolean) : [],
+   lanes: Array.isArray(parsed.lanes) ? parsed.lanes.map(String).filter(Boolean) : null,
+   allowUnlocked: Boolean(parsed.allowUnlocked),
+   iat: Number(parsed.iat) || 0,
+   exp: Number(parsed.exp) || 0,
+  },
+ }
+}
+
+function decodeKeySegment(encoded) {
+ try {
+  return decodeURIComponent(String(encoded || ''))
+ }
+ catch {
+  return String(encoded || '')
+ }
+}
+
+export function isForbiddenDirectKvKey(rawKey) {
+ if (typeof rawKey !== 'string' || rawKey.length === 0) {
+  return true
+ }
+ if (rawKey.includes('\0')) {
+  return true
+ }
+ if (rawKey === 'vault' || rawKey.startsWith('vault#') || rawKey.startsWith('vault.')) {
+  return true
+ }
+ if (/^lanes#[^/]+\/secrets(?:$|\/|\.|-)/.test(rawKey)) {
+  return true
+ }
+ return false
+}
+
+export function classifyKvKey(rawKey) {
+ if (typeof rawKey !== 'string' || rawKey.length === 0 || rawKey.includes('\0')) {
+  return { kind: 'invalid' }
+ }
+ if (isForbiddenDirectKvKey(rawKey)) {
+  return { kind: 'forbidden' }
+ }
+ const hashParts = rawKey.split('#')
+ if (hashParts.length > 2) {
+  return { kind: 'invalid' }
+ }
+ if (hashParts.length === 2) {
+  const [ns, rel] = hashParts
+  if (!ns || !rel || rel.split('/').some(seg => seg === '..' || seg === '.')) {
+   return { kind: 'invalid' }
+  }
+  const slashIdx = rel.indexOf('/')
+  const firstSeg = slashIdx === -1 ? rel : rel.slice(0, slashIdx)
+  const rest = slashIdx === -1 ? '' : rel.slice(slashIdx + 1)
+  if (ns === 'lanes') {
+   const laneId = decodeKeySegment(firstSeg.replace(/\.chunks$/, ''))
+   if (!laneId) {
+    return { kind: 'invalid' }
+   }
+   if (rest === 'package' || rest.startsWith('package.chunks/')) {
+    return { kind: 'lane-package', laneId }
+   }
+   return { kind: 'lane', laneId }
+  }
+  if (ns === 'stories') {
+   const laneId = decodeKeySegment(firstSeg)
+   return laneId ? { kind: 'lane', laneId } : { kind: 'invalid' }
+  }
+  if (ns === 'triggers') {
+   if (rel.startsWith('lanes/')) {
+    const restLane = rel.slice('lanes/'.length).split('/')[0]
+    const laneId = decodeKeySegment(restLane.replace(/\.chunks$/, ''))
+    return laneId ? { kind: 'lane', laneId } : { kind: 'invalid' }
+   }
+   return { kind: 'workspace' }
+  }
+  if (ns === 'packages') {
+   const packageId = decodeKeySegment(firstSeg)
+   if (!packageId) {
+    return { kind: 'invalid' }
+   }
+   if (rest === 'meta' || rest.startsWith('meta.chunks/')) {
+    return { kind: 'package-meta', packageId }
+   }
+   return { kind: 'package-data', packageId }
+  }
+  if (ns === 'sessions') {
+   const sessionId = decodeKeySegment(firstSeg)
+   if (!sessionId) {
+    return { kind: 'invalid' }
+   }
+   if (rest === 'packages' || rest.startsWith('packages-') || rest.startsWith('packages.')) {
+    return { kind: 'session-packages', sessionId }
+   }
+   return { kind: 'session-meta', sessionId }
+  }
+  if (ns === 'deploy') {
+   return { kind: 'workspace' }
+  }
+  return { kind: 'workspace' }
+ }
+
+ if (rawKey.split('/').some(seg => seg === '..')) {
+  return { kind: 'invalid' }
+ }
+ const strippedChunk = rawKey.replace(/\.chunks\/\d+$/, '')
+ if (!strippedChunk.includes('.')) {
+  return { kind: 'workspace', key: strippedChunk }
+ }
+ const candidateLaneIds = []
+ let idx = strippedChunk.lastIndexOf('.')
+ while (idx > 0) {
+  candidateLaneIds.push(strippedChunk.slice(0, idx))
+  idx = strippedChunk.lastIndexOf('.', idx - 1)
+ }
+ return { kind: 'lane-dot', candidateLaneIds }
+}
 
 export function vaultMasterKey() {
  return 'vault#master-key'
@@ -4324,18 +4980,28 @@ function randomBytes(length) {
  return out
 }
 
-export async function ensureVaultMasterKey(rootKv) {
- const registryKv = resolveRegistryKv(rootKv) || unwrapKv(rootKv)
- if (registryKv) {
-  const existing = await kvGetChunked(registryKv, vaultMasterKey())
-  if (!isMissingValue(existing) && typeof existing === 'string' && existing.trim().length >= 64) {
-   return existing.trim()
-  }
-  const generated = bytesToHex(randomBytes(32))
-  await kvSetChunked(registryKv, vaultMasterKey(), generated)
-  return generated
+export async function ensureVaultMasterKey(rootKv = null) {
+ if (!isNodeServerRuntime) {
+  throw new Error('Master vault key is stored exclusively on the server and cannot be read by browser clients')
  }
- return bytesToHex(sha256Bytes(utf8Encoder.encode('civil-command-ephemeral-vault-key')))
+ const secretStore = resolveServerSecretStore(rootKv)
+ const proxyRoot = getProxyKvRoot(rootKv)
+ if (!proxyRoot && rootKv) {
+  const registryKv = resolveRegistryKv(rootKv) || unwrapKv(rootKv)
+  if (registryKv && typeof registryKv.get === 'function') {
+   try {
+    const legacy = await kvGetChunked(registryKv, vaultMasterKey())
+    if (!isMissingValue(legacy) && isValidMasterKeyHex(legacy)) {
+     secretStore.importLegacyMasterKey(legacy.trim())
+     await kvDeleteChunked(registryKv, vaultMasterKey())
+    }
+   }
+   catch {
+    // Ignore KV probe errors; server secret store remains authoritative
+   }
+  }
+ }
+ return secretStore.getMasterKeyHex()
 }
 
 async function deriveSecretKeyBytes(masterKeyHex, laneId, secretId, saltHex) {
@@ -4398,10 +5064,24 @@ export async function decryptSecretRecord(masterKeyHex, laneId, secretId, record
 }
 
 export async function loadLaneSecretRecord(rootKv, _laneData, laneId, secretId) {
- const kv = unwrapKv(rootKv)
  const cleanLaneId = String(laneId || '').trim()
  const cleanSecretId = String(secretId || '').trim()
- if (!kv || !cleanLaneId || !cleanSecretId) {
+ if (!cleanLaneId || !cleanSecretId) {
+  return null
+ }
+ const proxyRoot = getProxyKvRoot(rootKv)
+ if (proxyRoot) {
+  const apiRes = await proxyRoot.fetchVaultApi('secret', {
+   method: 'GET',
+   query: { laneId: cleanLaneId, secretId: cleanSecretId },
+  })
+  if (!apiRes || !apiRes.ok || !apiRes.data || !apiRes.data.record) {
+   return null
+  }
+  return apiRes.data.record
+ }
+ const kv = unwrapKv(rootKv)
+ if (!kv) {
   return null
  }
  const raw = await kvGetChunked(kv, laneSecretKey(cleanLaneId, cleanSecretId))
@@ -4418,17 +5098,36 @@ export async function loadLaneSecretRecord(rootKv, _laneData, laneId, secretId) 
 }
 
 export async function setLaneSecret(rootKv, laneData, laneId, inputName, plaintext, existingSecretId = '') {
- const kv = unwrapKv(rootKv)
  const cleanLaneId = String(laneId || '').trim()
  const cleanName = String(inputName || '').trim()
  const secretText = plaintext === null || plaintext === undefined ? '' : String(plaintext)
- if (!kv || !cleanLaneId) {
+ if (!rootKv || !cleanLaneId) {
   return { ok: false, error: 'rootKv and laneId are required' }
  }
  if (secretText.length === 0) {
   return { ok: false, error: 'Secret value cannot be empty' }
  }
  const cleanExistingId = String(existingSecretId || '').trim()
+ const proxyRoot = getProxyKvRoot(rootKv)
+ if (proxyRoot) {
+  const apiRes = await proxyRoot.fetchVaultApi('secret', {
+   method: 'POST',
+   body: {
+    laneId: cleanLaneId,
+    name: cleanName,
+    plaintext: secretText,
+    existingSecretId: cleanExistingId,
+   },
+  })
+  if (apiRes && apiRes.data && typeof apiRes.data === 'object') {
+   return apiRes.data
+  }
+  return { ok: false, error: 'Failed to store secret in server vault' }
+ }
+ const kv = unwrapKv(rootKv)
+ if (!kv) {
+  return { ok: false, error: 'rootKv and laneId are required' }
+ }
  if (cleanExistingId) {
   const existingRecord = await loadLaneSecretRecord(rootKv, laneData, cleanLaneId, cleanExistingId)
   if (existingRecord && existingRecord.ciphertext) {
@@ -4499,6 +5198,16 @@ export async function resolveLaneSecret(rootKv, laneData, laneId, entry) {
   return ''
  }
  const cleanLaneId = String(laneId || '').trim()
+ const proxyRoot = getProxyKvRoot(rootKv)
+ if (proxyRoot) {
+  const apiRes = await proxyRoot.fetchVaultApi('resolve', {
+   method: 'POST',
+   body: { laneId: cleanLaneId, secretId },
+  })
+  return apiRes && apiRes.ok && apiRes.data && typeof apiRes.data.value === 'string'
+   ? apiRes.data.value
+   : ''
+ }
  const record = await loadLaneSecretRecord(rootKv, laneData, cleanLaneId, secretId)
  if (!record || !record.ciphertext) {
   return ''
@@ -4546,10 +5255,23 @@ export async function resolveLaneSecrets(rootKv, laneData, laneId, inputs) {
 }
 
 export async function deleteLaneSecret(rootKv, _laneData, laneId, secretId) {
- const kv = unwrapKv(rootKv)
  const cleanLaneId = String(laneId || '').trim()
  const cleanSecretId = String(secretId || '').trim()
- if (!kv || !cleanLaneId || !cleanSecretId) {
+ if (!rootKv || !cleanLaneId || !cleanSecretId) {
+  return { ok: false }
+ }
+ const proxyRoot = getProxyKvRoot(rootKv)
+ if (proxyRoot) {
+  const apiRes = await proxyRoot.fetchVaultApi('secret', {
+   method: 'DELETE',
+   body: { laneId: cleanLaneId, secretId: cleanSecretId },
+  })
+  return apiRes && apiRes.data && typeof apiRes.data === 'object'
+   ? apiRes.data
+   : { ok: Boolean(apiRes && apiRes.ok) }
+ }
+ const kv = unwrapKv(rootKv)
+ if (!kv) {
   return { ok: false }
  }
  await kvDeleteChunked(kv, laneSecretKey(cleanLaneId, cleanSecretId))
