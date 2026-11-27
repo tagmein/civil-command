@@ -2,6 +2,9 @@ import { constants as fsConstants } from 'node:fs'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { verifyApiSessionToken } from './data-proxy.mjs'
+import { hasJsonContentType, isAllowedLocalOrigin } from './http-security.mjs'
+import { getDefaultServerSecretStore } from './storage.mjs'
 
 const MAX_JSON_BODY_BYTES = 64 * 1024
 
@@ -504,11 +507,12 @@ export async function createDirectory(parentDir, folderName, opts = {}) {
  }
 }
 
-function sendJson(res, status, payload) {
+function sendJson(res, status, payload, extraHeaders = null) {
  const body = JSON.stringify(payload)
  res.writeHead(status, {
   'Content-Type': 'application/json; charset=utf-8',
   'Cache-Control': 'no-store',
+  ...(extraHeaders || {}),
  })
  res.end(body)
 }
@@ -569,6 +573,20 @@ function readJsonBody(req) {
 }
 
 export async function handleFsApiRequest(req, res, opts = {}) {
+ if (!isAllowedLocalOrigin(req, opts)) {
+  return sendJson(res, 403, { ok: false, error: 'Cross-origin filesystem access denied' })
+ }
+ if (opts.requireAuth !== false) {
+  const authRes = verifyApiSessionToken(req, {
+   secretStore: opts.secretStore || getDefaultServerSecretStore(),
+   allowQueryToken: false,
+   allowLaneScoped: false,
+  })
+  if (!authRes.ok) {
+   return sendJson(res, authRes.status, { ok: false, error: authRes.error }, authRes.headers)
+  }
+ }
+
  const url = new URL(req.url || '/', 'http://localhost')
  const pathname = url.pathname
  const method = (req.method || 'GET').toUpperCase()
@@ -593,6 +611,9 @@ export async function handleFsApiRequest(req, res, opts = {}) {
  if (pathname === '/api/fs/mkdir') {
   if (method !== 'POST') {
    return sendJson(res, 405, { error: 'Method not allowed' })
+  }
+  if (!hasJsonContentType(req)) {
+   return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
   }
   let body
   try {

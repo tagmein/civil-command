@@ -930,7 +930,7 @@
      { JSON $window.JSON }
      { Date $window.Date }
      { Array $window.Array }
-     { fetch ( ; to { u o } $argv, [ match { $window.fetch : !window.fetch $u $o } { true : null } ] ) }
+     { fetch ( ; to { u o } $argv, [ match { [ and { $data.isProxyBacked } { $data.externalFetch } ] : !data.externalFetch $u $o } { $window.fetch : !window.fetch $u $o } { true : null } ] ) }
      { importLane $import-lane-fn }
      { exportLaneLine $export-lane-line-fn }
      { setLaneLine $export-lane-line-fn }

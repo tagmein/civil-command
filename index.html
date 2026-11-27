@@ -3433,6 +3433,250 @@
     color: #d6f5ff;
    }
 
+   .lane-data-bar-actions {
+    align-items: center;
+    display: inline-flex;
+    flex-shrink: 0;
+    gap: 0.28em;
+   }
+
+   .lane-data-import-table {
+    background: transparent;
+    border: 1px solid #38d39f44;
+    border-radius: 4px;
+    color: #a9fbe0;
+    cursor: pointer;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    line-height: 1.25;
+    padding: 0.24em 0.55em;
+    white-space: nowrap;
+   }
+
+   .lane-data-import-table:hover,
+   .lane-data-import-table:focus {
+    background: #38d39f1e;
+    border-color: #38d39f77;
+    color: #d9fff1;
+   }
+
+   .lane-data-table-tab--remote {
+    border-color: #38d39f40;
+   }
+
+   .lane-data-table-tab--remote.lane-data-table-tab--active {
+    border-color: #38d39f88;
+   }
+
+   .lane-data-table-tab-remote {
+    background: #38d39f1c;
+    border-radius: 999px;
+    color: #8ff5d1;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    padding: 0.05em 0.38em;
+    white-space: nowrap;
+   }
+
+   .lane-data-table-tab--readwrite .lane-data-table-tab-remote {
+    background: #9ce5ff1f;
+    color: #9ce5ff;
+   }
+
+   .lane-data-remote-bar {
+    align-items: center;
+    background: #38d39f10;
+    border: 1px solid #38d39f38;
+    border-radius: 5px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35em 0.5em;
+    padding: 0.32em 0.5em;
+   }
+
+   .lane-data-remote-bar[hidden] {
+    display: none;
+   }
+
+   .lane-data-remote-bar--readwrite {
+    background: #9ce5ff10;
+    border-color: #9ce5ff38;
+   }
+
+   .lane-data-remote-bar--missing,
+   .lane-data-remote-bar--denied {
+    background: #ff555514;
+    border-color: #ff555550;
+   }
+
+   .lane-data-remote-mode {
+    background: #38d39f1f;
+    border: 1px solid #38d39f44;
+    border-radius: 999px;
+    color: #a9fbe0;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 9.5px;
+    letter-spacing: 0.04em;
+    padding: 0.1em 0.45em;
+    white-space: nowrap;
+   }
+
+   .lane-data-remote-bar--readwrite .lane-data-remote-mode {
+    background: #9ce5ff1f;
+    border-color: #9ce5ff44;
+    color: #c7f0ff;
+   }
+
+   .lane-data-remote-jump-btn {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+   }
+
+   .lane-data-remote-edit-btn {
+    font-size: 10px;
+    margin-left: auto;
+    padding: 0.14em 0.48em;
+   }
+
+   .lane-data-remote-status {
+    color: #ff9c9c;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+   }
+
+   .lane-data-remote-status[hidden] {
+    display: none;
+   }
+
+   .lane-data-active--readonly .lane-data-table-name:disabled {
+    cursor: default;
+    opacity: 0.88;
+   }
+
+   .lane-table-import-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35em;
+    max-height: 15em;
+    overflow-y: auto;
+    padding-right: 0.15em;
+   }
+
+   .lane-table-import-item {
+    align-items: stretch;
+    background: #ffffff08;
+    border: 1px solid #ffffff1c;
+    border-radius: 5px;
+    color: #ffffffd8;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2em;
+    padding: 0.45em 0.6em;
+    text-align: left;
+   }
+
+   .lane-table-import-item:hover,
+   .lane-table-import-item:focus-visible {
+    background: #ffffff12;
+    border-color: #ffffff40;
+    color: white;
+    outline: none;
+   }
+
+   .lane-table-import-item--active {
+    background: #38d39f18;
+    border-color: #38d39f77;
+    color: #e2fff4;
+   }
+
+   .lane-table-import-item-top {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4em;
+   }
+
+   .lane-table-import-item-name {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    font-weight: bold;
+   }
+
+   .lane-table-import-item-meta {
+    color: #ffffff78;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+   }
+
+   .lane-table-import-item-badge {
+    background: #9ce5ff1f;
+    border: 1px solid #9ce5ff44;
+    border-radius: 999px;
+    color: #9ce5ff;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 9.5px;
+    margin-left: auto;
+    padding: 0.05em 0.42em;
+   }
+
+   .lane-table-import-item-cols {
+    color: #ffffff66;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+   }
+
+   .lane-table-import-mode-row {
+    display: grid;
+    gap: 0.45em;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+   }
+
+   .lane-table-import-mode-btn {
+    align-items: flex-start;
+    background: #ffffff08;
+    border: 1px solid #ffffff1c;
+    border-radius: 5px;
+    color: #ffffffc8;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2em;
+    padding: 0.45em 0.6em;
+    text-align: left;
+   }
+
+   .lane-table-import-mode-btn:hover,
+   .lane-table-import-mode-btn:focus-visible {
+    background: #ffffff12;
+    border-color: #ffffff40;
+    color: white;
+    outline: none;
+   }
+
+   .lane-table-import-mode-btn--active {
+    background: #38d39f18;
+    border-color: #38d39f77;
+    color: #e2fff4;
+   }
+
+   .lane-table-import-mode-title {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    font-weight: bold;
+   }
+
+   .lane-table-import-mode-desc {
+    color: #ffffff7a;
+    font-size: 10.5px;
+    line-height: 1.3;
+   }
+
    .lane-data-add-col:hover,
    .lane-data-add-col:focus,
    .lane-data-add-row:hover,
@@ -3576,6 +3820,17 @@
     border-color: #ff555555;
     color: #ff9c9c;
     outline: none;
+   }
+
+   .lane-data-table-menu-item--neutral {
+    color: #ffffffd4;
+   }
+
+   .lane-data-table-menu-item--neutral:hover:not(:disabled),
+   .lane-data-table-menu-item--neutral:focus:not(:disabled) {
+    background: #ffffff14;
+    border-color: #ffffff38;
+    color: white;
    }
 
    .lane-data-table-menu-item:disabled {
@@ -8004,6 +8259,7 @@
     MIN_LANE_MODAL_HEIGHT,
     MIN_LANE_MODAL_WIDTH,
     PRIMITIVE_TYPES,
+    TABLE_IMPORT_MODES,
     buildTablesScope,
     buildTopRailTimezoneOptions,
     checkColumnChangeImpact,
@@ -8038,6 +8294,8 @@
     hasImportCycle,
     isDataCellValueEmpty,
     isParseableFieldScriptLine,
+    isReadOnlyRemoteTable,
+    isRemoteTable,
     isValidTimeZone,
     listKnownBrowserTimeZones,
     lookupRowDisplay,
@@ -8053,6 +8311,8 @@
     normalizeLaneTab,
     normalizeLaneWidth,
     normalizePrimitiveType,
+    normalizeTableImportMode,
+    normalizeTableRemoteSpec,
     normalizeTopRailHidden,
     normalizeTopRailOrder,
     parseCellValue,
@@ -8171,6 +8431,7 @@
     returnToBrowserSession,
     saveDeployServer,
     saveDeployedLaneScript,
+    saveImportedTableLink,
     saveLaneDeployment,
     saveLaneScript,
     saveLaneSourceDraft,
@@ -8230,6 +8491,7 @@
     DEFAULT_STORY_PAGE_SIZE,
     LANE_CRON_INTERVAL_MS,
     LANE_FEATURES,
+    TABLE_IMPORT_MODES,
     addLaneTable,
     addTableRow,
     allocateNextPort,
@@ -8318,6 +8580,8 @@
     inspectSessionForAgent,
     isDataCellValueEmpty,
     isParseableFieldScriptLine,
+    isReadOnlyRemoteTable,
+    isRemoteTable,
     isValidTimeZone,
     killDeployTerminalSession,
     laneSourceDraftsStorageKey,
@@ -8363,6 +8627,8 @@
     normalizeSessionLinkIds,
     normalizeSessionTableDisplayOptions,
     normalizeSubpath,
+    normalizeTableImportMode,
+    normalizeTableRemoteSpec,
     normalizeTopRailHidden,
     normalizeTopRailOrder,
     openPackageInSession,
@@ -8406,6 +8672,7 @@
     runLines: runLinesInWorker,
     saveDeployServer,
     saveDeployedLaneScript,
+    saveImportedTableLink,
     saveLaneDeployment,
     saveLaneScript,
     saveLaneSourceDraft,

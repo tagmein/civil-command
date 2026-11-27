@@ -559,6 +559,7 @@ export function httpKV({
  triggers = undefined,
  sessionToken = '',
  proxyCapabilities = false,
+ proactiveToken = false,
  _compiledTriggers = null,
  _triggerQueues = null,
  _clientsByPath = null,
@@ -577,6 +578,7 @@ export function httpKV({
   inFlightBootstrap: new Map(),
   activeSessionId: '',
   fallbackToken: typeof sessionToken === 'string' ? sessionToken.trim() : '',
+  vaultUnavailable: false,
  }
 
  const setSessionToken = (token, opts = null) => {
@@ -722,7 +724,12 @@ export function httpKV({
     basePath: dir,
    },
   })
-   .then(res => (res && res.data && typeof res.data.token === 'string' ? res.data.token : ''))
+   .then(res => {
+    if (res && res.status === 404) {
+     tokenStore.vaultUnavailable = true
+    }
+    return res && res.data && typeof res.data.token === 'string' ? res.data.token : ''
+   })
    .catch(() => '')
    .finally(() => {
     tokenStore.inFlightBootstrap.delete(slot)
@@ -732,6 +739,9 @@ export function httpKV({
  }
 
  const performKvFetch = async (finalUrl, init) => {
+  if (isProxyBacked && proactiveToken && !tokenStore.vaultUnavailable && !getSessionToken(cleanBasePath)) {
+   await bootstrapPathToken(cleanBasePath)
+  }
   const resp = await fetch(finalUrl, withHeaders(init, cleanBasePath))
   if (
    resp &&
@@ -741,12 +751,101 @@ export function httpKV({
    typeof resp.headers.get === 'function' &&
    resp.headers.get(TOKEN_BOOTSTRAP_HEADER)
   ) {
+   setSessionToken('', {
+    sessionId: tokenStore.activeSessionId || undefined,
+    basePath: cleanBasePath,
+   })
    const minted = await bootstrapPathToken(cleanBasePath)
    if (minted) {
     return fetch(finalUrl, withHeaders(init, cleanBasePath))
    }
   }
   return resp
+ }
+
+ const normalizeExternalFetchHeaders = rawHeaders => {
+  if (!rawHeaders || typeof rawHeaders !== 'object') {
+   return undefined
+  }
+  const out = {}
+  if (typeof rawHeaders.forEach === 'function') {
+   rawHeaders.forEach((v, k) => {
+    if (k && v !== undefined && v !== null) {
+     out[String(k)] = String(v)
+    }
+   })
+  }
+  else {
+   for (const [k, v] of Object.entries(rawHeaders)) {
+    if (k && v !== undefined && v !== null) {
+     out[String(k)] = String(v)
+    }
+   }
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+ }
+
+ const externalFetch = async (rawUrl, init = {}) => {
+  if (!isProxyBacked) {
+   return fetch(rawUrl, init)
+  }
+  if (!tokenStore.vaultUnavailable && !getSessionToken(cleanBasePath)) {
+   await bootstrapPathToken(cleanBasePath)
+  }
+  const opts = init && typeof init === 'object' ? init : {}
+  const method = opts.method !== undefined && opts.method !== null
+   ? String(opts.method).trim().toUpperCase() || 'GET'
+   : 'GET'
+  const headers = normalizeExternalFetchHeaders(opts.headers)
+  const payload = {
+   url: String(rawUrl ?? ''),
+   method,
+   basePath: cleanBasePath,
+  }
+  if (headers) {
+   payload.headers = headers
+  }
+  if (method !== 'GET' && method !== 'HEAD' && opts.body !== undefined && opts.body !== null) {
+   payload.body = typeof opts.body === 'string' ? opts.body : String(opts.body)
+  }
+  let res = await fetchVaultApi('fetch', {
+   method: 'POST',
+   basePath: cleanBasePath,
+   body: payload,
+  })
+  if (res && res.status === 401 && !tokenStore.vaultUnavailable) {
+   setSessionToken('', {
+    sessionId: tokenStore.activeSessionId || undefined,
+    basePath: cleanBasePath,
+   })
+   const minted = await bootstrapPathToken(cleanBasePath)
+   if (minted) {
+    res = await fetchVaultApi('fetch', {
+     method: 'POST',
+     basePath: cleanBasePath,
+     body: payload,
+    })
+   }
+  }
+  if (!res || !res.ok || !res.data || !res.data.response) {
+   const errMsg = res && res.data && res.data.error ? res.data.error : `HTTP ${(res && res.status) || 502}: External fetch failed`
+   throw new Error(errMsg)
+  }
+  const r = res.data.response
+  const respHeaders = typeof Headers === 'function' ? new Headers(r.headers || {}) : (r.headers || {})
+  return {
+   ok: Boolean(r.ok),
+   status: Number.isInteger(r.status) ? r.status : (r.ok ? 200 : 502),
+   statusText: typeof r.statusText === 'string' ? r.statusText : '',
+   url: typeof r.url === 'string' ? r.url : payload.url,
+   headers: respHeaders,
+   async text() {
+    return String(r.bodyText ?? '')
+   },
+   async json() {
+    return JSON.parse(String(r.bodyText ?? ''))
+   },
+  }
  }
 
  const getOrCreateRootClient = targetPath => {
@@ -764,6 +863,7 @@ export function httpKV({
     switchable: false,
     headers: requestHeaders,
     proxyCapabilities,
+    proactiveToken,
     _compiledTriggers: compiledTriggers,
     _triggerQueues: triggerQueues,
     _clientsByPath: clientsByPath,
@@ -778,6 +878,7 @@ export function httpKV({
    switchable: false,
    headers: requestHeaders,
    proxyCapabilities,
+   proactiveToken,
    _compiledTriggers: compiledTriggers,
    _triggerQueues: triggerQueues,
    _clientsByPath: clientsByPath,
@@ -812,6 +913,7 @@ export function httpKV({
     basePath: activeClient.basePath,
     ...(opts || {}),
    }),
+   externalFetch: (rawUrl, init) => activeClient.externalFetch(rawUrl, init),
    withBasePath(nextPath) {
     return getOrCreateRootClient(nextPath)
    },
@@ -862,6 +964,7 @@ export function httpKV({
   getSessionToken,
   setActiveSession,
   fetchVaultApi,
+  externalFetch,
 
   withBasePath(nextPath) {
    return getOrCreateRootClient(nextPath)
@@ -877,6 +980,7 @@ export function httpKV({
     defaultRoot: client.defaultRoot,
     headers: requestHeaders,
     proxyCapabilities,
+    proactiveToken,
     _compiledTriggers: compiledTriggers,
     _triggerQueues: triggerQueues,
     _clientsByPath: clientsByPath,
@@ -893,6 +997,7 @@ export function httpKV({
     defaultRoot: client.defaultRoot,
     headers: requestHeaders,
     proxyCapabilities,
+    proactiveToken,
     _compiledTriggers: compiledTriggers,
     _triggerQueues: triggerQueues,
     _clientsByPath: clientsByPath,
@@ -929,7 +1034,8 @@ export function httpKV({
    const method = 'POST'
    const resp = await performKvFetch(finalUrl, {
     method,
-    body: value,
+    headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+    body: value === null || value === undefined ? '' : String(value),
    })
 
    if (!resp.ok) {
@@ -1007,10 +1113,41 @@ const origin = typeof location !== 'undefined' && location && location.origin
  : 'http://localhost:8080'
 const baseUrl = `${origin}/api/data?mode=disk`
 
-export const data = httpKV({ baseUrl, switchable: true, proxyCapabilities: true })
+export const data = httpKV({ baseUrl, switchable: true, proxyCapabilities: true, proactiveToken: true })
+
+async function fetchWithSessionToken(targetUrl, init = {}) {
+ const withTok = tok => {
+  const mergedHeaders = { ...((init && init.headers) || {}) }
+  if (tok && !Object.hasOwn(mergedHeaders, SESSION_TOKEN_HEADER) && !Object.hasOwn(mergedHeaders, SESSION_TOKEN_HEADER.toLowerCase())) {
+   mergedHeaders[SESSION_TOKEN_HEADER] = tok
+  }
+  return { ...(init || {}), headers: mergedHeaders }
+ }
+ let curTok = typeof data.getSessionToken === 'function' ? data.getSessionToken() : ''
+ if (!curTok && data.isProxyBacked && typeof data.fetchVaultApi === 'function') {
+  const boot = await data.fetchVaultApi('session', { method: 'POST', body: {} }).catch(() => null)
+  curTok = boot && boot.data && typeof boot.data.token === 'string' ? boot.data.token.trim() : ''
+ }
+ let resp = await fetch(targetUrl, withTok(curTok))
+ if (
+  resp &&
+  resp.status === 401 &&
+  resp.headers &&
+  typeof resp.headers.get === 'function' &&
+  resp.headers.get(TOKEN_BOOTSTRAP_HEADER) &&
+  typeof data.fetchVaultApi === 'function'
+ ) {
+  const boot = await data.fetchVaultApi('session', { method: 'POST', body: {} }).catch(() => null)
+  const minted = boot && boot.data && typeof boot.data.token === 'string' ? boot.data.token.trim() : ''
+  if (minted) {
+   resp = await fetch(targetUrl, withTok(minted))
+  }
+ }
+ return resp
+}
 
 export async function fetchFsRoots() {
- const resp = await fetch(`${origin}/api/fs/roots`)
+ const resp = await fetchWithSessionToken(`${origin}/api/fs/roots`)
  let parsed = null
  try {
   parsed = await resp.json()
@@ -1030,7 +1167,7 @@ export async function fetchFsList(dirPath = '') {
  if (dirPath !== null && dirPath !== undefined && String(dirPath).trim() !== '') {
   url.searchParams.set('path', String(dirPath))
  }
- const resp = await fetch(url.toString())
+ const resp = await fetchWithSessionToken(url.toString())
  let parsed = null
  try {
   parsed = await resp.json()
@@ -1058,7 +1195,7 @@ export async function fetchFsList(dirPath = '') {
 }
 
 export async function createFsDir(parentDir, name) {
- const resp = await fetch(`${origin}/api/fs/mkdir`, {
+ const resp = await fetchWithSessionToken(`${origin}/api/fs/mkdir`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ parent: parentDir, name }),
@@ -1085,7 +1222,7 @@ export async function createFsDir(parentDir, name) {
 }
 
 async function postDeployJson(endpointPath, payload = {}) {
- const resp = await fetch(`${origin}${endpointPath}`, {
+ const resp = await fetchWithSessionToken(`${origin}${endpointPath}`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(payload),
@@ -1288,32 +1425,61 @@ export function subscribeAgentEvents(onEvent, win = globalThis) {
  if (typeof EventSourceCtor !== 'function') {
   return () => {}
  }
- let es
- try {
-  es = new EventSourceCtor(`${origin}/api/agent/events`)
- }
- catch {
-  return () => {}
- }
- es.onmessage = ev => {
-  if (!ev || !ev.data) {
+ let es = null
+ let closed = false
+ const openStream = tok => {
+  if (closed) {
    return
   }
+  const url = new URL(`${origin}/api/agent/events`)
+  if (tok) {
+   url.searchParams.set('token', tok)
+  }
   try {
-   const parsed = JSON.parse(ev.data)
-   if (parsed && typeof parsed === 'object') {
-    onEvent(parsed)
-   }
+   es = new EventSourceCtor(url.toString())
   }
   catch {
-   // ignore malformed event
+   return
+  }
+  es.onmessage = ev => {
+   if (!ev || !ev.data) {
+    return
+   }
+   try {
+    const parsed = JSON.parse(ev.data)
+    if (parsed && typeof parsed === 'object') {
+     onEvent(parsed)
+    }
+   }
+   catch {
+    // ignore malformed event
+   }
   }
  }
+
+ const curTok = typeof data.getSessionToken === 'function' ? data.getSessionToken() : ''
+ if (curTok) {
+  openStream(curTok)
+ }
+ else if (typeof data.fetchVaultApi === 'function') {
+  data.fetchVaultApi('session', { method: 'POST', body: {} })
+   .then(res => {
+    const minted = res && res.data && typeof res.data.token === 'string' ? res.data.token.trim() : ''
+    if (minted && !closed) {
+     openStream(minted)
+    }
+   })
+   .catch(() => {})
+ }
+
  return () => {
-  try {
-   es.close()
+  closed = true
+  if (es) {
+   try {
+    es.close()
+   }
+   catch {}
   }
-  catch {}
  }
 }
 

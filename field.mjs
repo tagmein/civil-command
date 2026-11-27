@@ -3158,6 +3158,67 @@ export const DATA_CONSTRAINT_TYPES = [
  'workflow',
 ]
 
+export const TABLE_IMPORT_MODES = Object.freeze(['read-only', 'read-write'])
+
+export function normalizeTableImportMode(raw) {
+ const trimmed = typeof raw === 'string' ? raw.trim().toLowerCase() : ''
+ if (trimmed === 'read-write' || trimmed === 'readwrite' || trimmed === 'rw') {
+  return 'read-write'
+ }
+ return 'read-only'
+}
+
+export function normalizeTableRemoteSpec(raw, { includeRuntimeStatus = false } = {}) {
+ if (!raw || typeof raw !== 'object') {
+  return null
+ }
+ const laneId = raw.laneId === null || raw.laneId === undefined ? '' : String(raw.laneId).trim()
+ const tableId = raw.tableId === null || raw.tableId === undefined ? '' : String(raw.tableId).trim()
+ if (!laneId || !tableId) {
+  return null
+ }
+ const tableName = raw.tableName === null || raw.tableName === undefined ? '' : String(raw.tableName)
+ const mode = normalizeTableImportMode(raw.mode)
+ const out = {
+  laneId,
+  tableId,
+  tableName,
+  mode,
+ }
+ if (raw.customName === true) {
+  out.customName = true
+ }
+ if (includeRuntimeStatus) {
+  if (typeof raw.missing === 'boolean') {
+   out.missing = raw.missing
+  }
+  if (typeof raw.accessDenied === 'boolean') {
+   out.accessDenied = raw.accessDenied
+  }
+ }
+ return out
+}
+
+export function isRemoteTable(table) {
+ return Boolean(
+  table &&
+  typeof table === 'object' &&
+  table.remote &&
+  typeof table.remote === 'object' &&
+  typeof table.remote.laneId === 'string' &&
+  table.remote.laneId.trim().length > 0 &&
+  typeof table.remote.tableId === 'string' &&
+  table.remote.tableId.trim().length > 0
+ )
+}
+
+export function isReadOnlyRemoteTable(table) {
+ return Boolean(
+  isRemoteTable(table) &&
+  (table.remote.mode !== 'read-write' || table.remote.missing === true || table.remote.accessDenied === true)
+ )
+}
+
 export const DEFAULT_FIXED_DECIMALS = 2
 export const DEFAULT_ROW_PICKER_PAGE_SIZE = 25
 export const MIN_LANE_WIDTH = 100
@@ -3947,7 +4008,56 @@ export function dataValuesEqual(a, b) {
  return false
 }
 
-export function resolveRowValueSpec(tables, col, visited = new Set()) {
+function resolveOwnerTableForCol(tables, col, ownerTableHint = null) {
+ if (ownerTableHint && typeof ownerTableHint === 'object' && Array.isArray(ownerTableHint.columns)) {
+  return ownerTableHint
+ }
+ if (!Array.isArray(tables)) {
+  return null
+ }
+ if (typeof ownerTableHint === 'string' && ownerTableHint.length > 0) {
+  const byId = tables.find(t => t && t.id === ownerTableHint)
+  if (byId) {
+   return byId
+  }
+ }
+ const colId = col && typeof col.id === 'string' ? col.id : ''
+ if (colId) {
+  const byColId = tables.find(t => t && Array.isArray(t.columns) && t.columns.some(c => c && c.id === colId))
+  if (byColId) {
+   return byColId
+  }
+ }
+ const filterByColumnId = col && typeof col.filterByColumnId === 'string' ? col.filterByColumnId : ''
+ if (filterByColumnId) {
+  const byFilterCol = tables.find(t => t && Array.isArray(t.columns) && t.columns.some(c => c && c.id === filterByColumnId))
+  if (byFilterCol) {
+   return byFilterCol
+  }
+ }
+ return null
+}
+
+function findReferencedTable(tables, refTableId, ownerTableHint = null) {
+ if (!Array.isArray(tables) || !refTableId) {
+  return null
+ }
+ const ownerTable = ownerTableHint && typeof ownerTableHint === 'object' ? ownerTableHint : null
+ if (ownerTable && isRemoteTable(ownerTable)) {
+  const sameOwner = tables.find(t => isRemoteTable(t) && t.remote.laneId === ownerTable.remote.laneId && t.remote.tableId === refTableId)
+  if (sameOwner) {
+   return sameOwner
+  }
+  return null
+ }
+ const exact = tables.find(t => t && t.id === refTableId)
+ if (exact) {
+  return exact
+ }
+ return tables.find(t => isRemoteTable(t) && t.remote.tableId === refTableId) || null
+}
+
+export function resolveRowValueSpec(tables, col, visited = new Set(), ownerTableHint = null) {
  if (!Array.isArray(tables) || !col || typeof col !== 'object') {
   return null
  }
@@ -3960,7 +4070,8 @@ export function resolveRowValueSpec(tables, col, visited = new Set()) {
  if (visited.has(visitKey)) {
   return null
  }
- const table = tables.find(t => t && t.id === refTableId)
+ const ownerTable = resolveOwnerTableForCol(tables, col, ownerTableHint)
+ const table = findReferencedTable(tables, refTableId, ownerTable)
  if (!table || !Array.isArray(table.columns)) {
   return null
  }
@@ -3972,7 +4083,7 @@ export function resolveRowValueSpec(tables, col, visited = new Set()) {
  if (parsed.type === 'row') {
   const nextVisited = new Set(visited)
   nextVisited.add(visitKey)
-  return resolveRowValueSpec(tables, linkCol, nextVisited)
+  return resolveRowValueSpec(tables, linkCol, nextVisited, table)
  }
  return parsed
 }
@@ -4005,15 +4116,19 @@ function singleFilterValuesMatch(a, b, colA = null, colB = null, tables = null) 
   colB.type === 'row' &&
   typeof colA.refTableId === 'string' &&
   colA.refTableId.length > 0 &&
-  colA.refTableId === colB.refTableId &&
+  typeof colB.refTableId === 'string' &&
+  colB.refTableId.length > 0 &&
   typeof colA.refColumnId === 'string' &&
   typeof colB.refColumnId === 'string' &&
   colA.refColumnId.length > 0 &&
   colB.refColumnId.length > 0 &&
   colA.refColumnId !== colB.refColumnId
  ) {
-  const sharedTable = tables.find(t => t && t.id === colA.refTableId)
-  const sharedRows = sharedTable && Array.isArray(sharedTable.rows) ? sharedTable.rows : []
+  const ownerA = resolveOwnerTableForCol(tables, colA)
+  const ownerB = resolveOwnerTableForCol(tables, colB)
+  const sharedTable = findReferencedTable(tables, colA.refTableId, ownerA)
+  const sharedTableB = findReferencedTable(tables, colB.refTableId, ownerB)
+  const sharedRows = sharedTable && sharedTable === sharedTableB && Array.isArray(sharedTable.rows) ? sharedTable.rows : []
   for (let i = 0; i < sharedRows.length; i++) {
    const sRow = sharedRows[i]
    if (
@@ -4048,36 +4163,6 @@ export function rowFilterValuesMatch(targetVal, ownerVal, refFilterCol = null, f
  return false
 }
 
-function resolveOwnerTableForCol(tables, col, ownerTableHint = null) {
- if (ownerTableHint && typeof ownerTableHint === 'object' && Array.isArray(ownerTableHint.columns)) {
-  return ownerTableHint
- }
- if (!Array.isArray(tables)) {
-  return null
- }
- if (typeof ownerTableHint === 'string' && ownerTableHint.length > 0) {
-  const byId = tables.find(t => t && t.id === ownerTableHint)
-  if (byId) {
-   return byId
-  }
- }
- const colId = col && typeof col.id === 'string' ? col.id : ''
- if (colId) {
-  const byColId = tables.find(t => t && Array.isArray(t.columns) && t.columns.some(c => c && c.id === colId))
-  if (byColId) {
-   return byColId
-  }
- }
- const filterByColumnId = col && typeof col.filterByColumnId === 'string' ? col.filterByColumnId : ''
- if (filterByColumnId) {
-  const byFilterCol = tables.find(t => t && Array.isArray(t.columns) && t.columns.some(c => c && c.id === filterByColumnId))
-  if (byFilterCol) {
-   return byFilterCol
-  }
- }
- return null
-}
-
 export function resolveRowTarget(tables, col, ownerTableHint = null) {
  const refTableId = col && typeof col.refTableId === 'string' ? col.refTableId : ''
  const refColumnId = col && typeof col.refColumnId === 'string' ? col.refColumnId : ''
@@ -4085,21 +4170,19 @@ export function resolveRowTarget(tables, col, ownerTableHint = null) {
  const refFilterColumnId = col && typeof col.refFilterColumnId === 'string' ? col.refFilterColumnId : ''
  const filterByColumnId = col && typeof col.filterByColumnId === 'string' ? col.filterByColumnId : ''
  const configured = Boolean(refTableId && refColumnId)
- const table = Array.isArray(tables) && refTableId
-  ? tables.find(t => t && t.id === refTableId) || null
-  : null
+ const ownerTable = resolveOwnerTableForCol(tables, col, ownerTableHint)
+ const table = findReferencedTable(tables, refTableId, ownerTable)
  const cols = table && Array.isArray(table.columns) ? table.columns : []
  const linkCol = refColumnId ? cols.find(c => c && c.id === refColumnId) || null : null
  const rawDisplayCol = refDisplayColumnId ? cols.find(c => c && c.id === refDisplayColumnId) || null : null
  const displayCol = rawDisplayCol && linkCol && rawDisplayCol.id !== linkCol.id ? rawDisplayCol : null
- const valueSpec = linkCol ? resolveRowValueSpec(tables, { refTableId, refColumnId }) : null
+ const valueSpec = linkCol ? resolveRowValueSpec(tables, { refTableId, refColumnId }, new Set(), ownerTable) : null
  const displaySpec = displayCol
   ? (displayCol.type === 'row'
-   ? (resolveRowValueSpec(tables, displayCol) || parseColumnType(displayCol, false))
+   ? (resolveRowValueSpec(tables, displayCol, new Set(), table) || parseColumnType(displayCol, false))
    : parseColumnType(displayCol, false))
   : null
  const refFilterCol = refFilterColumnId ? cols.find(c => c && c.id === refFilterColumnId) || null : null
- const ownerTable = resolveOwnerTableForCol(tables, col, ownerTableHint)
  const ownerCols = ownerTable && Array.isArray(ownerTable.columns) ? ownerTable.columns : []
  const colId = col && typeof col.id === 'string' ? col.id : ''
  const rawFilterByCol = filterByColumnId ? ownerCols.find(c => c && c.id === filterByColumnId) || null : null
@@ -4146,7 +4229,8 @@ export function formatColumnType(type, multiple, decimals, tables = null) {
   base = `fixed(${parsed.decimals})`
  }
  else if (parsed.type === 'row') {
-  const target = Array.isArray(tables) ? resolveRowTarget(tables, parsed) : null
+  const ownerTable = Array.isArray(tables) && type && typeof type === 'object' ? resolveOwnerTableForCol(tables, type) : null
+  const target = Array.isArray(tables) ? resolveRowTarget(tables, parsed, ownerTable) : null
   if (target && target.table && target.linkCol) {
    const tLabel = typeof target.table.name === 'string' && target.table.name.trim().length > 0
     ? target.table.name.trim()
@@ -4342,7 +4426,8 @@ export function parseCellValue(raw, type, decimals, tables = null, displayOpts =
    if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) {
     return { ok: true, value: null, error: null }
    }
-   const valueSpec = tables ? resolveRowValueSpec(tables, parsed) : null
+   const ownerTable = tables && type && typeof type === 'object' ? resolveOwnerTableForCol(tables, type) : null
+   const valueSpec = tables ? resolveRowValueSpec(tables, parsed, new Set(), ownerTable) : null
    if (valueSpec) {
     return parseCellValue(raw, valueSpec, undefined, tables, displayOpts)
    }
@@ -4378,7 +4463,8 @@ export function formatCellInputValue(value, type, decimals, tables = null, displ
   return formatFixedInteger(value, parsed.decimals)
  }
  if (base === 'row') {
-  const valueSpec = tables ? resolveRowValueSpec(tables, parsed) : null
+  const ownerTable = tables && type && typeof type === 'object' ? resolveOwnerTableForCol(tables, type) : null
+  const valueSpec = tables ? resolveRowValueSpec(tables, parsed, new Set(), ownerTable) : null
   if (valueSpec) {
    return formatCellInputValue(value, valueSpec, undefined, tables, displayOpts)
   }
@@ -4455,19 +4541,19 @@ function formatRowCellText(value, spec, displayOpts = null) {
  return String(formatCellInputValue(value, parsed, undefined, null, displayOpts))
 }
 
-function coerceSingleDataValue(value, targetSpec, fromSpec = null, tables = null) {
+function coerceSingleDataValue(value, targetSpec, fromSpec = null, tables = null, ownerHint = null, fromOwnerHint = null) {
  const parsed = typeof targetSpec === 'object' && targetSpec !== null ? targetSpec : parseColumnType(targetSpec, false)
  const effectiveFromSpec = fromSpec && fromSpec.type === 'row' && tables
-  ? resolveRowValueSpec(tables, fromSpec)
+  ? resolveRowValueSpec(tables, fromSpec, new Set(), fromOwnerHint)
   : fromSpec
  const base = parsed.type
  if (base === 'row') {
   if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) {
    return null
   }
-  const resolvedTarget = tables ? resolveRowValueSpec(tables, parsed) : null
+  const resolvedTarget = tables ? resolveRowValueSpec(tables, parsed, new Set(), ownerHint) : null
   if (resolvedTarget) {
-   return coerceSingleDataValue(value, resolvedTarget, effectiveFromSpec, tables)
+   return coerceSingleDataValue(value, resolvedTarget, effectiveFromSpec, tables, ownerHint, fromOwnerHint)
   }
   return cloneDataValue(value)
  }
@@ -4606,19 +4692,21 @@ function coerceSingleDataValue(value, targetSpec, fromSpec = null, tables = null
 export function coerceDataValue(value, type, multiple, fromType = null, tables = null) {
  const parsed = parseColumnType(type, multiple)
  const fromParsed = fromType ? parseColumnType(fromType) : null
+ const ownerHint = tables && type && typeof type === 'object' ? resolveOwnerTableForCol(tables, type) : null
+ const fromOwnerHint = tables && fromType && typeof fromType === 'object' ? resolveOwnerTableForCol(tables, fromType) : null
  if (parsed.multiple) {
   if (Array.isArray(value)) {
-   return value.map(item => coerceSingleDataValue(item, parsed, fromParsed, tables))
+   return value.map(item => coerceSingleDataValue(item, parsed, fromParsed, tables, ownerHint, fromOwnerHint))
   }
   if (value === null || value === undefined || value === '') {
    return []
   }
-  return [coerceSingleDataValue(value, parsed, fromParsed, tables)]
+  return [coerceSingleDataValue(value, parsed, fromParsed, tables, ownerHint, fromOwnerHint)]
  }
  if (Array.isArray(value)) {
-  return value.length > 0 ? coerceSingleDataValue(value[0], parsed, fromParsed, tables) : defaultDataValue(parsed, false)
+  return value.length > 0 ? coerceSingleDataValue(value[0], parsed, fromParsed, tables, ownerHint, fromOwnerHint) : defaultDataValue(parsed, false)
  }
- return coerceSingleDataValue(value, parsed, fromParsed, tables)
+ return coerceSingleDataValue(value, parsed, fromParsed, tables, ownerHint, fromOwnerHint)
 }
 
 export function checkColumnChangeImpact(table, colId, nextType, nextMultiple, nextDecimals, tables = null) {
@@ -4767,7 +4855,12 @@ export function parseStoredTables(stored) {
    }
    columns.push(normalizedCol)
   }
-  out.push({ id: tableId, name: tableName, columns, rows: [] })
+  const tableObj = { id: tableId, name: tableName, columns, rows: [] }
+  const remote = normalizeTableRemoteSpec(item.remote)
+  if (remote) {
+   tableObj.remote = remote
+  }
+  out.push(tableObj)
   rawRowsPerTable.push(Array.isArray(item.rows) ? item.rows : [])
  }
  for (let t = 0; t < out.length; t++) {
@@ -5120,9 +5213,8 @@ export function resolveWorkflowTarget(tables, col) {
  }
  const { tableId, fromColumnId, toColumnId } = constraint
  const configured = Boolean(tableId && fromColumnId && toColumnId)
- const table = Array.isArray(tables) && tableId
-  ? tables.find(t => t && t.id === tableId) || null
-  : null
+ const ownerTable = resolveOwnerTableForCol(tables, col)
+ const table = findReferencedTable(tables, tableId, ownerTable)
  const cols = table && Array.isArray(table.columns) ? table.columns : []
  const fromCol = fromColumnId ? cols.find(c => c && c.id === fromColumnId) || null : null
  const toCol = toColumnId ? cols.find(c => c && c.id === toColumnId) || null : null
@@ -5365,7 +5457,8 @@ export function resolveInboundSubtables(tables, targetTable) {
    if (!col || typeof col !== 'object' || col.type !== 'row') {
     continue
    }
-   if (String(col.refTableId || '') !== targetId) {
+   const resolvedRef = findReferencedTable(tables, String(col.refTableId || ''), srcTable)
+   if (resolvedRef !== targetTable) {
     continue
    }
    const refColId = typeof col.refColumnId === 'string' ? col.refColumnId : ''
@@ -5451,6 +5544,19 @@ export function syncTableRowsInMemory(tables, tableNameOrId, rawRecords, keyColu
  const table = list.find(t => t && (t.id === query || String(t.name || '').trim().toLowerCase() === lowerQuery)) || null
  if (!table) {
   return { ok: false, error: `Table "${query}" not found`, count: 0, added: 0, updated: 0, table: null }
+ }
+ if (isReadOnlyRemoteTable(table)) {
+  return {
+   ok: false,
+   changed: false,
+   readOnly: true,
+   error: `Table "${table.name || query}" is imported as read-only`,
+   count: Array.isArray(table.rows) ? table.rows.length : 0,
+   added: 0,
+   updated: 0,
+   removed: 0,
+   table,
+  }
  }
  const cols = Array.isArray(table.columns) ? table.columns : []
  const existingRows = Array.isArray(table.rows) ? table.rows : []

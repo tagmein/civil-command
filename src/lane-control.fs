@@ -83,6 +83,8 @@
 ; set $config-modal scope.config-modal
 ; to import-modal !lane-import-modal.create $scope
 ; set $import-modal scope.import-modal
+; to table-import-modal !lane-import-modal.create-table-import $scope
+; set $table-import-modal scope.table-import-modal
 ; to export-modal !lane-export-modal.create $scope
 ; set $export-modal scope.export-modal
 ; to export-deploy-modal !lane-export-deploy-modal.create $scope
@@ -2216,6 +2218,11 @@
  ; to { opts } $argv
  !import-modal.open $opts
 )
+; to scope.pick-table-import (
+ -- Opens the Import Table picker modal for mounting a read-only or read-write remote table
+ ; to { opts } $argv
+ !table-import-modal.open $opts
+)
 ; to scope.pick-export (
  -- Opens the Export to Lane target picker modal
  ; to { opts } $argv
@@ -2593,6 +2600,168 @@
   ) }
  ]
 )
+; to scope.navigate-to-lane-table (
+ -- Opens or restores a target lane on the Data tab, selects the specified table, highlights the lane, and scrolls it into view
+ ; to { target-lane-id target-table-id target-table-name from-lane-id } $argv
+ ; to clean-lane [ match { $target-lane-id : ; add '' $target-lane-id } { true : '' } ]
+ ; to clean-table-id [ match { $target-table-id : ; add '' $target-table-id } { true : '' } ]
+ ; to clean-table-name [ match { $target-table-name : ; add '' $target-table-name } { true : '' } ]
+ [ match
+  { [ propertyIs '' clean-lane ] : null }
+  { true (
+   [ match
+    { $scope.fullscreen-lane (
+     ; to is-same-fs [ propertyIs $clean-lane scope.fullscreen-lane.id ]
+     ; condition { propertyIs false is-same-fs } : !scope.exit-lane-fullscreen true
+    ) }
+   ]
+   [ match
+    { $rails.preview-lane : !rails.hide-preview }
+   ]
+   ; to existing [ get scope.by-id $clean-lane ]
+   ; to target-lane [ match
+    { $existing (
+     !scope.begin-session-status-pending 'Loading…'
+     ; try (
+      ; condition { propertyIs true existing.is-minimized } : !scope.restore $clean-lane false true
+      ; to dv $existing.notebook.data-view
+      [ match
+       { $dv (
+        ; to matched-box ; object { tbl null }
+        ; to tid-empty [ propertyIs '' clean-table-id ]
+        ; to tname-empty [ propertyIs '' clean-table-name ]
+        [ match
+         { [ propertyIs false tid-empty ] (
+          ; each $dv.tables (
+           ; to { t } $argv
+           ; condition { propertyIs $clean-table-id t.id } : ; set $t matched-box.tbl
+          )
+         ) }
+        ]
+        [ match
+         { [ and { $matched-box.tbl } { $dv.select-table } ] : !dv.select-table $matched-box.tbl.id true }
+         { [ and { [ propertyIs false tname-empty ] } { $dv.select-table-by-name } ] : !dv.select-table-by-name $clean-table-name true }
+        ]
+       ) }
+      ]
+      [ match
+       { $existing.notebook.set-tab : !existing.notebook.set-tab data true }
+      ]
+      [ match
+       { $existing.notebook.data-view.sync-data-path : !existing.notebook.data-view.sync-data-path }
+       { true : !scope.remember-path $existing }
+      ]
+      !scope.update-url
+     ) : null
+     !scope.end-session-status-pending
+     $existing
+    ) }
+    { true (
+     !scope.begin-session-status-pending 'Loading…'
+     ; to opened null
+     ; try (
+      ; set [ !scope.open $clean-lane data $clean-table-name $from-lane-id ] opened
+      [ match
+       { $opened.is-minimized : !scope.restore $clean-lane false true }
+      ]
+      ; to od-dv $opened.notebook.data-view
+      ; to open-tid-empty [ propertyIs '' clean-table-id ]
+      [ match
+       { [ and { $od-dv } { [ propertyIs false open-tid-empty ] } ] (
+        ; to matched-open ; object { tbl null }
+        ; each $od-dv.tables (
+         ; to { t } $argv
+         ; condition { propertyIs $clean-table-id t.id } : ; set $t matched-open.tbl
+        )
+        ; to already-selected [ propertyIs $matched-open.tbl.id od-dv.active-table-id ]
+        [ match
+         { [ and { $matched-open.tbl } { [ propertyIs false already-selected ] } { $od-dv.select-table } ] (
+          !od-dv.select-table $matched-open.tbl.id true
+          !od-dv.sync-data-path
+         ) }
+        ]
+       ) }
+      ]
+      !scope.update-url
+     ) : null
+     !scope.end-session-status-pending
+     $opened
+    ) }
+   ]
+   [ match
+    { $target-lane (
+     !scope.highlight-lane $clean-lane
+     ; to scroll-target [ match
+      { $target-lane.notebook.data-view.table-header-el : $target-lane.notebook.data-view.table-header-el }
+      { true : $target-lane.element }
+     ]
+     !scope.scroll-lane-into-view $target-lane $scroll-target
+    ) }
+   ]
+   $target-lane
+  ) }
+ ]
+)
+; to scope.notify-table-dependents (
+ -- Propagates live table schema/row updates between an owner lane and all open lanes mounting its tables remotely
+ ; to { owner-lane-id owner-tables source-lane-id change-info } $argv
+ ; to clean-owner [ match { $owner-lane-id : ; add '' $owner-lane-id } { true : '' } ]
+ ; to clean-src [ match { $source-lane-id : ; add '' $source-lane-id } { true : '' } ]
+ [ match
+  { [ propertyIs '' clean-owner ] : null }
+  { true (
+   ; to open-owner [ get scope.by-id $clean-owner ]
+   ; to eff-tables [ match
+    { [ !window.Array.isArray $owner-tables ] : $owner-tables }
+    { [ and { [ propertyIs $clean-src clean-owner ] } { $open-owner } { [ !window.Array.isArray $open-owner.notebook.data-view.tables ] } ] : $open-owner.notebook.data-view.tables }
+    { true : !loadLaneTables $data [ !data.namespace $clean-owner ] $clean-owner [ object { openPackageIds $scope.open-package-ids } ] }
+   ]
+   ; each $scope.lanes (
+    ; to { dep-lane } $argv
+    ; to same-src [ propertyIs $dep-lane.id clean-src ]
+    ; to is-locked [ propertyIs true dep-lane.is-locked ]
+    ; condition { and { [ propertyIs false same-src ] } { [ propertyIs false is-locked ] } } (
+     ; to dep-dv $dep-lane.notebook.data-view
+     ; to dep-changed ; object { hit false }
+     [ match
+      { [ propertyIs $dep-lane.id clean-owner ] (
+       [ match
+        { $dep-dv.apply-external-owner-table-sync (
+         ; to applied !dep-dv.apply-external-owner-table-sync $eff-tables $change-info
+         ; condition { propertyIs true applied } : ; set true dep-changed.hit
+        ) }
+       ]
+      ) }
+      { $dep-dv.has-remote-from-lane (
+       ; to uses-owner !dep-dv.has-remote-from-lane $clean-owner
+       ; condition { propertyIs true uses-owner } (
+        [ match
+         { $dep-dv.sync-remote-tables-from-owner (
+          ; to synced !dep-dv.sync-remote-tables-from-owner $clean-owner $eff-tables $change-info
+          ; condition { propertyIs true synced } : ; set true dep-changed.hit
+         ) }
+        ]
+       )
+      ) }
+     ]
+     ; condition { propertyIs true dep-changed.hit } (
+      ; to dep-tab $dep-lane.notebook.active-tab
+      [ match
+       { [ propertyIs story dep-tab ] : null }
+       { [ propertyIs input dep-tab ] : null }
+       { [ propertyIs data dep-tab ] (
+        [ match
+         { $dep-lane.notebook.run-on-table-change : !dep-lane.notebook.run-on-table-change $change-info }
+        ]
+       ) }
+       { $dep-lane.notebook.run : !dep-lane.notebook.run null false $change-info }
+      ]
+     )
+    )
+   )
+  ) }
+ ]
+)
 ; to scope.set-lane-line (
  -- Writes evaluated text to a target lane line if changed, records Set-by metadata in Civil Command, updates any mounted target lane UI, and returns deploy status
  ; to { target-lane-id target-line-id content caller-lane-id visited caller-line-id } $argv
@@ -2754,7 +2923,7 @@
      ; to open-target [ get scope.by-id $clean-target ]
      ; to tables [ match
       { $open-target.notebook.data-view.tables : $open-target.notebook.data-view.tables }
-      { true : !loadLaneTables $data $target-data $clean-target }
+      { true : !loadLaneTables $data $target-data $clean-target [ object { openPackageIds $scope.open-package-ids } ] }
      ]
      ; to res [ match
       { $syncTableRowsInMemory : !syncTableRowsInMemory $tables $clean-tbl $records $key-col }
@@ -2774,6 +2943,15 @@
          ]
         ) }
        ]
+       ; to effective-owner [ match
+        { $res.table.remote.laneId : $res.table.remote.laneId }
+        { true : $clean-target }
+       ]
+       ; to owner-tables-for-sync [ match
+        { [ propertyIs $effective-owner clean-target ] : $tables }
+        { true : null }
+       ]
+       !scope.notify-table-dependents $effective-owner $owner-tables-for-sync $clean-target [ object { tableId $res.table.id } { tableName $res.table.name } { action sync-lane-table } ]
       ) }
      ]
      ; to out ; object
@@ -2810,7 +2988,7 @@
      ; to caller-dv $caller-lane.notebook.data-view
      ; to caller-tables [ match
       { $caller-dv.tables : $caller-dv.tables }
-      { $caller-lane-id : !loadLaneTables $data [ !data.namespace $caller-lane-id ] $caller-lane-id }
+      { $caller-lane-id : !loadLaneTables $data [ !data.namespace $caller-lane-id ] $caller-lane-id [ object { openPackageIds $scope.open-package-ids } ] }
       { true : {} }
      ]
      ; to tbl-query [ match
@@ -3077,7 +3255,7 @@
  )
  ; to stored-inputs !target-data.get inputs
  ; to inputs !lane-inputs.parse-stored $stored-inputs
- ; to tables !loadLaneTables $data $target-data $target-id
+ ; to tables !loadLaneTables $data $target-data $target-id [ object { openPackageIds $scope.open-package-ids } ]
  ; to line-ctx ; object { index null } { lineNumber null } { lineId '' }
  ; to story-rec [ match
   { [ and { [ propertyIs false skip-story ] } { $createStoryRunRecorder } ] : !createStoryRunRecorder [ object { laneId $target-id } { trigger $trigger } ] }
@@ -3170,7 +3348,7 @@
   { JSON $window.JSON }
   { Date $window.Date }
   { Array $window.Array }
-  { fetch ( ; to { u o } $argv, [ match { $window.fetch : !window.fetch $u $o } { true : null } ] ) }
+  { fetch ( ; to { u o } $argv, [ match { [ and { $data.isProxyBacked } { $data.externalFetch } ] : !data.externalFetch $u $o } { $window.fetch : !window.fetch $u $o } { true : null } ] ) }
   { respond [ match { $createResponseHelper : !createResponseHelper } { true : null } ] }
   { exportLaneLine $export-lane-fn }
   { setLaneLine $export-lane-fn }
@@ -3206,6 +3384,15 @@
        ]
       ) }
      ]
+     ; to effective-owner [ match
+      { $res.table.remote.laneId : $res.table.remote.laneId }
+      { true : $target-id }
+     ]
+     ; to owner-tables-for-sync [ match
+      { [ propertyIs $effective-owner target-id ] : $tables }
+      { true : null }
+     ]
+     !scope.notify-table-dependents $effective-owner $owner-tables-for-sync $target-id [ object { tableId $res.table.id } { tableName $res.table.name } { action sync-table } ]
     ) }
    ]
    $res
@@ -5600,9 +5787,18 @@
     { true : false }
    ]
    ; to direct-synced ; object { ok false }
-   ; condition { and { propertyIs true need-direct-fetch } { get window.fetch } } (
+   ; to use-proxy-fetch [ ternary [ and { $data.isProxyBacked } { $data.externalFetch } ] true false ]
+   ; to can-fetch [ match
+    { $use-proxy-fetch : true }
+    { $window.fetch : true }
+    { true : false }
+   ]
+   ; condition { and { propertyIs true need-direct-fetch } { propertyIs true can-fetch } } (
     ; try (
-     ; to res !window.fetch $target-url
+     ; to res [ match
+      { $use-proxy-fetch : !data.externalFetch $target-url }
+      { true : !window.fetch $target-url }
+     ]
      [ match
       { $res.ok (
        ; to txt !res.text
@@ -5884,6 +6080,28 @@
        ; to open-lane [ get scope.by-id $target-id ]
        [ match
         { $open-lane : !scope.reload $target-id }
+       ]
+       ; to has-remote-deps ; object { hit false }
+       ; each $scope.lanes (
+        ; to { dep-l } $argv
+        ; to is-self-dep [ propertyIs $dep-l.id target-id ]
+        ; condition { propertyIs false is-self-dep } (
+         [ match
+          { $dep-l.notebook.data-view.has-remote-from-lane (
+           ; to uses-t !dep-l.notebook.data-view.has-remote-from-lane $target-id
+           ; condition { propertyIs true uses-t } : ; set true has-remote-deps.hit
+          ) }
+         ]
+        )
+       )
+       [ match
+        { $has-remote-deps.hit (
+         ; to owner-tbls [ match
+          { $open-lane.notebook.data-view.tables : $open-lane.notebook.data-view.tables }
+          { true : !loadLaneTables $data [ !data.namespace $target-id ] $target-id [ object { openPackageIds $scope.open-package-ids } ] }
+         ]
+         !scope.notify-table-dependents $target-id $owner-tbls $target-id [ object { action $ev.action } { tableId $ev.tableId } ]
+        ) }
        ]
        [ match
         { $scope.preferences-lane-id (

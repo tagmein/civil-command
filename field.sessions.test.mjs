@@ -16,6 +16,7 @@ import {
  PRIMITIVE_TYPES,
  SECRET_MASK,
  SESSION_STORAGE_KEY,
+ SESSION_TOKEN_HEADER,
  STORY_NAMESPACE,
  addLaneTable,
  addTableRow,
@@ -26,10 +27,12 @@ import {
  buildBreadcrumbs,
  buildDataUrl,
  createAgentEventHub,
+ createCapabilityToken,
  createDirectory,
  createIdleTracker,
  createNewSession,
  createPackage,
+ createServerSecretStore,
  defaultValueForType,
  deletePagedIds,
  dirModalSource,
@@ -1470,10 +1473,16 @@ test('fs-api.mjs: parseProcMounts, listDisks, listDirectories (including hidden 
   assert.equal(badNameRes.status, 400)
 
   // HTTP handler round-trip for /api/fs/roots, /api/fs/list, /api/fs/mkdir, 404, 405
+  const fsSecretStore = createServerSecretStore({ useEnv: false })
+  const fsSessionToken = createCapabilityToken({ sessionId: null, basePath: null, allowUnlocked: true }, fsSecretStore)
   async function invokeFsApi(method, urlPath, jsonBody = null) {
    const req = new EventEmitter()
    req.method = method
    req.url = urlPath
+   req.headers = {
+    [SESSION_TOKEN_HEADER.toLowerCase()]: fsSessionToken,
+    ...(jsonBody !== null ? { 'content-type': 'application/json' } : {}),
+   }
    let statusCode = 0
    let headers = {}
    let rawBody = ''
@@ -1491,6 +1500,7 @@ test('fs-api.mjs: parseProcMounts, listDisks, listDirectories (including hidden 
     homedir: homeDir,
     mountsText: '/dev/nvme0n1p2 / ext4 rw 0 0\n',
     extraMountParents: [mountParent],
+    secretStore: fsSecretStore,
    })
    if (jsonBody !== null) {
     queueMicrotask(() => {
@@ -2917,21 +2927,29 @@ test('Agent context helpers (formatAgentContext, inspectSessionForAgent) and UI 
 
   // 7. HTTP handler /api/agent/* and /api/mcp over loopback server
   const http = await import('node:http')
-  const srv = http.createServer((req, res) => handleAgentApiRequest(req, res, { rootKv: defaultRootKv, eventHub }))
+  const agentSecretStore = createServerSecretStore({ useEnv: false })
+  const agentToken = createCapabilityToken({ sessionId: null, basePath: null, allowUnlocked: true }, agentSecretStore)
+  const srv = http.createServer((req, res) =>
+   handleAgentApiRequest(req, res, { rootKv: defaultRootKv, eventHub, secretStore: agentSecretStore })
+  )
   await new Promise(resolve => srv.listen(0, '127.0.0.1', resolve))
   const port = srv.address().port
   try {
-   const sessHttp = await fetch(`http://127.0.0.1:${port}/api/agent/sessions`).then(r => r.json())
+   const sessHttp = await origFetch(`http://127.0.0.1:${port}/api/agent/sessions`, {
+    headers: { [SESSION_TOKEN_HEADER]: agentToken },
+   }).then(r => r.json())
    assert.equal(sessHttp.ok, true)
    assert.equal(sessHttp.activeSession.name, 'Agent Workspace')
 
-   const laneHttp = await fetch(`http://127.0.0.1:${port}/api/agent/lane?lane=Inbox`).then(r => r.json())
+   const laneHttp = await origFetch(`http://127.0.0.1:${port}/api/agent/lane?lane=Inbox`, {
+    headers: { [SESSION_TOKEN_HEADER]: agentToken },
+   }).then(r => r.json())
    assert.equal(laneHttp.ok, true)
    assert.equal(laneHttp.lane.id, 'inbox-lane-1')
 
    const mcpHttp = await origFetch(`http://127.0.0.1:${port}/api/mcp`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', [SESSION_TOKEN_HEADER]: agentToken },
     body: JSON.stringify({
      jsonrpc: '2.0',
      id: 99,

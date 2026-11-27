@@ -18,6 +18,7 @@ import {
  NEW_LOG_HIGHLIGHT_HOLD_MS,
  NEW_LOG_HIGHLIGHT_TOTAL_MS,
  PRIMITIVE_TYPES,
+ SESSION_TOKEN_HEADER,
  TRIGGER_INTERNAL_PREFIX,
  agentListDeployments,
  allocateNextPort,
@@ -29,9 +30,11 @@ import {
  computeLaneSnapshotRevision,
  computeNewLogHighlightAlpha,
  computeWebSocketAccept,
+ createCapabilityToken,
  createIdleTracker,
  createLaneHttpServer,
  createResponseHelper,
+ createServerSecretStore,
  createTerminalBuffer,
  createTerminalManager,
  createTriggerStamp,
@@ -121,6 +124,12 @@ import {
  withKvTriggers,
  writeLaneSyncBundleToKv,
 } from './field.fixtures.mjs'
+import {
+ extractLocalMjsImports,
+ generateFastResyncScript,
+ readRuntimeFiles,
+ resolveBundledRuntimeFileNames,
+} from './deploy-api.mjs'
 
 test('lane-http.mjs: request parsing, handler detection, hybrid expression fallback, respond envelope vs plain JSON, and mock simulator', async () => {
  const req = buildRequestObject({
@@ -724,6 +733,7 @@ test('deploy-api.mjs: validation, bash -n checked script generation, Nginx/syste
  const portBoundUnit = generateSystemdUnit({ slug: 'calc-api', title: 'Calc API', port: 4100, allowLoopback: true })
  assert.match(portBoundUnit, /^SocketBindAllow=ipv4:tcp:4100$/m)
  assert.match(portBoundUnit, /^IPAddressAllow=127\.0\.0\.1\/32$/m)
+ assert.match(portBoundUnit, /^IPAddressAllow=127\.0\.0\.53\/32$/m)
  assert.match(portBoundUnit, /^IPAddressDeny=.*localhost.*link-local.*169\.254\.169\.254\/32/m)
 
  const subNginx = generateNginxSubpathConfig({ slug: 'calc-api', port: 4100, subpath: '/calc' })
@@ -798,7 +808,71 @@ test('deploy-api.mjs: validation, bash -n checked script generation, Nginx/syste
  assert.match(deployScript, /sandbox\.mjs/)
  assert.match(deployScript, /source-worker\.mjs/)
  assert.match(deployScript, /chmod 644/)
+ assert.match(deployScript, /systemctl reset-failed/)
  assert.match(deployScript, /__CC_DEPLOY_OK__/)
+
+ assert.throws(() => {
+  const withoutSandbox = { ...runtimeFiles }
+  delete withoutSandbox['sandbox.mjs']
+  generateDeployScript({
+   slug: 'calc-api',
+   laneId: 'lane-1',
+   civilMemoryUrl: 'http://127.0.0.1:3333',
+   runtimeFiles: withoutSandbox,
+  })
+ }, /Missing runtime file content for sandbox\.mjs/)
+
+ assert.throws(() => {
+  const withoutWorker = { ...runtimeFiles }
+  delete withoutWorker['source-worker.mjs']
+  generateDeployScript({
+   slug: 'calc-api',
+   laneId: 'lane-1',
+   civilMemoryUrl: 'http://127.0.0.1:3333',
+   runtimeFiles: withoutWorker,
+  })
+ }, /Missing runtime file content for source-worker\.mjs/)
+
+ assert.throws(() => {
+  generateDeployScript({
+   slug: 'calc-api',
+   laneId: 'lane-1',
+   civilMemoryUrl: 'http://127.0.0.1:3333',
+   runtimeFiles: {
+    ...runtimeFiles,
+    'storage.mjs': "import { DEFAULT_KV_CHUNK_BYTES } from './kv-config.mjs'\nexport const ok = DEFAULT_KV_CHUNK_BYTES\n",
+   },
+  })
+ }, /Missing runtime file content for kv-config\.mjs/)
+
+ assert.deepEqual(
+  extractLocalMjsImports("import {\n a,\n b\n} from './field.mjs'\nexport * from './data.mjs'\nconst x = await import('./extra.mjs')").sort(),
+  ['data.mjs', 'extra.mjs', 'field.mjs']
+ )
+ const resolvedNames = resolveBundledRuntimeFileNames({
+  ...runtimeFiles,
+  'extra.mjs': 'export const extra = 1',
+ }, {
+  requiredBase: ['field.mjs', 'data.mjs', 'storage.mjs', 'sandbox.mjs', 'source-worker.mjs', 'lane-http.mjs', 'lane-server.mjs'],
+  entryFiles: ['lane-server.mjs', 'source-worker.mjs'],
+ })
+ assert.equal(resolvedNames.includes('extra.mjs'), true)
+
+ const fastResyncScript = generateFastResyncScript({
+  slug: 'calc-api',
+  laneId: 'lane-1',
+  title: 'Calc API',
+  port: 4100,
+  routeMode: 'subpath',
+  domain: 'api.example.com',
+  subpath: '/calc',
+  civilMemoryUrl: 'http://127.0.0.1:3333',
+  dataBasePath: '/opt/civil-command/calc-api/data',
+  runtimeFiles,
+  syncBundle: { mainLaneId: 'lane-1', includeImports: false, lanes: [{ id: 'lane-1', title: 'Calc', records: [], tables: [] }] },
+ })
+ assert.match(fastResyncScript, /CC_RUNTIME_UPDATED=0/)
+ assert.match(fastResyncScript, /systemctl reset-failed/)
 
  const deployRootScript = generateDeployScript({
   slug: 'root-api',
@@ -840,6 +914,7 @@ test('deploy-api.mjs: validation, bash -n checked script generation, Nginx/syste
  for (const [label, scriptText] of [
   ['cmInstall', cmInstallScript],
   ['deploySubpath', deployScript],
+  ['fastResync', fastResyncScript],
   ['deployDomain', deployRootScript],
   ['undeploySubpath', undeployScript],
   ['undeployDomain', undeployRootScript],
@@ -915,8 +990,10 @@ test('deploy-api.mjs: validation, bash -n checked script generation, Nginx/syste
   new Promise(r => cmMock.listen(0, '127.0.0.1', r)),
   new Promise(r => echoMock.listen(0, '127.0.0.1', r)),
  ])
+ const deploySecretStore = createServerSecretStore({ useEnv: false })
+ const deployToken = createCapabilityToken({ sessionId: null, basePath: null, allowUnlocked: true }, deploySecretStore)
  const apiServer = http.createServer((req, res) => {
-  handleDeployApiRequest(req, res)
+  handleDeployApiRequest(req, res, { secretStore: deploySecretStore })
  })
  await new Promise(r => apiServer.listen(0, '127.0.0.1', r))
  const apiPort = apiServer.address().port
@@ -929,21 +1006,21 @@ test('deploy-api.mjs: validation, bash -n checked script generation, Nginx/syste
 
   const evilRes = await fetch(`http://127.0.0.1:${apiPort}/api/deploy/kv/test`, {
    method: 'POST',
-   headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' },
+   headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example', [SESSION_TOKEN_HEADER]: deployToken },
    body: JSON.stringify({ url: cmBase }),
   })
   assert.equal(evilRes.status, 403)
 
   const kvTestOk = await fetch(`http://127.0.0.1:${apiPort}/api/deploy/kv/test`, {
    method: 'POST',
-   headers: { 'Content-Type': 'application/json' },
+   headers: { 'Content-Type': 'application/json', [SESSION_TOKEN_HEADER]: deployToken },
    body: JSON.stringify({ url: cmBase, basePath: '/opt/test/data' }),
   }).then(r => r.json())
   assert.equal(kvTestOk.ok, true)
 
   const kvSyncOk = await fetch(`http://127.0.0.1:${apiPort}/api/deploy/kv/sync`, {
    method: 'POST',
-   headers: { 'Content-Type': 'application/json' },
+   headers: { 'Content-Type': 'application/json', [SESSION_TOKEN_HEADER]: deployToken },
    body: JSON.stringify({
     url: cmBase,
     basePath: '/opt/test/data',
@@ -955,7 +1032,7 @@ test('deploy-api.mjs: validation, bash -n checked script generation, Nginx/syste
 
   const proxyRes = await fetch(`http://127.0.0.1:${apiPort}/api/deploy/proxy`, {
    method: 'POST',
-   headers: { 'Content-Type': 'application/json' },
+   headers: { 'Content-Type': 'application/json', [SESSION_TOKEN_HEADER]: deployToken },
    body: JSON.stringify({ url: `${echoBase}/hello?a=1`, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"v":7}' }),
   }).then(r => r.json())
   assert.equal(proxyRes.ok, true)
@@ -2822,8 +2899,10 @@ test('agentListDeployments --ping liveCodeMatches & /api/deploy/kv/sync reloadUr
   res.writeHead(200, { 'Content-Type': 'application/json' })
   res.end('{"ok":true}')
  })
+ const reloadSecretStore = createServerSecretStore({ useEnv: false })
+ const reloadToken = createCapabilityToken({ sessionId: null, basePath: null, allowUnlocked: true }, reloadSecretStore)
  const apiServer = http.createServer((req, res) => {
-  handleDeployApiRequest(req, res, { rootDir: process.cwd() })
+  handleDeployApiRequest(req, res, { rootDir: process.cwd(), secretStore: reloadSecretStore })
  })
 
  try {
@@ -2866,7 +2945,7 @@ test('agentListDeployments --ping liveCodeMatches & /api/deploy/kv/sync reloadUr
   // Verify /api/deploy/kv/sync forwards reloadUrl
   const syncResp = await fetch(`http://127.0.0.1:${apiPort}/api/deploy/kv/sync`, {
    method: 'POST',
-   headers: { 'Content-Type': 'application/json' },
+   headers: { 'Content-Type': 'application/json', [SESSION_TOKEN_HEADER]: reloadToken },
    body: JSON.stringify({
     url: `http://127.0.0.1:${cmPort}`,
     reloadUrl: `http://127.0.0.1:${spyPort}/_cc/reload`,
@@ -2888,5 +2967,166 @@ test('agentListDeployments --ping liveCodeMatches & /api/deploy/kv/sync reloadUr
    new Promise(r => reloadSpy.close(r)),
    new Promise(r => apiServer.close(r)),
   ])
+ }
+})
+
+test('deploy-api.mjs readRuntimeFiles + generateDeployScript: isolated deployed service directory boots lane-server.mjs and executes --permission worker requests without repo access', async () => {
+ async function getFreePort() {
+  return new Promise((resolve, reject) => {
+   const srv = net.createServer()
+   srv.unref()
+   srv.on('error', reject)
+   srv.listen(0, '127.0.0.1', () => {
+    const { port } = srv.address()
+    srv.close(() => resolve(port))
+   })
+  })
+ }
+
+ const runtimeFiles = await readRuntimeFiles()
+ assert.deepEqual(
+  Object.keys(runtimeFiles),
+  ['field.mjs', 'data.mjs', 'kv-config.mjs', 'storage.mjs', 'sandbox.mjs', 'source-worker.mjs', 'lane-http.mjs', 'lane-server.mjs']
+ )
+
+ const kvStore = new Map()
+ const cmServer = http.createServer(async (req, res) => {
+  const u = new URL(req.url || '/', 'http://127.0.0.1')
+  const key = u.searchParams.get('key')
+  if (req.method === 'GET') {
+   if (!kvStore.has(key)) {
+    res.writeHead(404)
+    res.end('Not found')
+    return
+   }
+   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' })
+   res.end(kvStore.get(key))
+   return
+  }
+  if (req.method === 'POST' || req.method === 'PUT') {
+   const chunks = []
+   for await (const ch of req) { chunks.push(ch) }
+   kvStore.set(key, Buffer.concat(chunks).toString('utf8'))
+   res.writeHead(200)
+   res.end('ok')
+   return
+  }
+  if (req.method === 'DELETE') {
+   kvStore.delete(key)
+   res.writeHead(200)
+   res.end('ok')
+   return
+  }
+  res.writeHead(405)
+  res.end('Method not allowed')
+ })
+
+ const serviceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-isolated-deploy-'))
+ let child = null
+ let exitPromise = null
+
+ try {
+  await new Promise(resolve => cmServer.listen(0, '127.0.0.1', resolve))
+  const cmPort = cmServer.address().port
+  const cmUrl = normalizeCivilMemoryBaseUrl(`http://127.0.0.1:${cmPort}`)
+  const laneId = 'isolated-beacon-lane'
+  const kvClient = httpKV({ baseUrl: cmUrl, switchable: false })
+  await saveLaneScript(
+   kvClient,
+   kvClient.namespace(laneId),
+   laneId,
+   ['; to get (\n ; to { req } $argv\n ; object { ok true } { sum [ ; add 20 22 ] } { path $req.path }\n)'],
+   null
+  )
+
+  const lanePort = await getFreePort()
+  const configPath = path.join(serviceDir, 'config.json')
+  await fs.writeFile(path.join(serviceDir, 'package.json'), '{"type":"module","private":true}\n', 'utf8')
+  for (const [name, content] of Object.entries(runtimeFiles)) {
+   await fs.writeFile(path.join(serviceDir, name), content, 'utf8')
+  }
+  await fs.writeFile(configPath, JSON.stringify({
+   slug: 'isolated-beacon',
+   laneId,
+   title: 'Isolated Beacon',
+   host: '127.0.0.1',
+   port: lanePort,
+   basePath: '',
+   cors: true,
+   civilMemoryUrl: cmUrl,
+   dataBasePath: null,
+   includeImports: false,
+  }, null, 1), 'utf8')
+
+  let logs = ''
+  child = spawn(process.execPath, [path.join(serviceDir, 'lane-server.mjs'), '--config', configPath], {
+   cwd: serviceDir,
+   stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  child.stdout.on('data', d => { logs += d.toString('utf8') })
+  child.stderr.on('data', d => { logs += d.toString('utf8') })
+
+  let exited = null
+  exitPromise = new Promise(resolve => {
+   child.once('exit', (code, signal) => {
+    exited = { code, signal }
+    resolve(exited)
+   })
+  })
+
+  const deadline = Date.now() + 8000
+  let healthRes = null
+  while (Date.now() < deadline) {
+   if (exited) {
+    throw new Error(`Isolated lane-server.mjs exited early (${JSON.stringify(exited)}): ${logs}`)
+   }
+   try {
+    const resp = await fetch(`http://127.0.0.1:${lanePort}/_cc/health`)
+    if (resp.ok) {
+     healthRes = await resp.json()
+     break
+    }
+   }
+   catch {
+    // Still starting
+   }
+   await new Promise(r => setTimeout(r, 40))
+  }
+  assert.ok(healthRes, `Timed out waiting for isolated lane-server.mjs health: ${logs}`)
+  assert.equal(healthRes.ok, true)
+
+  const reloadResp = await fetch(`http://127.0.0.1:${lanePort}/_cc/reload?force=1`, { method: 'POST' })
+  assert.equal(reloadResp.status, 200)
+  const reloadBody = await reloadResp.json()
+  assert.equal(reloadBody.ok, true)
+
+  const pingResp = await fetch(`http://127.0.0.1:${lanePort}/ping`)
+  assert.equal(pingResp.status, 200)
+  assert.deepEqual(await pingResp.json(), {
+   ok: true,
+   sum: 42,
+   path: '/ping',
+  })
+ }
+ finally {
+  if (child && child.exitCode === null && child.signalCode === null) {
+   child.kill('SIGTERM')
+   await Promise.race([
+    exitPromise,
+    new Promise(r => setTimeout(r, 3000)).then(() => {
+     if (child && child.exitCode === null && child.signalCode === null) {
+      try { child.kill('SIGKILL') } catch {}
+     }
+    }),
+   ])
+   if (exitPromise) {
+    await exitPromise.catch(() => {})
+   }
+  }
+  if (typeof cmServer.closeAllConnections === 'function') {
+   cmServer.closeAllConnections()
+  }
+  await new Promise(resolve => cmServer.close(resolve))
+  await fs.rm(serviceDir, { recursive: true, force: true })
  }
 })

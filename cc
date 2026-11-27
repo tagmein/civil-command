@@ -15,6 +15,7 @@ import {
  resolveAgentRootKv,
 } from './agent-api.mjs'
 import { resolveAgentRemoteOptions } from './agent-remote.mjs'
+import { SESSION_TOKEN_HEADER } from './data.mjs'
 import { startMcpStdioServer } from './mcp.mjs'
 
 function isCliFlagToken(token) {
@@ -59,11 +60,20 @@ function parseCliArgs(argv) {
  return { positional, flags }
 }
 
-async function notifyRunningServer(serverOrigin, eventPayload, headers = {}) {
+async function notifyRunningServer(serverOrigin, rootKv, eventPayload, headers = {}) {
  try {
+  let tok = rootKv && typeof rootKv.getSessionToken === 'function' ? rootKv.getSessionToken() : ''
+  if (!tok && rootKv && typeof rootKv.fetchVaultApi === 'function') {
+   const boot = await rootKv.fetchVaultApi('session', { method: 'POST', body: {} }).catch(() => null)
+   tok = boot && boot.data && typeof boot.data.token === 'string' ? boot.data.token.trim() : ''
+  }
+  const reqHeaders = { 'Content-Type': 'application/json', ...headers }
+  if (tok && !Object.hasOwn(reqHeaders, SESSION_TOKEN_HEADER) && !Object.hasOwn(reqHeaders, SESSION_TOKEN_HEADER.toLowerCase())) {
+   reqHeaders[SESSION_TOKEN_HEADER] = tok
+  }
   await fetch(`${serverOrigin}/api/agent/notify`, {
    method: 'POST',
-   headers: { 'Content-Type': 'application/json', ...headers },
+   headers: reqHeaders,
    body: JSON.stringify(eventPayload),
   })
  }
@@ -90,6 +100,7 @@ Usage:
   ./cc set-input <laneIdOrTitle> <name> <type> [secretValue] [--session <idOrName>]
   ./cc delete-input <laneIdOrTitle> <name> [--session <idOrName>]
   ./cc create-table <laneIdOrTitle> <tableName> <jsonColumns> [--session <idOrName>]
+  ./cc import-table <laneIdOrTitle> <sourceLaneIdOrTitle> <sourceTableNameOrId> [--mode read-only|read-write] [--as <localName>] [--session <idOrName>]
   ./cc add-row <laneIdOrTitle> <tableNameOrId> <jsonValues> [--session <idOrName>]
   ./cc update-row <laneIdOrTitle> <tableNameOrId> <rowId> <jsonValues> [--session <idOrName>]
   ./cc delete-row <laneIdOrTitle> <tableNameOrId> <rowId> [--session <idOrName>]
@@ -124,7 +135,6 @@ async function main() {
  const { baseUrl, headers, serverOrigin } = resolveAgentRemoteOptions(flags, process.env, {
   defaultDataUrl: DEFAULT_AGENT_DATA_URL,
  })
- const notify = eventPayload => notifyRunningServer(serverOrigin, eventPayload, headers)
 
  if (cmd === 'mcp') {
   startMcpStdioServer({ baseUrl, headers })
@@ -132,6 +142,7 @@ async function main() {
  }
 
  const rootKv = resolveAgentRootKv({ baseUrl, headers })
+ const notify = eventPayload => notifyRunningServer(serverOrigin, rootKv, eventPayload, headers)
  const sessionId = typeof flags.session === 'string' ? flags.session : ''
  const dataDir = typeof flags.dir === 'string' ? flags.dir : undefined
 
@@ -413,6 +424,13 @@ async function main() {
     laneId: out.laneId,
     action: 'add-row',
    })
+   if (out.ownerLaneId) {
+    await notify({
+     type: 'lane-updated',
+     laneId: out.ownerLaneId,
+     action: 'add-row',
+    })
+   }
   }
   console.log(JSON.stringify(out, null, 2))
   if (!out.ok) process.exitCode = 1
@@ -440,6 +458,13 @@ async function main() {
     laneId: out.laneId,
     action: 'update-row',
    })
+   if (out.ownerLaneId) {
+    await notify({
+     type: 'lane-updated',
+     laneId: out.ownerLaneId,
+     action: 'update-row',
+    })
+   }
   }
   console.log(JSON.stringify(out, null, 2))
   if (!out.ok) process.exitCode = 1
@@ -521,6 +546,35 @@ async function main() {
   return
  }
 
+ if (cmd === 'import-table') {
+  const laneQuery = positional[1] || ''
+  const sourceLane = positional[2] || flags['source-lane'] || flags.sourceLane || ''
+  const sourceTable = positional[3] || flags['source-table'] || flags.sourceTable || ''
+  const localName = typeof flags.as === 'string'
+   ? flags.as
+   : (typeof flags.name === 'string' ? flags.name : undefined)
+  const out = await agentMutateLaneTable(rootKv, {
+   sessionId,
+   dataDir,
+   laneId: laneQuery,
+   action: 'import-table',
+   sourceLane,
+   sourceTable,
+   mode: typeof flags.mode === 'string' ? flags.mode : 'read-only',
+   localName,
+  })
+  if (out.ok) {
+   await notify({
+    type: 'lane-updated',
+    laneId: out.laneId,
+    action: 'import-table',
+   })
+  }
+  console.log(JSON.stringify(out, null, 2))
+  if (!out.ok) process.exitCode = 1
+  return
+ }
+
  if (cmd === 'delete-row') {
   const laneQuery = positional[1] || ''
   const tableQuery = positional[2] || ''
@@ -539,6 +593,13 @@ async function main() {
     laneId: out.laneId,
     action: 'delete-row',
    })
+   if (out.ownerLaneId) {
+    await notify({
+     type: 'lane-updated',
+     laneId: out.ownerLaneId,
+     action: 'delete-row',
+    })
+   }
   }
   console.log(JSON.stringify(out, null, 2))
   if (!out.ok) process.exitCode = 1

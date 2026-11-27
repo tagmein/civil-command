@@ -9,10 +9,18 @@ import {
  DEFAULT_FIXED_DECIMALS,
  DEFAULT_PACKAGE_ID,
  PRIMITIVE_TYPES,
+ TABLE_IMPORT_MODES,
+ addLaneTable,
+ agentCreateLane,
+ agentGetLane,
+ agentMutateLaneTable,
  buildTablesScope,
  checkColumnChangeImpact,
  coerceDataValue,
+ collectLaneSyncBundle,
+ createAgentEventHub,
  createIdleTracker,
+ createNewSession,
  createSourceWorkerRunner,
  dataValuesEqual,
  defaultDataValue,
@@ -33,6 +41,8 @@ import {
  getWorkflowCellState,
  hasImportCycle,
  isDataCellValueEmpty,
+ isReadOnlyRemoteTable,
+ isRemoteTable,
  laneServerSource,
  laneServersModalSource,
  laneStorySource,
@@ -43,8 +53,11 @@ import {
  normalizeColumnConstraint,
  normalizeColumnWidth,
  normalizeDataColumnType,
+ normalizeDataDir,
  normalizeFixedDecimals,
  normalizePrimitiveType,
+ normalizeTableImportMode,
+ normalizeTableRemoteSpec,
  packageModalSource,
  parse,
  parseCellValue,
@@ -63,8 +76,10 @@ import {
  rowFilterValuesMatch,
  runLines,
  runTransportedScripts,
+ saveImportedTableLink,
  saveLaneTables,
  sessionModalSource,
+ syncTableRowsInMemory,
 } from './field.fixtures.mjs'
 
 test('DATA_COLUMN_TYPES, cell parsing/coercion, change impact detection, stored table parsing, and scope export', () => {
@@ -5069,4 +5084,744 @@ test('Multiselect Apply/Cancel on selectable multiple Data columns: lane[], row[
  finally {
   globalThis.fetch = origFetch
  }
+})
+
+test('Remote table helpers: normalization, runtime status guards, stored parsing, and read-only syncTable rejection', () => {
+ assert.deepEqual(TABLE_IMPORT_MODES, ['read-only', 'read-write'])
+ assert.equal(normalizeTableImportMode('read-write'), 'read-write')
+ assert.equal(normalizeTableImportMode('READ-WRITE'), 'read-write')
+ assert.equal(normalizeTableImportMode('read-only'), 'read-only')
+ assert.equal(normalizeTableImportMode('unknown'), 'read-only')
+ assert.equal(normalizeTableImportMode(null), 'read-only')
+
+ assert.equal(normalizeTableRemoteSpec(null), null)
+ assert.equal(normalizeTableRemoteSpec({ laneId: 'lane-a' }), null)
+ assert.deepEqual(
+  normalizeTableRemoteSpec({
+   laneId: ' lane-a ',
+   tableId: ' tbl-1 ',
+   tableName: 'inventory',
+   mode: 'read-write',
+   customName: true,
+   missing: true,
+   accessDenied: true,
+  }),
+  {
+   laneId: 'lane-a',
+   tableId: 'tbl-1',
+   tableName: 'inventory',
+   mode: 'read-write',
+   customName: true,
+  }
+ )
+ assert.deepEqual(
+  normalizeTableRemoteSpec(
+   { laneId: 'lane-a', tableId: 'tbl-1', tableName: 'inventory', mode: 'bad', missing: true, accessDenied: false },
+   { includeRuntimeStatus: true }
+  ),
+  {
+   laneId: 'lane-a',
+   tableId: 'tbl-1',
+   tableName: 'inventory',
+   mode: 'read-only',
+   missing: true,
+   accessDenied: false,
+  }
+ )
+
+ const roTable = {
+  id: 'tbl-ro',
+  name: 'ro_inv',
+  columns: [{ id: 'c1', name: 'sku', type: 'text', multiple: false }],
+  rows: [{ id: 'r1', values: { c1: 'A-1' } }],
+  remote: { laneId: 'owner-1', tableId: 'owner-tbl-1', tableName: 'inv', mode: 'read-only' },
+ }
+ const rwTable = {
+  id: 'tbl-rw',
+  name: 'rw_inv',
+  columns: [{ id: 'c1', name: 'sku', type: 'text', multiple: false }],
+  rows: [{ id: 'r1', values: { c1: 'A-1' } }],
+  remote: { laneId: 'owner-1', tableId: 'owner-tbl-1', tableName: 'inv', mode: 'read-write' },
+ }
+ const localTable = {
+  id: 'tbl-local',
+  name: 'local_items',
+  columns: [{ id: 'c1', name: 'sku', type: 'text', multiple: false }],
+  rows: [],
+ }
+
+ assert.equal(isRemoteTable(roTable), true)
+ assert.equal(isRemoteTable(rwTable), true)
+ assert.equal(isRemoteTable(localTable), false)
+ assert.equal(isReadOnlyRemoteTable(roTable), true)
+ assert.equal(isReadOnlyRemoteTable(rwTable), false)
+ assert.equal(isReadOnlyRemoteTable(localTable), false)
+ assert.equal(isReadOnlyRemoteTable({ ...rwTable, remote: { ...rwTable.remote, accessDenied: true } }), true)
+ assert.equal(isReadOnlyRemoteTable({ ...rwTable, remote: { ...rwTable.remote, missing: true } }), true)
+
+ const storedReparsed = parseStoredTables(JSON.stringify([roTable, rwTable, localTable]))
+ assert.equal(storedReparsed.length, 3)
+ assert.deepEqual(storedReparsed[0].remote, {
+  laneId: 'owner-1',
+  tableId: 'owner-tbl-1',
+  tableName: 'inv',
+  mode: 'read-only',
+ })
+ assert.deepEqual(storedReparsed[1].remote, {
+  laneId: 'owner-1',
+  tableId: 'owner-tbl-1',
+  tableName: 'inv',
+  mode: 'read-write',
+ })
+ assert.equal('remote' in storedReparsed[2], false)
+
+ const roSyncRes = syncTableRowsInMemory([roTable, rwTable], 'ro_inv', [{ sku: 'NEW' }], 'sku')
+ assert.equal(roSyncRes.ok, false)
+ assert.equal(roSyncRes.changed, false)
+ assert.equal(roSyncRes.readOnly, true)
+ assert.match(roSyncRes.error, /read-only/i)
+ assert.equal(roTable.rows.length, 1)
+
+ const rwSyncRes = syncTableRowsInMemory([roTable, rwTable], 'rw_inv', [{ sku: 'A-1' }, { sku: 'B-2' }], 'sku')
+ assert.equal(rwSyncRes.ok, true)
+ assert.equal(rwSyncRes.count, 2)
+ assert.equal(rwTable.rows.length, 2)
+})
+
+test('Data tab Import button, Table Import modal, remote badges, Jump-to-Owner navigation, read-only enforcement, read-write live sync, Import settings, and safe Remove import', async () => {
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  return {
+   tag,
+   nodeType: 1,
+   style: { setProperty() {}, removeProperty() {}, getPropertyValue() { return '' } },
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   checked: false,
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   readOnly: false,
+   focused: false,
+   removed: false,
+   rect: { top: 24, left: 0, width: 640, height: 480 },
+   getBoundingClientRect() { return this.rect },
+   setAttribute(name, value) { this.attributes[name] = value },
+   getAttribute(name) { return this.attributes[name] ?? null },
+   removeAttribute(name) { delete this.attributes[name] },
+   contains(target) {
+    if (target === this) return true
+    return this.children.some(c => c === target || (c && typeof c.contains === 'function' && c.contains(target)))
+   },
+   appendChild(child) {
+    if (child && child.parentNode && child.parentNode.children) {
+     const idx = child.parentNode.children.indexOf(child)
+     if (idx !== -1) child.parentNode.children.splice(idx, 1)
+    }
+    this.children.push(child)
+    if (child && typeof child === 'object') {
+     child.parentNode = this
+     child.removed = false
+    }
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child && child.parentNode && child.parentNode.children) {
+     const oldIdx = child.parentNode.children.indexOf(child)
+     if (oldIdx !== -1) child.parentNode.children.splice(oldIdx, 1)
+    }
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) this.children.push(child)
+    else this.children.splice(idx, 0, child)
+    if (child && typeof child === 'object') {
+     child.parentNode = this
+     child.removed = false
+    }
+    return child
+   },
+   replaceChildren(...nodes) {
+    this.children = []
+    for (const n of nodes) this.appendChild(n)
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode && this.parentNode.children) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) this.parentNode.children.splice(idx, 1)
+    }
+    this.parentNode = null
+   },
+  }
+ }
+
+ const stores = new Map()
+ function getStore(dirKey) {
+  if (!stores.has(dirKey)) stores.set(dirKey, new Map())
+  return stores.get(dirKey)
+ }
+ function makeKv(dirKey, prefix = '', rootRef = null, defaultRootRef = null) {
+  const store = getStore(dirKey)
+  const q = k => (prefix ? `${prefix}/${k}` : k)
+  const kv = {
+   get basePath() { return dirKey === '__default__' ? null : dirKey },
+   get root() { return rootRef || kv },
+   get defaultRoot() { return defaultRootRef || rootRef || kv },
+   withBasePath(bp) {
+    const clean = normalizeDataDir(bp)
+    const k = clean === null ? '__default__' : clean
+    return makeKv(k, '', null, kv.defaultRoot)
+   },
+   namespace(name) { return makeKv(dirKey, q(name), kv.root, kv.defaultRoot) },
+   hashNamespace(name) { return makeKv(dirKey, q(name), kv.root, kv.defaultRoot) },
+   async get(k) { return store.has(q(k)) ? store.get(q(k)) : null },
+   async set(k, v) { store.set(q(k), String(v)) },
+   async delete(k) { store.delete(q(k)) },
+  }
+  return kv
+ }
+ const defaultRootKv = makeKv('__default__')
+
+ let uuid = 0
+ const localStore = new Map()
+ const sessionStore = new Map()
+ const makeStorage = m => ({
+  getItem: k => (m.has(k) ? m.get(k) : null),
+  setItem: (k, v) => m.set(k, String(v)),
+  removeItem: k => m.delete(k),
+ })
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  Intl,
+  JSON,
+  Math,
+  Number,
+  Object,
+  Reflect,
+  String,
+  decodeURIComponent,
+  encodeURIComponent,
+  innerHeight: 900,
+  innerWidth: 1440,
+  localStorage: makeStorage(localStore),
+  sessionStorage: makeStorage(sessionStore),
+  location: { pathname: '/', search: '', hash: '' },
+  history: {
+   pushState(_s, _t, url) {
+    if (typeof url === 'string') mockWindow.location.pathname = url.split('?')[0].split('#')[0] || '/'
+   },
+   replaceState(_s, _t, url) {
+    if (typeof url === 'string') mockWindow.location.pathname = url.split('?')[0].split('#')[0] || '/'
+   },
+  },
+  crypto: { randomUUID: () => `rt-uuid-${++uuid}` },
+  setTimeout: () => 1,
+  clearTimeout() {},
+  addEventListener() {},
+  removeEventListener() {},
+ }
+
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/main.fs') return { text: async () => mainSource }
+  if (url === '/src/lane-control.fs') return { text: async () => laneSource }
+  if (url === '/src/lane-notebook.fs') return { text: async () => notebookSource }
+  if (url === '/src/lane-inputs.fs') return { text: async () => inputsSource }
+  if (url === '/src/lane-scope.fs') return { text: async () => scopeSource }
+  if (url === '/src/lane-data.fs') return { text: async () => dataSource }
+  if (url === '/src/confirm-modal.fs') return { text: async () => confirmModalSource }
+  if (url === '/src/lane-row-picker-modal.fs') return { text: async () => rowPickerModalSource }
+  if (url === '/src/lane-output.fs') return { text: async () => outputSource }
+  if (url === '/src/lane-modal.fs') return { text: async () => modalSource }
+  if (url === '/src/lane-config-modal.fs') return { text: async () => configModalSource }
+  if (url === '/src/lane-import-modal.fs') return { text: async () => importModalSource }
+  if (url === '/src/lane-export-modal.fs') return { text: async () => exportModalSource }
+  if (url === '/src/lane-export-deploy-modal.fs') return { text: async () => exportDeployModalSource }
+  if (url === '/src/lane-rails.fs') return { text: async () => railsSource }
+  if (url === '/src/lane-line-info-modal.fs') return { text: async () => lineInfoModalSource }
+  if (url === '/src/lane-session-modal.fs') return { text: async () => sessionModalSource }
+  if (url === '/src/lane-package-modal.fs') return { text: async () => packageModalSource }
+  if (url === '/src/lane-dir-modal.fs') return { text: async () => dirModalSource }
+  if (url === '/src/lane-server.fs') return { text: async () => laneServerSource }
+  if (url === '/src/lane-story.fs') return { text: async () => laneStorySource }
+  if (url === '/src/lane-terminal-modal.fs') return { text: async () => laneTerminalModalSource }
+  if (url === '/src/lane-servers-modal.fs') return { text: async () => laneServersModalSource }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const mockDocument = {
+   body: createMockElement('body'),
+   documentElement: createMockElement('html'),
+   defaultView: mockWindow,
+   createElement: createMockElement,
+   addEventListener() {},
+  }
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: defaultRootKv,
+   defaultValueForType,
+   document: mockDocument,
+   formatImportLine,
+   hasImportCycle,
+   history: mockWindow.history,
+   location: mockWindow.location,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+   window: mockWindow,
+  })
+  await f.run(parse(mainSource, '/src/main.fs'))
+  const lc = f.state['lane-control']
+  await lc['confirm-session-data-dir'](null)
+
+  const warehouseLane = await lc.add()
+  await lc.rename(warehouseLane.id, 'Warehouse')
+  const storefrontLane = await lc.add()
+  await lc.rename(storefrontLane.id, 'Storefront')
+  const auditorLane = await lc.add()
+  await lc.rename(auditorLane.id, 'Auditor')
+
+  // Seed Owner ("Warehouse") with two tables: "inventory" (2 rows) and "warehouses" (active)
+  await warehouseLane.notebook['set-tab']('data')
+  const wDv = warehouseLane.notebook['data-view']
+  const invTbl = await wDv['add-table']('inventory')
+  const skuCol = await wDv['add-column']('sku', 'text', false)
+  const qtyCol = await wDv['add-column']('qty', 'integer', false)
+  const wRow1 = await wDv['add-row']()
+  wRow1.values[skuCol.id] = 'A-1'
+  wRow1.values[qtyCol.id] = 10
+  await wDv['save-row'](invTbl, wRow1)
+  const wRow2 = await wDv['add-row']()
+  wRow2.values[skuCol.id] = 'B-2'
+  wRow2.values[qtyCol.id] = 5
+  await wDv['save-row'](invTbl, wRow2)
+
+  const whTbl = await wDv['add-table']('warehouses')
+  const codeCol = await wDv['add-column']('code', 'text', false)
+  const whRow = await wDv['add-row']()
+  whRow.values[codeCol.id] = 'EAST'
+  await wDv['save-row'](whTbl, whRow)
+  assert.equal(wDv['active-table-id'], whTbl.id)
+
+  // Setup Importer ("Storefront") with its own local table named "inventory" to test collision disambiguation
+  await storefrontLane.notebook['set-tab']('data')
+  const sDv = storefrontLane.notebook['data-view']
+  assert.deepEqual(sDv['bar-el'].children, [sDv['tabs-el'], sDv['bar-actions-el']])
+  assert.deepEqual(sDv['bar-actions-el'].children, [sDv['add-table-btn'], sDv['import-table-btn']])
+  assert.equal(sDv['add-table-btn'].textContent, '+ Table')
+  assert.equal(sDv['import-table-btn'].textContent, 'Import')
+
+  const localInv = await sDv['add-table']('inventory')
+  const orderSkuCol = await sDv['add-column']('order_no', 'text', false)
+  const sLocalRow = await sDv['add-row']()
+  sLocalRow.values[orderSkuCol.id] = 'ORD-1'
+  await sDv['save-row'](localInv, sLocalRow)
+
+  // Local table keeps standard menu children [clear-rows-btn, delete-table-btn] and hidden remote banner
+  assert.equal(sDv['remote-bar-el'].hidden, true)
+  assert.deepEqual(sDv['table-menu'].children, [sDv['clear-rows-btn'], sDv['delete-table-btn']])
+
+  // Click Import next to + Table -> opens Import Table modal
+  const importModal = lc['table-import-modal']
+  await sDv['import-table-btn'].listeners.click()
+  assert.equal(importModal['is-open'], true)
+  assert.equal(importModal['heading-el'].textContent, 'Import Table')
+  assert.deepEqual(
+   importModal['lane-items'].map(it => it.id),
+   [warehouseLane.id, auditorLane.id]
+  )
+
+  const whLaneItem = importModal['lane-items'].find(it => it.id === warehouseLane.id)
+  await whLaneItem.el.listeners.click()
+  assert.deepEqual(
+   importModal['table-items'].map(it => it.table.name),
+   ['inventory', 'warehouses']
+  )
+  const invTableItem = importModal['table-items'].find(it => it.table.id === invTbl.id)
+  await invTableItem.el.listeners.click()
+  assert.equal(importModal['alias-input'].value, 'inventory_2')
+  assert.equal(importModal.mode, 'read-only')
+
+  // Confirm Read-only import
+  await importModal.form.listeners.submit({})
+  assert.equal(importModal['is-open'], false)
+  assert.equal(sDv.tables.length, 2)
+  const roImported = sDv.tables[1]
+  assert.equal(roImported.name, 'inventory_2')
+  assert.equal(roImported.remote.laneId, warehouseLane.id)
+  assert.equal(roImported.remote.tableId, invTbl.id)
+  assert.equal(roImported.remote.mode, 'read-only')
+  assert.equal(roImported.remote.customName, true)
+  assert.equal(roImported.rows.length, 2)
+
+  // Single source of truth: ZERO row keys persisted under Storefront's imported table namespace
+  const defaultStore = getStore('__default__')
+  const dupRowKeys = [...defaultStore.keys()].filter(k =>
+   k.startsWith(`lanes#${storefrontLane.id}/tables/${roImported.id}/rows`)
+  )
+  assert.deepEqual(dupRowKeys, [])
+
+  // Visual remote badges on tab pill + origin banner
+  const roTab = sDv['table-tabs'][1]
+  assert.match(roTab.el.className, /lane-data-table-tab--remote/)
+  assert.match(roTab.el.className, /lane-data-table-tab--readonly/)
+  assert.equal(roTab['remote-el'].textContent, '↗ RO')
+  assert.equal(roTab.el.getAttribute('data-remote-lane'), warehouseLane.id)
+  assert.equal(roTab.el.getAttribute('data-remote-table'), invTbl.id)
+  assert.equal(roTab.el.getAttribute('data-remote-mode'), 'read-only')
+
+  assert.equal(sDv['remote-bar-el'].hidden, false)
+  assert.equal(sDv['remote-mode-badge'].textContent, 'REMOTE · READ-ONLY')
+  assert.equal(sDv['remote-jump-btn'].textContent, '← From Warehouse · data/inventory ↗')
+  assert.equal(sDv['remote-edit-btn'].hidden, false)
+  assert.deepEqual(sDv['table-menu'].children, [
+   sDv['jump-owner-btn'],
+   sDv['edit-import-btn'],
+   sDv['delete-table-btn'],
+  ])
+  assert.equal(sDv['delete-table-btn'].textContent, 'Remove import')
+
+  // Read-only enforcement in UI
+  assert.equal(sDv['table-name-input'].disabled, true)
+  assert.equal(sDv['table-name-input'].readOnly, true)
+  assert.equal(sDv['add-row-btn'].hidden, true)
+  assert.equal(sDv['add-row-btn'].disabled, true)
+  assert.equal(sDv['add-col-btn'].hidden, true)
+  assert.equal(sDv['add-col-btn'].disabled, true)
+  assert.equal(sDv['grid-rows'][0]['remove-btn'].hidden, true)
+  assert.equal(sDv['grid-rows'][0].cells[0]['input-el'].disabled, true)
+  assert.equal(sDv['grid-rows'][0].cells[1]['input-el'].disabled, true)
+  await sDv['schema-toggle-btn'].listeners.click()
+  assert.equal(sDv['schema-rows'][0]['name-el'].disabled, true)
+  assert.equal(sDv['schema-rows'][0]['type-el'].disabled, true)
+  assert.equal(sDv['schema-rows'][0]['remove-btn'].hidden, true)
+
+  // Local table can still create a row-type column referencing imported read-only table, with + Add disabled
+  await sDv['select-table'](localInv.id)
+  const linkCol = await sDv['add-column']('stock_ref', {
+   type: 'row',
+   multiple: false,
+   refTableId: roImported.id,
+   refColumnId: skuCol.id,
+  })
+  const rowPicker = lc['row-picker-modal']
+  await sDv['grid-rows'][0].cells[1]['trigger-el'].listeners.click()
+  assert.equal(rowPicker['is-open'], true)
+  assert.equal(rowPicker['can-add'], false)
+  assert.deepEqual(rowPicker['option-items'].map(o => o.item.value), ['A-1', 'B-2'])
+  await rowPicker['option-items'][0].el.listeners.click()
+  assert.equal(localInv.rows[0].values[linkCol.id], 'A-1')
+
+  // Source scope exposes $inventory_2 natively, while !syncTable on read-only remote table is rejected
+  await sDv['select-table'](roImported.id)
+  await storefrontLane.notebook['set-tab']('source')
+  storefrontLane.notebook.rows[0]['input-el'].value =
+   "; to res !syncTable inventory_2 { [ object { sku 'Z-9' } { qty 1 } ] } sku"
+  await storefrontLane.notebook.rows[0]['input-el'].listeners.input()
+  assert.equal(storefrontLane.notebook.state.res.ok, false)
+  assert.match(storefrontLane.notebook.state.res.error, /read-only/i)
+  assert.deepEqual(storefrontLane.notebook.state.inventory_2, [
+   { sku: 'A-1', qty: 10 },
+   { sku: 'B-2', qty: 5 },
+  ])
+  await storefrontLane.notebook['set-tab']('data')
+
+  // Auditor importing from Storefront must NOT see Storefront's imported table (prevents chains/cycles)
+  await auditorLane.notebook['set-tab']('data')
+  const aDv = auditorLane.notebook['data-view']
+  await aDv['import-table-btn'].listeners.click()
+  const sfItem = importModal['lane-items'].find(it => it.id === storefrontLane.id)
+  await sfItem.el.listeners.click()
+  assert.deepEqual(
+   importModal['table-items'].map(it => it.table.name),
+   ['inventory']
+  )
+  await importModal['close-btn'].listeners.click()
+
+  // Owner rename live-updates remote jump button text
+  await lc.rename(warehouseLane.id, 'Central Warehouse')
+  assert.equal(sDv['remote-jump-btn'].textContent, '← From Central Warehouse · data/inventory ↗')
+
+  // Jump-to-Owner Case 1: open owner currently on Source tab & different active table ("warehouses")
+  await warehouseLane.notebook['set-tab']('source')
+  assert.equal(wDv['active-table-id'], whTbl.id)
+  await sDv['remote-jump-btn'].listeners.click()
+  assert.equal(warehouseLane.notebook['active-tab'], 'data')
+  assert.equal(wDv['active-table-id'], invTbl.id)
+  assert.equal(warehouseLane['is-highlighted'], true)
+  assert.match(mockWindow.location.pathname, new RegExp(`${warehouseLane.id};data\\|inventory`))
+
+  // Jump-to-Owner Case 2: minimized owner -> restores and switches to data/inventory
+  await lc.minimize(warehouseLane.id, 'left')
+  assert.equal(warehouseLane['is-minimized'], true)
+  await sDv['jump-owner-btn'].listeners.click()
+  const restoredOwner = lc['by-id'][warehouseLane.id]
+  assert.equal(restoredOwner['is-minimized'], false)
+  assert.equal(restoredOwner.notebook['active-tab'], 'data')
+  assert.equal(restoredOwner.notebook['data-view']['active-table-id'], invTbl.id)
+
+  // Jump-to-Owner Case 3: closed owner -> opens immediately after importing lane on data/inventory + URL sync
+  await lc.close(warehouseLane.id)
+  assert.equal(Boolean(lc['by-id'][warehouseLane.id]), false)
+  await sDv['remote-jump-btn'].listeners.click()
+  const reopenedOwner = lc['by-id'][warehouseLane.id]
+  assert.ok(reopenedOwner)
+  const sfIdx = lc['lane-ids'].indexOf(storefrontLane.id)
+  assert.equal(lc['lane-ids'][sfIdx + 1], warehouseLane.id)
+  assert.equal(reopenedOwner.notebook['active-tab'], 'data')
+  assert.equal(reopenedOwner.notebook['data-view']['active-table-id'], invTbl.id)
+  assert.match(mockWindow.location.pathname, new RegExp(`${warehouseLane.id};data\\|inventory`))
+  const latestWDv = reopenedOwner.notebook['data-view']
+
+  // Import Settings: switch Storefront remote table to Read-write with alias "remote_stock"
+  await sDv['remote-edit-btn'].listeners.click()
+  assert.equal(importModal['is-open'], true)
+  assert.equal(importModal['heading-el'].textContent, 'Import Settings')
+  await importModal['rw-btn'].listeners.click()
+  importModal['alias-input'].value = 'remote_stock'
+  await importModal['alias-input'].listeners.input()
+  await importModal.form.listeners.submit({})
+
+  assert.equal(importModal['is-open'], false)
+  assert.equal(roImported.name, 'remote_stock')
+  assert.equal(roImported.remote.mode, 'read-write')
+  assert.equal(roImported.remote.customName, true)
+  assert.equal(sDv['remote-mode-badge'].textContent, 'REMOTE · READ-WRITE')
+  assert.equal(sDv['table-tabs'][1]['remote-el'].textContent, '↗ RW')
+  assert.equal(sDv['add-row-btn'].hidden, false)
+  assert.equal(sDv['add-row-btn'].disabled, false)
+  assert.equal(latestWDv.tables.find(t => t.id === invTbl.id).name, 'inventory')
+
+  // Also mount Warehouse "inventory" into Auditor as Read-only so we verify 3-way live sync
+  await auditorLane.notebook['set-tab']('data')
+  await aDv['import-table-btn'].listeners.click()
+  await importModal['lane-items'].find(it => it.id === warehouseLane.id).el.listeners.click()
+  await importModal['table-items'].find(it => it.table.id === invTbl.id).el.listeners.click()
+  await importModal.form.listeners.submit({})
+  const auditorRoTbl = aDv.tables[0]
+  assert.equal(auditorRoTbl.remote.mode, 'read-only')
+
+  // Write-through from Read-write Importer ("Storefront"): edit row 1 qty -> 42 and add row 3 ("C-3": 99)
+  sDv['grid-rows'][0].cells[1]['input-el'].value = '42'
+  await sDv['grid-rows'][0].cells[1]['input-el'].listeners.input()
+  const addedRwRow = await sDv['add-row']()
+  addedRwRow.values[skuCol.id] = 'C-3'
+  addedRwRow.values[qtyCol.id] = 99
+  await sDv['save-row'](roImported, addedRwRow)
+
+  const liveOwnerInv = latestWDv.tables.find(t => t.id === invTbl.id)
+  assert.equal(liveOwnerInv.rows.length, 3)
+  assert.equal(liveOwnerInv.rows[0].values[qtyCol.id], 42)
+  assert.equal(liveOwnerInv.rows[2].values[skuCol.id], 'C-3')
+  assert.equal(liveOwnerInv.rows[2].values[qtyCol.id], 99)
+  assert.equal(auditorRoTbl.rows.length, 3)
+  assert.equal(auditorRoTbl.rows[0].values[qtyCol.id], 42)
+  assert.equal(auditorRoTbl.rows[2].values[skuCol.id], 'C-3')
+
+  // Zero duplicate row keys under Storefront's imported table ID after write-through!
+  const dupAfterRw = [...defaultStore.keys()].filter(k =>
+   k.startsWith(`lanes#${storefrontLane.id}/tables/${roImported.id}/rows`)
+  )
+  assert.deepEqual(dupAfterRw, [])
+
+  // Owner edit live-syncs open Read-write and Read-only importers
+  latestWDv['grid-rows'][1].cells[1]['input-el'].value = '15'
+  await latestWDv['grid-rows'][1].cells[1]['input-el'].listeners.input()
+  assert.equal(roImported.rows[1].values[qtyCol.id], 15)
+  assert.equal(auditorRoTbl.rows[1].values[qtyCol.id], 15)
+
+  // Safe Remove import: unlinks remote table from Storefront without agreement checkbox and WITHOUT deleting owner table/rows
+  const confirmModal = sDv['confirm-modal']
+  await sDv['table-menu-btn'].listeners.click({})
+  await sDv['delete-table-btn'].listeners.click()
+  assert.equal(confirmModal['is-open'], true)
+  assert.equal(confirmModal['title-el'].textContent, 'Remove Imported Table')
+  assert.equal(confirmModal['require-agreement'], false)
+  assert.equal(confirmModal['confirm-btn'].disabled, false)
+  assert.match(confirmModal['message-el'].textContent, /Central Warehouse/)
+  assert.match(confirmModal['message-el'].textContent, /will not be deleted/)
+  await confirmModal['confirm-btn'].listeners.click()
+
+  assert.equal(sDv.tables.length, 1)
+  assert.equal(sDv.tables[0].id, localInv.id)
+  const ownerAfterUnlink = await loadLaneTables(defaultRootKv, defaultRootKv.namespace(warehouseLane.id), warehouseLane.id)
+  const persistedOwnerInv = ownerAfterUnlink.find(t => t.id === invTbl.id)
+  assert.equal(persistedOwnerInv.rows.length, 3)
+  assert.equal(persistedOwnerInv.rows[0].values[qtyCol.id], 42)
+  assert.equal(persistedOwnerInv.rows[1].values[qtyCol.id], 15)
+  assert.equal(persistedOwnerInv.rows[2].values[skuCol.id], 'C-3')
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('Agent API import-table action, read-only guards, read-write write-through, and collectLaneSyncBundle owner inclusion', async () => {
+ const stores = new Map()
+ function getStore(dirKey) {
+  if (!stores.has(dirKey)) stores.set(dirKey, new Map())
+  return stores.get(dirKey)
+ }
+ function makeKv(dirKey, prefix = '', rootRef = null, defaultRootRef = null) {
+  const store = getStore(dirKey)
+  const q = k => (prefix ? `${prefix}/${k}` : k)
+  const kv = {
+   get basePath() { return dirKey === '__default__' ? null : dirKey },
+   get root() { return rootRef || kv },
+   get defaultRoot() { return defaultRootRef || rootRef || kv },
+   withBasePath(bp) {
+    const clean = normalizeDataDir(bp)
+    const k = clean === null ? '__default__' : clean
+    return makeKv(k, '', null, kv.defaultRoot)
+   },
+   namespace(name) { return makeKv(dirKey, q(name), kv.root, kv.defaultRoot) },
+   hashNamespace(name) { return makeKv(dirKey, q(name), kv.root, kv.defaultRoot) },
+   async get(k) { return store.has(q(k)) ? store.get(q(k)) : null },
+   async set(k, v) { store.set(q(k), String(v)) },
+   async delete(k) { store.delete(q(k)) },
+  }
+  return kv
+ }
+ const defaultRootKv = makeKv('__default__')
+ const mockWin = {
+  Array,
+  JSON,
+  Object,
+  crypto: {
+   _seq: 0,
+   randomUUID() { return `ag-uuid-${++this._seq}` },
+  },
+ }
+ await createNewSession(defaultRootKv, mockWin, { name: 'Remote Agent Test', dataDir: null })
+ await defaultRootKv.set(`sessions#default/data-dir-confirmed`, 'true')
+
+ const eventHub = createAgentEventHub()
+ const ownerRes = await agentCreateLane(defaultRootKv, {
+  title: 'LedgerOwner',
+  lines: ['; to owner_ready true'],
+  eventHub,
+ })
+ const importerRes = await agentCreateLane(defaultRootKv, {
+  title: 'ReportConsumer',
+  lines: ['; to report $ledger.0.account'],
+  eventHub,
+ })
+ assert.equal(ownerRes.ok, true)
+ assert.equal(importerRes.ok, true)
+ const ownerId = ownerRes.laneId
+ const importerId = importerRes.laneId
+
+ await agentMutateLaneTable(defaultRootKv, {
+  laneId: ownerId,
+  action: 'create-table',
+  tableName: 'accounts',
+  columns: [
+   { name: 'account', type: 'text', required: true },
+   { name: 'balance', type: 'fixed', decimals: 2 },
+  ],
+  eventHub,
+ })
+ await agentMutateLaneTable(defaultRootKv, {
+  laneId: ownerId,
+  action: 'add-row',
+  table: 'accounts',
+  values: { account: 'Checking', balance: '125.50' },
+  eventHub,
+ })
+
+ // Import read-only
+ const impRo = await agentMutateLaneTable(defaultRootKv, {
+  laneId: importerId,
+  action: 'import-table',
+  sourceLane: 'LedgerOwner',
+  sourceTable: 'accounts',
+  mode: 'read-only',
+  localName: 'ro_ledger',
+  eventHub,
+ })
+ assert.equal(impRo.ok, true)
+ assert.equal(impRo.table.name, 'ro_ledger')
+ assert.equal(impRo.table.remote.mode, 'read-only')
+
+ const roFail = await agentMutateLaneTable(defaultRootKv, {
+  laneId: importerId,
+  action: 'add-row',
+  table: 'ro_ledger',
+  values: { account: 'Blocked', balance: '1.00' },
+  eventHub,
+ })
+ assert.equal(roFail.ok, false)
+ assert.match(roFail.error, /read-only/i)
+
+ // Import read-write as "ledger" and write through to owner
+ const impRw = await agentMutateLaneTable(defaultRootKv, {
+  laneId: importerId,
+  action: 'import-table',
+  sourceLane: 'LedgerOwner',
+  sourceTable: 'accounts',
+  mode: 'read-write',
+  localName: 'ledger',
+  eventHub,
+ })
+ assert.equal(impRw.ok, true)
+ assert.equal(impRw.table.remote.mode, 'read-write')
+
+ const rwAdd = await agentMutateLaneTable(defaultRootKv, {
+  laneId: importerId,
+  action: 'add-row',
+  table: 'ledger',
+  values: { account: 'Reserve', balance: '500.00' },
+  eventHub,
+ })
+ assert.equal(rwAdd.ok, true)
+
+ const ownerCheck = await agentGetLane(defaultRootKv, { laneId: ownerId })
+ assert.equal(ownerCheck.lane.tables[0].namedRows.length, 2)
+ assert.equal(ownerCheck.lane.tables[0].namedRows[1].account, 'Reserve')
+ assert.equal(ownerCheck.lane.tables[0].namedRows[1].balance, 50000)
+
+ // Sync bundle includes remote table owner lane when includeImports = true
+ const bundle = await collectLaneSyncBundle(defaultRootKv, importerId, { includeImports: true, win: mockWin })
+ assert.deepEqual(bundle.lanes.map(l => l.id), [importerId, ownerId])
+
+ // Deleting imported table via agent safely unlinks without deleting owner table
+ const delImp = await agentMutateLaneTable(defaultRootKv, {
+  laneId: importerId,
+  action: 'delete-table',
+  table: 'ro_ledger',
+  eventHub,
+ })
+ assert.equal(delImp.ok, true)
+ const ownerStillThere = await agentGetLane(defaultRootKv, { laneId: ownerId })
+ assert.equal(ownerStillThere.lane.tables[0].namedRows.length, 2)
 })

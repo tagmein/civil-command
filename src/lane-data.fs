@@ -51,10 +51,16 @@
  ; set lane-data-bar bar-el.className
  ; to tabs-el !document.createElement div
  ; set lane-data-table-tabs tabs-el.className
+ ; to bar-actions-el !document.createElement div
+ ; set lane-data-bar-actions bar-actions-el.className
  ; to add-table-btn !document.createElement button
  ; assign $add-table-btn { type button } { className lane-data-add-table } { textContent '+ Table' } { title 'Create a new table' }
+ ; to import-table-btn !document.createElement button
+ ; assign $import-table-btn { type button } { className lane-data-import-table } { textContent Import } { title 'Import a remote table from another lane' }
+ !bar-actions-el.appendChild $add-table-btn
+ !bar-actions-el.appendChild $import-table-btn
  !bar-el.appendChild $tabs-el
- !bar-el.appendChild $add-table-btn
+ !bar-el.appendChild $bar-actions-el
 
  ; to empty-el !document.createElement div
  ; assign $empty-el { className lane-data-empty } { textContent 'No tables yet. Create a table to define columns and add rows.' }
@@ -62,6 +68,21 @@
  ; to active-el !document.createElement div
  ; set lane-data-active active-el.className
  ; set true active-el.hidden
+
+ ; to remote-bar-el !document.createElement div
+ ; assign $remote-bar-el { className lane-data-remote-bar } { hidden true }
+ ; to remote-mode-badge !document.createElement span
+ ; assign $remote-mode-badge { className 'cc-badge lane-data-remote-mode' } { textContent 'REMOTE · READ-ONLY' }
+ ; to remote-jump-btn !document.createElement button
+ ; assign $remote-jump-btn { type button } { className 'lane-line-set-by-btn lane-data-remote-jump-btn' } { textContent '' }
+ ; to remote-status-el !document.createElement span
+ ; assign $remote-status-el { className lane-data-remote-status } { textContent '' } { hidden true }
+ ; to remote-edit-btn !document.createElement button
+ ; assign $remote-edit-btn { type button } { className 'lane-data-btn lane-data-remote-edit-btn' } { textContent 'Import settings' } { title 'Change read-only / read-write mode or local table name' }
+ !remote-bar-el.appendChild $remote-mode-badge
+ !remote-bar-el.appendChild $remote-jump-btn
+ !remote-bar-el.appendChild $remote-status-el
+ !remote-bar-el.appendChild $remote-edit-btn
 
  ; to table-header-el !document.createElement div
  ; set lane-data-table-header table-header-el.className
@@ -88,6 +109,12 @@
  ; to delete-table-btn !document.createElement button
  ; assign $delete-table-btn { type button } { className 'lane-data-table-menu-item lane-data-delete-table' } { textContent 'Delete table' } { title 'Delete this table' }
  !delete-table-btn.setAttribute role menuitem
+ ; to jump-owner-btn !document.createElement button
+ ; assign $jump-owner-btn { type button } { className 'lane-data-table-menu-item lane-data-table-menu-item--neutral lane-data-jump-owner' } { textContent 'Go to owner table ↗' } { title 'Open original owner lane and table' }
+ !jump-owner-btn.setAttribute role menuitem
+ ; to edit-import-btn !document.createElement button
+ ; assign $edit-import-btn { type button } { className 'lane-data-table-menu-item lane-data-table-menu-item--neutral lane-data-edit-import' } { textContent 'Import settings…' } { title 'Edit remote table import mode or local name' }
+ !edit-import-btn.setAttribute role menuitem
  !table-menu.appendChild $clear-rows-btn
  !table-menu.appendChild $delete-table-btn
  !table-menu-wrap.appendChild $table-menu-btn
@@ -195,6 +222,7 @@
  !updates-section.appendChild $updates-header
  !updates-section.appendChild $updates-list
 
+ !active-el.appendChild $remote-bar-el
  !active-el.appendChild $table-header-el
  !active-el.appendChild $schema-section
  !active-el.appendChild $updates-section
@@ -205,7 +233,7 @@
  !root-el.appendChild $active-el
  !container.appendChild $root-el
 
- ; assign $view { element $root-el } { bar-el $bar-el } { tabs-el $tabs-el } { add-table-btn $add-table-btn } { empty-el $empty-el } { active-el $active-el } { table-name-input $table-name-input } { header-actions-el $header-actions-el } { schema-toggle-btn $schema-toggle-btn } { table-menu-wrap $table-menu-wrap } { table-menu-btn $table-menu-btn } { table-menu $table-menu } { clear-rows-btn $clear-rows-btn } { delete-table-btn $delete-table-btn } { schema-section $schema-section } { schema-tbody $schema-tbody } { schema-empty-el $schema-empty-el } { add-col-btn $add-col-btn } { updates-section $updates-section } { updates-header $updates-header } { updates-title-wrap $updates-title-wrap } { updates-title $updates-title } { updates-count-badge $updates-count-badge } { updates-status-badge $updates-status-badge } { updates-caption $updates-caption } { updates-list $updates-list } { rows-section $rows-section } { rows-title $rows-title } { add-row-btn $add-row-btn } { grid-wrap $grid-wrap } { display-options-el $display-options-el } { display-options-label $display-options-label } { display-options-list $display-options-list } { grid-hrow $grid-hrow } { grid-tbody $grid-tbody } { rows-empty-el $rows-empty-el }
+ ; assign $view { element $root-el } { bar-el $bar-el } { tabs-el $tabs-el } { bar-actions-el $bar-actions-el } { add-table-btn $add-table-btn } { import-table-btn $import-table-btn } { empty-el $empty-el } { active-el $active-el } { remote-bar-el $remote-bar-el } { remote-mode-badge $remote-mode-badge } { remote-jump-btn $remote-jump-btn } { remote-status-el $remote-status-el } { remote-edit-btn $remote-edit-btn } { table-name-input $table-name-input } { header-actions-el $header-actions-el } { schema-toggle-btn $schema-toggle-btn } { table-menu-wrap $table-menu-wrap } { table-menu-btn $table-menu-btn } { table-menu $table-menu } { jump-owner-btn $jump-owner-btn } { edit-import-btn $edit-import-btn } { clear-rows-btn $clear-rows-btn } { delete-table-btn $delete-table-btn } { schema-section $schema-section } { schema-tbody $schema-tbody } { schema-empty-el $schema-empty-el } { add-col-btn $add-col-btn } { updates-section $updates-section } { updates-header $updates-header } { updates-title-wrap $updates-title-wrap } { updates-title $updates-title } { updates-count-badge $updates-count-badge } { updates-status-badge $updates-status-badge } { updates-caption $updates-caption } { updates-list $updates-list } { rows-section $rows-section } { rows-title $rows-title } { add-row-btn $add-row-btn } { grid-wrap $grid-wrap } { display-options-el $display-options-el } { display-options-label $display-options-label } { display-options-list $display-options-list } { grid-hrow $grid-hrow } { grid-tbody $grid-tbody } { rows-empty-el $rows-empty-el }
 
  ; to view.close-table-menu (
   -- Closes the "..." table actions dropdown menu
@@ -272,13 +300,265 @@
   $ids
  )
 
+ ; to clone-plain-data (
+  -- Deep-clones plain JSON-serializable table columns or row records so open owner and importer lanes stay isolated in memory
+  ; to { raw fallback } $argv
+  [ match
+   { [ propertyIs undefined raw ] : $fallback }
+   { [ propertyIs null raw ] : $fallback }
+   { $window.JSON.stringify (
+    ; to serialized null
+    ; try (
+     ; set [ !window.JSON.stringify $raw ] serialized
+    ) : null
+    [ match
+     { [ propertyIs null serialized ] : $fallback }
+     { [ propertyIs undefined serialized ] : $fallback }
+     { $serialized.trim : !window.JSON.parse $serialized }
+     { true : $fallback }
+    ]
+   ) }
+   { true : $fallback }
+  ]
+ )
+
+ ; to register-table-used-ids (
+  -- Marks a table ID and its column and row IDs as used in this Data view
+  ; to { tbl } $argv
+  [ match
+   { $tbl (
+    [ match { $tbl.id : ; to view.used-ids $tbl.id true } ]
+    [ match
+     { [ !window.Array.isArray $tbl.columns ] (
+      ; each $tbl.columns (
+       ; to { col } $argv
+       [ match { $col.id : ; to view.used-ids $col.id true } ]
+      )
+     ) }
+    ]
+    [ match
+     { [ !window.Array.isArray $tbl.rows ] (
+      ; each $tbl.rows (
+       ; to { row } $argv
+       [ match { $row.id : ; to view.used-ids $row.id true } ]
+      )
+     ) }
+    ]
+   ) }
+  ]
+ )
+
  ; to view.save (
   -- Persists all tables (schemas and rows) across split per-table and per-row KV keys
   !saveLaneTables $data $view.lane.data $view.lane.id $view.tables
  )
 
+ ; to view.is-remote-table (
+  -- Returns true if the given table is mounted remotely from another lane
+  ; to { tbl } $argv
+  [ match
+   { [ propertyIs null tbl ] : false }
+   { [ propertyIs undefined tbl ] : false }
+   { $isRemoteTable : !isRemoteTable $tbl }
+   { $tbl.remote (
+    ; to rl [ match { $tbl.remote.laneId : ; add '' $tbl.remote.laneId } { true : '' } ]
+    ; to rt [ match { $tbl.remote.tableId : ; add '' $tbl.remote.tableId } { true : '' } ]
+    ; to rl-empty [ propertyIs '' rl ]
+    ; to rt-empty [ propertyIs '' rt ]
+    [ ternary [ and { [ propertyIs false rl-empty ] } { [ propertyIs false rt-empty ] } ] true false ]
+   ) }
+   { true : false }
+  ]
+ )
+
+ ; to view.is-readonly-table (
+  -- Returns true if the given table is a read-only remote table
+  ; to { tbl } $argv
+  [ match
+   { [ propertyIs null tbl ] : false }
+   { [ propertyIs undefined tbl ] : false }
+   { $isReadOnlyRemoteTable : !isReadOnlyRemoteTable $tbl }
+   { true (
+    ; to is-rem !view.is-remote-table $tbl
+    [ match
+     { [ propertyIs false is-rem ] : false }
+     { [ propertyIs 'read-write' tbl.remote.mode ] : false }
+     { true : true }
+    ]
+   ) }
+  ]
+ )
+
+ ; to view.remote-origin-info (
+  -- Computes UI origin badge, jump label/path, and status metadata for a remote table (or null for local tables)
+  ; to { tbl } $argv
+  ; to is-rem !view.is-remote-table $tbl
+  [ match
+   { $is-rem (
+    ; to owner-lane-id ; add '' $tbl.remote.laneId
+    ; to owner-table-id ; add '' $tbl.remote.tableId
+    ; to raw-owner-tname [ match
+     { $tbl.remote.tableName : ; add '' $tbl.remote.tableName }
+     { $tbl.name : ; add '' $tbl.name }
+     { true : $owner-table-id }
+    ]
+    ; to owner-table-name !raw-owner-tname.trim
+    ; to raw-mode [ match { $tbl.remote.mode : $tbl.remote.mode } { true : read-only } ]
+    ; to norm-mode [ match
+     { $normalizeTableImportMode : !normalizeTableImportMode $raw-mode }
+     { true : [ ternary [ propertyIs 'read-write' raw-mode ] 'read-write' 'read-only' ] }
+    ]
+    ; to is-ro [ ternary [ propertyIs 'read-write' norm-mode ] false true ]
+    ; to lane-info !view.lookup-lane-info $owner-lane-id
+    ; to lane-label [ match
+     { $lane-info.title : $lane-info.title }
+     { true : $owner-lane-id }
+    ]
+    ; to path-label [ match
+     { [ propertyIs '' owner-table-name ] : data }
+     { true : ; add 'data/' $owner-table-name }
+    ]
+    ; to jump-text ; add '← From ' ; add $lane-label ; add ' · ' ; add $path-label ' ↗'
+    ; to jump-title ; add 'Go to owner lane "' ; add $lane-label ; add '" (' ; add $path-label ')'
+    ; to mode-badge-text [ ternary $is-ro 'REMOTE · READ-ONLY' 'REMOTE · READ-WRITE' ]
+    ; to tab-badge-text [ ternary $is-ro '↗ RO' '↗ RW' ]
+    ; to is-denied [ propertyIs true tbl.remote.accessDenied ]
+    ; to is-missing [ propertyIs true tbl.remote.missing ]
+    ; to status-text [ match
+     { $is-denied : 'Owner lane package is locked' }
+     { $is-missing : 'Owner table was deleted' }
+     { true : '' }
+    ]
+    [ object
+     { owner-lane-id $owner-lane-id }
+     { owner-table-id $owner-table-id }
+     { owner-table-name $owner-table-name }
+     { mode $norm-mode }
+     { is-readonly $is-ro }
+     { lane-label $lane-label }
+     { path-label $path-label }
+     { jump-text $jump-text }
+     { jump-title $jump-title }
+     { mode-badge-text $mode-badge-text }
+     { tab-badge-text $tab-badge-text }
+     { status-text $status-text }
+     { is-denied $is-denied }
+     { is-missing $is-missing }
+    ]
+   ) }
+   { true : null }
+  ]
+ )
+
+ ; to view.sync-table-menu (
+  -- Populates the "..." table actions dropdown menu items appropriate for local vs remote tables
+  ; to { tbl } $argv
+  ; while { propertyIsGreaterThan 0 table-menu.children.length } (
+   ; to prev-len $table-menu.children.length
+   ; to cidx ; subtract $prev-len 1
+   ; to child [ get table-menu.children $cidx ]
+   [ match
+    { $child.remove : !child.remove }
+   ]
+   ; condition { propertyIs $prev-len table-menu.children.length } : !table-menu.children.pop
+  )
+  !jump-owner-btn.remove
+  !edit-import-btn.remove
+  !clear-rows-btn.remove
+  !delete-table-btn.remove
+  ; to is-rem !view.is-remote-table $tbl
+  [ match
+   { $is-rem (
+    !table-menu.appendChild $jump-owner-btn
+    [ match
+     { $lane-control.pick-table-import : !table-menu.appendChild $edit-import-btn }
+    ]
+    ; to is-ro !view.is-readonly-table $tbl
+    ; condition { propertyIs false is-ro } : !table-menu.appendChild $clear-rows-btn
+    ; assign $delete-table-btn { textContent 'Remove import' } { title 'Remove imported remote table from this lane' }
+    !table-menu.appendChild $delete-table-btn
+   ) }
+   { true (
+    !table-menu.appendChild $clear-rows-btn
+    ; assign $delete-table-btn { textContent 'Delete table' } { title 'Delete this table' }
+    !table-menu.appendChild $delete-table-btn
+   ) }
+  ]
+ )
+
+ ; to view.render-remote-bar (
+  -- Renders or hides the remote origin bar and updates active-el read-only state for the selected table
+  ; to tbl !view.get-active-table
+  !view.sync-table-menu $tbl
+  ; to info !view.remote-origin-info $tbl
+  [ match
+   { $info (
+    ; to base-cls [ ternary $info.is-readonly lane-data-remote-bar 'lane-data-remote-bar lane-data-remote-bar--readwrite' ]
+    ; to denied-cls [ ternary $info.is-denied [ add $base-cls ' lane-data-remote-bar--denied' ] $base-cls ]
+    ; to full-cls [ ternary $info.is-missing [ add $denied-cls ' lane-data-remote-bar--missing' ] $denied-cls ]
+    ; assign $remote-bar-el { className $full-cls } { hidden false }
+    !remote-bar-el.setAttribute data-remote-lane $info.owner-lane-id
+    !remote-bar-el.setAttribute data-remote-table $info.owner-table-id
+    !remote-bar-el.setAttribute data-remote-mode $info.mode
+    ; set $info.mode-badge-text remote-mode-badge.textContent
+    ; assign $remote-jump-btn { textContent $info.jump-text } { title $info.jump-title }
+    ; to no-status [ propertyIs '' info.status-text ]
+    ; to has-status [ propertyIs false no-status ]
+    ; assign $remote-status-el { textContent $info.status-text } { hidden [ ternary $has-status false true ] }
+    ; set [ ternary $lane-control.pick-table-import false true ] remote-edit-btn.hidden
+    ; set [ ternary $info.is-readonly 'lane-data-active lane-data-active--readonly' lane-data-active ] active-el.className
+   ) }
+   { true (
+    ; assign $remote-bar-el { className lane-data-remote-bar } { hidden true }
+    [ match
+     { $remote-bar-el.removeAttribute (
+      !remote-bar-el.removeAttribute data-remote-lane
+      !remote-bar-el.removeAttribute data-remote-table
+      !remote-bar-el.removeAttribute data-remote-mode
+     ) }
+    ]
+    ; assign $remote-jump-btn { textContent '' } { title '' }
+    ; assign $remote-status-el { textContent '' } { hidden true }
+    ; set lane-data-active active-el.className
+   ) }
+  ]
+ )
+
+ ; to view.jump-to-owner-table (
+  -- Navigates directly to the active remote table's original owner lane and data/<table> path
+  ; to tbl !view.get-active-table
+  ; to info !view.remote-origin-info $tbl
+  [ match
+   { $info (
+    !view.close-table-menu
+    [ match
+     { $lane-control.navigate-to-lane-table : !lane-control.navigate-to-lane-table $info.owner-lane-id $info.owner-table-id $info.owner-table-name $view.lane.id }
+     { $lane-control.open : !lane-control.open $info.owner-lane-id data $info.owner-table-name $view.lane.id }
+    ]
+   ) }
+  ]
+ )
+
+ ; to view.propagate-table-mutation (
+  -- Broadcasts table row or schema mutations between an owner lane and all open lanes mounting its tables remotely
+  ; to { tbl action row } $argv
+  [ match
+   { [ and { $tbl } { $lane-control.notify-table-dependents } ] (
+    ; to is-rem !view.is-remote-table $tbl
+    ; to owner-id [ match { $is-rem : $tbl.remote.laneId } { true : $view.lane.id } ]
+    ; to owner-tbl-id [ match { $is-rem : $tbl.remote.tableId } { true : $tbl.id } ]
+    ; to owner-tables [ match
+     { [ propertyIs $owner-id view.lane.id ] : $view.tables }
+     { true : null }
+    ]
+    ; to row-id [ match { $row.id : $row.id } { true : '' } ]
+    !lane-control.notify-table-dependents $owner-id $owner-tables $view.lane.id [ object { tableId $owner-tbl-id } { tableName $tbl.name } { action $action } { rowId $row-id } ]
+   ) }
+  ]
+ )
+
  ; to view.notify-record-change (
-  -- Notifies the owning notebook when a record in a table is added, updated, deleted, or cleared
+  -- Notifies the owning notebook and dependent remote/owner lanes when a record in a table is added, updated, deleted, or cleared
   ; to { tbl row action } $argv
   [ match
    { [ and { $tbl } { $view.on-record-change } ] (
@@ -292,6 +572,7 @@
     ]
    ) }
   ]
+  !view.propagate-table-mutation $tbl $action $row
  )
 
  ; to view.get-table-updates (
@@ -454,22 +735,396 @@
  )
 
  ; to view.save-row (
-  -- Persists a single table row to its own KV key and notifies listeners of the record change
+  -- Persists a single table row to its own KV key (writing through to owner when remote read-write) and notifies listeners
   ; to { tbl row } $argv
-  !saveTableRow $data $view.lane.data $view.lane.id $tbl.id $row
-  !view.notify-record-change $tbl $row update-row
+  ; to is-ro !view.is-readonly-table $tbl
+  ; condition { propertyIs false is-ro } (
+   !saveTableRow $data $view.lane.data $view.lane.id $tbl $row
+   !view.notify-record-change $tbl $row update-row
+  )
  )
 
  ; to view.save-schema (
-  -- Persists a single table schema (name and columns) to its own KV key
+  -- Persists a single table schema (writing through to owner when remote read-write) and propagates to dependent lanes
   ; to { tbl } $argv
-  !saveTableSchema $data $view.lane.data $view.lane.id $tbl
+  ; to is-ro !view.is-readonly-table $tbl
+  ; condition { propertyIs false is-ro } (
+   !saveTableSchema $data $view.lane.data $view.lane.id $tbl
+   !view.propagate-table-mutation $tbl update-schema null
+  )
  )
 
  ; to view.save-schema-and-rows (
-  -- Persists a single table schema and its rows after a structural column change
+  -- Persists a single table schema and its rows after a structural column change and propagates to dependent lanes
   ; to { tbl } $argv
-  !saveTableSchemaAndRows $data $view.lane.data $view.lane.id $tbl
+  ; to is-ro !view.is-readonly-table $tbl
+  ; condition { propertyIs false is-ro } (
+   !saveTableSchemaAndRows $data $view.lane.data $view.lane.id $tbl
+   !view.propagate-table-mutation $tbl update-schema-and-rows null
+  )
+ )
+
+ ; to view.sync-notebook-table-scope (
+  -- Updates mounted notebook state table bindings after a remote table import, update, rename, or sync
+  ; to { old-name } $argv
+  [ match
+   { [ and { $view.lane.notebook.state } { $buildTablesScope } ] (
+    [ match
+     { $old-name (
+      ; to clean-old ; add '' $old-name
+      ; to trimmed-old !clean-old.trim
+      ; to old-empty [ propertyIs '' trimmed-old ]
+      ; condition { propertyIs false old-empty } (
+       ; to still-used ; object { hit false }
+       ; each $view.tables (
+        ; to { t } $argv
+        ; to tname [ match { $t.name : !t.name.trim } { true : '' } ]
+        ; condition { propertyIs $trimmed-old tname } : ; set true still-used.hit
+       )
+       ; condition { propertyIs false still-used.hit } (
+        [ match
+         { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $view.lane.notebook.state $trimmed-old }
+        ]
+       )
+      )
+     ) }
+    ]
+    ; to next-scoped !buildTablesScope $view.tables
+    ; assign $view.lane.notebook.state $next-scoped
+   ) }
+  ]
+ )
+
+ ; to view.import-table (
+  -- Mounts a remote table link into this lane's tables, persists only its schema link, selects it, and updates scope/URL
+  ; to { spec } $argv
+  [ match
+   { [ and { $spec } { $spec.laneId } { $spec.tableId } ] (
+    ; to raw-local [ match { $spec.localName : ; add '' $spec.localName } { $spec.tableName : ; add '' $spec.tableName } { true : imported_table } ]
+    ; to clean-local !raw-local.trim
+    ; to raw-owner-tname [ match { $spec.tableName : ; add '' $spec.tableName } { true : $clean-local } ]
+    ; to raw-mode [ match { $spec.mode : $spec.mode } { true : read-only } ]
+    ; to mode [ match { $normalizeTableImportMode : !normalizeTableImportMode $raw-mode } { true : [ ternary [ propertyIs 'read-write' raw-mode ] 'read-write' 'read-only' ] } ]
+    ; to raw-remote [ object
+     { laneId $spec.laneId }
+     { tableId $spec.tableId }
+     { tableName $raw-owner-tname }
+     { mode $mode }
+     { customName [ ternary $spec.customName true false ] }
+    ]
+    ; to remote-spec [ match
+     { $normalizeTableRemoteSpec : !normalizeTableRemoteSpec $raw-remote }
+     { true : $raw-remote }
+    ]
+    ; to cols !clone-plain-data [ match { [ !window.Array.isArray $spec.columns ] : $spec.columns } { true : {} } ] {}
+    ; to rows !clone-plain-data [ match { [ !window.Array.isArray $spec.rows ] : $spec.rows } { true : {} } ] {}
+    ; to tbl [ object
+     { id !view.next-id tbl }
+     { name [ match { [ propertyIs '' clean-local ] : $raw-owner-tname } { true : $clean-local } ] }
+     { columns $cols }
+     { rows $rows }
+     { remote $remote-spec }
+    ]
+    !register-table-used-ids $tbl
+    !view.tables.push $tbl
+    ; set $tbl.id view.active-table-id
+    ; set $tbl.name lane.subroute
+    ; set [ !view.default-schema-open $tbl ] view.schema-open
+    [ match
+     { $lane-control.load-catalog : !lane-control.load-catalog }
+    ]
+    !view.render
+    !view.sync-notebook-table-scope ''
+    [ match
+     { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Saving…' }
+    ]
+    ; try (
+     ; to table-ids !collect-ids $view.tables
+     !addLaneTable $data $view.lane.data $view.lane.id $tbl $table-ids
+     !view.sync-data-path
+     [ match
+      { $lane-control.update-url : !lane-control.update-url }
+     ]
+    ) : null
+    [ match
+     { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
+    ]
+    [ match
+     { $view.lane.notebook.run-on-table-change : !view.lane.notebook.run-on-table-change [ object { tableId $tbl.id } { tableName $tbl.name } { action import-table } ] }
+    ]
+    $tbl
+   ) }
+   { true : null }
+  ]
+ )
+
+ ; to view.open-import-modal (
+  -- Opens the Import Table modal to pick an owner lane, source table, access mode, and local alias
+  !view.close-table-menu
+  [ match
+   { $lane-control.pick-table-import (
+    ; to opts [ object
+     { lane $view.lane }
+     { current-lane-id $view.lane.id }
+     { existing-tables $view.tables }
+     { on-confirm (
+      ; to { spec } $argv
+      !view.import-table $spec
+     ) }
+    ]
+    !lane-control.pick-table-import $opts
+   ) }
+  ]
+ )
+
+ ; to view.update-import-table (
+  -- Updates an existing imported table's mode, local name, or source reference and persists its schema link
+  ; to { tbl spec } $argv
+  [ match
+   { [ and { $tbl } { $spec } { $spec.laneId } { $spec.tableId } ] (
+    ; to prev-name $tbl.name
+    ; to raw-local [ match { $spec.localName : ; add '' $spec.localName } { $spec.tableName : ; add '' $spec.tableName } { true : $tbl.name } ]
+    ; to clean-local !raw-local.trim
+    ; to next-name [ match { [ propertyIs '' clean-local ] : $tbl.name } { true : $clean-local } ]
+    ; to raw-owner-tname [ match { $spec.tableName : ; add '' $spec.tableName } { true : $next-name } ]
+    ; to raw-mode [ match { $spec.mode : $spec.mode } { true : read-only } ]
+    ; to mode [ match { $normalizeTableImportMode : !normalizeTableImportMode $raw-mode } { true : [ ternary [ propertyIs 'read-write' raw-mode ] 'read-write' 'read-only' ] } ]
+    ; to raw-remote [ object
+     { laneId $spec.laneId }
+     { tableId $spec.tableId }
+     { tableName $raw-owner-tname }
+     { mode $mode }
+     { customName [ ternary $spec.customName true false ] }
+    ]
+    ; to remote-spec [ match
+     { $normalizeTableRemoteSpec : !normalizeTableRemoteSpec $raw-remote }
+     { true : $raw-remote }
+    ]
+    ; to cols !clone-plain-data [ match { [ !window.Array.isArray $spec.columns ] : $spec.columns } { true : $tbl.columns } ] {}
+    ; to rows !clone-plain-data [ match { [ !window.Array.isArray $spec.rows ] : $spec.rows } { true : $tbl.rows } ] {}
+    ; set $next-name tbl.name
+    ; set $remote-spec tbl.remote
+    ; set $cols tbl.columns
+    ; set $rows tbl.rows
+    !register-table-used-ids $tbl
+    ; condition { propertyIs $tbl.id view.active-table-id } (
+     ; set $tbl.name lane.subroute
+     ; set [ !view.default-schema-open $tbl ] view.schema-open
+    )
+    !view.render
+    !view.sync-notebook-table-scope $prev-name
+    [ match
+     { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Saving…' }
+    ]
+    ; try (
+     [ match
+      { $saveImportedTableLink : !saveImportedTableLink $data $view.lane.data $view.lane.id $tbl }
+      { true : !saveTableSchema $data $view.lane.data $view.lane.id $tbl }
+     ]
+     !view.sync-data-path
+     [ match
+      { $lane-control.update-url : !lane-control.update-url }
+     ]
+    ) : null
+    [ match
+     { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
+    ]
+    [ match
+     { $view.lane.notebook.run-on-table-change : !view.lane.notebook.run-on-table-change [ object { tableId $tbl.id } { tableName $tbl.name } { action update-import } ] }
+    ]
+    $tbl
+   ) }
+   { true : null }
+  ]
+ )
+
+ ; to view.open-edit-import (
+  -- Opens the Import Table modal in edit mode for a mounted remote table
+  ; to { target-tbl } $argv
+  ; to tbl [ match { $target-tbl : $target-tbl } { true : !view.get-active-table } ]
+  ; to is-rem !view.is-remote-table $tbl
+  [ match
+   { [ and { $is-rem } { $lane-control.pick-table-import } ] (
+    !view.close-table-menu
+    ; to cur-mode [ match { $tbl.remote.mode : $tbl.remote.mode } { true : read-only } ]
+    ; to opts [ object
+     { lane $view.lane }
+     { current-lane-id $view.lane.id }
+     { existing-tables $view.tables }
+     { editing-table-id $tbl.id }
+     { lane-id $tbl.remote.laneId }
+     { table-id $tbl.remote.tableId }
+     { local-name $tbl.name }
+     { custom-name [ propertyIs true tbl.remote.customName ] }
+     { mode $cur-mode }
+     { on-confirm (
+      ; to { spec } $argv
+      !view.update-import-table $tbl $spec
+     ) }
+    ]
+    !lane-control.pick-table-import $opts
+   ) }
+  ]
+ )
+
+ ; to view.has-remote-from-lane (
+  -- Returns true if this lane mounts at least one remote table owned by owner-lane-id
+  ; to { owner-lane-id } $argv
+  ; to clean-owner [ match { $owner-lane-id : ; add '' $owner-lane-id } { true : '' } ]
+  ; to owner-empty [ propertyIs '' clean-owner ]
+  ; to found ; object { hit false }
+  [ match
+   { [ propertyIs false owner-empty ] (
+    ; each $view.tables (
+     ; to { tbl } $argv
+     ; to is-rem !view.is-remote-table $tbl
+     ; condition { and { [ propertyIs true is-rem ] } { [ propertyIs $clean-owner tbl.remote.laneId ] } } : ; set true found.hit
+    )
+   ) }
+  ]
+  $found.hit
+ )
+
+ ; to view.sync-remote-tables-from-owner (
+  -- Refreshes in-memory remote tables owned by owner-lane-id after the owner or another read-write importer writes changes
+  ; to { owner-lane-id owner-tables change-info } $argv
+  ; to clean-owner [ match { $owner-lane-id : ; add '' $owner-lane-id } { true : '' } ]
+  ; to fresh-by-id ; object
+  [ match
+   { [ !window.Array.isArray $owner-tables ] (
+    ; each $owner-tables (
+     ; to { ot } $argv
+     [ match { $ot.id : ; to fresh-by-id $ot.id $ot } ]
+    )
+   ) }
+  ]
+  ; to changed ; object { hit false }
+  ; to active-renamed ; object { hit false }
+  ; to prev-active-name ''
+  ; each $view.tables (
+   ; to { tbl } $argv
+   ; to is-rem !view.is-remote-table $tbl
+   ; condition { and { [ propertyIs true is-rem ] } { [ propertyIs $clean-owner tbl.remote.laneId ] } } (
+    ; set true changed.hit
+    ; to match-ot [ get fresh-by-id $tbl.remote.tableId ]
+    [ match
+     { $match-ot (
+      ; to next-cols !clone-plain-data [ match { [ !window.Array.isArray $match-ot.columns ] : $match-ot.columns } { true : {} } ] {}
+      ; to next-rows !clone-plain-data [ match { [ !window.Array.isArray $match-ot.rows ] : $match-ot.rows } { true : {} } ] {}
+      ; set $next-cols tbl.columns
+      ; set $next-rows tbl.rows
+      ; to next-rname [ match { $match-ot.name : ; add '' $match-ot.name } { true : '' } ]
+      ; set $next-rname tbl.remote.tableName
+      [ match
+       { $window.Reflect.deleteProperty (
+        !window.Reflect.deleteProperty $tbl.remote missing
+        !window.Reflect.deleteProperty $tbl.remote accessDenied
+       ) }
+       { true (
+        ; set false tbl.remote.missing
+        ; set false tbl.remote.accessDenied
+       ) }
+      ]
+      !register-table-used-ids $tbl
+      ; to has-custom [ propertyIs true tbl.remote.customName ]
+      ; to same-rname [ propertyIs $next-rname tbl.name ]
+      ; condition { and { [ propertyIs false has-custom ] } { [ propertyIs false same-rname ] } } (
+       ; condition { propertyIs $tbl.id view.active-table-id } : ; set $tbl.name prev-active-name
+       ; set $next-rname tbl.name
+       ; condition { propertyIs $tbl.id view.active-table-id } (
+        ; set true active-renamed.hit
+        ; set $next-rname lane.subroute
+       )
+      )
+     ) }
+     { true (
+      ; set true tbl.remote.missing
+      ; set {} tbl.columns
+      ; set {} tbl.rows
+     ) }
+    ]
+   )
+  )
+  [ match
+   { $changed.hit (
+    !view.sync-notebook-table-scope $prev-active-name
+    !view.render
+    ; condition { propertyIs true active-renamed.hit } (
+     !view.sync-data-path
+     [ match
+      { $lane-control.update-url : !lane-control.update-url }
+     ]
+    )
+    true
+   ) }
+   { true : false }
+  ]
+ )
+
+ ; to view.apply-external-owner-table-sync (
+  -- Applies changes written to an owner table by an external read-write importer into this owner lane's open Data view
+  ; to { fresh-owner-tables change-info } $argv
+  ; to fresh-by-id ; object
+  [ match
+   { [ !window.Array.isArray $fresh-owner-tables ] (
+    ; each $fresh-owner-tables (
+     ; to { ft } $argv
+     [ match { $ft.id : ; to fresh-by-id $ft.id $ft } ]
+    )
+   ) }
+  ]
+  ; to target-tid [ match { $change-info.tableId : ; add '' $change-info.tableId } { true : '' } ]
+  ; to no-tid [ propertyIs '' target-tid ]
+  ; to has-tid [ propertyIs false no-tid ]
+  ; to changed ; object { hit false }
+  ; to active-renamed ; object { hit false }
+  ; to prev-active-name ''
+  ; each $view.tables (
+   ; to { tbl } $argv
+   ; to is-rem !view.is-remote-table $tbl
+   ; to should-check [ match
+    { $is-rem : false }
+    { $has-tid : [ propertyIs $target-tid tbl.id ] }
+    { true : true }
+   ]
+   ; condition { propertyIs true should-check } (
+    ; to ft [ get fresh-by-id $tbl.id ]
+    [ match
+     { $ft (
+      ; to next-cols !clone-plain-data [ match { [ !window.Array.isArray $ft.columns ] : $ft.columns } { true : {} } ] {}
+      ; to next-rows !clone-plain-data [ match { [ !window.Array.isArray $ft.rows ] : $ft.rows } { true : {} } ] {}
+      ; to next-name [ match { $ft.name : ; add '' $ft.name } { true : '' } ]
+      ; to same-name [ propertyIs $next-name tbl.name ]
+      ; condition { propertyIs false same-name } (
+       ; condition { propertyIs $tbl.id view.active-table-id } : ; set $tbl.name prev-active-name
+       ; set $next-name tbl.name
+       ; condition { propertyIs $tbl.id view.active-table-id } (
+        ; set true active-renamed.hit
+        ; set $next-name lane.subroute
+       )
+      )
+      ; set $next-cols tbl.columns
+      ; set $next-rows tbl.rows
+      !register-table-used-ids $tbl
+      ; set true changed.hit
+     ) }
+    ]
+   )
+  )
+  [ match
+   { $changed.hit (
+    !view.sync-notebook-table-scope $prev-active-name
+    !view.render
+    ; condition { propertyIs true active-renamed.hit } (
+     !view.sync-data-path
+     [ match
+      { $lane-control.update-url : !lane-control.update-url }
+     ]
+    )
+    true
+   ) }
+   { true : false }
+  ]
  )
 
  ; to view.seed-env (
@@ -591,7 +1246,7 @@
  )
 
  ; to view.update-table-tabs-text (
-  -- Updates pill labels and row count badges without full re-render
+  -- Updates pill labels, remote badges, and row count badges without full re-render
   ; each $view.tables (
    ; to { tbl idx } $argv
    ; to tab [ get view.table-tabs $idx ]
@@ -600,6 +1255,13 @@
      ; to label !view.display-table-name $tbl $idx
      ; set $label tab.label-el.textContent
      ; set $tbl.rows.length tab.count-el.textContent
+     ; to r-info !view.remote-origin-info $tbl
+     [ match
+      { [ and { $r-info } { $tab.remote-el } ] (
+       ; set $r-info.tab-badge-text tab.remote-el.textContent
+       ; set $r-info.jump-title tab.el.title
+      ) }
+     ]
     ) }
    ]
   )
@@ -614,19 +1276,40 @@
   ; each $view.tables (
    ; to { tbl idx } $argv
    ; to is-active [ propertyIs $view.active-table-id tbl.id ]
+   ; to r-info !view.remote-origin-info $tbl
    ; to btn !document.createElement button
-   ; to cls [ ternary $is-active 'lane-data-table-tab lane-data-table-tab--active' lane-data-table-tab ]
+   ; to base-cls [ ternary $is-active 'lane-data-table-tab lane-data-table-tab--active' lane-data-table-tab ]
+   ; to cls [ match
+    { $r-info (
+     ; to mode-cls [ ternary $r-info.is-readonly 'lane-data-table-tab--remote lane-data-table-tab--readonly' 'lane-data-table-tab--remote lane-data-table-tab--readwrite' ]
+     ; add $base-cls ; add ' ' $mode-cls
+    ) }
+    { true : $base-cls }
+   ]
    ; assign $btn { type button } { className $cls }
    !btn.setAttribute aria-selected [ ternary $is-active 'true' 'false' ]
    ; to label-el !document.createElement span
    ; assign $label-el { className lane-data-table-tab-label } { textContent !view.display-table-name $tbl $idx }
+   !btn.appendChild $label-el
+   ; to remote-el [ match
+    { $r-info (
+     !btn.setAttribute data-remote-lane $r-info.owner-lane-id
+     !btn.setAttribute data-remote-table $r-info.owner-table-id
+     !btn.setAttribute data-remote-mode $r-info.mode
+     ; set $r-info.jump-title btn.title
+     ; to r-badge !document.createElement span
+     ; assign $r-badge { className lane-data-table-tab-remote } { textContent $r-info.tab-badge-text }
+     !btn.appendChild $r-badge
+     $r-badge
+    ) }
+    { true : null }
+   ]
    ; to count-el !document.createElement span
    ; assign $count-el { className lane-data-table-tab-count } { textContent $tbl.rows.length }
-   !btn.appendChild $label-el
    !btn.appendChild $count-el
    !btn.addEventListener click : !view.select-table $tbl.id
    !tabs-el.appendChild $btn
-   ; to tab-rec ; object { id $tbl.id } { el $btn } { label-el $label-el } { count-el $count-el }
+   ; to tab-rec ; object { id $tbl.id } { el $btn } { label-el $label-el } { remote-el $remote-el } { count-el $count-el }
    !view.table-tabs.push $tab-rec
   )
  )
@@ -748,7 +1431,10 @@
  )
 
  ; to view.refresh-lane-labels (
-  -- Re-renders lane cell trigger labels across the active table grid after a lane rename or reload
+  -- Re-renders remote origin banner, tab tooltips, and lane cell trigger labels across the active table grid after a lane rename or reload
+  !view.render-remote-bar
+  !view.update-table-tabs-text
+  !view.render-updates
   ; to refresh-lanes-in-grow (
    ; to { target-tbl grow } $argv
    ; each $grow.cells (
@@ -862,6 +1548,7 @@
  ; to view.create-typed-control (
   -- Builds an editable typed input, checkbox, or async row/lane picker trigger for a single value of col.type
   ; to { col initial-val on-valid on-enter owner-tbl owner-row on-open-picker } $argv
+  ; to is-ro !view.is-readonly-table $owner-tbl
   [ match
    { [ propertyIs row col.type ] (
     ; to { trigger-btn display-el id-el } !create-picker-trigger
@@ -977,12 +1664,14 @@
        !trigger-btn.setAttribute aria-invalid 'false'
       ) }
      ]
+     ; condition { propertyIs true is-ro } : ; set true trigger-btn.disabled
     )
     !update-trigger $initial-val
 
     !trigger-btn.addEventListener click (
-     [ match
-      { $on-open-picker : !$on-open-picker }
+     ; condition { propertyIs false is-ro } (
+      [ match
+       { $on-open-picker : !$on-open-picker }
       { true (
        ; to target !resolveRowTarget $view.tables $col $owner-tbl
        ; condition { propertyIs true target.valid } (
@@ -1036,6 +1725,42 @@
           ]
          ) }
         ]
+        ; to create-row-fn (
+         ; to { row-values } $argv
+         ; to values ; object
+         ; each $target.table.columns (
+          ; to { tcol } $argv
+          ; to has-draft [ match
+           { $row-values : [ !window.Object.hasOwn $row-values $tcol.id ] }
+           { true : false }
+          ]
+          ; to col-val [ match
+           { $has-draft : !coerceDataValue [ get row-values $tcol.id ] $tcol $tcol.multiple null $view.tables }
+           { true : !defaultDataValue $tcol }
+          ]
+          ; to values $tcol.id $col-val
+         )
+         ; to new-row [ object
+          { id !view.next-id row }
+          { values $values }
+         ]
+         !target.table.rows.push $new-row
+         !view.update-table-tabs-text
+         ; to row-ids !collect-ids $target.table.rows
+         !addTableRow $data $view.lane.data $view.lane.id $target.table $new-row $row-ids
+         !view.notify-record-change $target.table $new-row add-row
+         ; to chosen-val [ get values $target.linkCol.id ]
+         ; to after-select (
+          [ match
+           { [ propertyIs $target.table.id view.active-table-id ] : !view.render-grid }
+           { true (
+            !view.render-grid
+           ) }
+          ]
+         )
+         ; object { ok true } { row $new-row } { value $chosen-val } { after-select $after-select }
+        )
+        ; to target-is-ro !view.is-readonly-table $target.table
         ; to pick-opts [ object
          { lane $view.lane }
          { lane-id $view.lane.id }
@@ -1054,41 +1779,7 @@
           ; to { offset limit } $argv
           !view.fetch-row-page $col $offset $limit $owner-row $owner-tbl
          ) }
-         { on-create-row (
-          ; to { row-values } $argv
-          ; to values ; object
-          ; each $target.table.columns (
-           ; to { tcol } $argv
-           ; to has-draft [ match
-            { $row-values : [ !window.Object.hasOwn $row-values $tcol.id ] }
-            { true : false }
-           ]
-           ; to col-val [ match
-            { $has-draft : !coerceDataValue [ get row-values $tcol.id ] $tcol $tcol.multiple null $view.tables }
-            { true : !defaultDataValue $tcol }
-           ]
-           ; to values $tcol.id $col-val
-          )
-          ; to new-row [ object
-           { id !view.next-id row }
-           { values $values }
-          ]
-          !target.table.rows.push $new-row
-          !view.update-table-tabs-text
-          ; to row-ids !collect-ids $target.table.rows
-          !addTableRow $data $view.lane.data $view.lane.id $target.table.id $new-row $row-ids
-          !view.notify-record-change $target.table $new-row add-row
-          ; to chosen-val [ get values $target.linkCol.id ]
-          ; to after-select (
-           [ match
-            { [ propertyIs $target.table.id view.active-table-id ] : !view.render-grid }
-            { true (
-             !view.render-grid
-            ) }
-           ]
-          )
-          ; object { ok true } { row $new-row } { value $chosen-val } { after-select $after-select }
-         ) }
+         { on-create-row [ ternary $target-is-ro null $create-row-fn ] }
          { on-select (
           ; to { chosen-val } $argv
           !update-trigger $chosen-val
@@ -1099,6 +1790,7 @@
        )
       ) }
      ]
+     )
     )
     ; object { el $trigger-btn } { input-el $trigger-btn } { trigger-el $trigger-btn } { display-el $display-el } { id-el $id-el } { update-trigger $update-trigger }
    ) }
@@ -1162,7 +1854,11 @@
       { $lane-control.open : true }
       { true : false }
      ]
-     ; to trig-disabled [ ternary $has-picker false true ]
+     ; to trig-disabled [ match
+      { $is-ro : true }
+      { $has-picker : false }
+      { true : true }
+     ]
      ; to open-disabled [ ternary $has-open false true ]
      [ match
       { $info.is-empty (
@@ -1194,28 +1890,30 @@
     !update-trigger $initial-val
 
     !trigger-btn.addEventListener click (
-     [ match
-      { $on-open-picker : !$on-open-picker }
-      { $lane-control.pick-lane (
-       ; to trimmed-name !col.name.trim
-       ; to title [ match
-        { [ propertyIs '' trimmed-name ] : 'Select Lane' }
-        { true : ; add 'Select ' $trimmed-name }
-       ]
-       ; to pick-opts [ object
-        { lane $view.lane }
-        { lane-id $view.lane.id }
-        { title $title }
-        { current-value $ctrl-state.value }
-        { on-select (
-         ; to { chosen-id } $argv
-         !update-trigger $chosen-id
-         !$on-valid $chosen-id
-        ) }
-       ]
-       !lane-control.pick-lane $pick-opts
-      ) }
-     ]
+     ; condition { propertyIs false is-ro } (
+      [ match
+       { $on-open-picker : !$on-open-picker }
+       { $lane-control.pick-lane (
+        ; to trimmed-name !col.name.trim
+        ; to title [ match
+         { [ propertyIs '' trimmed-name ] : 'Select Lane' }
+         { true : ; add 'Select ' $trimmed-name }
+        ]
+        ; to pick-opts [ object
+         { lane $view.lane }
+         { lane-id $view.lane.id }
+         { title $title }
+         { current-value $ctrl-state.value }
+         { on-select (
+          ; to { chosen-id } $argv
+          !update-trigger $chosen-id
+          !$on-valid $chosen-id
+         ) }
+        ]
+        !lane-control.pick-lane $pick-opts
+       ) }
+      ]
+     )
     )
     !open-btn.addEventListener click (
      [ match
@@ -1246,7 +1944,7 @@
     ; to wrap !document.createElement label
     ; set lane-data-bool-wrap wrap.className
     ; to cb !document.createElement input
-    ; assign $cb { type checkbox } { className lane-data-bool-input }
+    ; assign $cb { type checkbox } { className lane-data-bool-input } { disabled $is-ro }
     ; to bool-val !formatCellInputValue $initial-val boolean
     ; set $bool-val cb.checked
     ; to txt !document.createElement span
@@ -1254,9 +1952,11 @@
     !wrap.appendChild $cb
     !wrap.appendChild $txt
     !cb.addEventListener change (
-     ; to next-bool [ ternary $cb.checked true false ]
-     ; set [ ternary $next-bool 'true' 'false' ] txt.textContent
-     !$on-valid $next-bool
+     ; condition { propertyIs false is-ro } (
+      ; to next-bool [ ternary $cb.checked true false ]
+      ; set [ ternary $next-bool 'true' 'false' ] txt.textContent
+      !$on-valid $next-bool
+     )
     )
     ; object { el $wrap } { input-el $cb } { label-el $txt }
    ) }
@@ -1312,12 +2012,15 @@
        ; set $wf-state.hint select-el.title
       ) }
      ]
+     ; condition { propertyIs true is-ro } : ; set true select-el.disabled
     )
     !render-options $initial-val
     !select-el.addEventListener change (
-     ; to next-val $select-el.value
-     !render-options $next-val
-     !$on-valid $next-val
+     ; condition { propertyIs false is-ro } (
+      ; to next-val $select-el.value
+      !render-options $next-val
+      !$on-valid $next-val
+     )
     )
     ; object { el $select-el } { input-el $select-el } { select-el $select-el } { option-els $ctrl-state.option-els } { render-options $render-options }
    ) }
@@ -1396,6 +2099,13 @@
     ; assign $input-el { type text } { className 'lane-data-cell-input lane-data-cell-input--datetime' } { value $formatted } { placeholder $ph } { spellcheck false } { autocomplete off }
     !sync-picker-title $init-opts
     !apply-input-state true $initial-val ''
+    ; condition { propertyIs true is-ro } (
+     ; set true input-el.disabled
+     ; set true input-el.readOnly
+     ; set true picker-btn.disabled
+     ; set true picker-btn.hidden
+     ; set true native-picker.disabled
+    )
 
     ; to update-datetime (
      ; to { next-val } $argv
@@ -1424,29 +2134,31 @@
      ]
     )
     ; to handle-edit (
-     ; to copts !view.get-clock-display-opts
-     ; to raw-text $input-el.value
-     ; to cur-display !formatCellInputValue $ctrl-state.value $col undefined $view.tables $copts
-     [ match
-      { [ and { propertyIs true ctrl-state.valid } { propertyIs $cur-display raw-text } ] (
-       !apply-input-state true $ctrl-state.value ''
-      ) }
-      { true (
-       ; to parsed !parseCellValue $raw-text $col undefined $view.tables $copts
-       [ match
-        { $parsed.ok (
-         ; set $parsed.value ctrl-state.value
-         ; set true ctrl-state.valid
-         !apply-input-state true $parsed.value ''
-         !$on-valid $parsed.value
-        ) }
-        { true (
-         ; set false ctrl-state.valid
-         !apply-input-state false null $parsed.error
-        ) }
-       ]
-      ) }
-     ]
+     ; condition { propertyIs false is-ro } (
+      ; to copts !view.get-clock-display-opts
+      ; to raw-text $input-el.value
+      ; to cur-display !formatCellInputValue $ctrl-state.value $col undefined $view.tables $copts
+      [ match
+       { [ and { propertyIs true ctrl-state.valid } { propertyIs $cur-display raw-text } ] (
+        !apply-input-state true $ctrl-state.value ''
+       ) }
+       { true (
+        ; to parsed !parseCellValue $raw-text $col undefined $view.tables $copts
+        [ match
+         { $parsed.ok (
+          ; set $parsed.value ctrl-state.value
+          ; set true ctrl-state.valid
+          !apply-input-state true $parsed.value ''
+          !$on-valid $parsed.value
+         ) }
+         { true (
+          ; set false ctrl-state.valid
+          !apply-input-state false null $parsed.error
+         ) }
+        ]
+       ) }
+      ]
+     )
     )
     ; to handle-blur (
      ; to copts !view.get-clock-display-opts
@@ -1474,43 +2186,47 @@
     !input-el.addEventListener change $handle-edit
     !input-el.addEventListener blur $handle-blur
     !picker-btn.addEventListener click (
-     ; to { ev } $argv
-     [ match
-      { $ev.preventDefault : !ev.preventDefault }
-     ]
-     [ match
-      { $ev.stopPropagation : !ev.stopPropagation }
-     ]
-     ; to copts !view.get-clock-display-opts
-     ; to local-val [ match
-      { $formatDatetimeLocalInTimeZone : !formatDatetimeLocalInTimeZone $ctrl-state.value $copts.timeZone $window.Intl }
-      { true : '' }
-     ]
-     ; set $local-val native-picker.value
-     [ match
-      { $native-picker.showPicker : ; try ( !native-picker.showPicker ) (
-       [ match { $native-picker.focus : !native-picker.focus } ]
-       [ match { $native-picker.click : !native-picker.click } ]
-      ) }
-      { true (
-       [ match { $native-picker.focus : !native-picker.focus } ]
-       [ match { $native-picker.click : !native-picker.click } ]
-      ) }
-     ]
+     ; condition { propertyIs false is-ro } (
+      ; to { ev } $argv
+      [ match
+       { $ev.preventDefault : !ev.preventDefault }
+      ]
+      [ match
+       { $ev.stopPropagation : !ev.stopPropagation }
+      ]
+      ; to copts !view.get-clock-display-opts
+      ; to local-val [ match
+       { $formatDatetimeLocalInTimeZone : !formatDatetimeLocalInTimeZone $ctrl-state.value $copts.timeZone $window.Intl }
+       { true : '' }
+      ]
+      ; set $local-val native-picker.value
+      [ match
+       { $native-picker.showPicker : ; try ( !native-picker.showPicker ) (
+        [ match { $native-picker.focus : !native-picker.focus } ]
+        [ match { $native-picker.click : !native-picker.click } ]
+       ) }
+       { true (
+        [ match { $native-picker.focus : !native-picker.focus } ]
+        [ match { $native-picker.click : !native-picker.click } ]
+       ) }
+      ]
+     )
     )
     !native-picker.addEventListener change (
-     ; to copts !view.get-clock-display-opts
-     ; to parsed !parseCellValue $native-picker.value $col undefined $view.tables $copts
-     [ match
-      { $parsed.ok (
-       ; set $parsed.value ctrl-state.value
-       ; set true ctrl-state.valid
-       ; to disp !formatCellInputValue $parsed.value $col undefined $view.tables $copts
-       ; set $disp input-el.value
-       !apply-input-state true $parsed.value ''
-       !$on-valid $parsed.value
-      ) }
-     ]
+     ; condition { propertyIs false is-ro } (
+      ; to copts !view.get-clock-display-opts
+      ; to parsed !parseCellValue $native-picker.value $col undefined $view.tables $copts
+      [ match
+       { $parsed.ok (
+        ; set $parsed.value ctrl-state.value
+        ; set true ctrl-state.valid
+        ; to disp !formatCellInputValue $parsed.value $col undefined $view.tables $copts
+        ; set $disp input-el.value
+        !apply-input-state true $parsed.value ''
+        !$on-valid $parsed.value
+       ) }
+      ]
+     )
     )
     [ match
      { $on-enter (
@@ -1600,17 +2316,23 @@
      ; set $cls input-el.className
     )
     !apply-input-state true $initial-val ''
+    ; condition { propertyIs true is-ro } (
+     ; set true input-el.disabled
+     ; set true input-el.readOnly
+    )
     ; to handle-edit (
-     ; to parsed !parseCellValue $input-el.value $col
-     [ match
-      { $parsed.ok (
-       !apply-input-state true $parsed.value ''
-       !$on-valid $parsed.value
-      ) }
-      { true (
-       !apply-input-state false null $parsed.error
-      ) }
-     ]
+     ; condition { propertyIs false is-ro } (
+      ; to parsed !parseCellValue $input-el.value $col
+      [ match
+       { $parsed.ok (
+        !apply-input-state true $parsed.value ''
+        !$on-valid $parsed.value
+       ) }
+       { true (
+        !apply-input-state false null $parsed.error
+       ) }
+      ]
+     )
     )
     !input-el.addEventListener input $handle-edit
     [ match
@@ -1773,17 +2495,27 @@
  ; to view.sync-multi-add-btn (
   -- Updates the + button enabled state and tooltip on a multiple ([]) cell
   ; to { tbl col add-btn } $argv
+  ; to is-ro !view.is-readonly-table $tbl
   [ match
    { $add-btn (
-    ; to st !view.get-selectable-col-status $col $tbl
+    ; set $is-ro add-btn.hidden
     [ match
-     { $st.selectable (
-      ; set [ ternary $st.ready false true ] add-btn.disabled
-      ; set [ ternary $st.ready 'Add or remove items' $st.reason ] add-btn.title
+     { $is-ro (
+      ; set true add-btn.disabled
+      ; set 'Read-only remote table' add-btn.title
      ) }
      { true (
-      ; set false add-btn.disabled
-      ; set 'Add item' add-btn.title
+      ; to st !view.get-selectable-col-status $col $tbl
+      [ match
+       { $st.selectable (
+        ; set [ ternary $st.ready false true ] add-btn.disabled
+        ; set [ ternary $st.ready 'Add or remove items' $st.reason ] add-btn.title
+       ) }
+       { true (
+        ; set false add-btn.disabled
+        ; set 'Add item' add-btn.title
+       ) }
+      ]
      ) }
     ]
    ) }
@@ -1793,7 +2525,9 @@
  ; to view.open-multi-select (
   -- Opens a multiselect modal (with Apply / Cancel) for a selectable multiple ([]) cell (lane[], row[], or text(workflow)[])
   ; to { tbl row row-idx col cell-rec on-row-edited } $argv
-  ; to raw-val [ get row.values $col.id ]
+  ; to is-ro !view.is-readonly-table $tbl
+  ; condition { propertyIs false is-ro } (
+   ; to raw-val [ get row.values $col.id ]
   ; to raw-arr [ match
    { [ !window.Array.isArray $raw-val ] : $raw-val }
    { true : !coerceDataValue $raw-val $col true null $view.tables }
@@ -1888,6 +2622,37 @@
        ]
       ) }
      ]
+     ; to create-row-fn (
+      ; to { row-values } $argv
+      ; to values ; object
+      ; each $target.table.columns (
+       ; to { tcol } $argv
+       ; to has-draft [ match
+        { $row-values : [ !window.Object.hasOwn $row-values $tcol.id ] }
+        { true : false }
+       ]
+       ; to col-val [ match
+        { $has-draft : !coerceDataValue [ get row-values $tcol.id ] $tcol $tcol.multiple null $view.tables }
+        { true : !defaultDataValue $tcol }
+       ]
+       ; to values $tcol.id $col-val
+      )
+      ; to new-row [ object
+       { id !view.next-id row }
+       { values $values }
+      ]
+      !target.table.rows.push $new-row
+      !view.update-table-tabs-text
+      ; to row-ids !collect-ids $target.table.rows
+      !addTableRow $data $view.lane.data $view.lane.id $target.table $new-row $row-ids
+      !view.notify-record-change $target.table $new-row add-row
+      ; to chosen-val [ get values $target.linkCol.id ]
+      ; to after-select (
+       !view.render-grid
+      )
+      ; object { ok true } { row $new-row } { value $chosen-val } { after-select $after-select }
+     )
+     ; to target-is-ro !view.is-readonly-table $target.table
      ; to pick-opts [ object
       { lane $view.lane }
       { lane-id $view.lane.id }
@@ -1912,113 +2677,86 @@
        ; to { offset limit } $argv
        !view.fetch-row-page $col $offset $limit $row $tbl
       ) }
-      { on-create-row (
-       ; to { row-values } $argv
-       ; to values ; object
-       ; each $target.table.columns (
-        ; to { tcol } $argv
-        ; to has-draft [ match
-         { $row-values : [ !window.Object.hasOwn $row-values $tcol.id ] }
-         { true : false }
-        ]
-        ; to col-val [ match
-         { $has-draft : !coerceDataValue [ get row-values $tcol.id ] $tcol $tcol.multiple null $view.tables }
-         { true : !defaultDataValue $tcol }
-        ]
-        ; to values $tcol.id $col-val
-       )
-       ; to new-row [ object
-        { id !view.next-id row }
-        { values $values }
-       ]
-       !target.table.rows.push $new-row
-       !view.update-table-tabs-text
-       ; to row-ids !collect-ids $target.table.rows
-       !addTableRow $data $view.lane.data $view.lane.id $target.table.id $new-row $row-ids
-       !view.notify-record-change $target.table $new-row add-row
-       ; to chosen-val [ get values $target.linkCol.id ]
-       ; to after-select (
-        !view.render-grid
-       )
-       ; object { ok true } { row $new-row } { value $chosen-val } { after-select $after-select }
-      ) }
-      { on-select $apply-multi-values }
-     ]
-     !view.row-picker.open $pick-opts
-    )
-   ) }
-   { [ match { [ propertyIs text col.type ] : !normalizeColumnConstraint $col.constraint } { true : null } ] (
-    ; to wf-target !resolveWorkflowTarget $view.tables $col
-    ; condition { propertyIs true wf-target.valid } (
-     ; to col-label !view.display-col-name $col
-     ; to title ; add 'Select ' ; add $col-label ; add ' (' ; add $wf-target.tableName ')'
-     ; to state-items {}
-     ; to seen-states ; object
-     ; each $wf-target.fromValues (
-      ; to { fv } $argv
-      ; to already [ get seen-states $fv ]
-      [ match
-       { $already : null }
-       { [ propertyIs '' fv ] : null }
-       { true (
-        ; to seen-states $fv true
-        !state-items.push [ object { value $fv } { valueText $fv } { displayText $fv } { hasSeparateDisplay false } { label $fv } ]
-       ) }
+       { on-create-row [ ternary $target-is-ro null $create-row-fn ] }
+       { on-select $apply-multi-values }
       ]
+      !view.row-picker.open $pick-opts
      )
-     ; each $wf-target.toValues (
-      ; to { tv } $argv
-      ; to already [ get seen-states $tv ]
-      [ match
-       { $already : null }
-       { [ propertyIs '' tv ] : null }
-       { true (
-        ; to seen-states $tv true
-        !state-items.push [ object { value $tv } { valueText $tv } { displayText $tv } { hasSeparateDisplay false } { label $tv } ]
-       ) }
-      ]
-     )
-     ; to pick-opts [ object
-      { lane $view.lane }
-      { lane-id $view.lane.id }
-      { host $view.container }
-      { multiple true }
-      { title $title }
-      { placeholder 'Filter states...' }
-      { item-noun state }
-      { item-noun-plural states }
-      { empty-message 'No workflow states available in mapped table.' }
-      { current-values $cur-list }
-      { page-size $view.row-page-size }
-      { resolve-display (
-       ; to { val } $argv
-       ; to st-txt [ match
-        { [ propertyIs undefined val ] : '' }
-        { [ propertyIs null val ] : '' }
-        { true : ; add '' $val }
+    ) }
+    { [ match { [ propertyIs text col.type ] : !normalizeColumnConstraint $col.constraint } { true : null } ] (
+     ; to wf-target !resolveWorkflowTarget $view.tables $col
+     ; condition { propertyIs true wf-target.valid } (
+      ; to col-label !view.display-col-name $col
+      ; to title ; add 'Select ' ; add $col-label ; add ' (' ; add $wf-target.tableName ')'
+      ; to state-items {}
+      ; to seen-states ; object
+      ; each $wf-target.fromValues (
+       ; to { fv } $argv
+       ; to already [ get seen-states $fv ]
+       [ match
+        { $already : null }
+        { [ propertyIs '' fv ] : null }
+        { true (
+         ; to seen-states $fv true
+         !state-items.push [ object { value $fv } { valueText $fv } { displayText $fv } { hasSeparateDisplay false } { label $fv } ]
+        ) }
        ]
-       ; to wf-st !getWorkflowCellState $view.tables $col $st-txt
-       ; object { isEmpty [ propertyIs '' st-txt ] } { valueText $st-txt } { displayText $st-txt } { hasSeparateDisplay false } { label $st-txt } { filterMatched $wf-st.isValueValid }
-      ) }
-      { fetch-page (
-       ; to { offset limit } $argv
-       ; to end ; add $offset $limit
-       ; to slice !state-items.slice $offset $end
-       ; to next-off ; add $offset $slice.length
-       ; to has-more [ propertyIsLessThan $state-items.length next-off ]
-       ; object { ok true } { items $slice } { total $state-items.length } { nextOffset $next-off } { hasMore $has-more }
-      ) }
-      { on-select $apply-multi-values }
-     ]
-     !view.row-picker.open $pick-opts
-    )
-   ) }
-  ]
+      )
+      ; each $wf-target.toValues (
+       ; to { tv } $argv
+       ; to already [ get seen-states $tv ]
+       [ match
+        { $already : null }
+        { [ propertyIs '' tv ] : null }
+        { true (
+         ; to seen-states $tv true
+         !state-items.push [ object { value $tv } { valueText $tv } { displayText $tv } { hasSeparateDisplay false } { label $tv } ]
+        ) }
+       ]
+      )
+      ; to pick-opts [ object
+       { lane $view.lane }
+       { lane-id $view.lane.id }
+       { host $view.container }
+       { multiple true }
+       { title $title }
+       { placeholder 'Filter states...' }
+       { item-noun state }
+       { item-noun-plural states }
+       { empty-message 'No workflow states available in mapped table.' }
+       { current-values $cur-list }
+       { page-size $view.row-page-size }
+       { resolve-display (
+        ; to { val } $argv
+        ; to st-txt [ match
+         { [ propertyIs undefined val ] : '' }
+         { [ propertyIs null val ] : '' }
+         { true : ; add '' $val }
+        ]
+        ; to wf-st !getWorkflowCellState $view.tables $col $st-txt
+        ; object { isEmpty [ propertyIs '' st-txt ] } { valueText $st-txt } { displayText $st-txt } { hasSeparateDisplay false } { label $st-txt } { filterMatched $wf-st.isValueValid }
+       ) }
+       { fetch-page (
+        ; to { offset limit } $argv
+        ; to end ; add $offset $limit
+        ; to slice !state-items.slice $offset $end
+        ; to next-off ; add $offset $slice.length
+        ; to has-more [ propertyIsLessThan $state-items.length next-off ]
+        ; object { ok true } { items $slice } { total $state-items.length } { nextOffset $next-off } { hasMore $has-more }
+       ) }
+       { on-select $apply-multi-values }
+      ]
+      !view.row-picker.open $pick-opts
+     )
+    ) }
+   ]
+  )
  )
 
  ; to view.render-multi-cell (
   -- Renders a multiple-value ([]) cell editor with typed item inputs, confirmed removal, and + item button
   ; to { tbl row row-idx col cell-rec focus-idx } $argv
+  ; to is-ro !view.is-readonly-table $tbl
   ; to items-el $cell-rec.items-el
   ; while { propertyIsGreaterThan 0 cell-rec.items.length } (
    ; to old !cell-rec.items.pop
@@ -2035,6 +2773,7 @@
    ) }
   ]
   ; to multi-picker-cb [ match
+   { $is-ro : null }
    { [ propertyIs row col.type ] : : !view.open-multi-select $tbl $row $row-idx $col $cell-rec $cell-rec.on-row-edited }
    { [ propertyIs lane col.type ] : : !view.open-multi-select $tbl $row $row-idx $col $cell-rec $cell-rec.on-row-edited }
    { true : null }
@@ -2059,10 +2798,11 @@
     !view.refresh-row-cells $row
     !view.save-row $tbl $row
    )
-   ; to ctrl !view.create-typed-control $col $item-val $on-item-valid $on-item-enter $tbl $row $multi-picker-cb
+   ; to eff-enter [ ternary $is-ro null $on-item-enter ]
+   ; to ctrl !view.create-typed-control $col $item-val $on-item-valid $eff-enter $tbl $row $multi-picker-cb
    ; to rm-btn !document.createElement button
-   ; assign $rm-btn { type button } { className lane-data-multi-remove } { textContent '×' } { title 'Remove item' }
-   !rm-btn.addEventListener click : !view.request-remove-multi-item $tbl $row $row-idx $col $cell-rec $item-idx
+   ; assign $rm-btn { type button } { className lane-data-multi-remove } { textContent '×' } { title 'Remove item' } { hidden $is-ro } { disabled $is-ro }
+   !rm-btn.addEventListener click : ; condition { propertyIs false is-ro } : !view.request-remove-multi-item $tbl $row $row-idx $col $cell-rec $item-idx
    !item-el.appendChild $ctrl.el
    !item-el.appendChild $rm-btn
    !items-el.appendChild $item-el
@@ -2099,44 +2839,47 @@
  ; to view.request-remove-multi-item (
   -- Prompts for confirmation before removing an item from a multiple ([]) cell
   ; to { tbl row row-idx col cell-rec item-idx } $argv
-  ; to arr [ get row.values $col.id ]
-  ; to item-val [ get arr $item-idx ]
-  ; to col-label !view.display-col-name $col
-  ; to row-num ; add $row-idx 1
-  ; to item-num ; add $item-idx 1
-  ; to val-str [ match
-   { [ propertyIs row col.type ] (
-    ; to clock-opts !view.get-clock-display-opts
-    ; to info !lookupRowDisplay $view.tables $col $item-val undefined undefined $clock-opts
-    [ match
-     { $info.isEmpty : empty }
-     { [ propertyIs '' info.label ] : empty }
-     { true : $info.label }
-    ]
-   ) }
-   { [ propertyIs lane col.type ] (
-    ; to info !view.lookup-lane-info $item-val
-    [ match
-     { $info.is-empty : empty }
-     { [ propertyIs '' info.label ] : empty }
-     { true : $info.label }
-    ]
-   ) }
-   { true : !formatCellInputValue $item-val $col undefined $view.tables [ !view.get-clock-display-opts ] }
-  ]
-  ; to msg ; add 'Remove item #' ; add $item-num ; add ' ("' ; add $val-str ; add '") from "' ; add $col-label ; add '" in row #' ; add $row-num '?'
-  ; to opts [ object
-   { title 'Remove Item' }
-   { message $msg }
-   { confirm-label 'Remove item' }
-   { on-confirm (
-    !arr.splice $item-idx 1
-    !view.render-multi-cell $tbl $row $row-idx $col $cell-rec -1
-    !view.refresh-row-cells $row
-    !view.save-row $tbl $row
-   ) }
-  ]
-  !view.confirm $opts
+  ; to is-ro !view.is-readonly-table $tbl
+  ; condition { propertyIs false is-ro } (
+   ; to arr [ get row.values $col.id ]
+   ; to item-val [ get arr $item-idx ]
+   ; to col-label !view.display-col-name $col
+   ; to row-num ; add $row-idx 1
+   ; to item-num ; add $item-idx 1
+   ; to val-str [ match
+    { [ propertyIs row col.type ] (
+     ; to clock-opts !view.get-clock-display-opts
+     ; to info !lookupRowDisplay $view.tables $col $item-val undefined undefined $clock-opts
+     [ match
+      { $info.isEmpty : empty }
+      { [ propertyIs '' info.label ] : empty }
+      { true : $info.label }
+     ]
+    ) }
+    { [ propertyIs lane col.type ] (
+     ; to info !view.lookup-lane-info $item-val
+     [ match
+      { $info.is-empty : empty }
+      { [ propertyIs '' info.label ] : empty }
+      { true : $info.label }
+     ]
+    ) }
+    { true : !formatCellInputValue $item-val $col undefined $view.tables [ !view.get-clock-display-opts ] }
+   ]
+   ; to msg ; add 'Remove item #' ; add $item-num ; add ' ("' ; add $val-str ; add '") from "' ; add $col-label ; add '" in row #' ; add $row-num '?'
+   ; to opts [ object
+    { title 'Remove Item' }
+    { message $msg }
+    { confirm-label 'Remove item' }
+    { on-confirm (
+     !arr.splice $item-idx 1
+     !view.render-multi-cell $tbl $row $row-idx $col $cell-rec -1
+     !view.refresh-row-cells $row
+     !view.save-row $tbl $row
+    ) }
+   ]
+   !view.confirm $opts
+  )
  )
 
  ; to view.is-right-aligned-col (
@@ -2381,29 +3124,32 @@
       )
      )
      !add-item-btn.addEventListener click (
-      ; to sel-st !view.get-selectable-col-status $col $tbl
-      [ match
-       { $sel-st.selectable (
-        ; condition { propertyIs true sel-st.ready } : !view.open-multi-select $tbl $row $row-idx $col $cell-rec $on-row-edited
-       ) }
-       { true (
-        ; to arr [ get row.values $col.id ]
-        ; to list [ match
-         { [ !window.Array.isArray $arr ] : $arr }
-         { true (
-          ; to fresh {}
-          ; to row.values $col.id $fresh
-          $fresh
-         ) }
-        ]
-        ; to def-val !defaultDataValue $col false
-        !list.push $def-val
-        ; to new-idx ; subtract $list.length 1
-        !view.render-multi-cell $tbl $row $row-idx $col $cell-rec $new-idx
-        !view.save-row $tbl $row
-        [ match { $on-row-edited : !$on-row-edited } ]
-       ) }
-      ]
+      ; to tbl-is-ro !view.is-readonly-table $tbl
+      ; condition { propertyIs false tbl-is-ro } (
+       ; to sel-st !view.get-selectable-col-status $col $tbl
+       [ match
+        { $sel-st.selectable (
+         ; condition { propertyIs true sel-st.ready } : !view.open-multi-select $tbl $row $row-idx $col $cell-rec $on-row-edited
+        ) }
+        { true (
+         ; to arr [ get row.values $col.id ]
+         ; to list [ match
+          { [ !window.Array.isArray $arr ] : $arr }
+          { true (
+           ; to fresh {}
+           ; to row.values $col.id $fresh
+           $fresh
+          ) }
+         ]
+         ; to def-val !defaultDataValue $col false
+         !list.push $def-val
+         ; to new-idx ; subtract $list.length 1
+         !view.render-multi-cell $tbl $row $row-idx $col $cell-rec $new-idx
+         !view.save-row $tbl $row
+         [ match { $on-row-edited : !$on-row-edited } ]
+        ) }
+       ]
+      )
      )
      !view.render-multi-cell $tbl $row $row-idx $col $cell-rec -1
      !cells.push $cell-rec
@@ -2463,13 +3209,16 @@
   ; to tbl !view.get-active-table
   [ match
    { $tbl (
+    ; to is-ro !view.is-readonly-table $tbl
     ; to col-count $tbl.columns.length
     ; to row-count $tbl.rows.length
     ; set [ add 'Rows (' ; add $row-count ')' ] rows-title.textContent
     ; to has-cols [ propertyIsGreaterThan 0 col-count ]
     ; to has-rows [ propertyIsGreaterThan 0 row-count ]
-    ; set [ ternary $has-cols false true ] add-row-btn.disabled
-    ; set [ ternary $has-rows false true ] clear-rows-btn.disabled
+    ; set $is-ro add-row-btn.hidden
+    ; set [ match { $is-ro : true } { $has-cols : false } { true : true } ] add-row-btn.disabled
+    ; set [ ternary $is-ro 'Read-only remote table' 'Add a new row to this table' ] add-row-btn.title
+    ; set [ match { $is-ro : true } { $has-rows : false } { true : true } ] clear-rows-btn.disabled
     ; set [ ternary $has-cols false true ] grid-wrap.hidden
 
     ; to inbound-subtables !view.get-inbound-subtables $tbl
@@ -2546,78 +3295,82 @@
         { [ propertyIs lane col.type ] : ; set 'Stores a selected lane ID' type-span.title }
        ]
        ; to resizer-el !document.createElement div
-       ; assign $resizer-el { className lane-data-col-resizer } { title 'Drag to resize column (double-click to reset)' }
+       ; assign $resizer-el { className lane-data-col-resizer } { title 'Drag to resize column (double-click to reset)' } { hidden $is-ro }
        !resizer-el.setAttribute role separator
        !resizer-el.setAttribute aria-orientation vertical
        !resizer-el.addEventListener mousedown (
-        ; to { ev } $argv
-        [ match
-         { $ev.preventDefault : !ev.preventDefault }
-        ]
-        [ match
-         { $ev.stopPropagation : !ev.stopPropagation }
-        ]
-        ; to start-x [ match
-         { [ propertyIs undefined ev.clientX ] : 0 }
-         { [ propertyIs null ev.clientX ] : 0 }
-         { true : $ev.clientX }
-        ]
-        ; to saved-w !normalizeColumnWidth $col.width
-        ; to measured [ match
-         { $saved-w : $saved-w }
-         { $th.getBoundingClientRect (
-          ; to rect !th.getBoundingClientRect
-          !window.Math.round $rect.width
-         ) }
-         { [ propertyIsGreaterThan 0 th.offsetWidth ] : $th.offsetWidth }
-         { true : 120 }
-        ]
-        ; to drag ; object { start-x $start-x } { start-w $measured } { moved false }
-        ; set 'lane-data-col-resizer lane-data-col-resizer--active' resizer-el.className
-        ; to on-move (
-         ; to { mev } $argv
-         ; to cur-x [ match
-          { [ propertyIs undefined mev.clientX ] : $drag.start-x }
-          { [ propertyIs null mev.clientX ] : $drag.start-x }
-          { true : $mev.clientX }
-         ]
-         ; to delta ; subtract $cur-x $drag.start-x
-         ; to raw-next ; add $drag.start-w $delta
-         ; to safe-next [ match
-          { [ propertyIsLessThan 1 raw-next ] : 1 }
-          { true : $raw-next }
-         ]
-         ; to next-w !normalizeColumnWidth $safe-next
+        ; condition { propertyIs false is-ro } (
+         ; to { ev } $argv
          [ match
-          { $next-w (
-           ; set true drag.moved
-           ; set $next-w col.width
-           !view.apply-column-width $col-idx $next-w
+          { $ev.preventDefault : !ev.preventDefault }
+         ]
+         [ match
+          { $ev.stopPropagation : !ev.stopPropagation }
+         ]
+         ; to start-x [ match
+          { [ propertyIs undefined ev.clientX ] : 0 }
+          { [ propertyIs null ev.clientX ] : 0 }
+          { true : $ev.clientX }
+         ]
+         ; to saved-w !normalizeColumnWidth $col.width
+         ; to measured [ match
+          { $saved-w : $saved-w }
+          { $th.getBoundingClientRect (
+           ; to rect !th.getBoundingClientRect
+           !window.Math.round $rect.width
           ) }
+          { [ propertyIsGreaterThan 0 th.offsetWidth ] : $th.offsetWidth }
+          { true : 120 }
          ]
+         ; to drag ; object { start-x $start-x } { start-w $measured } { moved false }
+         ; set 'lane-data-col-resizer lane-data-col-resizer--active' resizer-el.className
+         ; to on-move (
+          ; to { mev } $argv
+          ; to cur-x [ match
+           { [ propertyIs undefined mev.clientX ] : $drag.start-x }
+           { [ propertyIs null mev.clientX ] : $drag.start-x }
+           { true : $mev.clientX }
+          ]
+          ; to delta ; subtract $cur-x $drag.start-x
+          ; to raw-next ; add $drag.start-w $delta
+          ; to safe-next [ match
+           { [ propertyIsLessThan 1 raw-next ] : 1 }
+           { true : $raw-next }
+          ]
+          ; to next-w !normalizeColumnWidth $safe-next
+          [ match
+           { $next-w (
+            ; set true drag.moved
+            ; set $next-w col.width
+            !view.apply-column-width $col-idx $next-w
+           ) }
+          ]
+         )
+         ; to on-up (
+          ; set lane-data-col-resizer resizer-el.className
+          [ match
+           { $window.removeEventListener (
+            !window.removeEventListener mousemove $on-move
+            !window.removeEventListener mouseup $on-up
+           ) }
+          ]
+          [ match
+           { $drag.moved : !view.save-schema $tbl }
+          ]
+         )
+         !window.addEventListener mousemove $on-move
+         !window.addEventListener mouseup $on-up
         )
-        ; to on-up (
-         ; set lane-data-col-resizer resizer-el.className
-         [ match
-          { $window.removeEventListener (
-           !window.removeEventListener mousemove $on-move
-           !window.removeEventListener mouseup $on-up
-          ) }
-         ]
-         [ match
-          { $drag.moved : !view.save-schema $tbl }
-         ]
-        )
-        !window.addEventListener mousemove $on-move
-        !window.addEventListener mouseup $on-up
        )
        !resizer-el.addEventListener dblclick (
-        [ match
-         { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col width }
-         { true : ; set undefined col.width }
-        ]
-        !view.apply-column-width $col-idx null
-        !view.save-schema $tbl
+        ; condition { propertyIs false is-ro } (
+         [ match
+          { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col width }
+          { true : ; set undefined col.width }
+         ]
+         !view.apply-column-width $col-idx null
+         !view.save-schema $tbl
+        )
        )
        !th-inner.appendChild $name-span
        !th-inner.appendChild $type-span
@@ -2656,7 +3409,7 @@
        ; to act-td !document.createElement td
        ; set 'lane-data-td lane-data-td--actions' act-td.className
        ; to rm-row-btn !document.createElement button
-       ; assign $rm-row-btn { type button } { className lane-data-row-remove } { textContent '×' } { title 'Delete row' }
+       ; assign $rm-row-btn { type button } { className lane-data-row-remove } { textContent '×' } { title 'Delete row' } { hidden $is-ro } { disabled $is-ro }
        !rm-row-btn.addEventListener click : !view.request-delete-row $tbl $row-idx
        !act-td.appendChild $rm-row-btn
        !tr.appendChild $act-td
@@ -2781,8 +3534,9 @@
 
             ; to s-act-td !document.createElement td
             ; set 'lane-data-td lane-data-td--actions' s-act-td.className
+            ; to sub-ro !view.is-readonly-table $sub-tbl
             ; to s-rm-btn !document.createElement button
-            ; assign $s-rm-btn { type button } { className lane-data-row-remove } { textContent '×' } { title 'Delete row' }
+            ; assign $s-rm-btn { type button } { className lane-data-row-remove } { textContent '×' } { title 'Delete row' } { hidden $sub-ro } { disabled $sub-ro }
             !s-rm-btn.addEventListener click : !view.request-delete-row $sub-tbl $s-idx
             !s-act-td.appendChild $s-rm-btn
             !s-tr.appendChild $s-act-td
@@ -2859,11 +3613,11 @@
       )
 
       ; set $has-rows rows-empty-el.hidden
-      ; set 'No rows yet. Click + Row to add data.' rows-empty-el.textContent
+      ; set [ ternary $is-ro 'No rows in remote table.' 'No rows yet. Click + Row to add data.' ] rows-empty-el.textContent
      ) }
      { true (
       ; set false rows-empty-el.hidden
-      ; set 'Add at least one column to start entering rows.' rows-empty-el.textContent
+      ; set [ ternary $is-ro 'Remote table has no columns.' 'Add at least one column to start entering rows.' ] rows-empty-el.textContent
      ) }
     ]
    ) }
@@ -2873,183 +3627,202 @@
  ; to view.apply-column-change (
   -- Applies a confirmed column type/multiplicity/decimals/row-link change and coerces existing row values
   ; to { tbl col next-type next-multiple next-decimals } $argv
-  ; to from-spec !parseColumnType $col
-  ; to next-spec !parseColumnType $next-type $next-multiple $next-decimals
-  ; set $next-spec.type col.type
-  ; set $next-spec.multiple col.multiple
-  [ match
-   { [ propertyIs fixed next-spec.type ] : ; set $next-spec.decimals col.decimals }
-   { true (
-    [ match
-     { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col decimals }
-     { true : ; set undefined col.decimals }
-    ]
-   ) }
-  ]
-  [ match
-   { [ propertyIs row next-spec.type ] (
-    ; set $next-spec.refTableId col.refTableId
-    ; set $next-spec.refColumnId col.refColumnId
-    ; set $next-spec.refDisplayColumnId col.refDisplayColumnId
-    [ match
-     { $next-spec.refFilterColumnId : ; set $next-spec.refFilterColumnId col.refFilterColumnId }
+  ; to is-ro !view.is-readonly-table $tbl
+  ; condition { propertyIs false is-ro } (
+   ; to from-spec !parseColumnType $col
+   ; to next-spec !parseColumnType $next-type $next-multiple $next-decimals
+   ; set $next-spec.type col.type
+   ; set $next-spec.multiple col.multiple
+   [ match
+    { [ propertyIs fixed next-spec.type ] : ; set $next-spec.decimals col.decimals }
+    { true (
+     [ match
+      { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col decimals }
+      { true : ; set undefined col.decimals }
+     ]
+    ) }
+   ]
+   [ match
+    { [ propertyIs row next-spec.type ] (
+     ; set $next-spec.refTableId col.refTableId
+     ; set $next-spec.refColumnId col.refColumnId
+     ; set $next-spec.refDisplayColumnId col.refDisplayColumnId
+     [ match
+      { $next-spec.refFilterColumnId : ; set $next-spec.refFilterColumnId col.refFilterColumnId }
+      { true (
+       [ match
+        { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col refFilterColumnId }
+        { true : ; set undefined col.refFilterColumnId }
+       ]
+      ) }
+     ]
+     [ match
+      { $next-spec.filterByColumnId : ; set $next-spec.filterByColumnId col.filterByColumnId }
+      { true (
+       [ match
+        { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col filterByColumnId }
+        { true : ; set undefined col.filterByColumnId }
+       ]
+      ) }
+     ]
+    ) }
+    { true (
+     [ match
+      { $window.Reflect.deleteProperty (
+       !window.Reflect.deleteProperty $col refTableId
+       !window.Reflect.deleteProperty $col refColumnId
+       !window.Reflect.deleteProperty $col refDisplayColumnId
+       !window.Reflect.deleteProperty $col refFilterColumnId
+       !window.Reflect.deleteProperty $col filterByColumnId
+      ) }
+      { true (
+       ; set undefined col.refTableId
+       ; set undefined col.refColumnId
+       ; set undefined col.refDisplayColumnId
+       ; set undefined col.refFilterColumnId
+       ; set undefined col.filterByColumnId
+      ) }
+     ]
+    ) }
+   ]
+   [ match
+    { [ propertyIs text next-spec.type ] [ match
+     { $next-spec.constraint : ; set $next-spec.constraint col.constraint }
      { true (
       [ match
-       { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col refFilterColumnId }
-       { true : ; set undefined col.refFilterColumnId }
+       { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col constraint }
+       { true : ; set undefined col.constraint }
       ]
      ) }
-    ]
-    [ match
-     { $next-spec.filterByColumnId : ; set $next-spec.filterByColumnId col.filterByColumnId }
-     { true (
-      [ match
-       { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col filterByColumnId }
-       { true : ; set undefined col.filterByColumnId }
-      ]
-     ) }
-    ]
-   ) }
-   { true (
-    [ match
-     { $window.Reflect.deleteProperty (
-      !window.Reflect.deleteProperty $col refTableId
-      !window.Reflect.deleteProperty $col refColumnId
-      !window.Reflect.deleteProperty $col refDisplayColumnId
-      !window.Reflect.deleteProperty $col refFilterColumnId
-      !window.Reflect.deleteProperty $col filterByColumnId
-     ) }
-     { true (
-      ; set undefined col.refTableId
-      ; set undefined col.refColumnId
-      ; set undefined col.refDisplayColumnId
-      ; set undefined col.refFilterColumnId
-      ; set undefined col.filterByColumnId
-     ) }
-    ]
-   ) }
-  ]
-  [ match
-   { [ propertyIs text next-spec.type ] [ match
-    { $next-spec.constraint : ; set $next-spec.constraint col.constraint }
+    ] }
     { true (
      [ match
       { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col constraint }
       { true : ; set undefined col.constraint }
      ]
     ) }
-   ] }
-   { true (
-    [ match
-     { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col constraint }
-     { true : ; set undefined col.constraint }
-    ]
-   ) }
-  ]
-  ; each $tbl.rows (
-   ; to { row } $argv
-   ; to cur [ get row.values $col.id ]
-   ; to coerced !coerceDataValue $cur $next-spec $next-spec.multiple $from-spec $view.tables
-   ; to row.values $col.id $coerced
+   ]
+   ; each $tbl.rows (
+    ; to { row } $argv
+    ; to cur [ get row.values $col.id ]
+    ; to coerced !coerceDataValue $cur $next-spec $next-spec.multiple $from-spec $view.tables
+    ; to row.values $col.id $coerced
+   )
+   !view.render-schema
+   !view.render-grid
+   !view.save-schema-and-rows $tbl
   )
-  !view.render-schema
-  !view.render-grid
-  !view.save-schema-and-rows $tbl
  )
 
  ; to view.request-column-change (
   -- Validates column type/multiple/decimals/row-link change and confirms when existing row data would be altered or truncated
   ; to { tbl col next-type next-multiple next-decimals on-revert } $argv
-  ; to impact !checkColumnChangeImpact $tbl $col.id $next-type $next-multiple $next-decimals $view.tables
+  ; to is-ro !view.is-readonly-table $tbl
   [ match
-   { $impact.destructive (
-    ; to col-label !view.display-col-name $col
-    ; to prev-fmt !formatColumnType $col undefined undefined $view.tables
-    ; to next-fmt !formatColumnType $next-type $next-multiple $next-decimals $view.tables
-    ; to msg ; add 'Change column "' ; add $col-label ; add '" from ' ; add $prev-fmt ; add ' to ' ; add $next-fmt ; add '? ' $impact.reason
-    ; to opts [ object
-     { title 'Change Column Type' }
-     { message $msg }
-     { confirm-label 'Apply change' }
-     { on-confirm : !view.apply-column-change $tbl $col $next-type $next-multiple $next-decimals }
-     { on-cancel (
-      [ match
-       { $on-revert : !$on-revert }
-      ]
-     ) }
+   { $is-ro (
+    [ match
+     { $on-revert : !$on-revert }
     ]
-    !view.confirm $opts
    ) }
-   { true : !view.apply-column-change $tbl $col $next-type $next-multiple $next-decimals }
+   { true (
+    ; to impact !checkColumnChangeImpact $tbl $col.id $next-type $next-multiple $next-decimals $view.tables
+    [ match
+     { $impact.destructive (
+      ; to col-label !view.display-col-name $col
+      ; to prev-fmt !formatColumnType $col undefined undefined $view.tables
+      ; to next-fmt !formatColumnType $next-type $next-multiple $next-decimals $view.tables
+      ; to msg ; add 'Change column "' ; add $col-label ; add '" from ' ; add $prev-fmt ; add ' to ' ; add $next-fmt ; add '? ' $impact.reason
+      ; to opts [ object
+       { title 'Change Column Type' }
+       { message $msg }
+       { confirm-label 'Apply change' }
+       { on-confirm : !view.apply-column-change $tbl $col $next-type $next-multiple $next-decimals }
+       { on-cancel (
+        [ match
+         { $on-revert : !$on-revert }
+        ]
+       ) }
+      ]
+      !view.confirm $opts
+     ) }
+     { true : !view.apply-column-change $tbl $col $next-type $next-multiple $next-decimals }
+    ]
+   ) }
   ]
  )
 
  ; to view.request-delete-column (
   -- Prompts for confirmation before deleting a schema column and stripping its data from all rows
   ; to { tbl col-idx } $argv
-  ; to col [ get tbl.columns $col-idx ]
-  [ match
-   { $col (
-    ; to col-label !view.display-col-name $col
-    ; to fmt-type !formatColumnType $col undefined undefined $view.tables
-    ; to row-count $tbl.rows.length
-    ; to row-note [ match
-     { [ propertyIs 1 row-count ] : ' This will permanently delete its value from 1 row.' }
-     { [ propertyIsGreaterThan 1 row-count ] : ; add ' This will permanently delete its values from all ' ; add $row-count ' rows.' }
-     { true : ' This will remove the column from the table schema.' }
-    ]
-    ; to msg ; add 'Delete column "' ; add $col-label ; add '" (' ; add $fmt-type ; add ')?' $row-note
-    ; to opts [ object
-     { title 'Delete Column' }
-     { message $msg }
-     { confirm-label 'Delete column' }
-     { on-confirm (
-      !tbl.columns.splice $col-idx 1
-      ; each $tbl.rows (
-       ; to { row } $argv
-       ; to next-vals ; object
-       ; each $tbl.columns (
-        ; to { keep-col } $argv
-        ; to keep-val [ get row.values $keep-col.id ]
-        ; to next-vals $keep-col.id $keep-val
+  ; to is-ro !view.is-readonly-table $tbl
+  ; condition { propertyIs false is-ro } (
+   ; to col [ get tbl.columns $col-idx ]
+   [ match
+    { $col (
+     ; to col-label !view.display-col-name $col
+     ; to fmt-type !formatColumnType $col undefined undefined $view.tables
+     ; to row-count $tbl.rows.length
+     ; to row-note [ match
+      { [ propertyIs 1 row-count ] : ' This will permanently delete its value from 1 row.' }
+      { [ propertyIsGreaterThan 1 row-count ] : ; add ' This will permanently delete its values from all ' ; add $row-count ' rows.' }
+      { true : ' This will remove the column from the table schema.' }
+     ]
+     ; to msg ; add 'Delete column "' ; add $col-label ; add '" (' ; add $fmt-type ; add ')?' $row-note
+     ; to opts [ object
+      { title 'Delete Column' }
+      { message $msg }
+      { confirm-label 'Delete column' }
+      { on-confirm (
+       !tbl.columns.splice $col-idx 1
+       ; each $tbl.rows (
+        ; to { row } $argv
+        ; to next-vals ; object
+        ; each $tbl.columns (
+         ; to { keep-col } $argv
+         ; to keep-val [ get row.values $keep-col.id ]
+         ; to next-vals $keep-col.id $keep-val
+        )
+        ; set $next-vals row.values
        )
-       ; set $next-vals row.values
-      )
-      !view.render-schema
-      !view.render-grid
-      !view.save-schema-and-rows $tbl
-     ) }
-    ]
-    !view.confirm $opts
-   ) }
-  ]
+       !view.render-schema
+       !view.render-grid
+       !view.save-schema-and-rows $tbl
+      ) }
+     ]
+     !view.confirm $opts
+    ) }
+   ]
+  )
  )
 
  ; to view.request-delete-row (
   -- Prompts for confirmation before deleting a row from the active table
   ; to { tbl row-idx } $argv
-  ; to row-num ; add $row-idx 1
-  ; to tbl-idx !view.tables.indexOf $tbl
-  ; to tbl-label !view.display-table-name $tbl $tbl-idx
-  ; to msg ; add 'Delete row #' ; add $row-num ; add ' from "' ; add $tbl-label '"?'
-  ; to opts [ object
-   { title 'Delete Row' }
-   { message $msg }
-   { confirm-label 'Delete row' }
-   { on-confirm (
-    ; to removed [ get tbl.rows $row-idx ]
-    !tbl.rows.splice $row-idx 1
-    !view.render-grid
-    !view.update-table-tabs-text
-    ; to row-ids !collect-ids $tbl.rows
-    [ match
-     { $removed : !deleteTableRow $data $view.lane.data $view.lane.id $tbl.id $removed.id $row-ids }
-     { true : !view.save-schema-and-rows $tbl }
-    ]
-    !view.notify-record-change $tbl $removed delete-row
-   ) }
-  ]
-  !view.confirm $opts
+  ; to is-ro !view.is-readonly-table $tbl
+  ; condition { propertyIs false is-ro } (
+   ; to row-num ; add $row-idx 1
+   ; to tbl-idx !view.tables.indexOf $tbl
+   ; to tbl-label !view.display-table-name $tbl $tbl-idx
+   ; to msg ; add 'Delete row #' ; add $row-num ; add ' from "' ; add $tbl-label '"?'
+   ; to opts [ object
+    { title 'Delete Row' }
+    { message $msg }
+    { confirm-label 'Delete row' }
+    { on-confirm (
+     ; to removed [ get tbl.rows $row-idx ]
+     !tbl.rows.splice $row-idx 1
+     !view.render-grid
+     !view.update-table-tabs-text
+     ; to row-ids !collect-ids $tbl.rows
+     [ match
+      { $removed : !deleteTableRow $data $view.lane.data $view.lane.id $tbl $removed.id $row-ids }
+      { true : !view.save-schema-and-rows $tbl }
+     ]
+     !view.notify-record-change $tbl $removed delete-row
+    ) }
+   ]
+   !view.confirm $opts
+  )
  )
 
  ; to view.request-clear-rows (
@@ -3058,96 +3831,120 @@
   ; to tbl !view.get-active-table
   [ match
    { $tbl (
-    ; to row-count $tbl.rows.length
-    ; to col-count $tbl.columns.length
-    ; to tbl-idx !view.tables.indexOf $tbl
-    ; to tbl-label !view.display-table-name $tbl $tbl-idx
-    ; to row-phrase [ match
-     { [ propertyIs 1 row-count ] : '1 row' }
-     { [ propertyIsGreaterThan 1 row-count ] : ; add 'all ' ; add $row-count ' rows' }
-     { true : ; add $row-count ' rows' }
-    ]
-    ; to col-keep-msg [ match
-     { [ propertyIs 0 col-count ] : 'The table schema will be kept.' }
-     { [ propertyIs 1 col-count ] : 'The table column will be kept.' }
-     { true : 'The table columns will be kept.' }
-    ]
-    ; to msg ; add 'Delete ' ; add $row-phrase ; add ' from "' ; add $tbl-label ; add '"? This action cannot be undone. ' $col-keep-msg
-    ; to agree-msg ; add 'I understand and agree to permanently delete ' ; add $row-phrase ; add ' from "' ; add $tbl-label '".'
-    ; to opts [ object
-     { title 'Clear Rows' }
-     { message $msg }
-     { require-agreement true }
-     { agreement-label $agree-msg }
-     { confirm-label 'Clear rows' }
-     { on-confirm (
-      ; to removed-ids !collect-ids $tbl.rows
-      ; set 0 tbl.rows.length
-      !view.render-grid
-      !view.update-table-tabs-text
-      !clearTableRows $data $view.lane.data $view.lane.id $tbl.id $removed-ids
-      !view.notify-record-change $tbl null clear-rows
-     ) }
-    ]
-    !view.confirm $opts
+    ; to is-ro !view.is-readonly-table $tbl
+    ; condition { propertyIs false is-ro } (
+     ; to row-count $tbl.rows.length
+     ; to col-count $tbl.columns.length
+     ; to tbl-idx !view.tables.indexOf $tbl
+     ; to tbl-label !view.display-table-name $tbl $tbl-idx
+     ; to row-phrase [ match
+      { [ propertyIs 1 row-count ] : '1 row' }
+      { [ propertyIsGreaterThan 1 row-count ] : ; add 'all ' ; add $row-count ' rows' }
+      { true : ; add $row-count ' rows' }
+     ]
+     ; to col-keep-msg [ match
+      { [ propertyIs 0 col-count ] : 'The table schema will be kept.' }
+      { [ propertyIs 1 col-count ] : 'The table column will be kept.' }
+      { true : 'The table columns will be kept.' }
+     ]
+     ; to msg ; add 'Delete ' ; add $row-phrase ; add ' from "' ; add $tbl-label ; add '"? This action cannot be undone. ' $col-keep-msg
+     ; to agree-msg ; add 'I understand and agree to permanently delete ' ; add $row-phrase ; add ' from "' ; add $tbl-label '".'
+     ; to opts [ object
+      { title 'Clear Rows' }
+      { message $msg }
+      { require-agreement true }
+      { agreement-label $agree-msg }
+      { confirm-label 'Clear rows' }
+      { on-confirm (
+       ; to removed-ids !collect-ids $tbl.rows
+       ; set 0 tbl.rows.length
+       !view.render-grid
+       !view.update-table-tabs-text
+       !clearTableRows $data $view.lane.data $view.lane.id $tbl $removed-ids
+       !view.notify-record-change $tbl null clear-rows
+      ) }
+     ]
+     !view.confirm $opts
+    )
    ) }
   ]
  )
 
  ; to view.request-delete-table (
-  -- Prompts for confirmation with explicit checkbox agreement before deleting the active table
+  -- Prompts for confirmation before unlinking an imported table or deleting a local table
   !view.close-table-menu
   ; to tbl !view.get-active-table
   [ match
    { $tbl (
     ; to tbl-idx !view.tables.indexOf $tbl
     ; to tbl-label !view.display-table-name $tbl $tbl-idx
-    ; to col-count $tbl.columns.length
-    ; to row-count $tbl.rows.length
-    ; to col-unit [ ternary [ propertyIs 1 col-count ] column columns ]
-    ; to row-unit [ ternary [ propertyIs 1 row-count ] row rows ]
-    ; to msg ; add 'Delete table "' ; add $tbl-label ; add '"? This will permanently remove its ' ; add $col-count ; add ' ' ; add $col-unit ; add ' and ' ; add $row-count ; add ' ' ; add $row-unit '. This action cannot be undone.'
-    ; to agree-msg ; add 'I understand and agree to permanently delete table "' ; add $tbl-label ; add '" (' ; add $col-count ; add ' ' ; add $col-unit ; add ', ' ; add $row-count ; add ' ' ; add $row-unit ').'
-    ; to opts [ object
-     { title 'Delete Table' }
-     { message $msg }
-     { require-agreement true }
-     { agreement-label $agree-msg }
-     { confirm-label 'Delete table' }
-     { on-confirm (
-      ; to cur-idx !view.tables.indexOf $tbl
-      ; condition { propertyIsGreaterThanOrEqual 0 cur-idx } : !view.tables.splice $cur-idx 1
-      ; to next-tbl [ match
-       { [ propertyIsGreaterThan 0 view.tables.length ] (
-        ; to clamp-idx [ match
-         { [ propertyIsLessThan $view.tables.length cur-idx ] : $cur-idx }
-         { true : ; subtract $view.tables.length 1 }
-        ]
-        [ get view.tables $clamp-idx ]
-       ) }
-       { true : null }
-      ]
-      ; set [ match { $next-tbl : $next-tbl.id } { true : '' } ] view.active-table-id
-      ; set [ match { $next-tbl : $next-tbl.name } { true : '' } ] lane.subroute
-      ; set [ !view.default-schema-open $next-tbl ] view.schema-open
-      !view.render
-      [ match
-       { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Saving…' }
-      ]
-      ; try (
-       ; to table-ids !collect-ids $view.tables
-       !deleteLaneTable $data $view.lane.data $view.lane.id $tbl $table-ids
-       !view.sync-data-path
-       [ match
-        { $lane-control.update-url : !lane-control.update-url }
+    ; to is-rem !view.is-remote-table $tbl
+    ; to on-confirm-remove (
+     ; to removed-name $tbl.name
+     ; to cur-idx !view.tables.indexOf $tbl
+     ; condition { propertyIsGreaterThanOrEqual 0 cur-idx } : !view.tables.splice $cur-idx 1
+     ; to next-tbl [ match
+      { [ propertyIsGreaterThan 0 view.tables.length ] (
+       ; to clamp-idx [ match
+        { [ propertyIsLessThan $view.tables.length cur-idx ] : $cur-idx }
+        { true : ; subtract $view.tables.length 1 }
        ]
-      ) : null
+       [ get view.tables $clamp-idx ]
+      ) }
+      { true : null }
+     ]
+     ; set [ match { $next-tbl : $next-tbl.id } { true : '' } ] view.active-table-id
+     ; set [ match { $next-tbl : $next-tbl.name } { true : '' } ] lane.subroute
+     ; set [ !view.default-schema-open $next-tbl ] view.schema-open
+     !view.sync-notebook-table-scope $removed-name
+     !view.render
+     [ match
+      { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Saving…' }
+     ]
+     ; try (
+      ; to table-ids !collect-ids $view.tables
+      !deleteLaneTable $data $view.lane.data $view.lane.id $tbl $table-ids
+      !view.sync-data-path
       [ match
-       { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
+       { $lane-control.update-url : !lane-control.update-url }
       ]
+     ) : null
+     [ match
+      { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
+     ]
+    )
+    [ match
+     { $is-rem (
+      ; to r-info !view.remote-origin-info $tbl
+      ; to owner-label [ match { $r-info.lane-label : $r-info.lane-label } { true : $tbl.remote.laneId } ]
+      ; to msg ; add 'Remove imported remote table "' ; add $tbl-label ; add '" from this lane? The original table in "' ; add $owner-label '" will not be deleted.'
+      ; to opts [ object
+       { title 'Remove Imported Table' }
+       { message $msg }
+       { require-agreement false }
+       { confirm-label 'Remove import' }
+       { on-confirm $on-confirm-remove }
+      ]
+      !view.confirm $opts
+     ) }
+     { true (
+      ; to col-count $tbl.columns.length
+      ; to row-count $tbl.rows.length
+      ; to col-unit [ ternary [ propertyIs 1 col-count ] column columns ]
+      ; to row-unit [ ternary [ propertyIs 1 row-count ] row rows ]
+      ; to msg ; add 'Delete table "' ; add $tbl-label ; add '"? This will permanently remove its ' ; add $col-count ; add ' ' ; add $col-unit ; add ' and ' ; add $row-count ; add ' ' ; add $row-unit '. This action cannot be undone.'
+      ; to agree-msg ; add 'I understand and agree to permanently delete table "' ; add $tbl-label ; add '" (' ; add $col-count ; add ' ' ; add $col-unit ; add ', ' ; add $row-count ; add ' ' ; add $row-unit ').'
+      ; to opts [ object
+       { title 'Delete Table' }
+       { message $msg }
+       { require-agreement true }
+       { agreement-label $agree-msg }
+       { confirm-label 'Delete table' }
+       { on-confirm $on-confirm-remove }
+      ]
+      !view.confirm $opts
      ) }
     ]
-    !view.confirm $opts
    ) }
   ]
  )
@@ -3161,12 +3958,17 @@
   ; to tbl !view.get-active-table
   [ match
    { $tbl (
+    ; to is-ro !view.is-readonly-table $tbl
+    ; to is-rem !view.is-remote-table $tbl
     ; to col-count $tbl.columns.length
     ; to arrow [ ternary $view.schema-open '▾' '▸' ]
     ; set [ add 'Schema (' ; add $col-count ; add ') ' $arrow ] schema-toggle-btn.textContent
     ; set [ ternary $view.schema-open false true ] schema-section.hidden
     ; to has-cols [ propertyIsGreaterThan 0 col-count ]
     ; set $has-cols schema-empty-el.hidden
+    ; set [ ternary $is-ro 'Remote table has no columns defined.' 'No columns defined.' ] schema-empty-el.textContent
+    ; set $is-ro add-col-btn.hidden
+    ; set $is-ro add-col-btn.disabled
 
     ; each $tbl.columns (
      ; to { col col-idx } $argv
@@ -3176,7 +3978,7 @@
      ; to name-td !document.createElement td
      ; set lane-input-cell name-td.className
      ; to name-el !document.createElement input
-     ; assign $name-el { type text } { className lane-input-name } { value $col.name } { placeholder column } { spellcheck false } { autocomplete off }
+     ; assign $name-el { type text } { className lane-input-name } { value $col.name } { placeholder column } { spellcheck false } { autocomplete off } { disabled $is-ro } { readOnly $is-ro }
      !name-td.appendChild $name-el
 
      ; to type-td !document.createElement td
@@ -3184,7 +3986,7 @@
      ; to type-wrap !document.createElement div
      ; set lane-data-type-wrap type-wrap.className
      ; to type-el !document.createElement select
-     ; set lane-input-type type-el.className
+     ; assign $type-el { className lane-input-type } { disabled $is-ro }
      ; each $dataColumnTypes (
       ; to { type-name } $argv
       ; to opt !document.createElement option
@@ -3199,7 +4001,7 @@
      ; to decimals-label !document.createElement span
      ; assign $decimals-label { className lane-data-decimals-label } { textContent dp }
      ; to decimals-el !document.createElement input
-     ; assign $decimals-el { type number } { className lane-data-decimals-input } { value [ add '' $dec-val ] } { title 'Decimal places (0–12)' } { spellcheck false } { autocomplete off }
+     ; assign $decimals-el { type number } { className lane-data-decimals-input } { value [ add '' $dec-val ] } { title 'Decimal places (0–12)' } { spellcheck false } { autocomplete off } { disabled $is-ro } { readOnly $is-ro }
      !decimals-el.setAttribute min '0'
      !decimals-el.setAttribute max '12'
      !decimals-el.setAttribute step '1'
@@ -3213,11 +4015,12 @@
      ]
      ; to has-constraint [ match { $cur-constraint : true } { true : false } ]
      ; to show-add-constraint [ match
+      { $is-ro : false }
       { $is-text : [ ternary $has-constraint false true ] }
       { true : false }
      ]
      ; to constraint-add-el !document.createElement select
-     ; assign $constraint-add-el { className 'lane-input-type lane-data-constraint-add' } { hidden [ ternary $show-add-constraint false true ] } { title 'Add column constraint' }
+     ; assign $constraint-add-el { className 'lane-input-type lane-data-constraint-add' } { hidden [ ternary $show-add-constraint false true ] } { disabled $is-ro } { title 'Add column constraint' }
      ; to constraint-add-placeholder !document.createElement option
      ; assign $constraint-add-placeholder { value '' } { textContent '+ constraint' }
      !constraint-add-el.appendChild $constraint-add-placeholder
@@ -3315,27 +4118,41 @@
        ; to sel-table-box ; object { table null } { name '' }
        ; each $view.tables (
         ; to { t t-idx } $argv
-        ; to t-disp !view.display-table-name $t $t-idx
-        ; to opt-t !document.createElement option
-        ; assign $opt-t { value $t.id } { textContent $t-disp }
-        !ref-table-el.appendChild $opt-t
-        ; condition { propertyIs $cur-ref-table-id t.id } (
-         ; set $t sel-table-box.table
-         ; set $t-disp sel-table-box.name
+        ; to allow-t [ match
+         { [ propertyIs false is-rem ] : true }
+         { [ and { $t.remote } { [ propertyIs $tbl.remote.laneId t.remote.laneId ] } ] : true }
+         { true : false }
+        ]
+        ; condition { propertyIs true allow-t } (
+         ; to opt-val [ match { $is-rem : $t.remote.tableId } { true : $t.id } ]
+         ; to t-disp !view.display-table-name $t $t-idx
+         ; to opt-t !document.createElement option
+         ; assign $opt-t { value $opt-val } { textContent $t-disp }
+         !ref-table-el.appendChild $opt-t
+         ; condition { propertyIs $cur-ref-table-id opt-val } (
+          ; set $t sel-table-box.table
+          ; set $t-disp sel-table-box.name
+         )
         )
        )
        ; to sel-table $sel-table-box.table
        ; to sel-table-name $sel-table-box.name
-       ; set [ match { $sel-table : $sel-table.id } { true : '' } ] ref-table-el.value
+       ; set $is-ro ref-table-el.disabled
+       ; to sel-tbl-val [ match
+        { [ propertyIs null sel-table ] : '' }
+        { $is-rem : $sel-table.remote.tableId }
+        { true : $sel-table.id }
+       ]
+       ; set $sel-tbl-val ref-table-el.value
        ; set [ ternary $sel-table 'lane-input-type lane-data-row-select' 'lane-input-type lane-data-row-select lane-data-row-select--required' ] ref-table-el.className
 
        ; to sel-col-box ; object { col null } { disp null } { filter-col null } { filter-by-col null }
        [ match
         { $sel-table (
-         ; set false ref-col-el.disabled
-         ; set false ref-display-el.disabled
-         ; set false ref-filter-col-el.disabled
-         ; set false filter-by-col-el.disabled
+         ; set $is-ro ref-col-el.disabled
+         ; set $is-ro ref-display-el.disabled
+         ; set $is-ro ref-filter-col-el.disabled
+         ; set $is-ro filter-by-col-el.disabled
          ; each $sel-table.columns (
           ; to { tc } $argv
           ; to tc-name !view.display-col-name $tc
@@ -3449,7 +4266,7 @@
      ; to constraint-title !document.createElement span
      ; assign $constraint-title { className lane-data-constraint-title } { textContent Constraint }
      ; to constraint-remove-btn !document.createElement button
-     ; assign $constraint-remove-btn { type button } { className lane-data-constraint-remove } { textContent '×' } { title 'Remove constraint' }
+     ; assign $constraint-remove-btn { type button } { className lane-data-constraint-remove } { textContent '×' } { title 'Remove constraint' } { hidden $is-ro } { disabled $is-ro }
      !constraint-header.appendChild $constraint-title
      !constraint-header.appendChild $constraint-remove-btn
 
@@ -3458,7 +4275,7 @@
      ; to constraint-type-label !document.createElement span
      ; assign $constraint-type-label { className lane-data-row-label } { textContent Type }
      ; to constraint-type-el !document.createElement select
-     ; set 'lane-input-type lane-data-row-select lane-data-constraint-type' constraint-type-el.className
+     ; assign $constraint-type-el { className 'lane-input-type lane-data-row-select lane-data-constraint-type' } { disabled $is-ro }
      ; to constraint-type-wf !document.createElement option
      ; assign $constraint-type-wf { value workflow } { textContent Workflow }
      !constraint-type-el.appendChild $constraint-type-wf
@@ -3470,7 +4287,7 @@
      ; to constraint-table-label !document.createElement span
      ; assign $constraint-table-label { className lane-data-row-label } { textContent Table }
      ; to constraint-table-el !document.createElement select
-     ; set 'lane-input-type lane-data-row-select lane-data-constraint-table' constraint-table-el.className
+     ; assign $constraint-table-el { className 'lane-input-type lane-data-row-select lane-data-constraint-table' } { disabled $is-ro }
      ; to constraint-table-empty !document.createElement option
      ; assign $constraint-table-empty { value '' } { textContent 'Select table…' }
      !constraint-table-el.appendChild $constraint-table-empty
@@ -3514,20 +4331,33 @@
        ; to sel-wf-table-box ; object { table null }
        ; each $view.tables (
         ; to { t t-idx } $argv
-        ; to opt-wt !document.createElement option
-        ; assign $opt-wt { value $t.id } { textContent !view.display-table-name $t $t-idx }
-        !constraint-table-el.appendChild $opt-wt
-        ; condition { propertyIs $cur-wf-table-id t.id } : ; set $t sel-wf-table-box.table
+        ; to allow-wt [ match
+         { [ propertyIs false is-rem ] : true }
+         { [ and { $t.remote } { [ propertyIs $tbl.remote.laneId t.remote.laneId ] } ] : true }
+         { true : false }
+        ]
+        ; condition { propertyIs true allow-wt } (
+         ; to opt-wval [ match { $is-rem : $t.remote.tableId } { true : $t.id } ]
+         ; to opt-wt !document.createElement option
+         ; assign $opt-wt { value $opt-wval } { textContent !view.display-table-name $t $t-idx }
+         !constraint-table-el.appendChild $opt-wt
+         ; condition { propertyIs $cur-wf-table-id opt-wval } : ; set $t sel-wf-table-box.table
+        )
        )
        ; to sel-wf-table $sel-wf-table-box.table
-       ; set [ match { $sel-wf-table : $sel-wf-table.id } { true : '' } ] constraint-table-el.value
+       ; to sel-wf-val [ match
+        { [ propertyIs null sel-wf-table ] : '' }
+        { $is-rem : $sel-wf-table.remote.tableId }
+        { true : $sel-wf-table.id }
+       ]
+       ; set $sel-wf-val constraint-table-el.value
        ; set [ ternary $sel-wf-table 'lane-input-type lane-data-row-select lane-data-constraint-table' 'lane-input-type lane-data-row-select lane-data-constraint-table lane-data-row-select--required' ] constraint-table-el.className
 
        ; to sel-wf-col-box ; object { from-col null } { to-col null }
        [ match
         { $sel-wf-table (
-         ; set false constraint-from-el.disabled
-         ; set false constraint-to-el.disabled
+         ; set $is-ro constraint-from-el.disabled
+         ; set $is-ro constraint-to-el.disabled
          ; each $sel-wf-table.columns (
           ; to { tc } $argv
           ; to tc-name !view.display-col-name $tc
@@ -3586,7 +4416,7 @@
      ; to is-multi [ ternary $col.multiple true false ]
      ; to multi-cls [ ternary $is-multi 'lane-data-multi-toggle lane-data-multi-toggle--active' lane-data-multi-toggle ]
      ; to fmt-title ; add 'Multiple values: ' !formatColumnType $col $is-multi undefined $view.tables
-     ; assign $multi-btn { type button } { className $multi-cls } { textContent '[]' } { title $fmt-title }
+     ; assign $multi-btn { type button } { className $multi-cls } { textContent '[]' } { title $fmt-title } { disabled $is-ro }
      !multi-btn.setAttribute aria-pressed [ ternary $is-multi 'true' 'false' ]
      !multi-td.appendChild $multi-btn
 
@@ -3596,14 +4426,14 @@
      ; to is-req [ ternary $col.required true false ]
      ; to req-cls [ ternary $is-req 'lane-data-req-toggle lane-data-req-toggle--active' lane-data-req-toggle ]
      ; to req-title [ ternary $is-req 'Required: yes' 'Required: no' ]
-     ; assign $req-btn { type button } { className $req-cls } { textContent '*' } { title $req-title }
+     ; assign $req-btn { type button } { className $req-cls } { textContent '*' } { title $req-title } { disabled $is-ro }
      !req-btn.setAttribute aria-pressed [ ternary $is-req 'true' 'false' ]
      !req-td.appendChild $req-btn
 
      ; to act-td !document.createElement td
      ; set 'lane-input-cell lane-input-cell--actions' act-td.className
      ; to rm-btn !document.createElement button
-     ; assign $rm-btn { type button } { className lane-input-remove } { textContent '×' } { title 'Delete column' }
+     ; assign $rm-btn { type button } { className lane-input-remove } { textContent '×' } { title 'Delete column' } { hidden $is-ro } { disabled $is-ro }
      !act-td.appendChild $rm-btn
 
      !tr.appendChild $name-td
@@ -3645,269 +4475,307 @@
      ]
 
      !name-el.addEventListener input (
-      ; set $name-el.value col.name
-      ; to col-head-offset [ match
-       { [ propertyIsGreaterThan 0 view.grid-head-cells.length ] (
-        ; to first-h [ get view.grid-head-cells 0 ]
-        [ ternary [ propertyIs subtoggle first-h.kind ] 2 1 ]
-       ) }
-       { true : 1 }
-      ]
-      ; to h-idx ; add $srow.index $col-head-offset
-      ; to h-cell [ get view.grid-head-cells $h-idx ]
-      [ match
-       { $h-cell.name-el : ; set [ !view.display-col-name $col ] h-cell.name-el.textContent }
-      ]
-      ; condition { propertyIs row col.type } : !view.refresh-row-column-triggers $srow.index
-      !view.save-schema $tbl
+      ; condition { propertyIs false is-ro } (
+       ; set $name-el.value col.name
+       ; to col-head-offset [ match
+        { [ propertyIsGreaterThan 0 view.grid-head-cells.length ] (
+         ; to first-h [ get view.grid-head-cells 0 ]
+         [ ternary [ propertyIs subtoggle first-h.kind ] 2 1 ]
+        ) }
+        { true : 1 }
+       ]
+       ; to h-idx ; add $srow.index $col-head-offset
+       ; to h-cell [ get view.grid-head-cells $h-idx ]
+       [ match
+        { $h-cell.name-el : ; set [ !view.display-col-name $col ] h-cell.name-el.textContent }
+       ]
+       ; condition { propertyIs row col.type } : !view.refresh-row-column-triggers $srow.index
+       !view.save-schema $tbl
+      )
      )
      !name-el.addEventListener keydown (
-      ; to { ev } $argv
-      ; condition { propertyIs Enter ev.key } (
-       [ match
-        { $ev.preventDefault : !ev.preventDefault }
-       ]
-       !view.add-column '' text false
+      ; condition { propertyIs false is-ro } (
+       ; to { ev } $argv
+       ; condition { propertyIs Enter ev.key } (
+        [ match
+         { $ev.preventDefault : !ev.preventDefault }
+        ]
+        !view.add-column '' text false
+       )
       )
      )
      !type-el.addEventListener change (
-      ; to next-type !normalizeDataColumnType $type-el.value
-      ; to next-spec [ match
-       { [ propertyIs fixed next-type ] [ object
-        { type fixed }
-        { multiple $col.multiple }
-        { decimals !normalizeFixedDecimals $col.decimals }
-       ] }
-       { [ propertyIs row next-type ] [ object
-        { type row }
-        { multiple $col.multiple }
-        { refTableId [ match { $col.refTableId : $col.refTableId } { true : '' } ] }
-        { refColumnId [ match { $col.refColumnId : $col.refColumnId } { true : '' } ] }
-        { refDisplayColumnId [ match { $col.refDisplayColumnId : $col.refDisplayColumnId } { true : '' } ] }
-        { refFilterColumnId [ match { $col.refFilterColumnId : $col.refFilterColumnId } { true : '' } ] }
-        { filterByColumnId [ match { $col.filterByColumnId : $col.filterByColumnId } { true : '' } ] }
-       ] }
-       { true [ object
-        { type $next-type }
-        { multiple $col.multiple }
-       ] }
-      ]
-      ; to on-revert (
-       ; set $col.type type-el.value
+      ; condition { propertyIs false is-ro } (
+       ; to next-type !normalizeDataColumnType $type-el.value
+       ; to next-spec [ match
+        { [ propertyIs fixed next-type ] [ object
+         { type fixed }
+         { multiple $col.multiple }
+         { decimals !normalizeFixedDecimals $col.decimals }
+        ] }
+        { [ propertyIs row next-type ] [ object
+         { type row }
+         { multiple $col.multiple }
+         { refTableId [ match { $col.refTableId : $col.refTableId } { true : '' } ] }
+         { refColumnId [ match { $col.refColumnId : $col.refColumnId } { true : '' } ] }
+         { refDisplayColumnId [ match { $col.refDisplayColumnId : $col.refDisplayColumnId } { true : '' } ] }
+         { refFilterColumnId [ match { $col.refFilterColumnId : $col.refFilterColumnId } { true : '' } ] }
+         { filterByColumnId [ match { $col.filterByColumnId : $col.filterByColumnId } { true : '' } ] }
+        ] }
+        { true [ object
+         { type $next-type }
+         { multiple $col.multiple }
+        ] }
+       ]
+       ; to on-revert (
+        ; set $col.type type-el.value
+       )
+       !view.request-column-change $tbl $col $next-spec $col.multiple $next-spec.decimals $on-revert
       )
-      !view.request-column-change $tbl $col $next-spec $col.multiple $next-spec.decimals $on-revert
      )
      !ref-table-el.addEventListener change (
-      ; to prev-table-id [ match { $col.refTableId : $col.refTableId } { true : '' } ]
-      ; to next-table-id $ref-table-el.value
-      [ match
-       { [ propertyIs $prev-table-id next-table-id ] : null }
-       { true (
-        ; to next-spec [ object
-         { type row }
-         { multiple $col.multiple }
-         { refTableId $next-table-id }
-         { refColumnId '' }
-         { refDisplayColumnId '' }
-        ]
-        ; to on-revert (
-         ; set $prev-table-id ref-table-el.value
-        )
-        !view.request-column-change $tbl $col $next-spec $col.multiple undefined $on-revert
-       ) }
-      ]
+      ; condition { propertyIs false is-ro } (
+       ; to prev-table-id [ match { $col.refTableId : $col.refTableId } { true : '' } ]
+       ; to next-table-id $ref-table-el.value
+       [ match
+        { [ propertyIs $prev-table-id next-table-id ] : null }
+        { true (
+         ; to next-spec [ object
+          { type row }
+          { multiple $col.multiple }
+          { refTableId $next-table-id }
+          { refColumnId '' }
+          { refDisplayColumnId '' }
+         ]
+         ; to on-revert (
+          ; set $prev-table-id ref-table-el.value
+         )
+         !view.request-column-change $tbl $col $next-spec $col.multiple undefined $on-revert
+        ) }
+       ]
+      )
      )
      !ref-col-el.addEventListener change (
-      ; to prev-col-id [ match { $col.refColumnId : $col.refColumnId } { true : '' } ]
-      ; to next-col-id $ref-col-el.value
-      [ match
-       { [ propertyIs $prev-col-id next-col-id ] : null }
-       { true (
-        ; to cur-tbl-id [ match { $col.refTableId : $col.refTableId } { true : '' } ]
-        ; to cur-disp-id [ match { $col.refDisplayColumnId : $col.refDisplayColumnId } { true : '' } ]
-        ; to cur-ref-filter-id [ match { $col.refFilterColumnId : $col.refFilterColumnId } { true : '' } ]
-        ; to cur-filter-by-id [ match { $col.filterByColumnId : $col.filterByColumnId } { true : '' } ]
-        ; to next-spec [ object
-         { type row }
-         { multiple $col.multiple }
-         { refTableId $cur-tbl-id }
-         { refColumnId $next-col-id }
-         { refDisplayColumnId $cur-disp-id }
-         { refFilterColumnId $cur-ref-filter-id }
-         { filterByColumnId $cur-filter-by-id }
-        ]
-        ; to on-revert (
-         ; set $prev-col-id ref-col-el.value
-        )
-        !view.request-column-change $tbl $col $next-spec $col.multiple undefined $on-revert
-       ) }
-      ]
+      ; condition { propertyIs false is-ro } (
+       ; to prev-col-id [ match { $col.refColumnId : $col.refColumnId } { true : '' } ]
+       ; to next-col-id $ref-col-el.value
+       [ match
+        { [ propertyIs $prev-col-id next-col-id ] : null }
+        { true (
+         ; to cur-tbl-id [ match { $col.refTableId : $col.refTableId } { true : '' } ]
+         ; to cur-disp-id [ match { $col.refDisplayColumnId : $col.refDisplayColumnId } { true : '' } ]
+         ; to cur-ref-filter-id [ match { $col.refFilterColumnId : $col.refFilterColumnId } { true : '' } ]
+         ; to cur-filter-by-id [ match { $col.filterByColumnId : $col.filterByColumnId } { true : '' } ]
+         ; to next-spec [ object
+          { type row }
+          { multiple $col.multiple }
+          { refTableId $cur-tbl-id }
+          { refColumnId $next-col-id }
+          { refDisplayColumnId $cur-disp-id }
+          { refFilterColumnId $cur-ref-filter-id }
+          { filterByColumnId $cur-filter-by-id }
+         ]
+         ; to on-revert (
+          ; set $prev-col-id ref-col-el.value
+         )
+         !view.request-column-change $tbl $col $next-spec $col.multiple undefined $on-revert
+        ) }
+       ]
+      )
      )
      !ref-display-el.addEventListener change (
-      ; set $ref-display-el.value col.refDisplayColumnId
-      !view.render-schema
-      !view.render-grid
-      !view.save-schema $tbl
+      ; condition { propertyIs false is-ro } (
+       ; set $ref-display-el.value col.refDisplayColumnId
+       !view.render-schema
+       !view.render-grid
+       !view.save-schema $tbl
+      )
      )
      !ref-filter-col-el.addEventListener change (
-      ; to next-fc-id $ref-filter-col-el.value
-      [ match
-       { [ propertyIs '' next-fc-id ] (
-        [ match
-         { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col refFilterColumnId }
-         { true : ; set undefined col.refFilterColumnId }
-        ]
-       ) }
-       { true : ; set $next-fc-id col.refFilterColumnId }
-      ]
-      !view.render-schema
-      !view.render-grid
-      !view.save-schema $tbl
+      ; condition { propertyIs false is-ro } (
+       ; to next-fc-id $ref-filter-col-el.value
+       [ match
+        { [ propertyIs '' next-fc-id ] (
+         [ match
+          { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col refFilterColumnId }
+          { true : ; set undefined col.refFilterColumnId }
+         ]
+        ) }
+        { true : ; set $next-fc-id col.refFilterColumnId }
+       ]
+       !view.render-schema
+       !view.render-grid
+       !view.save-schema $tbl
+      )
      )
      !filter-by-col-el.addEventListener change (
-      ; to next-fb-id $filter-by-col-el.value
-      [ match
-       { [ propertyIs '' next-fb-id ] (
-        [ match
-         { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col filterByColumnId }
-         { true : ; set undefined col.filterByColumnId }
-        ]
-       ) }
-       { true : ; set $next-fb-id col.filterByColumnId }
-      ]
-      !view.render-schema
-      !view.render-grid
-      !view.save-schema $tbl
+      ; condition { propertyIs false is-ro } (
+       ; to next-fb-id $filter-by-col-el.value
+       [ match
+        { [ propertyIs '' next-fb-id ] (
+         [ match
+          { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col filterByColumnId }
+          { true : ; set undefined col.filterByColumnId }
+         ]
+        ) }
+        { true : ; set $next-fb-id col.filterByColumnId }
+       ]
+       !view.render-schema
+       !view.render-grid
+       !view.save-schema $tbl
+      )
      )
      !decimals-el.addEventListener change (
-      ; to next-decimals !normalizeFixedDecimals $decimals-el.value
-      ; to cur-decimals !normalizeFixedDecimals $col.decimals
-      [ match
-       { [ propertyIs $cur-decimals next-decimals ] : ; set [ add '' $cur-decimals ] decimals-el.value }
-       { true (
-        ; to on-revert (
-         ; set [ add '' $cur-decimals ] decimals-el.value
-        )
-        !view.request-column-change $tbl $col $col.type $col.multiple $next-decimals $on-revert
-       ) }
-      ]
+      ; condition { propertyIs false is-ro } (
+       ; to next-decimals !normalizeFixedDecimals $decimals-el.value
+       ; to cur-decimals !normalizeFixedDecimals $col.decimals
+       [ match
+        { [ propertyIs $cur-decimals next-decimals ] : ; set [ add '' $cur-decimals ] decimals-el.value }
+        { true (
+         ; to on-revert (
+          ; set [ add '' $cur-decimals ] decimals-el.value
+         )
+         !view.request-column-change $tbl $col $col.type $col.multiple $next-decimals $on-revert
+        ) }
+       ]
+      )
      )
      !constraint-add-el.addEventListener change (
-      ; to picked $constraint-add-el.value
-      ; set '' constraint-add-el.value
-      [ match
-       { [ propertyIs workflow picked ] (
-        ; to next-constraint [ object
-         { type workflow }
-         { tableId '' }
-         { fromColumnId '' }
-         { toColumnId '' }
-        ]
-        ; set $next-constraint col.constraint
-        !view.render-schema
-        !view.render-grid
-        !view.save-schema $tbl
-       ) }
-      ]
+      ; condition { propertyIs false is-ro } (
+       ; to picked $constraint-add-el.value
+       ; set '' constraint-add-el.value
+       [ match
+        { [ propertyIs workflow picked ] (
+         ; to next-constraint [ object
+          { type workflow }
+          { tableId '' }
+          { fromColumnId '' }
+          { toColumnId '' }
+         ]
+         ; set $next-constraint col.constraint
+         !view.render-schema
+         !view.render-grid
+         !view.save-schema $tbl
+        ) }
+       ]
+      )
      )
      !constraint-remove-btn.addEventListener click (
-      [ match
-       { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col constraint }
-       { true : ; set undefined col.constraint }
-      ]
-      !view.render-schema
-      !view.render-grid
-      !view.save-schema $tbl
+      ; condition { propertyIs false is-ro } (
+       [ match
+        { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col constraint }
+        { true : ; set undefined col.constraint }
+       ]
+       !view.render-schema
+       !view.render-grid
+       !view.save-schema $tbl
+      )
      )
      !constraint-type-el.addEventListener change (
-      ; to next-ctype $constraint-type-el.value
-      [ match
-       { [ propertyIs workflow next-ctype ] (
-        ; to existing !normalizeColumnConstraint $col.constraint
-        ; to next-constraint [ object
-         { type workflow }
-         { tableId [ match { $existing : $existing.tableId } { true : '' } ] }
-         { fromColumnId [ match { $existing : $existing.fromColumnId } { true : '' } ] }
-         { toColumnId [ match { $existing : $existing.toColumnId } { true : '' } ] }
-        ]
-        ; set $next-constraint col.constraint
-        !view.render-schema
-        !view.render-grid
-        !view.save-schema $tbl
-       ) }
-      ]
+      ; condition { propertyIs false is-ro } (
+       ; to next-ctype $constraint-type-el.value
+       [ match
+        { [ propertyIs workflow next-ctype ] (
+         ; to existing !normalizeColumnConstraint $col.constraint
+         ; to next-constraint [ object
+          { type workflow }
+          { tableId [ match { $existing : $existing.tableId } { true : '' } ] }
+          { fromColumnId [ match { $existing : $existing.fromColumnId } { true : '' } ] }
+          { toColumnId [ match { $existing : $existing.toColumnId } { true : '' } ] }
+         ]
+         ; set $next-constraint col.constraint
+         !view.render-schema
+         !view.render-grid
+         !view.save-schema $tbl
+        ) }
+       ]
+      )
      )
      !constraint-table-el.addEventListener change (
-      ; to next-tbl-id $constraint-table-el.value
-      ; to found-tbl ; object { table null }
-      ; each $view.tables (
-       ; to { cand } $argv
-       ; condition { propertyIs $next-tbl-id cand.id } : ; set $cand found-tbl.table
+      ; condition { propertyIs false is-ro } (
+       ; to next-tbl-id $constraint-table-el.value
+       ; to found-tbl ; object { table null }
+       ; each $view.tables (
+        ; to { cand } $argv
+        ; to match-cand [ match
+         { $is-rem : [ ternary [ and { $cand.remote } { [ propertyIs $tbl.remote.laneId cand.remote.laneId ] } { [ propertyIs $next-tbl-id cand.remote.tableId ] } ] true false ] }
+         { true : [ propertyIs $next-tbl-id cand.id ] }
+        ]
+        ; condition { propertyIs true match-cand } : ; set $cand found-tbl.table
+       )
+       ; to defaults !findWorkflowDefaultColumns $found-tbl.table
+       ; to next-constraint [ object
+        { type workflow }
+        { tableId $next-tbl-id }
+        { fromColumnId $defaults.fromColumnId }
+        { toColumnId $defaults.toColumnId }
+       ]
+       ; set $next-constraint col.constraint
+       !view.render-schema
+       !view.render-grid
+       !view.save-schema $tbl
       )
-      ; to defaults !findWorkflowDefaultColumns $found-tbl.table
-      ; to next-constraint [ object
-       { type workflow }
-       { tableId $next-tbl-id }
-       { fromColumnId $defaults.fromColumnId }
-       { toColumnId $defaults.toColumnId }
-      ]
-      ; set $next-constraint col.constraint
-      !view.render-schema
-      !view.render-grid
-      !view.save-schema $tbl
      )
      !constraint-from-el.addEventListener change (
-      ; to existing !normalizeColumnConstraint $col.constraint
-      [ match
-       { $existing (
-        ; to next-constraint [ object
-         { type $existing.type }
-         { tableId $existing.tableId }
-         { fromColumnId $constraint-from-el.value }
-         { toColumnId $existing.toColumnId }
-        ]
-        ; set $next-constraint col.constraint
-        !view.render-schema
-        !view.render-grid
-        !view.save-schema $tbl
-       ) }
-      ]
+      ; condition { propertyIs false is-ro } (
+       ; to existing !normalizeColumnConstraint $col.constraint
+       [ match
+        { $existing (
+         ; to next-constraint [ object
+          { type $existing.type }
+          { tableId $existing.tableId }
+          { fromColumnId $constraint-from-el.value }
+          { toColumnId $existing.toColumnId }
+         ]
+         ; set $next-constraint col.constraint
+         !view.render-schema
+         !view.render-grid
+         !view.save-schema $tbl
+        ) }
+       ]
+      )
      )
      !constraint-to-el.addEventListener change (
-      ; to existing !normalizeColumnConstraint $col.constraint
-      [ match
-       { $existing (
-        ; to next-constraint [ object
-         { type $existing.type }
-         { tableId $existing.tableId }
-         { fromColumnId $existing.fromColumnId }
-         { toColumnId $constraint-to-el.value }
-        ]
-        ; set $next-constraint col.constraint
-        !view.render-schema
-        !view.render-grid
-        !view.save-schema $tbl
-       ) }
-      ]
+      ; condition { propertyIs false is-ro } (
+       ; to existing !normalizeColumnConstraint $col.constraint
+       [ match
+        { $existing (
+         ; to next-constraint [ object
+          { type $existing.type }
+          { tableId $existing.tableId }
+          { fromColumnId $existing.fromColumnId }
+          { toColumnId $constraint-to-el.value }
+         ]
+         ; set $next-constraint col.constraint
+         !view.render-schema
+         !view.render-grid
+         !view.save-schema $tbl
+        ) }
+       ]
+      )
      )
      !multi-btn.addEventListener click (
-      ; to next-multi [ ternary $col.multiple false true ]
-      !view.request-column-change $tbl $col $col $next-multi $col.decimals null
+      ; condition { propertyIs false is-ro } (
+       ; to next-multi [ ternary $col.multiple false true ]
+       !view.request-column-change $tbl $col $col $next-multi $col.decimals null
+      )
      )
      !req-btn.addEventListener click (
-      ; to next-req [ ternary $col.required false true ]
-      [ match
-       { $next-req : ; set true col.required }
-       { true (
-        [ match
-         { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col required }
-         { true : ; set false col.required }
-        ]
-       ) }
-      ]
-      !view.render-schema
-      !view.render-grid
-      !view.save-schema $tbl
+      ; condition { propertyIs false is-ro } (
+       ; to next-req [ ternary $col.required false true ]
+       [ match
+        { $next-req : ; set true col.required }
+        { true (
+         [ match
+          { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col required }
+          { true : ; set false col.required }
+         ]
+        ) }
+       ]
+       !view.render-schema
+       !view.render-grid
+       !view.save-schema $tbl
+      )
      )
      !rm-btn.addEventListener click : !view.request-delete-column $tbl $srow.index
 
@@ -3919,7 +4787,7 @@
  )
 
  ; to view.render (
-  -- Re-renders table tabs, active table header, schema columns, and editable rows grid
+  -- Re-renders table tabs, remote origin banner, active table header, schema columns, and editable rows grid
   !view.close-table-menu
   !view.render-table-tabs
   ; to tbl !view.get-active-table
@@ -3927,6 +4795,10 @@
    { $tbl (
     ; set true empty-el.hidden
     ; set false active-el.hidden
+    !view.render-remote-bar
+    ; to is-ro !view.is-readonly-table $tbl
+    ; set $is-ro table-name-input.disabled
+    ; set $is-ro table-name-input.readOnly
     ; set $tbl.name table-name-input.value
     !view.render-schema
     !view.render-updates
@@ -3935,6 +4807,9 @@
    { true (
     ; set false empty-el.hidden
     ; set true active-el.hidden
+    !view.render-remote-bar
+    ; set false table-name-input.disabled
+    ; set false table-name-input.readOnly
     !view.render-schema
     !view.render-updates
     !view.render-grid
@@ -4066,69 +4941,72 @@
   ; to tbl !view.get-active-table
   [ match
    { $tbl (
-    ; to clean-name [ match
-     { [ propertyIs undefined name ] : '' }
-     { [ propertyIs null name ] : '' }
-     { true : ; add '' $name }
-    ]
-    ; to parsed !parseColumnType $type $multiple $decimals
-    ; to col [ match
-     { [ propertyIs fixed parsed.type ] [ object
-      { id !view.next-id col }
-      { name $clean-name }
-      { type $parsed.type }
-      { multiple $parsed.multiple }
-      { decimals $parsed.decimals }
-     ] }
-     { [ propertyIs row parsed.type ] (
-      ; to row-col [ object
+    ; to is-ro !view.is-readonly-table $tbl
+    ; condition { propertyIs false is-ro } (
+     ; to clean-name [ match
+      { [ propertyIs undefined name ] : '' }
+      { [ propertyIs null name ] : '' }
+      { true : ; add '' $name }
+     ]
+     ; to parsed !parseColumnType $type $multiple $decimals
+     ; to col [ match
+      { [ propertyIs fixed parsed.type ] [ object
        { id !view.next-id col }
        { name $clean-name }
        { type $parsed.type }
        { multiple $parsed.multiple }
-       { refTableId $parsed.refTableId }
-       { refColumnId $parsed.refColumnId }
-       { refDisplayColumnId $parsed.refDisplayColumnId }
-      ]
-      [ match
-       { $parsed.refFilterColumnId : ; set $parsed.refFilterColumnId row-col.refFilterColumnId }
-      ]
-      [ match
-       { $parsed.filterByColumnId : ; set $parsed.filterByColumnId row-col.filterByColumnId }
-      ]
-      $row-col
-     ) }
-     { $parsed.constraint [ object
-      { id !view.next-id col }
-      { name $clean-name }
-      { type $parsed.type }
-      { multiple $parsed.multiple }
-      { constraint $parsed.constraint }
-     ] }
-     { true [ object
-      { id !view.next-id col }
-      { name $clean-name }
-      { type $parsed.type }
-      { multiple $parsed.multiple }
-     ] }
-    ]
-    ; condition { propertyIs true required } : ; set true col.required
-    !tbl.columns.push $col
-    ; each $tbl.rows (
-     ; to { row } $argv
-     ; to def-val !defaultDataValue $col
-     ; to row.values $col.id $def-val
+       { decimals $parsed.decimals }
+      ] }
+      { [ propertyIs row parsed.type ] (
+       ; to row-col [ object
+        { id !view.next-id col }
+        { name $clean-name }
+        { type $parsed.type }
+        { multiple $parsed.multiple }
+        { refTableId $parsed.refTableId }
+        { refColumnId $parsed.refColumnId }
+        { refDisplayColumnId $parsed.refDisplayColumnId }
+       ]
+       [ match
+        { $parsed.refFilterColumnId : ; set $parsed.refFilterColumnId row-col.refFilterColumnId }
+       ]
+       [ match
+        { $parsed.filterByColumnId : ; set $parsed.filterByColumnId row-col.filterByColumnId }
+       ]
+       $row-col
+      ) }
+      { $parsed.constraint [ object
+       { id !view.next-id col }
+       { name $clean-name }
+       { type $parsed.type }
+       { multiple $parsed.multiple }
+       { constraint $parsed.constraint }
+      ] }
+      { true [ object
+       { id !view.next-id col }
+       { name $clean-name }
+       { type $parsed.type }
+       { multiple $parsed.multiple }
+      ] }
+     ]
+     ; condition { propertyIs true required } : ; set true col.required
+     !tbl.columns.push $col
+     ; each $tbl.rows (
+      ; to { row } $argv
+      ; to def-val !defaultDataValue $col
+      ; to row.values $col.id $def-val
+     )
+     ; set true view.schema-open
+     !view.render-schema
+     !view.render-grid
+     ; to last-idx ; subtract $view.schema-rows.length 1
+     ; to last-srow [ get view.schema-rows $last-idx ]
+     [ match
+      { $last-srow.name-el.focus : !last-srow.name-el.focus }
+     ]
+     !view.save-schema-and-rows $tbl
+     $col
     )
-    ; set true view.schema-open
-    !view.render-schema
-    !view.render-grid
-    ; to last-idx ; subtract $view.schema-rows.length 1
-    ; to last-srow [ get view.schema-rows $last-idx ]
-    [ match
-     { $last-srow.name-el.focus : !last-srow.name-el.focus }
-    ]
-    !view.save-schema-and-rows $tbl
-    $col
    ) }
   ]
  )
@@ -4138,7 +5016,8 @@
   ; to tbl !view.get-active-table
   [ match
    { $tbl (
-    ; condition { propertyIsGreaterThan 0 tbl.columns.length } (
+    ; to is-ro !view.is-readonly-table $tbl
+    ; condition { and { [ propertyIs false is-ro ] } { [ propertyIsGreaterThan 0 tbl.columns.length ] } } (
      ; to values ; object
      ; each $tbl.columns (
       ; to { col } $argv
@@ -4160,7 +5039,7 @@
       { $first-cell.add-btn.focus : !first-cell.add-btn.focus }
      ]
      ; to row-ids !collect-ids $tbl.rows
-     !addTableRow $data $view.lane.data $view.lane.id $tbl.id $row $row-ids
+     !addTableRow $data $view.lane.data $view.lane.id $tbl $row $row-ids
      !view.notify-record-change $tbl $row add-row
      $row
     )
@@ -4169,26 +5048,55 @@
  )
 
  !add-table-btn.addEventListener click : !view.add-table
+ !import-table-btn.addEventListener click : !view.open-import-modal
+ !remote-jump-btn.addEventListener click : !view.jump-to-owner-table
+ !remote-edit-btn.addEventListener click : !view.open-edit-import null
+ !jump-owner-btn.addEventListener click : !view.jump-to-owner-table
+ !edit-import-btn.addEventListener click : !view.open-edit-import null
  !table-name-input.addEventListener input (
   ; to tbl !view.get-active-table
   [ match
    { $tbl (
-    ; set $table-name-input.value tbl.name
-    ; set $tbl.name lane.subroute
-    !view.update-table-tabs-text
-    [ match
-     { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Saving…' }
-    ]
-    ; try (
-     !view.save-schema $tbl
-     !view.sync-data-path
-     [ match
-      { $lane-control.update-url : !lane-control.update-url }
+    ; to is-ro !view.is-readonly-table $tbl
+    ; condition { propertyIs false is-ro } (
+     ; to prev-name $tbl.name
+     ; set $table-name-input.value tbl.name
+     ; set $tbl.name lane.subroute
+     !view.sync-notebook-table-scope $prev-name
+     !view.update-table-tabs-text
+     ; to is-rem !view.is-remote-table $tbl
+     ; to is-custom [ match
+      { [ and { $is-rem } { [ propertyIs true tbl.remote.customName ] } ] : true }
+      { true : false }
      ]
-    ) : null
-    [ match
-     { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
-    ]
+     [ match
+      { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Saving…' }
+     ]
+     ; try (
+      [ match
+       { $is-custom [ match
+        { $saveImportedTableLink : !saveImportedTableLink $data $view.lane.data $view.lane.id $tbl }
+        { true : !view.save-schema $tbl }
+       ] }
+       { true (
+        [ match
+         { $is-rem (
+          ; set $tbl.name tbl.remote.tableName
+          !view.render-remote-bar
+         ) }
+        ]
+        !view.save-schema $tbl
+       ) }
+      ]
+      !view.sync-data-path
+      [ match
+       { $lane-control.update-url : !lane-control.update-url }
+      ]
+     ) : null
+     [ match
+      { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
+     ]
+    )
    ) }
   ]
  )
@@ -4219,6 +5127,8 @@
       { [ propertyIs $table-menu-wrap target ] : true }
       { [ propertyIs $table-menu-btn target ] : true }
       { [ propertyIs $table-menu target ] : true }
+      { [ propertyIs $jump-owner-btn target ] : true }
+      { [ propertyIs $edit-import-btn target ] : true }
       { [ propertyIs $clear-rows-btn target ] : true }
       { [ propertyIs $delete-table-btn target ] : true }
       { $table-menu-wrap.contains : !table-menu-wrap.contains $target }
@@ -4238,11 +5148,17 @@
   ) }
  ]
 
- ; to initial-tables !loadLaneTables $data $lane.data $lane.id
+ ; to load-opts [ match
+  { $lane-control.open-package-ids : [ object { openPackageIds $lane-control.open-package-ids } ] }
+  { true : ; object }
+ ]
+ ; to initial-tables !loadLaneTables $data $lane.data $lane.id $load-opts
  ; to needs-catalog ; object { hit false }
  ; each $initial-tables (
   ; to { tbl } $argv
   ; to view.used-ids $tbl.id true
+  ; to is-rem !view.is-remote-table $tbl
+  ; condition { propertyIs true is-rem } : ; set true needs-catalog.hit
   ; each $tbl.columns (
    ; to { col } $argv
    ; to view.used-ids $col.id true

@@ -4,12 +4,16 @@ import {
  defaultDataValue,
  defaultValueForType,
  describeValue,
+ isReadOnlyRemoteTable,
+ isRemoteTable,
  listScopeEntries,
  normalizeLaneFeatures,
  normalizeLaneMinimizeSide,
  normalizeLanePath,
  normalizeLaneWidth,
  normalizePrimitiveType,
+ normalizeTableImportMode,
+ normalizeTableRemoteSpec,
  parseCellValue,
  parseColumnType,
  parseLaneFeatures,
@@ -19,6 +23,8 @@ import {
  validateFieldScriptLines,
 } from './field.mjs'
 import { attenuateKv, formatDataDirLabel, httpKV, normalizeDataDir } from './data.mjs'
+import { verifyApiSessionToken } from './data-proxy.mjs'
+import { hasJsonContentType, isAllowedLocalOrigin } from './http-security.mjs'
 import {
  DEFAULT_PACKAGE_ID,
  addLaneTable,
@@ -32,6 +38,7 @@ import {
  deleteTableRow,
  formatAgentContext,
  generateLineId,
+ getDefaultServerSecretStore,
  getLaneDeployStatus,
  getLanePackageId,
  inspectSessionForAgent,
@@ -152,7 +159,7 @@ export function formatTableWithNamedRows(table) {
   }
   return record
  })
- return {
+ const out = {
   id: String(table.id || ''),
   name: String(table.name || ''),
   columns,
@@ -160,6 +167,34 @@ export function formatTableWithNamedRows(table) {
   rows,
   namedRows,
  }
+ if (isRemoteTable(table)) {
+  out.remote = normalizeTableRemoteSpec(table.remote, { includeRuntimeStatus: true })
+ }
+ return out
+}
+
+function resolveCatalogLaneId(catalog, rawQuery) {
+ const query = rawQuery !== undefined && rawQuery !== null ? String(rawQuery).trim() : ''
+ if (!query) {
+  return ''
+ }
+ const list = Array.isArray(catalog) ? catalog : []
+ const exactId = list.find(item => item && item.id === query)
+ if (exactId) {
+  return exactId.id
+ }
+ const lower = query.toLowerCase()
+ const exactTitle = list.find(item => item && String(item.title || '').trim().toLowerCase() === lower)
+ if (exactTitle) {
+  return exactTitle.id
+ }
+ const prefixMatch = list.find(item =>
+  item && (
+   String(item.id || '').toLowerCase().startsWith(lower) ||
+   String(item.title || '').trim().toLowerCase().includes(lower)
+  )
+ )
+ return prefixMatch ? prefixMatch.id : query
 }
 
 export async function agentListSessions(rootKv, options = {}) {
@@ -190,29 +225,7 @@ export async function agentResolveSessionAndLane(rootKv, options = {}) {
   ? String(opts.laneId).trim()
   : (opts.lane !== undefined && opts.lane !== null ? String(opts.lane).trim() : '')
 
- let resolvedLaneId = ''
- if (rawQuery) {
-  const exactId = catalog.find(item => item && item.id === rawQuery)
-  if (exactId) {
-   resolvedLaneId = exactId.id
-  }
-  else {
-   const lower = rawQuery.toLowerCase()
-   const exactTitle = catalog.find(item => item && String(item.title || '').trim().toLowerCase() === lower)
-   if (exactTitle) {
-    resolvedLaneId = exactTitle.id
-   }
-   else {
-    const prefixMatch = catalog.find(item =>
-     item && (
-      String(item.id || '').toLowerCase().startsWith(lower) ||
-      String(item.title || '').trim().toLowerCase().includes(lower)
-     )
-    )
-    resolvedLaneId = prefixMatch ? prefixMatch.id : rawQuery
-   }
-  }
- }
+ const resolvedLaneId = resolveCatalogLaneId(catalog, rawQuery)
 
  return {
   rootKv: kv,
@@ -398,7 +411,7 @@ export async function agentEvalLane(rootKv, options = {}) {
    laneData.get('title'),
    laneData.get('inputs'),
    loadLaneScript(sessionKv, laneData, cleanId, null),
-   loadLaneTables(sessionKv, laneData, cleanId),
+   loadLaneTables(sessionKv, laneData, cleanId, { openPackageIds }),
   ])
 
   let inputs = []
@@ -449,6 +462,16 @@ export async function agentEvalLane(rootKv, options = {}) {
       action: 'sync-table',
       tableId: res.table.id,
      })
+     if (isRemoteTable(res.table)) {
+      eventHub.emit({
+       type: 'lane-updated',
+       sessionId: resolved.activeSession ? resolved.activeSession.id : null,
+       dataDir: resolved.dataDir,
+       laneId: res.table.remote.laneId,
+       action: 'sync-table',
+       tableId: res.table.remote.tableId,
+      })
+     }
     }
     return res
    },
@@ -504,7 +527,7 @@ export async function agentEvalLane(rootKv, options = {}) {
      }
     }
     const targetData = sessionKv.namespace(cleanTarget)
-    const targetTables = await loadLaneTables(sessionKv, targetData, cleanTarget)
+    const targetTables = await loadLaneTables(sessionKv, targetData, cleanTarget, { openPackageIds })
     const res = syncTableRowsInMemory(targetTables, cleanTbl, records, keyCol)
     if (res.ok && res.table) {
      await saveTableSchemaAndRows(sessionKv, targetData, cleanTarget, res.table)
@@ -517,6 +540,17 @@ export async function agentEvalLane(rootKv, options = {}) {
       action: 'sync-lane-table',
       tableId: res.table.id,
      })
+     if (isRemoteTable(res.table)) {
+      evalCache.delete(res.table.remote.laneId)
+      eventHub.emit({
+       type: 'lane-updated',
+       sessionId: resolved.activeSession ? resolved.activeSession.id : null,
+       dataDir: resolved.dataDir,
+       laneId: res.table.remote.laneId,
+       action: 'sync-lane-table',
+       tableId: res.table.remote.tableId,
+      })
+     }
     }
     const outRes = { ...res, laneId: cleanTarget }
     if (storyRecorder) {
@@ -1286,7 +1320,68 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
  const laneData = sessionKv.namespace(laneId)
  const eventHub = options.eventHub || defaultAgentEventHub
  const action = String(options.action || 'upsert-row').trim().toLowerCase()
- const tables = await loadLaneTables(sessionKv, laneData, laneId)
+ const tables = await loadLaneTables(sessionKv, laneData, laneId, { openPackageIds: resolved.openPackageIds })
+
+ if (action === 'import-table') {
+  const rawSourceLane = options.sourceLaneId ?? options.sourceLane ?? options.ownerLaneId ?? options.ownerLane ?? ''
+  const sourceLaneId = resolveCatalogLaneId(resolved.catalog, rawSourceLane)
+  if (!sourceLaneId) {
+   return { ok: false, error: 'sourceLaneId or sourceLane title is required' }
+  }
+  if (sourceLaneId === laneId) {
+   return { ok: false, error: 'Cannot import a table from the same lane' }
+  }
+  if (resolved.openPackageIds && resolved.openPackageIds.length > 0) {
+   const access = await checkLaneAccess(sessionKv, resolved.openPackageIds, sourceLaneId)
+   if (!access.allowed) {
+    return { ok: false, accessDenied: true, error: 'Access denied: source lane belongs to a locked package' }
+   }
+  }
+  const sourceData = sessionKv.namespace(sourceLaneId)
+  const sourceTables = await loadLaneTables(sessionKv, sourceData, sourceLaneId, { openPackageIds: resolved.openPackageIds })
+  const sourceTableQuery = options.sourceTableId || options.sourceTable || options.remoteTable || options.tableId || options.tableName || options.table
+  const sourceTable = findTableByIdOrName(sourceTables, sourceTableQuery)
+  if (!sourceTable) {
+   return { ok: false, error: `Table "${sourceTableQuery || ''}" not found in lane "${sourceLaneId}"` }
+  }
+  if (isRemoteTable(sourceTable)) {
+   return { ok: false, error: 'Cannot import a table that is already imported from another lane; import from the owner lane directly' }
+  }
+  const mode = normalizeTableImportMode(options.mode)
+  const explicitLocalName = options.localName ?? options.alias ?? options.tableName ?? options.name
+  const trimmedLocal = explicitLocalName !== undefined && explicitLocalName !== null ? String(explicitLocalName).trim() : ''
+  const localName = trimmedLocal || sourceTable.name
+  const customName = Boolean(trimmedLocal && trimmedLocal !== sourceTable.name)
+  const tableId = options.tableId && String(options.tableId).trim()
+   ? String(options.tableId).trim()
+   : `tbl-${globalThis.crypto && globalThis.crypto.randomUUID ? globalThis.crypto.randomUUID() : Date.now()}`
+  const newTable = {
+   id: tableId,
+   name: localName,
+   columns: Array.isArray(sourceTable.columns) ? sourceTable.columns : [],
+   rows: Array.isArray(sourceTable.rows) ? sourceTable.rows : [],
+   remote: {
+    laneId: sourceLaneId,
+    tableId: sourceTable.id,
+    tableName: sourceTable.name,
+    mode,
+    ...(customName ? { customName: true } : {}),
+    missing: false,
+    accessDenied: false,
+   },
+  }
+  tables.push(newTable)
+  await addLaneTable(sessionKv, laneData, laneId, newTable, tables.map(t => t.id))
+  eventHub.emit({
+   type: 'lane-updated',
+   sessionId: resolved.activeSession ? resolved.activeSession.id : null,
+   dataDir: resolved.dataDir,
+   laneId,
+   action: 'import-table',
+   tableId,
+  })
+  return { ok: true, laneId, table: formatTableWithNamedRows(newTable) }
+ }
 
  if (action === 'create-table' || action === 'add-table') {
   const tableName = String(options.tableName || options.table || 'table_1').trim()
@@ -1345,6 +1440,39 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
   return { ok: true, laneId, deletedTableId: table.id }
  }
 
+ if (isReadOnlyRemoteTable(table)) {
+  return {
+   ok: false,
+   readOnly: true,
+   laneId,
+   tableId: table.id,
+   error: `Table "${table.name || table.id}" is imported as read-only`,
+  }
+ }
+
+ const emitTableLaneUpdate = (eventAction, extra = {}) => {
+  eventHub.emit({
+   type: 'lane-updated',
+   sessionId: resolved.activeSession ? resolved.activeSession.id : null,
+   dataDir: resolved.dataDir,
+   laneId,
+   action: eventAction,
+   tableId: table.id,
+   ...extra,
+  })
+  if (isRemoteTable(table)) {
+   eventHub.emit({
+    type: 'lane-updated',
+    sessionId: resolved.activeSession ? resolved.activeSession.id : null,
+    dataDir: resolved.dataDir,
+    laneId: table.remote.laneId,
+    action: eventAction,
+    tableId: table.remote.tableId,
+    ...extra,
+   })
+  }
+ }
+
  if (action === 'add-column') {
   const colSpec = options.column && typeof options.column === 'object' ? options.column : options
   const colId = colSpec.columnId || colSpec.id || `col-${globalThis.crypto && globalThis.crypto.randomUUID ? globalThis.crypto.randomUUID() : Date.now()}`
@@ -1363,15 +1491,14 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
   }
   table.columns.push(newCol)
   await saveTableSchema(sessionKv, laneData, laneId, table)
-  eventHub.emit({
-   type: 'lane-updated',
-   sessionId: resolved.activeSession ? resolved.activeSession.id : null,
-   dataDir: resolved.dataDir,
+  emitTableLaneUpdate('add-column')
+  return {
+   ok: true,
    laneId,
-   action: 'add-column',
-   tableId: table.id,
-  })
-  return { ok: true, laneId, table: formatTableWithNamedRows(table), column: newCol }
+   ...(isRemoteTable(table) ? { ownerLaneId: table.remote.laneId } : {}),
+   table: formatTableWithNamedRows(table),
+   column: newCol,
+  }
  }
 
  if (action === 'add-row' || action === 'upsert-row' || action === 'update-row') {
@@ -1405,11 +1532,11 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
   const rowRecord = { id: rowId, values: nextValues }
   if (isNew) {
    table.rows.push(rowRecord)
-   await addTableRow(sessionKv, laneData, laneId, table.id, rowRecord, table.rows.map(r => r.id))
+   await addTableRow(sessionKv, laneData, laneId, table, rowRecord, table.rows.map(r => r.id))
   }
   else {
    existingRow.values = nextValues
-   await saveTableRow(sessionKv, laneData, laneId, table.id, existingRow)
+   await saveTableRow(sessionKv, laneData, laneId, table, existingRow)
   }
 
   let triggeredEval = null
@@ -1432,19 +1559,12 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
    })
   }
 
-  eventHub.emit({
-   type: 'lane-updated',
-   sessionId: resolved.activeSession ? resolved.activeSession.id : null,
-   dataDir: resolved.dataDir,
-   laneId,
-   action: isNew ? 'add-row' : 'update-row',
-   tableId: table.id,
-   rowId,
-  })
+  emitTableLaneUpdate(isNew ? 'add-row' : 'update-row', { rowId })
   const updates = await loadTableUpdates(sessionKv, laneData, laneId, table.id)
   return {
    ok: true,
    laneId,
+   ...(isRemoteTable(table) ? { ownerLaneId: table.remote.laneId } : {}),
    tableId: table.id,
    tableName: table.name,
    isNew,
@@ -1461,7 +1581,7 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
    return { ok: false, error: `Row "${rowId}" not found in table "${table.name}"` }
   }
   table.rows.splice(idx, 1)
-  await deleteTableRow(sessionKv, laneData, laneId, table.id, rowId, table.rows.map(r => r.id))
+  await deleteTableRow(sessionKv, laneData, laneId, table, rowId, table.rows.map(r => r.id))
   const scriptLoaded = await loadLaneScript(sessionKv, laneData, laneId, null)
   const hasTriggerScript = Array.isArray(scriptLoaded && scriptLoaded.records) &&
    scriptLoaded.records.some(r => r && typeof r.text === 'string' && /\b(?:syncLaneTable|deployLane|resyncLane|exportLaneLine|setLaneLine)\b/.test(r.text))
@@ -1480,22 +1600,20 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
     },
    })
   }
-  eventHub.emit({
-   type: 'lane-updated',
-   sessionId: resolved.activeSession ? resolved.activeSession.id : null,
-   dataDir: resolved.dataDir,
+  emitTableLaneUpdate('delete-row', { rowId })
+  return {
+   ok: true,
    laneId,
-   action: 'delete-row',
+   ...(isRemoteTable(table) ? { ownerLaneId: table.remote.laneId } : {}),
    tableId: table.id,
-   rowId,
-  })
-  return { ok: true, laneId, tableId: table.id, deletedRowId: rowId }
+   deletedRowId: rowId,
+  }
  }
 
  if (action === 'clear-rows') {
   const removedIds = table.rows.map(r => r.id)
   table.rows = []
-  await clearTableRows(sessionKv, laneData, laneId, table.id, removedIds)
+  await clearTableRows(sessionKv, laneData, laneId, table, removedIds)
   const scriptLoaded = await loadLaneScript(sessionKv, laneData, laneId, null)
   const hasTriggerScript = Array.isArray(scriptLoaded && scriptLoaded.records) &&
    scriptLoaded.records.some(r => r && typeof r.text === 'string' && /\b(?:syncLaneTable|deployLane|resyncLane|exportLaneLine|setLaneLine)\b/.test(r.text))
@@ -1514,15 +1632,14 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
     },
    })
   }
-  eventHub.emit({
-   type: 'lane-updated',
-   sessionId: resolved.activeSession ? resolved.activeSession.id : null,
-   dataDir: resolved.dataDir,
+  emitTableLaneUpdate('clear-rows')
+  return {
+   ok: true,
    laneId,
-   action: 'clear-rows',
+   ...(isRemoteTable(table) ? { ownerLaneId: table.remote.laneId } : {}),
    tableId: table.id,
-  })
-  return { ok: true, laneId, tableId: table.id, clearedCount: removedIds.length }
+   clearedCount: removedIds.length,
+  }
  }
 
  return { ok: false, error: `Unknown table action: "${action}"` }
@@ -1837,7 +1954,7 @@ export const MCP_TOOLS = [
  },
  {
   name: 'cc_mutate_table',
-  description: 'Create/delete tables or add/update/delete rows and columns in a lane Data table by column name or ID (automatically scaling fixed decimals). Broadcasts a live reload event to open browsers.',
+  description: 'Create/import/delete tables or add/update/delete rows and columns in a lane Data table by column name or ID (automatically scaling fixed decimals). Broadcasts a live reload event to open browsers.',
   inputSchema: {
    type: 'object',
    properties: {
@@ -1845,9 +1962,13 @@ export const MCP_TOOLS = [
     sessionId: { type: 'string', description: 'Optional session ID or name' },
     action: {
      type: 'string',
-     enum: ['create-table', 'delete-table', 'add-column', 'add-row', 'upsert-row', 'update-row', 'delete-row', 'clear-rows'],
+     enum: ['create-table', 'import-table', 'delete-table', 'add-column', 'add-row', 'upsert-row', 'update-row', 'delete-row', 'clear-rows'],
     },
     table: { type: 'string', description: 'Table name or table ID' },
+    sourceLane: { type: 'string', description: 'Owner lane ID or title when action is import-table' },
+    sourceTable: { type: 'string', description: 'Owner table name or ID when action is import-table' },
+    mode: { type: 'string', enum: ['read-only', 'read-write'], description: 'Remote table access mode when action is import-table' },
+    localName: { type: 'string', description: 'Optional local table name override when action is import-table' },
     rowId: { type: 'string', description: 'Row ID (for update-row, upsert-row, delete-row)' },
     values: { type: 'object', description: 'Row values keyed by column name or column ID' },
     columns: { type: 'array', description: 'Columns array when creating a table' },
@@ -1965,6 +2086,11 @@ export async function handleMcpJsonRpc(rootKv, message, options = {}) {
     }
    }
    catch (toolErr) {
+    const errPayload = {
+     ok: false,
+     error: toolErr && toolErr.message ? toolErr.message : String(toolErr),
+     ...(toolErr && toolErr.status === 403 ? { accessDenied: true } : {}),
+    }
     return {
      jsonrpc: '2.0',
      id,
@@ -1972,9 +2098,10 @@ export async function handleMcpJsonRpc(rootKv, message, options = {}) {
       content: [
        {
         type: 'text',
-        text: JSON.stringify({ ok: false, error: toolErr.message || String(toolErr) }, null, 2),
+        text: JSON.stringify(errPayload, null, 2),
        },
       ],
+      structuredContent: errPayload,
       isError: true,
      },
     }
@@ -2051,11 +2178,12 @@ export async function handleMcpJsonRpc(rootKv, message, options = {}) {
 
 // ---------- HTTP Handler for /api/agent/* and /api/mcp ----------
 
-function sendJson(res, status, payload) {
+function sendJson(res, status, payload, extraHeaders = null) {
  const body = JSON.stringify(payload)
  res.writeHead(status, {
   'Content-Type': 'application/json; charset=utf-8',
   'Cache-Control': 'no-store',
+  ...(extraHeaders || {}),
  })
  res.end(body)
 }
@@ -2109,15 +2237,39 @@ function readJsonBody(req) {
 }
 
 export async function handleAgentApiRequest(req, res, opts = {}) {
+ if (!isAllowedLocalOrigin(req, opts)) {
+  return sendJson(res, 403, { ok: false, error: 'Cross-origin agent API access denied' })
+ }
+
  const url = new URL(req.url || '/', 'http://localhost')
  const pathname = url.pathname
- const rootKv = resolveAgentRootKv(opts.rootKv || {
-  baseUrl: opts.baseUrl || DEFAULT_AGENT_DATA_URL,
- })
+ const method = String(req.method || 'GET').toUpperCase()
+ let authRes = null
+ if (opts.requireAuth !== false) {
+  const allowQueryToken = pathname === '/api/agent/events' && method === 'GET'
+  authRes = verifyApiSessionToken(req, {
+   secretStore: opts.secretStore || getDefaultServerSecretStore(),
+   allowQueryToken,
+   allowLaneScoped: false,
+  })
+  if (!authRes.ok) {
+   return sendJson(res, authRes.status, { ok: false, error: authRes.error }, authRes.headers)
+  }
+ }
+
+ const rootKv = typeof opts.createAuthorizedRootKv === 'function' && authRes && authRes.token
+  ? opts.createAuthorizedRootKv(authRes.token)
+  : resolveAgentRootKv(opts.rootKv || {
+   baseUrl: opts.baseUrl || DEFAULT_AGENT_DATA_URL,
+   sessionToken: authRes ? authRes.token : '',
+  })
  const eventHub = opts.eventHub || defaultAgentEventHub
 
  // Server-Sent Events stream for real-time browser reload on agent mutations
- if (pathname === '/api/agent/events' && req.method === 'GET') {
+ if (pathname === '/api/agent/events') {
+  if (method !== 'GET') {
+   return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
+  }
   res.writeHead(200, {
    'Content-Type': 'text/event-stream; charset=utf-8',
    'Cache-Control': 'no-cache, no-transform',
@@ -2135,15 +2287,18 @@ export async function handleAgentApiRequest(req, res, opts = {}) {
 
  // Streamable HTTP MCP JSON-RPC endpoint
  if (pathname === '/api/mcp') {
-  if (req.method === 'GET') {
+  if (method === 'GET') {
    return sendJson(res, 200, {
     ok: true,
     server: MCP_SERVER_INFO,
     tools: MCP_TOOLS,
    })
   }
-  if (req.method !== 'POST') {
+  if (method !== 'POST') {
    return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
+  }
+  if (!hasJsonContentType(req)) {
+   return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
   }
   try {
    const body = await readJsonBody(req)
@@ -2169,71 +2324,108 @@ export async function handleAgentApiRequest(req, res, opts = {}) {
  }
 
  try {
-  if (pathname === '/api/agent/sessions' && req.method === 'GET') {
+  if (pathname === '/api/agent/sessions') {
+   if (method !== 'GET') {
+    return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
+   }
    const packageId = url.searchParams.get('packageId') || DEFAULT_PACKAGE_ID
    const out = await agentListSessions(rootKv, { packageId })
    return sendJson(res, 200, out)
   }
 
-  if (pathname === '/api/agent/session' && req.method === 'GET') {
+  if (pathname === '/api/agent/session') {
+   if (method !== 'GET') {
+    return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
+   }
    const sessionId = url.searchParams.get('sessionId') || url.searchParams.get('session') || ''
    const dataDir = url.searchParams.get('dataDir') || undefined
    const out = await agentGetSession(rootKv, { sessionId, dataDir })
    return sendJson(res, 200, out)
   }
 
-  if (pathname === '/api/agent/lane' && req.method === 'GET') {
-   const sessionId = url.searchParams.get('sessionId') || url.searchParams.get('session') || ''
-   const dataDir = url.searchParams.get('dataDir') || undefined
-   const laneId = url.searchParams.get('laneId') || url.searchParams.get('lane') || ''
-   const out = await agentGetLane(rootKv, { sessionId, dataDir, laneId })
-   return sendJson(res, out.ok ? 200 : 404, out)
+  if (pathname === '/api/agent/lane') {
+   if (method === 'GET') {
+    const sessionId = url.searchParams.get('sessionId') || url.searchParams.get('session') || ''
+    const dataDir = url.searchParams.get('dataDir') || undefined
+    const laneId = url.searchParams.get('laneId') || url.searchParams.get('lane') || ''
+    const out = await agentGetLane(rootKv, { sessionId, dataDir, laneId })
+    return sendJson(res, out.ok ? 200 : (out.accessDenied ? 403 : 404), out)
+   }
+   if (method === 'POST') {
+    if (!hasJsonContentType(req)) {
+     return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+    }
+    const body = await readJsonBody(req)
+    const out = await agentCreateLane(rootKv, { ...body, eventHub })
+    return sendJson(res, out.ok ? 200 : (out.accessDenied ? 403 : 400), out)
+   }
+   return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
   }
 
-  if (pathname === '/api/agent/lane' && req.method === 'POST') {
-   const body = await readJsonBody(req)
-   const out = await agentCreateLane(rootKv, { ...body, eventHub })
-   return sendJson(res, out.ok ? 200 : 400, out)
-  }
-
-  if (pathname === '/api/agent/lane/configure' && req.method === 'POST') {
+  if (pathname === '/api/agent/lane/configure') {
+   if (method !== 'POST') {
+    return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
+   }
+   if (!hasJsonContentType(req)) {
+    return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+   }
    const body = await readJsonBody(req)
    const out = await agentConfigureLane(rootKv, { ...body, eventHub })
-   return sendJson(res, out.ok ? 200 : 400, out)
+   return sendJson(res, out.ok ? 200 : (out.accessDenied ? 403 : 400), out)
   }
 
-  if (pathname === '/api/agent/lane/eval' && (req.method === 'POST' || req.method === 'GET')) {
-   const body = req.method === 'POST'
-    ? await readJsonBody(req)
-    : {
-     sessionId: url.searchParams.get('sessionId') || url.searchParams.get('session') || '',
-     dataDir: url.searchParams.get('dataDir') || undefined,
-     laneId: url.searchParams.get('laneId') || url.searchParams.get('lane') || '',
-     applyExports: url.searchParams.get('applyExports') === 'true',
-    }
+  if (pathname === '/api/agent/lane/eval') {
+   if (method !== 'POST') {
+    return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
+   }
+   if (!hasJsonContentType(req)) {
+    return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+   }
+   const body = await readJsonBody(req)
    const out = await agentEvalLane(rootKv, { ...body, eventHub })
-   return sendJson(res, out.ok ? 200 : 400, out)
+   return sendJson(res, out.ok ? 200 : (out.accessDenied ? 403 : 400), out)
   }
 
-  if (pathname === '/api/agent/lane/script' && req.method === 'POST') {
+  if (pathname === '/api/agent/lane/script') {
+   if (method !== 'POST') {
+    return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
+   }
+   if (!hasJsonContentType(req)) {
+    return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+   }
    const body = await readJsonBody(req)
    const out = await agentMutateLaneScript(rootKv, { ...body, eventHub })
-   return sendJson(res, out.ok ? 200 : 400, out)
+   return sendJson(res, out.ok ? 200 : (out.accessDenied ? 403 : 400), out)
   }
 
-  if (pathname === '/api/agent/lane/table' && req.method === 'POST') {
+  if (pathname === '/api/agent/lane/table') {
+   if (method !== 'POST') {
+    return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
+   }
+   if (!hasJsonContentType(req)) {
+    return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+   }
    const body = await readJsonBody(req)
    const out = await agentMutateLaneTable(rootKv, { ...body, eventHub })
-   return sendJson(res, out.ok ? 200 : 400, out)
+   return sendJson(res, out.ok ? 200 : (out.accessDenied ? 403 : 400), out)
   }
 
-  if (pathname === '/api/agent/lane/input' && req.method === 'POST') {
+  if (pathname === '/api/agent/lane/input') {
+   if (method !== 'POST') {
+    return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
+   }
+   if (!hasJsonContentType(req)) {
+    return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+   }
    const body = await readJsonBody(req)
    const out = await agentMutateLaneInput(rootKv, { ...body, eventHub })
-   return sendJson(res, out.ok ? 200 : 400, out)
+   return sendJson(res, out.ok ? 200 : (out.accessDenied ? 403 : 400), out)
   }
 
-  if (pathname === '/api/agent/deployments' && req.method === 'GET') {
+  if (pathname === '/api/agent/deployments') {
+   if (method !== 'GET') {
+    return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
+   }
    const sessionId = url.searchParams.get('sessionId') || url.searchParams.get('session') || ''
    const dataDir = url.searchParams.get('dataDir') || undefined
    const ping = url.searchParams.get('ping') === 'true' || url.searchParams.get('ping') === '1'
@@ -2241,7 +2433,13 @@ export async function handleAgentApiRequest(req, res, opts = {}) {
    return sendJson(res, 200, out)
   }
 
-  if (pathname === '/api/agent/notify' && req.method === 'POST') {
+  if (pathname === '/api/agent/notify') {
+   if (method !== 'POST') {
+    return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
+   }
+   if (!hasJsonContentType(req)) {
+    return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+   }
    const body = await readJsonBody(req)
    const emitted = eventHub.emit({
     type: body.type || 'lane-updated',

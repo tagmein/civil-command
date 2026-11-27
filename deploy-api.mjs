@@ -5,9 +5,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { httpKV, withKvTriggers } from './data.mjs'
+import { verifyApiSessionToken } from './data-proxy.mjs'
+import { hasJsonContentType, isAllowedLocalHost, isAllowedLocalOrigin } from './http-security.mjs'
 import { normalizeCivilMemoryBaseUrl } from './lane-server.mjs'
 import { createTerminalManager } from './pty-terminal.mjs'
 import {
+ getDefaultServerSecretStore,
  normalizeDomainName,
  normalizeServiceSlug,
  normalizeSubpath,
@@ -20,6 +23,91 @@ const SHELL_META_RE = /[\s\0`"$\\;|&<>(){}*?!~\r\n]/
 const SAFE_USER_RE = /^[A-Za-z0-9._-]+$/
 const SAFE_HOST_RE = /^[A-Za-z0-9.:[\]-]+$/
 const SAFE_EMAIL_RE = /^[^\s@'"\\;<>`]+@[^\s@'"\\;<>`]+\.[^\s@'"\\;<>`]+$/
+const SAFE_RUNTIME_MJS_RE = /^[A-Za-z0-9._-]+\.mjs$/
+
+export const DEPLOY_RUNTIME_BASE_FILES = Object.freeze([
+ 'field.mjs',
+ 'data.mjs',
+ 'kv-config.mjs',
+ 'storage.mjs',
+ 'sandbox.mjs',
+ 'source-worker.mjs',
+ 'lane-http.mjs',
+ 'lane-server.mjs',
+])
+
+export function extractLocalMjsImports(sourceText) {
+ const src = String(sourceText || '')
+ const found = new Set()
+ const patterns = [
+  /(?:^|[\r\n;])\s*(?:import|export)\s+(?:\*\s*(?:as\s+[A-Za-z0-9_$]+\s+)?from\s+|[A-Za-z0-9_$]+(?:\s*,\s*\{[^{};]*\})?\s+from\s+|\{[^{};]*\}\s+from\s+)?['"]\.\/([A-Za-z0-9._-]+\.mjs)['"]/g,
+  /\bimport\s*\(\s*['"]\.\/([A-Za-z0-9._-]+\.mjs)['"]\s*\)/g,
+  /new\s+URL\s*\(\s*['"]\.\/([A-Za-z0-9._-]+\.mjs)['"]\s*,\s*import\.meta\.url\s*\)/g,
+ ]
+ for (const re of patterns) {
+  let match
+  while ((match = re.exec(src)) !== null) {
+   if (SAFE_RUNTIME_MJS_RE.test(match[1])) {
+    found.add(match[1])
+   }
+  }
+ }
+ if (src.includes("'source-worker.mjs'") || src.includes('"source-worker.mjs"')) {
+  found.add('source-worker.mjs')
+ }
+ return Array.from(found)
+}
+
+export function resolveBundledRuntimeFileNames(runtimeFiles, { requiredBase = [], entryFiles = [] } = {}) {
+ if (!runtimeFiles || typeof runtimeFiles !== 'object' || Array.isArray(runtimeFiles)) {
+  throw new Error('runtimeFiles must be an object')
+ }
+ for (const name of requiredBase) {
+  if (typeof runtimeFiles[name] !== 'string' || runtimeFiles[name].length === 0) {
+   throw new Error(`Missing runtime file content for ${name}`)
+  }
+ }
+ const queue = []
+ const visited = new Set()
+ for (const name of [...requiredBase, ...entryFiles]) {
+  if (typeof runtimeFiles[name] === 'string' && runtimeFiles[name].length > 0 && !visited.has(name)) {
+   visited.add(name)
+   queue.push(name)
+  }
+ }
+ while (queue.length > 0) {
+  const file = queue.shift()
+  const deps = extractLocalMjsImports(runtimeFiles[file])
+  for (const dep of deps) {
+   if (typeof runtimeFiles[dep] !== 'string' || runtimeFiles[dep].length === 0) {
+    throw new Error(`Missing runtime file content for ${dep} (imported by ${file})`)
+   }
+   if (!visited.has(dep)) {
+    visited.add(dep)
+    queue.push(dep)
+   }
+  }
+ }
+ const available = Object.keys(runtimeFiles).filter(
+  name => SAFE_RUNTIME_MJS_RE.test(name) && typeof runtimeFiles[name] === 'string' && runtimeFiles[name].length > 0
+ )
+ const availableSet = new Set(available)
+ const ordered = []
+ const added = new Set()
+ for (const name of DEPLOY_RUNTIME_BASE_FILES) {
+  if (availableSet.has(name) && !added.has(name)) {
+   ordered.push(name)
+   added.add(name)
+  }
+ }
+ for (const name of available.slice().sort()) {
+  if (!added.has(name)) {
+   ordered.push(name)
+   added.add(name)
+  }
+ }
+ return ordered
+}
 
 export const defaultTerminalManager = createTerminalManager()
 
@@ -843,7 +931,7 @@ export function generateSystemdUnit({
   'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6',
   `SocketBindAllow=${socketBindAllow}`,
   'SocketBindDeny=any',
-  ...(allowLoopback ? ['IPAddressAllow=127.0.0.1/32'] : []),
+  ...(allowLoopback ? ['IPAddressAllow=127.0.0.1/32', 'IPAddressAllow=127.0.0.53/32'] : []),
   `IPAddressDeny=${SYSTEMD_SSRF_DENY_NETWORKS.join(' ')}`,
   `ExecStart=/usr/bin/env node ${serviceDir}/lane-server.mjs --config ${serviceDir}/config.json`,
   'Restart=always',
@@ -1302,12 +1390,10 @@ export function generateRemoteKvSyncScript({
  if (!cleanUrl) {
   throw new Error('civil-memory URL is required')
  }
- const required = ['field.mjs', 'data.mjs', 'storage.mjs']
- for (const name of required) {
-  if (typeof runtimeFiles[name] !== 'string' || runtimeFiles[name].length === 0) {
-   throw new Error(`Missing runtime file content for ${name}`)
-  }
- }
+ const bundledNames = resolveBundledRuntimeFileNames(runtimeFiles, {
+  requiredBase: ['field.mjs', 'data.mjs', 'storage.mjs'],
+  entryFiles: ['data.mjs', 'storage.mjs'],
+ })
  const bundleJson = JSON.stringify(bundle || {})
  const lines = [
   '#!/usr/bin/env bash',
@@ -1315,14 +1401,11 @@ export function generateRemoteKvSyncScript({
   'TMPDIR="$(mktemp -d)"',
   'trap \'rm -rf "$TMPDIR"\' EXIT',
   'printf \'{"type":"module","private":true}\\n\' > "$TMPDIR/package.json"',
-  `printf '%s' ${shellQuote(encodeBase64(runtimeFiles['field.mjs']))} | base64 -d > "$TMPDIR/field.mjs"`,
-  `printf '%s' ${shellQuote(encodeBase64(runtimeFiles['data.mjs']))} | base64 -d > "$TMPDIR/data.mjs"`,
  ]
- if (typeof runtimeFiles['kv-config.mjs'] === 'string' && runtimeFiles['kv-config.mjs'].length > 0) {
-  lines.push(`printf '%s' ${shellQuote(encodeBase64(runtimeFiles['kv-config.mjs']))} | base64 -d > "$TMPDIR/kv-config.mjs"`)
+ for (const name of bundledNames) {
+  lines.push(`printf '%s' ${shellQuote(encodeBase64(runtimeFiles[name]))} | base64 -d > "$TMPDIR/${name}"`)
  }
  lines.push(
-  `printf '%s' ${shellQuote(encodeBase64(runtimeFiles['storage.mjs']))} | base64 -d > "$TMPDIR/storage.mjs"`,
   `printf '%s' ${shellQuote(encodeBase64(bundleJson))} | base64 -d > "$TMPDIR/bundle.json"`,
   'cd "$TMPDIR"',
   `CC_KV_URL=${shellQuote(cleanUrl)} CC_KV_BASE=${shellQuote(basePath || '')} node --input-type=module - <<'NODEEOF'`,
@@ -1379,12 +1462,18 @@ export function generateDeployScript({
  if (cleanEmail && !SAFE_EMAIL_RE.test(cleanEmail)) {
   throw new Error('Invalid Let\'s Encrypt email address')
  }
- const required = ['field.mjs', 'data.mjs', 'storage.mjs', 'lane-http.mjs', 'lane-server.mjs']
- for (const name of required) {
-  if (typeof runtimeFiles[name] !== 'string' || runtimeFiles[name].length === 0) {
-   throw new Error(`Missing runtime file content for ${name}`)
-  }
- }
+ const bundledNames = resolveBundledRuntimeFileNames(runtimeFiles, {
+  requiredBase: [
+   'field.mjs',
+   'data.mjs',
+   'storage.mjs',
+   'sandbox.mjs',
+   'source-worker.mjs',
+   'lane-http.mjs',
+   'lane-server.mjs',
+  ],
+  entryFiles: ['lane-server.mjs', 'source-worker.mjs'],
+ })
 
  const configJson = JSON.stringify({
   slug: cleanSlug,
@@ -1431,13 +1520,8 @@ export function generateDeployScript({
  }
 
  lines.push(`printf '%s' '{"type":"module","private":true}\n' > "$SERVICE_DIR/package.json"`)
- for (const name of required) {
+ for (const name of bundledNames) {
   lines.push(`printf '%s' ${shellQuote(encodeBase64(runtimeFiles[name]))} | base64 -d > "$SERVICE_DIR/${name}"`)
- }
- for (const optName of ['kv-config.mjs', 'sandbox.mjs', 'source-worker.mjs']) {
-  if (typeof runtimeFiles[optName] === 'string' && runtimeFiles[optName].length > 0) {
-   lines.push(`printf '%s' ${shellQuote(encodeBase64(runtimeFiles[optName]))} | base64 -d > "$SERVICE_DIR/${optName}"`)
-  }
  }
  lines.push(`printf '%s' ${shellQuote(encodeBase64(configJson))} | base64 -d > "$SERVICE_DIR/config.json"`)
  lines.push('chmod 644 "$SERVICE_DIR"/*.mjs "$SERVICE_DIR/package.json" "$SERVICE_DIR/config.json"')
@@ -1489,7 +1573,8 @@ export function generateDeployScript({
 
  lines.push(`printf '%s' ${shellQuote(encodeBase64(unitContent))} | base64 -d | sudo tee "/etc/systemd/system/civil-lane-${cleanSlug}.service" >/dev/null`)
  lines.push('sudo systemctl daemon-reload')
- lines.push(`sudo systemctl enable --now "civil-lane-${cleanSlug}.service"`)
+ lines.push(`sudo systemctl reset-failed "civil-lane-${cleanSlug}.service" >/dev/null 2>&1 || true`)
+ lines.push(`sudo systemctl enable "civil-lane-${cleanSlug}.service"`)
  lines.push(`sudo systemctl restart "civil-lane-${cleanSlug}.service"`)
 
  if (cleanDomain) {
@@ -1641,20 +1726,42 @@ export function generateFastResyncScript(options = {}) {
   return fullDeployScript
  }
 
+ const bundledNames = resolveBundledRuntimeFileNames(runtimeFiles, {
+  requiredBase: [
+   'field.mjs',
+   'data.mjs',
+   'storage.mjs',
+   'sandbox.mjs',
+   'source-worker.mjs',
+   'lane-http.mjs',
+   'lane-server.mjs',
+  ],
+  entryFiles: ['lane-server.mjs', 'source-worker.mjs'],
+ })
+
  const fastLines = [
   '#!/usr/bin/env bash',
   'set -euo pipefail',
+  `INSTALL_ROOT=${shellQuote(cleanRoot)}`,
   `SERVICE_DIR=${shellQuote(serviceDir)}`,
   `SLUG=${shellQuote(cleanSlug)}`,
   `PORT=${shellQuote(String(cleanPort))}`,
   'if [ -d "$SERVICE_DIR" ] && [ -f "$SERVICE_DIR/config.json" ] && sudo systemctl is-active --quiet "civil-lane-${SLUG}.service"; then',
+  ' sudo chmod 755 "$INSTALL_ROOT" "$SERVICE_DIR" 2>/dev/null || true',
+  ' CC_RUNTIME_UPDATED=0',
  ]
- for (const name of ['field.mjs', 'data.mjs', 'kv-config.mjs', 'storage.mjs', 'sandbox.mjs', 'source-worker.mjs', 'lane-http.mjs', 'lane-server.mjs']) {
-  if (typeof runtimeFiles[name] === 'string' && runtimeFiles[name].length > 0) {
-   fastLines.push(` printf '%s' ${shellQuote(encodeBase64(runtimeFiles[name]))} | base64 -d > "$SERVICE_DIR/${name}"`)
-  }
+ for (const name of bundledNames) {
+  fastLines.push(' CC_TMP_FILE="$(mktemp)"')
+  fastLines.push(` printf '%s' ${shellQuote(encodeBase64(runtimeFiles[name]))} | base64 -d > "$CC_TMP_FILE"`)
+  fastLines.push(' chmod 644 "$CC_TMP_FILE"')
+  fastLines.push(` if [ ! -f "$SERVICE_DIR/${name}" ] || ! cmp -s "$CC_TMP_FILE" "$SERVICE_DIR/${name}"; then`)
+  fastLines.push(`  mv "$CC_TMP_FILE" "$SERVICE_DIR/${name}"`)
+  fastLines.push('  CC_RUNTIME_UPDATED=1')
+  fastLines.push(' else')
+  fastLines.push('  rm -f "$CC_TMP_FILE"')
+  fastLines.push(' fi')
  }
- fastLines.push(' chmod 644 "$SERVICE_DIR"/*.mjs "$SERVICE_DIR/config.json" 2>/dev/null || true')
+ fastLines.push(' chmod 644 "$SERVICE_DIR"/*.mjs "$SERVICE_DIR/package.json" "$SERVICE_DIR/config.json" 2>/dev/null || true')
  fastLines.push(
   ' SYNC_BUNDLE_TMP="$(mktemp "$SERVICE_DIR/.sync-bundle.XXXXXX.json")"',
   ` printf '%s' ${shellQuote(encodeBase64(JSON.stringify(syncBundle)))} | base64 -d > "$SYNC_BUNDLE_TMP"`,
@@ -1669,9 +1776,26 @@ export function generateFastResyncScript(options = {}) {
   'NODEEOF',
   ' )',
   ' rm -f "$SYNC_BUNDLE_TMP"',
-  ' if curl -sf -X POST "http://127.0.0.1:${PORT}/_cc/reload" >/dev/null 2>&1; then',
-  `  echo "__CC_DEPLOY_OK__ $(node -e 'console.log(JSON.stringify({ok:true,slug:process.argv[1],laneId:process.argv[2],port:Number(process.argv[3]),publicUrl:process.argv[4],deployedAt:new Date().toISOString(),mode:"reload"}))' "$SLUG" ${shellQuote(String(laneId || '').trim())} "$PORT" ${shellQuote(publicUrl)})"`,
-  '  exit 0',
+  ' if [ "$CC_RUNTIME_UPDATED" = "1" ]; then',
+  '  sudo systemctl reset-failed "civil-lane-${SLUG}.service" >/dev/null 2>&1 || true',
+  '  sudo systemctl restart "civil-lane-${SLUG}.service"',
+  '  READY=0',
+  '  for i in $(seq 1 20); do',
+  '   if curl -sf "http://127.0.0.1:${PORT}/_cc/health" >/dev/null 2>&1; then',
+  '    READY=1',
+  '    break',
+  '   fi',
+  '   sleep 0.4',
+  '  done',
+  '  if [ "$READY" -eq 1 ] && curl -sf -X POST "http://127.0.0.1:${PORT}/_cc/reload" >/dev/null 2>&1; then',
+  `   echo "__CC_DEPLOY_OK__ $(node -e 'console.log(JSON.stringify({ok:true,slug:process.argv[1],laneId:process.argv[2],port:Number(process.argv[3]),publicUrl:process.argv[4],deployedAt:new Date().toISOString(),mode:"restart"}))' "$SLUG" ${shellQuote(String(laneId || '').trim())} "$PORT" ${shellQuote(publicUrl)})"`,
+  '   exit 0',
+  '  fi',
+  ' else',
+  '  if curl -sf -X POST "http://127.0.0.1:${PORT}/_cc/reload" >/dev/null 2>&1; then',
+  `   echo "__CC_DEPLOY_OK__ $(node -e 'console.log(JSON.stringify({ok:true,slug:process.argv[1],laneId:process.argv[2],port:Number(process.argv[3]),publicUrl:process.argv[4],deployedAt:new Date().toISOString(),mode:"reload"}))' "$SLUG" ${shellQuote(String(laneId || '').trim())} "$PORT" ${shellQuote(publicUrl)})"`,
+  '   exit 0',
+  '  fi',
   ' fi',
   'fi',
   fullDeployScript,
@@ -1989,27 +2113,31 @@ export function generateServiceActionScript({
  const cleanPort = Number(port) || 4100
  const unit = `civil-lane-${cleanSlug}.service`
  const lines = ['#!/usr/bin/env bash', 'set -euo pipefail']
- const requiredRuntime = ['field.mjs', 'data.mjs', 'storage.mjs', 'lane-http.mjs', 'lane-server.mjs']
+ const requiredRuntime = [
+  'field.mjs',
+  'data.mjs',
+  'storage.mjs',
+  'sandbox.mjs',
+  'source-worker.mjs',
+  'lane-http.mjs',
+  'lane-server.mjs',
+ ]
  const hasRuntimeFiles = Boolean(
   runtimeFiles &&
   typeof runtimeFiles === 'object' &&
   requiredRuntime.every(name => typeof runtimeFiles[name] === 'string' && runtimeFiles[name].length > 0)
  )
  if (hasRuntimeFiles && (cleanAction === 'logs' || cleanAction === 'restart' || cleanAction === 'start')) {
-  const copyRuntime = [
-   'field.mjs',
-   'data.mjs',
-   ...(['kv-config.mjs', 'sandbox.mjs', 'source-worker.mjs'].filter(
-    optName => typeof runtimeFiles[optName] === 'string' && runtimeFiles[optName].length > 0
-   )),
-   'storage.mjs',
-   'lane-http.mjs',
-   'lane-server.mjs',
-  ]
+  const copyRuntime = resolveBundledRuntimeFileNames(runtimeFiles, {
+   requiredBase: requiredRuntime,
+   entryFiles: ['lane-server.mjs', 'source-worker.mjs'],
+  })
   const cleanRoot = normalizeRemoteDirPath(installRoot, '/opt/civil-command')
   const serviceDir = `${cleanRoot}/${cleanSlug}`
   lines.push(`SERVICE_DIR=${shellQuote(serviceDir)}`)
   lines.push('if [ -d "$SERVICE_DIR" ]; then')
+  lines.push(` sudo chmod 755 ${shellQuote(cleanRoot)} "$SERVICE_DIR" 2>/dev/null || true`)
+  lines.push(' chmod 644 "$SERVICE_DIR/package.json" "$SERVICE_DIR/config.json" 2>/dev/null || true')
   lines.push(' CC_RUNTIME_UPDATED=0')
   for (const name of copyRuntime) {
    lines.push(' CC_TMP_FILE="$(mktemp)"')
@@ -2024,6 +2152,7 @@ export function generateServiceActionScript({
   }
   if (cleanAction === 'logs') {
    lines.push(' if [ "$CC_RUNTIME_UPDATED" = "1" ]; then')
+   lines.push(`  sudo systemctl reset-failed ${shellQuote(unit)} >/dev/null 2>&1 || true`)
    lines.push(`  sudo systemctl restart ${shellQuote(unit)}`)
    lines.push(' fi')
   }
@@ -2045,6 +2174,9 @@ export function generateServiceActionScript({
   lines.push('echo ""')
  }
  else {
+  if (cleanAction === 'restart' || cleanAction === 'start') {
+   lines.push(`sudo systemctl reset-failed ${shellQuote(unit)} >/dev/null 2>&1 || true`)
+  }
   lines.push(`sudo systemctl ${cleanAction} ${shellQuote(unit)}`)
   lines.push(`sudo systemctl status ${shellQuote(unit)} --no-pager || true`)
  }
@@ -2086,30 +2218,14 @@ export function generateLocalControlMasterRunner({
  ].join('\n')
 }
 
-export function isAllowedLocalOrigin(req) {
- const origin = req && req.headers ? req.headers.origin : null
- if (!origin) {
-  return true
- }
- try {
-  const parsed = new URL(String(origin))
-  const host = (parsed.hostname || '').toLowerCase()
-  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') {
-   return true
-  }
-  const reqHostHeader = String(req.headers.host || '').split(':')[0].toLowerCase()
-  return Boolean(reqHostHeader && host === reqHostHeader)
- }
- catch {
-  return false
- }
-}
+export { hasJsonContentType, isAllowedLocalHost, isAllowedLocalOrigin }
 
-function sendJson(res, status, payload) {
+function sendJson(res, status, payload, extraHeaders = null) {
  const body = JSON.stringify(payload)
  res.writeHead(status, {
   'Content-Type': 'application/json; charset=utf-8',
   'Cache-Control': 'no-store',
+  ...(extraHeaders || {}),
  })
  res.end(body)
 }
@@ -2169,29 +2285,44 @@ function readJsonBody(req) {
  })
 }
 
-async function readRuntimeFiles(rootDir) {
- const names = [
-  'field.mjs',
-  'data.mjs',
-  'kv-config.mjs',
-  'storage.mjs',
-  'sandbox.mjs',
-  'source-worker.mjs',
-  'lane-http.mjs',
-  'lane-server.mjs',
- ]
- const entries = await Promise.all(
-  names.map(async name => {
-   const text = await fs.readFile(path.join(rootDir, name), 'utf8')
-   return [name, text]
-  })
- )
- return Object.fromEntries(entries)
+export async function readRuntimeFiles(rootDir = REPO_DIR) {
+ const files = {}
+ const queue = [...DEPLOY_RUNTIME_BASE_FILES]
+ const queued = new Set(queue)
+ while (queue.length > 0) {
+  const name = queue.shift()
+  if (!SAFE_RUNTIME_MJS_RE.test(name)) {
+   continue
+  }
+  const text = await fs.readFile(path.join(rootDir, name), 'utf8')
+  files[name] = text
+  for (const dep of extractLocalMjsImports(text)) {
+   if (SAFE_RUNTIME_MJS_RE.test(dep) && !queued.has(dep)) {
+    queued.add(dep)
+    queue.push(dep)
+   }
+  }
+ }
+ const orderedNames = resolveBundledRuntimeFileNames(files, {
+  requiredBase: [...DEPLOY_RUNTIME_BASE_FILES],
+  entryFiles: ['lane-server.mjs', 'source-worker.mjs', 'data.mjs', 'storage.mjs'],
+ })
+ return Object.fromEntries(orderedNames.map(name => [name, files[name]]))
 }
 
 export async function handleDeployApiRequest(req, res, opts = {}) {
- if (!isAllowedLocalOrigin(req)) {
+ if (!isAllowedLocalOrigin(req, opts)) {
   return sendJson(res, 403, { ok: false, error: 'Cross-origin deploy access denied' })
+ }
+ if (opts.requireAuth !== false) {
+  const authRes = verifyApiSessionToken(req, {
+   secretStore: opts.secretStore || getDefaultServerSecretStore(),
+   allowQueryToken: false,
+   allowLaneScoped: false,
+  })
+  if (!authRes.ok) {
+   return sendJson(res, authRes.status, { ok: false, error: authRes.error }, authRes.headers)
+  }
  }
 
  const url = new URL(req.url || '/', 'http://localhost')
@@ -2204,6 +2335,9 @@ export async function handleDeployApiRequest(req, res, opts = {}) {
  if (pathname === '/api/deploy/kv/test') {
   if (method !== 'POST') {
    return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
+  }
+  if (!hasJsonContentType(req)) {
+   return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
   }
   let body
   try {
@@ -2283,6 +2417,9 @@ export async function handleDeployApiRequest(req, res, opts = {}) {
   if (method !== 'POST') {
    return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
   }
+  if (!hasJsonContentType(req)) {
+   return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+  }
   let body
   try {
    body = await readJsonBody(req)
@@ -2342,6 +2479,9 @@ export async function handleDeployApiRequest(req, res, opts = {}) {
   if (method !== 'POST') {
    return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
   }
+  if (!hasJsonContentType(req)) {
+   return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+  }
   let body
   try {
    body = await readJsonBody(req)
@@ -2373,6 +2513,9 @@ export async function handleDeployApiRequest(req, res, opts = {}) {
  if (pathname === '/api/deploy/proxy') {
   if (method !== 'POST') {
    return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
+  }
+  if (!hasJsonContentType(req)) {
+   return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
   }
   let body
   try {
@@ -2441,6 +2584,9 @@ export async function handleDeployApiRequest(req, res, opts = {}) {
  if (pathname === '/api/deploy/terminal/start') {
   if (method !== 'POST') {
    return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
+  }
+  if (!hasJsonContentType(req)) {
+   return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
   }
   let body
   try {
@@ -2607,6 +2753,9 @@ export async function handleDeployApiRequest(req, res, opts = {}) {
   if (method !== 'POST') {
    return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
   }
+  if (!hasJsonContentType(req)) {
+   return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+  }
   let body
   try {
    body = await readJsonBody(req)
@@ -2622,7 +2771,7 @@ export async function handleDeployApiRequest(req, res, opts = {}) {
 }
 
 export function handleDeployUpgrade(req, socket, head, opts = {}) {
- if (!isAllowedLocalOrigin(req)) {
+ if (!isAllowedLocalOrigin(req, opts)) {
   socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
   socket.destroy()
   return false

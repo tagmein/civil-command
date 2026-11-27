@@ -16,10 +16,15 @@ import {
  setKvChunkBytes,
 } from './kv-config.mjs'
 import {
+ TABLE_IMPORT_MODES,
  coerceDataValue,
  defaultDataValue,
  formatTimestampWithZone,
+ isReadOnlyRemoteTable,
+ isRemoteTable,
  normalizeColumnWidth,
+ normalizeTableImportMode,
+ normalizeTableRemoteSpec,
  parse,
  parseColumnType,
  parseImportLine,
@@ -569,7 +574,12 @@ function normalizeSchemaRecord(rawSchema, tableIdFallback) {
   }
   columns.push(normalizedCol)
  }
- return { id: tableId, name: tableName, columns }
+ const out = { id: tableId, name: tableName, columns }
+ const remote = normalizeTableRemoteSpec(rawSchema.remote)
+ if (remote) {
+  out.remote = remote
+ }
+ return out
 }
 
 export function serializeTableSchema(table) {
@@ -582,6 +592,42 @@ export function serializeTableRow(row) {
   id: row && row.id ? String(row.id) : '',
   values: row && row.values && typeof row.values === 'object' ? row.values : {},
  })
+}
+
+function resolveTableMutationTarget(laneId, tableOrId) {
+ if (typeof tableOrId === 'string') {
+  return {
+   allowed: Boolean(tableOrId),
+   targetLaneId: laneId,
+   targetTableId: tableOrId,
+   isRemote: false,
+  }
+ }
+ if (!tableOrId || typeof tableOrId !== 'object' || !tableOrId.id) {
+  return { allowed: false, targetLaneId: '', targetTableId: '', isRemote: false }
+ }
+ if (isRemoteTable(tableOrId)) {
+  if (isReadOnlyRemoteTable(tableOrId)) {
+   return {
+    allowed: false,
+    targetLaneId: tableOrId.remote.laneId,
+    targetTableId: tableOrId.remote.tableId,
+    isRemote: true,
+   }
+  }
+  return {
+   allowed: true,
+   targetLaneId: tableOrId.remote.laneId,
+   targetTableId: tableOrId.remote.tableId,
+   isRemote: true,
+  }
+ }
+ return {
+  allowed: true,
+  targetLaneId: laneId,
+  targetTableId: String(tableOrId.id),
+  isRemote: false,
+ }
 }
 
 async function deleteTableKeys(kv, laneId, tableId, knownRowIds = null) {
@@ -597,10 +643,18 @@ async function deleteTableKeys(kv, laneId, tableId, knownRowIds = null) {
 }
 
 async function writeSingleTableFull(kv, laneId, table) {
+ const prevRowIdx = await readPagedIds(kv, tableRowsBase(laneId, table.id))
+ if (isRemoteTable(table)) {
+  await kvSetChunked(kv, tableSchemaKey(laneId, table.id), serializeTableSchema(table))
+  if (prevRowIdx.exists) {
+   await mapConcurrent(prevRowIdx.ids, CONCURRENCY_LIMIT, rid => kvDeleteChunked(kv, tableRowKey(laneId, table.id, rid)))
+   await deletePagedIds(kv, tableRowsBase(laneId, table.id))
+  }
+  return
+ }
  const rows = Array.isArray(table.rows) ? table.rows : []
  const rowIds = rows.map(r => String(r.id))
  const nextRowIdSet = new Set(rowIds)
- const prevRowIdx = await readPagedIds(kv, tableRowsBase(laneId, table.id))
  await kvSetChunked(kv, tableSchemaKey(laneId, table.id), serializeTableSchema(table))
  await mapConcurrent(rows, CONCURRENCY_LIMIT, row => kvSetChunked(kv, tableRowKey(laneId, table.id, row.id), serializeTableRow(row)))
  await writePagedIds(kv, tableRowsBase(laneId, table.id), rowIds)
@@ -612,7 +666,47 @@ async function writeSingleTableFull(kv, laneId, table) {
  }
 }
 
-export async function loadLaneTables(rootKv, laneData, laneId) {
+async function loadOwnerReferencedSchemas(kv, ownerLaneId, seedColumns, visitedIds) {
+ const pending = []
+ for (const col of Array.isArray(seedColumns) ? seedColumns : []) {
+  if (col && col.type === 'row' && typeof col.refTableId === 'string' && col.refTableId && !visitedIds.has(col.refTableId)) {
+   visitedIds.add(col.refTableId)
+   pending.push(col.refTableId)
+  }
+ }
+ const refSchemas = []
+ while (pending.length > 0) {
+  const batch = pending.splice(0, pending.length)
+  const raws = await mapConcurrent(batch, CONCURRENCY_LIMIT, refId => kvGetChunked(kv, tableSchemaKey(ownerLaneId, refId)))
+  for (let i = 0; i < batch.length; i++) {
+   const raw = raws[i]
+   if (isMissingValue(raw)) {
+    continue
+   }
+   let parsed
+   try {
+    parsed = JSON.parse(raw)
+   }
+   catch {
+    continue
+   }
+   const norm = normalizeSchemaRecord(parsed, batch[i])
+   if (!norm) {
+    continue
+   }
+   refSchemas.push({ id: norm.id, name: norm.name, columns: norm.columns, rows: [] })
+   for (const col of norm.columns) {
+    if (col && col.type === 'row' && typeof col.refTableId === 'string' && col.refTableId && !visitedIds.has(col.refTableId)) {
+     visitedIds.add(col.refTableId)
+     pending.push(col.refTableId)
+    }
+   }
+  }
+ }
+ return refSchemas
+}
+
+export async function loadLaneTables(rootKv, laneData, laneId, options = {}) {
  const { kv, legacyKv } = resolveLaneStorage(rootKv, laneData, laneId)
  const [legacyRaw, modernTablesIdx] = await Promise.all([
   legacyKv ? legacyKv.get('tables') : Promise.resolve(null),
@@ -663,10 +757,7 @@ export async function loadLaneTables(rootKv, laneData, laneId) {
  }
 
  const tableEntries = await mapConcurrent(modernTablesIdx.ids, CONCURRENCY_LIMIT, async tableId => {
-  const [schemaRaw, rowsIdx] = await Promise.all([
-   kvGetChunked(kv, tableSchemaKey(laneId, tableId)),
-   readPagedIds(kv, tableRowsBase(laneId, tableId)),
-  ])
+  const schemaRaw = await kvGetChunked(kv, tableSchemaKey(laneId, tableId))
   if (isMissingValue(schemaRaw)) {
    return null
   }
@@ -681,9 +772,18 @@ export async function loadLaneTables(rootKv, laneData, laneId) {
   if (!schema) {
    return null
   }
+  if (schema.remote) {
+   return { schema, rowIds: [], rawRows: [] }
+  }
+  const rowsIdx = await readPagedIds(kv, tableRowsBase(laneId, tableId))
   const rawRows = await mapConcurrent(rowsIdx.ids, CONCURRENCY_LIMIT, rowId => kvGetChunked(kv, tableRowKey(laneId, tableId, rowId)))
   return { schema, rowIds: rowsIdx.ids, rawRows }
  })
+
+ const openPackageIds = options && Array.isArray(options.openPackageIds) && options.openPackageIds.length > 0
+  ? options.openPackageIds
+  : null
+ const accessCache = new Map()
 
  const out = []
  const loadedRowsPerTable = []
@@ -691,13 +791,160 @@ export async function loadLaneTables(rootKv, laneData, laneId) {
   if (!entry) {
    continue
   }
-  out.push({ id: entry.schema.id, name: entry.schema.name, columns: entry.schema.columns, rows: [] })
-  loadedRowsPerTable.push({ rowIds: entry.rowIds, rawRows: entry.rawRows })
+  if (!entry.schema.remote) {
+   out.push({ id: entry.schema.id, name: entry.schema.name, columns: entry.schema.columns, rows: [] })
+   loadedRowsPerTable.push({ isRemote: false, rowIds: entry.rowIds, rawRows: entry.rawRows })
+   continue
+  }
+
+  const remote = entry.schema.remote
+  const ownerLaneId = remote.laneId
+  const ownerTableId = remote.tableId
+  if (ownerLaneId === laneId && ownerTableId === entry.schema.id) {
+   out.push({
+    id: entry.schema.id,
+    name: entry.schema.name,
+    columns: entry.schema.columns,
+    rows: [],
+    remote: { ...remote, missing: true, accessDenied: false },
+   })
+   loadedRowsPerTable.push({ isRemote: true, rowIds: [], rawRows: [] })
+   continue
+  }
+
+  if (openPackageIds) {
+   let access = accessCache.get(ownerLaneId)
+   if (!access) {
+    access = await checkLaneAccess(kv, openPackageIds, ownerLaneId)
+    accessCache.set(ownerLaneId, access)
+   }
+   if (!access.allowed) {
+    out.push({
+     id: entry.schema.id,
+     name: entry.schema.name,
+     columns: entry.schema.columns,
+     rows: [],
+     remote: { ...remote, accessDenied: true, missing: false },
+    })
+    loadedRowsPerTable.push({ isRemote: true, rowIds: [], rawRows: [] })
+    continue
+   }
+  }
+
+  try {
+   const [ownerSchemaRaw, ownerRowsIdx] = await Promise.all([
+    kvGetChunked(kv, tableSchemaKey(ownerLaneId, ownerTableId)),
+    readPagedIds(kv, tableRowsBase(ownerLaneId, ownerTableId)),
+   ])
+   if (isMissingValue(ownerSchemaRaw)) {
+    out.push({
+     id: entry.schema.id,
+     name: entry.schema.name,
+     columns: entry.schema.columns,
+     rows: [],
+     remote: { ...remote, missing: true, accessDenied: false },
+    })
+    loadedRowsPerTable.push({ isRemote: true, rowIds: [], rawRows: [] })
+    continue
+   }
+   let parsedOwnerSchema
+   try {
+    parsedOwnerSchema = JSON.parse(ownerSchemaRaw)
+   }
+   catch {
+    parsedOwnerSchema = null
+   }
+   const ownerSchema = normalizeSchemaRecord(parsedOwnerSchema, ownerTableId)
+   if (!ownerSchema) {
+    out.push({
+     id: entry.schema.id,
+     name: entry.schema.name,
+     columns: entry.schema.columns,
+     rows: [],
+     remote: { ...remote, missing: true, accessDenied: false },
+    })
+    loadedRowsPerTable.push({ isRemote: true, rowIds: [], rawRows: [] })
+    continue
+   }
+
+   const rawOwnerRows = await mapConcurrent(ownerRowsIdx.ids, CONCURRENCY_LIMIT, rowId => kvGetChunked(kv, tableRowKey(ownerLaneId, ownerTableId, rowId)))
+   const ownerTableForCoercion = { id: ownerSchema.id, name: ownerSchema.name, columns: ownerSchema.columns, rows: [] }
+   const visitedRefIds = new Set([ownerSchema.id])
+   const ownerRefTables = await loadOwnerReferencedSchemas(kv, ownerLaneId, ownerSchema.columns, visitedRefIds)
+   const coercionTables = [ownerTableForCoercion, ...ownerRefTables]
+   const hydratedRows = []
+   for (let r = 0; r < rawOwnerRows.length; r++) {
+    const rowRaw = rawOwnerRows[r]
+    if (isMissingValue(rowRaw)) {
+     continue
+    }
+    let row
+    try {
+     row = JSON.parse(rowRaw)
+    }
+    catch {
+     continue
+    }
+    if (!row || typeof row !== 'object') {
+     continue
+    }
+    const rowId = typeof row.id === 'string' && row.id.length > 0 ? row.id : String(ownerRowsIdx.ids[r] || `row-r-${r + 1}`)
+    const rawValues = row.values && typeof row.values === 'object' ? row.values : {}
+    const values = {}
+    for (const col of ownerSchema.columns) {
+     if (Object.hasOwn(rawValues, col.id)) {
+      values[col.id] = coerceDataValue(rawValues[col.id], col, col.multiple, null, coercionTables)
+     }
+     else {
+      values[col.id] = defaultDataValue(col, col.multiple)
+     }
+    }
+    hydratedRows.push({ id: rowId, values })
+   }
+
+   const localName = remote.customName && entry.schema.name
+    ? entry.schema.name
+    : (ownerSchema.name || entry.schema.name)
+   const hydratedRemote = {
+    laneId: ownerLaneId,
+    tableId: ownerTableId,
+    tableName: ownerSchema.name,
+    mode: remote.mode,
+    missing: false,
+    accessDenied: false,
+   }
+   if (remote.customName) {
+    hydratedRemote.customName = true
+   }
+   out.push({
+    id: entry.schema.id,
+    name: localName,
+    columns: ownerSchema.columns,
+    rows: hydratedRows,
+    remote: hydratedRemote,
+   })
+   loadedRowsPerTable.push({ isRemote: true, rowIds: [], rawRows: [] })
+  }
+  catch (err) {
+   const isDenied = Boolean(err && (err.status === 403 || /403|forbidden|locked|access denied/i.test(String(err.message || ''))))
+   out.push({
+    id: entry.schema.id,
+    name: entry.schema.name,
+    columns: entry.schema.columns,
+    rows: [],
+    remote: { ...remote, missing: !isDenied, accessDenied: isDenied },
+   })
+   loadedRowsPerTable.push({ isRemote: true, rowIds: [], rawRows: [] })
+  }
  }
 
  for (let t = 0; t < out.length; t++) {
+  const entryRows = loadedRowsPerTable[t]
+  if (entryRows.isRemote) {
+   continue
+  }
   const table = out[t]
-  const { rowIds, rawRows } = loadedRowsPerTable[t]
+  const { rowIds, rawRows } = entryRows
   for (let r = 0; r < rawRows.length; r++) {
    const rowRaw = rawRows[r]
    if (isMissingValue(rowRaw)) {
@@ -730,43 +977,7 @@ export async function loadLaneTables(rootKv, laneData, laneId) {
  return out
 }
 
-export async function saveTableRow(rootKv, laneData, laneId, tableId, row) {
- if (!tableId || !row || !row.id) {
-  return
- }
- const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
- await kvSetChunked(kv, tableRowKey(laneId, tableId, row.id), serializeTableRow(row))
-}
-
-export async function addTableRow(rootKv, laneData, laneId, tableId, row, allRowIds) {
- if (!tableId || !row || !row.id) {
-  return
- }
- const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
- await kvSetChunked(kv, tableRowKey(laneId, tableId, row.id), serializeTableRow(row))
- await writePagedIds(kv, tableRowsBase(laneId, tableId), allRowIds)
-}
-
-export async function deleteTableRow(rootKv, laneData, laneId, tableId, rowId, remainingRowIds) {
- if (!tableId || !rowId) {
-  return
- }
- const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
- await writePagedIds(kv, tableRowsBase(laneId, tableId), remainingRowIds)
- await kvDeleteChunked(kv, tableRowKey(laneId, tableId, rowId))
-}
-
-export async function clearTableRows(rootKv, laneData, laneId, tableId, removedRowIds) {
- if (!tableId) {
-  return
- }
- const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
- await writePagedIds(kv, tableRowsBase(laneId, tableId), [])
- const ids = Array.isArray(removedRowIds) ? removedRowIds : []
- await mapConcurrent(ids, CONCURRENCY_LIMIT, rowId => kvDeleteChunked(kv, tableRowKey(laneId, tableId, rowId)))
-}
-
-export async function saveTableSchema(rootKv, laneData, laneId, table) {
+export async function saveImportedTableLink(rootKv, laneData, laneId, table) {
  if (!table || !table.id) {
   return
  }
@@ -774,11 +985,94 @@ export async function saveTableSchema(rootKv, laneData, laneId, table) {
  await kvSetChunked(kv, tableSchemaKey(laneId, table.id), serializeTableSchema(table))
 }
 
+export async function saveTableRow(rootKv, laneData, laneId, tableOrId, row) {
+ const target = resolveTableMutationTarget(laneId, tableOrId)
+ if (!target.allowed || !row || !row.id) {
+  return
+ }
+ const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
+ await kvSetChunked(kv, tableRowKey(target.targetLaneId, target.targetTableId, row.id), serializeTableRow(row))
+}
+
+export async function addTableRow(rootKv, laneData, laneId, tableOrId, row, allRowIds) {
+ const target = resolveTableMutationTarget(laneId, tableOrId)
+ if (!target.allowed || !row || !row.id) {
+  return
+ }
+ const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
+ await kvSetChunked(kv, tableRowKey(target.targetLaneId, target.targetTableId, row.id), serializeTableRow(row))
+ await writePagedIds(kv, tableRowsBase(target.targetLaneId, target.targetTableId), allRowIds)
+}
+
+export async function deleteTableRow(rootKv, laneData, laneId, tableOrId, rowId, remainingRowIds) {
+ const target = resolveTableMutationTarget(laneId, tableOrId)
+ if (!target.allowed || !rowId) {
+  return
+ }
+ const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
+ await writePagedIds(kv, tableRowsBase(target.targetLaneId, target.targetTableId), remainingRowIds)
+ await kvDeleteChunked(kv, tableRowKey(target.targetLaneId, target.targetTableId, rowId))
+}
+
+export async function clearTableRows(rootKv, laneData, laneId, tableOrId, removedRowIds) {
+ const target = resolveTableMutationTarget(laneId, tableOrId)
+ if (!target.allowed) {
+  return
+ }
+ const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
+ await writePagedIds(kv, tableRowsBase(target.targetLaneId, target.targetTableId), [])
+ const ids = Array.isArray(removedRowIds) ? removedRowIds : []
+ await mapConcurrent(ids, CONCURRENCY_LIMIT, rowId => kvDeleteChunked(kv, tableRowKey(target.targetLaneId, target.targetTableId, rowId)))
+}
+
+export async function saveTableSchema(rootKv, laneData, laneId, table) {
+ if (!table || !table.id) {
+  return
+ }
+ if (isReadOnlyRemoteTable(table)) {
+  return
+ }
+ const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
+ if (isRemoteTable(table)) {
+  const ownerName = table.remote.customName ? (table.remote.tableName || table.name) : table.name
+  if (!table.remote.customName) {
+   table.remote.tableName = ownerName
+  }
+  const ownerSchemaTable = {
+   id: table.remote.tableId,
+   name: ownerName,
+   columns: table.columns,
+  }
+  await kvSetChunked(kv, tableSchemaKey(table.remote.laneId, table.remote.tableId), serializeTableSchema(ownerSchemaTable))
+  await kvSetChunked(kv, tableSchemaKey(laneId, table.id), serializeTableSchema(table))
+  return
+ }
+ await kvSetChunked(kv, tableSchemaKey(laneId, table.id), serializeTableSchema(table))
+}
+
 export async function saveTableSchemaAndRows(rootKv, laneData, laneId, table) {
  if (!table || !table.id) {
   return
  }
+ if (isReadOnlyRemoteTable(table)) {
+  return
+ }
  const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
+ if (isRemoteTable(table)) {
+  const ownerName = table.remote.customName ? (table.remote.tableName || table.name) : table.name
+  if (!table.remote.customName) {
+   table.remote.tableName = ownerName
+  }
+  const ownerFullTable = {
+   id: table.remote.tableId,
+   name: ownerName,
+   columns: table.columns,
+   rows: Array.isArray(table.rows) ? table.rows : [],
+  }
+  await writeSingleTableFull(kv, table.remote.laneId, ownerFullTable)
+  await kvSetChunked(kv, tableSchemaKey(laneId, table.id), serializeTableSchema(table))
+  return
+ }
  const rows = Array.isArray(table.rows) ? table.rows : []
  const rowIds = rows.map(r => String(r.id))
  const nextRowIdSet = new Set(rowIds)
@@ -912,7 +1206,7 @@ export async function deleteLaneTable(rootKv, laneData, laneId, table, remaining
  }
  const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
  await writePagedIds(kv, laneTablesBase(laneId), remainingTableIds)
- const rowIds = Array.isArray(table.rows) ? table.rows.map(r => String(r.id)) : null
+ const rowIds = isRemoteTable(table) ? null : (Array.isArray(table.rows) ? table.rows.map(r => String(r.id)) : null)
  await deleteTableKeys(kv, laneId, table.id, rowIds)
 }
 
@@ -1964,8 +2258,6 @@ export async function ensureDefaultPackage(rootKv) {
   id: DEFAULT_PACKAGE_ID,
   name: DEFAULT_PACKAGE_NAME,
   hasPassphrase: false,
-  passphraseSalt: null,
-  passphraseHash: null,
   createdAt: now,
   updatedAt: now,
  }
@@ -3042,6 +3334,17 @@ export async function checkLaneAccess(rootKv, openPackageIds, laneId) {
  }
 }
 
+function isAccessDeniedError(err) {
+ if (!err) {
+  return false
+ }
+ if (err.status === 403) {
+  return true
+ }
+ const msg = typeof err.message === 'string' ? err.message : String(err)
+ return /\bHTTP 403\b|Access denied/i.test(msg)
+}
+
 export async function loadSessionCatalog(rootKv, openPackageIds) {
  const kv = unwrapKv(rootKv)
  await migrateLegacyCatalog(kv)
@@ -3049,46 +3352,58 @@ export async function loadSessionCatalog(rootKv, openPackageIds) {
  const catalog = {}
  const list = []
  if (!kv || pkgIds.length === 0) {
-  return { catalog, list }
+  return { catalog, list, accessiblePackageIds: [] }
  }
  const pkgResults = await mapConcurrent(pkgIds, CONCURRENCY_LIMIT, async pkgId => {
-  const [pkgMeta, laneIdx] = await Promise.all([
-   getPackageMeta(kv, pkgId),
-   readPagedIds(kv, packageLanesBase(pkgId)),
-  ])
-  if (!pkgMeta || !laneIdx.exists || laneIdx.ids.length === 0) {
-   return []
-  }
-  const laneRaws = await mapConcurrent(laneIdx.ids, CONCURRENCY_LIMIT, laneId => kvGetChunked(kv, packageLaneKey(pkgId, laneId)))
-  const entries = []
-  for (let i = 0; i < laneIdx.ids.length; i++) {
-   const laneId = laneIdx.ids[i]
-   const raw = laneRaws[i]
-   let title = laneId
-   if (!isMissingValue(raw)) {
-    try {
-     const parsed = JSON.parse(raw)
-     if (parsed && typeof parsed === 'object' && parsed.title !== undefined && parsed.title !== null) {
-      title = String(parsed.title)
+  try {
+   const [pkgMeta, laneIdx] = await Promise.all([
+    getPackageMeta(kv, pkgId),
+    readPagedIds(kv, packageLanesBase(pkgId)),
+   ])
+   if (!pkgMeta || !laneIdx.exists || laneIdx.ids.length === 0) {
+    return { pkgId, denied: false, entries: [] }
+   }
+   const laneRaws = await mapConcurrent(laneIdx.ids, CONCURRENCY_LIMIT, laneId => kvGetChunked(kv, packageLaneKey(pkgId, laneId)))
+   const entries = []
+   for (let i = 0; i < laneIdx.ids.length; i++) {
+    const laneId = laneIdx.ids[i]
+    const raw = laneRaws[i]
+    let title = laneId
+    if (!isMissingValue(raw)) {
+     try {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object' && parsed.title !== undefined && parsed.title !== null) {
+       title = String(parsed.title)
+      }
+     }
+     catch {
+      title = String(raw)
      }
     }
-    catch {
-     title = String(raw)
-    }
+    entries.push({
+     id: laneId,
+     title,
+     packageId: pkgId,
+     packageName: pkgMeta.name,
+    })
    }
-   entries.push({
-    id: laneId,
-    title,
-    packageId: pkgId,
-    packageName: pkgMeta.name,
-   })
+   return { pkgId, denied: false, entries }
   }
-  return entries
+  catch (err) {
+   if (isAccessDeniedError(err)) {
+    return { pkgId, denied: true, entries: [] }
+   }
+   throw err
+  }
  })
 
  const seen = new Set()
- for (const entries of pkgResults) {
-  for (const entry of entries) {
+ const accessiblePackageIds = []
+ for (const pkgRes of pkgResults) {
+  if (!pkgRes.denied) {
+   accessiblePackageIds.push(pkgRes.pkgId)
+  }
+  for (const entry of pkgRes.entries) {
    if (seen.has(entry.id)) {
     continue
    }
@@ -3097,7 +3412,7 @@ export async function loadSessionCatalog(rootKv, openPackageIds) {
    list.push(entry)
   }
  }
- return { catalog, list }
+ return { catalog, list, accessiblePackageIds }
 }
 
 export async function registerLaneInPackage(rootKv, laneId, title, packageId = DEFAULT_PACKAGE_ID) {
@@ -3990,9 +4305,11 @@ export function computeLaneScriptHash(linesOrRecords) {
 function canonicalizeSnapshotTable(table) {
  const cols = Array.isArray(table && table.columns) ? table.columns : []
  const rows = Array.isArray(table && table.rows) ? table.rows : []
+ const remote = isRemoteTable(table) ? normalizeTableRemoteSpec(table.remote) : null
  return {
   id: table && table.id !== undefined && table.id !== null ? String(table.id) : '',
   name: table && table.name !== undefined && table.name !== null ? String(table.name) : '',
+  ...(remote ? { remote } : {}),
   columns: cols.map(c => ({
    id: c && c.id !== undefined && c.id !== null ? String(c.id) : '',
    name: c && c.name !== undefined && c.name !== null ? String(c.name) : '',
@@ -4139,6 +4456,12 @@ export async function collectLaneSyncBundle(rootKv, laneId, options = {}) {
      if (depId && !seen.has(depId)) {
       pending.push(depId)
      }
+    }
+   }
+   for (const tbl of Array.isArray(tables) ? tables : []) {
+    const ownerLaneId = isRemoteTable(tbl) ? tbl.remote.laneId : ''
+    if (ownerLaneId && !seen.has(ownerLaneId)) {
+     pending.push(ownerLaneId)
     }
    }
   }
@@ -4399,7 +4722,22 @@ export async function inspectSessionForAgent(rootKv, options = {}) {
  const openPackageIds = sessionRecord && Array.isArray(sessionRecord.openPackageIds) && sessionRecord.openPackageIds.length > 0
   ? sessionRecord.openPackageIds
   : [DEFAULT_PACKAGE_ID]
- const catalogLoaded = sessionKv ? await loadSessionCatalog(sessionKv, openPackageIds) : { catalog: {}, list: [] }
+ const catalogLoaded = sessionKv ? await loadSessionCatalog(sessionKv, openPackageIds) : { catalog: {}, list: [], accessiblePackageIds: openPackageIds }
+ const accessiblePackageIds = Array.isArray(catalogLoaded && catalogLoaded.accessiblePackageIds)
+  ? catalogLoaded.accessiblePackageIds
+  : openPackageIds
+ const accessibleSet = new Set(accessiblePackageIds)
+ const filteredOpenPackages = sessionRecord
+  ? (sessionRecord.openPackages || []).filter(pkg => pkg && accessibleSet.has(pkg.id))
+  : []
+ const filteredActiveSession = sessionRecord && sessionRecord.meta
+  ? {
+   ...sessionRecord.meta,
+   activePackageId: accessibleSet.has(sessionRecord.meta.activePackageId)
+    ? sessionRecord.meta.activePackageId
+    : (accessiblePackageIds[0] || DEFAULT_PACKAGE_ID),
+  }
+  : matchedSession
  const catalogList = Array.isArray(catalogLoaded && catalogLoaded.list) ? catalogLoaded.list : []
  const rawLaneId = opts.laneId !== undefined && opts.laneId !== null ? String(opts.laneId).trim() : ''
  let resolvedLaneId = rawLaneId
@@ -4427,7 +4765,7 @@ export async function inspectSessionForAgent(rootKv, options = {}) {
    laneData.get('features'),
    laneData.get('inputs'),
    loadLaneScript(sessionKv, laneData, resolvedLaneId, opts.win || null),
-   loadLaneTables(sessionKv, laneData, resolvedLaneId),
+   loadLaneTables(sessionKv, laneData, resolvedLaneId, { openPackageIds: accessiblePackageIds }),
    getLanePackageId(sessionKv, resolvedLaneId),
   ])
   let inputs = []
@@ -4461,10 +4799,10 @@ export async function inspectSessionForAgent(rootKv, options = {}) {
 
  return {
   sessions,
-  activeSession: sessionRecord ? sessionRecord.meta : matchedSession,
+  activeSession: filteredActiveSession,
   dataDir: resolvedDataDir,
-  openPackages: sessionRecord ? sessionRecord.openPackages : [],
-  openPackageIds,
+  openPackages: filteredOpenPackages,
+  openPackageIds: accessiblePackageIds,
   catalog: catalogList,
   lane,
  }

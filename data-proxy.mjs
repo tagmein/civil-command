@@ -11,6 +11,17 @@ import {
  normalizeDataDir,
 } from './data.mjs'
 import {
+ hasJsonContentType,
+ isAllowedLocalOrigin,
+} from './http-security.mjs'
+import {
+ FORBIDDEN_PROPERTY_KEYS,
+} from './field.mjs'
+import {
+ createSafeExternalFetch,
+ validateSourceFetchUrl,
+} from './sandbox.mjs'
+import {
  DEFAULT_PACKAGE_ID,
  bindSecretStoreToKv,
  classifyKvKey,
@@ -20,6 +31,7 @@ import {
  createServerSecretStore,
  deleteLaneSecret,
  ensureDefaultPackage,
+ getDefaultServerSecretStore,
  getLanePackageId,
  getPackageMeta,
  isForbiddenDirectKvKey,
@@ -35,6 +47,7 @@ import {
  setDefaultServerSecretStore,
  setLaneSecret,
  readPagedIds,
+ unwrapKv,
  verifyCapabilityToken,
 } from './storage.mjs'
 
@@ -169,20 +182,75 @@ async function readJsonBody(req) {
  }
 }
 
-function extractRequestToken(req) {
+export function extractCapabilityTokenFromRequest(req, options = {}) {
  const headerKey = SESSION_TOKEN_HEADER.toLowerCase()
- const direct = req.headers && req.headers[headerKey]
+ const direct = req && req.headers && req.headers[headerKey]
  if (typeof direct === 'string' && direct.trim()) {
   return direct.trim()
  }
  if (Array.isArray(direct) && direct[0]) {
   return String(direct[0]).trim()
  }
- const auth = req.headers && req.headers.authorization
+ const auth = req && req.headers && req.headers.authorization
  if (typeof auth === 'string' && /^Bearer\s+cc_tok\./i.test(auth.trim())) {
   return auth.trim().replace(/^Bearer\s+/i, '').trim()
  }
+ if (options && options.allowQueryToken === true && req && typeof req.url === 'string') {
+  try {
+   const parsed = new URL(req.url, 'http://localhost')
+   const qTok = parsed.searchParams.get('token')
+   if (typeof qTok === 'string' && qTok.trim()) {
+    return qTok.trim()
+   }
+  }
+  catch {
+   // Ignore malformed URL
+  }
+ }
  return ''
+}
+
+export function verifyApiSessionToken(req, options = {}) {
+ const store = (options && options.secretStore) || getDefaultServerSecretStore()
+ const rawToken = extractCapabilityTokenFromRequest(req, options)
+ if (!rawToken) {
+  return {
+   ok: false,
+   status: 401,
+   needsBootstrap: true,
+   headers: { [TOKEN_BOOTSTRAP_HEADER]: '/api/vault/session' },
+   error: 'Missing session capability token',
+  }
+ }
+ const verified = verifyCapabilityToken(rawToken, store)
+ if (!verified.ok) {
+  const expired = /expired/i.test(verified.error || '')
+  return {
+   ok: false,
+   status: 401,
+   needsBootstrap: expired,
+   headers: expired ? { [TOKEN_BOOTSTRAP_HEADER]: '/api/vault/session' } : null,
+   error: verified.error || 'Invalid session capability token',
+  }
+ }
+ if (!(options && options.allowLaneScoped) && Array.isArray(verified.claims.lanes)) {
+  return {
+   ok: false,
+   status: 403,
+   needsBootstrap: false,
+   headers: null,
+   error: 'Lane capability token is not authorized for this endpoint',
+  }
+ }
+ return {
+  ok: true,
+  token: rawToken,
+  claims: verified.claims,
+ }
+}
+
+function extractRequestToken(req) {
+ return extractCapabilityTokenFromRequest(req)
 }
 
 function sanitizePackageMetaJsonText(rawText) {
@@ -205,13 +273,18 @@ function sanitizePackageMetaJsonText(rawText) {
  }
 }
 
-function requestBackendBuffer(backendUrl, method, bodyBuf) {
+function requestBackendBuffer(backendUrl, method, bodyBuf, contentType = '') {
  return new Promise((resolve, reject) => {
   const parsed = new URL(backendUrl)
   const lib = parsed.protocol === 'https:' ? https : http
   const headers = {}
-  if (bodyBuf && bodyBuf.length > 0) {
-   headers['Content-Length'] = String(bodyBuf.length)
+  const upperMethod = String(method || 'GET').toUpperCase()
+  if (upperMethod !== 'GET' && upperMethod !== 'HEAD') {
+   const len = bodyBuf ? bodyBuf.length : 0
+   headers['Content-Length'] = String(len)
+   if (upperMethod === 'POST' || upperMethod === 'PUT' || upperMethod === 'PATCH' || len > 0) {
+    headers['Content-Type'] = contentType || 'text/plain;charset=UTF-8'
+   }
   }
   const upstreamReq = lib.request(
    {
@@ -247,6 +320,9 @@ function requestBackendBuffer(backendUrl, method, bodyBuf) {
 export function createDataProxyHandler(options = {}) {
  const backendBaseUrl = options.backendBaseUrl || 'http://127.0.0.1:3333/?mode=disk'
  const secretStore = options.secretStore || createServerSecretStore()
+ const safeExternalFetch = typeof options.externalFetch === 'function'
+  ? options.externalFetch
+  : createSafeExternalFetch()
  if (options.setAsDefaultStore !== false) {
   setDefaultServerSecretStore(secretStore)
  }
@@ -259,6 +335,94 @@ export function createDataProxyHandler(options = {}) {
 
  function getBoundSessionKv(basePath) {
   return bindSecretStoreToKv(resolveSessionKv(backendRootKv, basePath), secretStore)
+ }
+
+ async function executeAuthorizedExternalFetch(body) {
+  const urlCheck = validateSourceFetchUrl(body && body.url)
+  if (!urlCheck.ok) {
+   return { status: 400, payload: { ok: false, error: urlCheck.error } }
+  }
+  const rawMethod = body && body.method !== undefined && body.method !== null
+   ? String(body.method).trim().toUpperCase()
+   : 'GET'
+  if (!rawMethod || rawMethod.length > 32 || !/^[A-Z][A-Z0-9-]*$/.test(rawMethod)) {
+   return { status: 400, payload: { ok: false, error: 'fetch method must be a valid HTTP method name' } }
+  }
+  const safeInit = {
+   method: rawMethod,
+   credentials: 'omit',
+  }
+  if (body && body.headers !== undefined && body.headers !== null) {
+   if (typeof body.headers !== 'object' || Array.isArray(body.headers)) {
+    return { status: 400, payload: { ok: false, error: 'fetch headers must be a plain object' } }
+   }
+   const cleanHeaders = {}
+   for (const [k, v] of Object.entries(body.headers)) {
+    if (FORBIDDEN_PROPERTY_KEYS.includes(k)) {
+     return { status: 400, payload: { ok: false, error: `Forbidden header key: ${k}` } }
+    }
+    if (/[\r\n]/.test(k)) {
+     return { status: 400, payload: { ok: false, error: 'Header name must not contain CR/LF' } }
+    }
+    if (k && v !== undefined && v !== null) {
+     const sv = String(v)
+     if (/[\r\n]/.test(sv)) {
+      return { status: 400, payload: { ok: false, error: 'Header value must not contain CR/LF' } }
+     }
+     cleanHeaders[k] = sv
+    }
+   }
+   if (Object.keys(cleanHeaders).length > 0) {
+    safeInit.headers = cleanHeaders
+   }
+  }
+  if (rawMethod !== 'GET' && rawMethod !== 'HEAD' && body && body.body !== undefined && body.body !== null) {
+   safeInit.body = typeof body.body === 'string' ? body.body : JSON.stringify(body.body)
+  }
+
+  try {
+   const resp = await safeExternalFetch(urlCheck.url, safeInit)
+   if (!resp || typeof resp !== 'object') {
+    return { status: 502, payload: { ok: false, error: 'External fetch returned empty response' } }
+   }
+   let bodyText = ''
+   if (typeof resp.text === 'function') {
+    bodyText = String((await resp.text()) ?? '')
+   }
+   else if (typeof resp.json === 'function') {
+    bodyText = JSON.stringify(await resp.json())
+   }
+   const outHeaders = {}
+   if (resp.headers && typeof resp.headers.forEach === 'function') {
+    resp.headers.forEach((v, k) => {
+     outHeaders[String(k).toLowerCase()] = String(v)
+    })
+   }
+   else if (resp.headers && typeof resp.headers === 'object') {
+    for (const [hk, hv] of Object.entries(resp.headers)) {
+     outHeaders[String(hk).toLowerCase()] = String(hv)
+    }
+   }
+   return {
+    status: 200,
+    payload: {
+     ok: true,
+     response: {
+      ok: resp.ok !== false,
+      status: Number.isInteger(resp.status) ? resp.status : (resp.ok === false ? 500 : 200),
+      statusText: typeof resp.statusText === 'string' ? resp.statusText : '',
+      url: typeof resp.url === 'string' ? resp.url : urlCheck.url,
+      headers: outHeaders,
+      bodyText,
+     },
+    },
+   }
+  }
+  catch (err) {
+   const msg = err && err.message ? err.message : String(err || 'External fetch failed')
+   const status = /blocked|private|loopback|localhost|protocol|invalid/i.test(msg) ? 403 : 502
+   return { status, payload: { ok: false, error: msg } }
+  }
  }
 
  async function isPassphraseProtectedPkg(sessionKv, basePath, packageId) {
@@ -291,8 +455,7 @@ export function createDataProxyHandler(options = {}) {
   return false
  }
 
- function resolveRequestAuth(req, requestedBasePath, allowRegistryFallback = false) {
-  const rawToken = extractRequestToken(req)
+ function resolveRawTokenAuth(rawToken, requestedBasePath, allowRegistryFallback = false, allowUnlockedAnyDir = false) {
   if (!rawToken) {
    return {
     ok: false,
@@ -306,13 +469,19 @@ export function createDataProxyHandler(options = {}) {
    return {
     ok: false,
     status: 401,
-    needsBootstrap: false,
+    needsBootstrap: /expired/i.test(verified.error || ''),
     error: verified.error || 'Invalid session capability token',
    }
   }
   const claims = verified.claims
   const reqDir = normalizeDataDir(requestedBasePath)
-  const dirMatches = claims.dir === reqDir || (allowRegistryFallback && reqDir === null)
+  const anyUnlockedDirAllowed = Boolean(
+   allowUnlockedAnyDir &&
+   claims.sid === null &&
+   claims.dir === null &&
+   claims.allowUnlocked === true
+  )
+  const dirMatches = claims.dir === reqDir || anyUnlockedDirAllowed || (allowRegistryFallback && reqDir === null)
   if (!dirMatches) {
    return {
     ok: false,
@@ -332,6 +501,10 @@ export function createDataProxyHandler(options = {}) {
    effectiveDir,
    effectivePkgs,
   }
+ }
+
+ function resolveRequestAuth(req, requestedBasePath, allowRegistryFallback = false) {
+  return resolveRawTokenAuth(extractRequestToken(req), requestedBasePath, allowRegistryFallback, false)
  }
 
  async function isPackageAllowedForAuth(sessionKv, basePath, packageId, authCtx) {
@@ -456,12 +629,18 @@ export function createDataProxyHandler(options = {}) {
  }
 
  async function handleVaultApiRequest(req, res) {
+  if (!isAllowedLocalOrigin(req, options)) {
+   return sendJson(res, 403, { ok: false, error: 'Cross-origin vault access denied' })
+  }
   const url = new URL(req.url || '/', 'http://localhost')
   const pathname = url.pathname
   const method = String(req.method || 'GET').toUpperCase()
 
   try {
    if (pathname === '/api/vault/session' && method === 'POST') {
+    if (!hasJsonContentType(req)) {
+     return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+    }
     const body = await readJsonBody(req)
     const rawSid = body.sessionId ? String(body.sessionId).trim() : ''
     const requestedDir = normalizeDataDir(body.basePath)
@@ -483,7 +662,7 @@ export function createDataProxyHandler(options = {}) {
     }
 
     const summary = await loadSessionSummary(rawSid, requestedDir)
-    const effectiveDir = body.basePath !== undefined && summary.meta === null
+    const effectiveDir = body.basePath !== undefined && (!summary.meta || !summary.meta.dataDirConfirmed)
      ? requestedDir
      : summary.dataDir
 
@@ -501,6 +680,9 @@ export function createDataProxyHandler(options = {}) {
     }
 
     const targetSessionKv = getBoundSessionKv(effectiveDir)
+    if (effectiveDir !== summary.dataDir) {
+     await ensureDefaultPackage(targetSessionKv)
+    }
     const grantedPkgs = await computeSessionGrantedPackages(
      targetSessionKv,
      effectiveDir,
@@ -523,6 +705,9 @@ export function createDataProxyHandler(options = {}) {
    }
 
    if (pathname === '/api/vault/lane-token' && method === 'POST') {
+    if (!hasJsonContentType(req)) {
+     return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+    }
     const body = await readJsonBody(req)
     const reqDir = normalizeDataDir(body.basePath)
     const authCtx = resolveRequestAuth(req, reqDir, false)
@@ -560,6 +745,9 @@ export function createDataProxyHandler(options = {}) {
    }
 
    if (pathname === '/api/vault/package/create' && method === 'POST') {
+    if (!hasJsonContentType(req)) {
+     return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+    }
     const body = await readJsonBody(req)
     const cleanSid = String(body.sessionId || '').trim()
     const reqDir = normalizeDataDir(body.basePath)
@@ -598,6 +786,9 @@ export function createDataProxyHandler(options = {}) {
    }
 
    if (pathname === '/api/vault/package/open' && method === 'POST') {
+    if (!hasJsonContentType(req)) {
+     return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+    }
     const body = await readJsonBody(req)
     const cleanSid = String(body.sessionId || '').trim()
     const reqDir = normalizeDataDir(body.basePath)
@@ -644,6 +835,9 @@ export function createDataProxyHandler(options = {}) {
    }
 
    if (pathname === '/api/vault/package/close' && method === 'POST') {
+    if (!hasJsonContentType(req)) {
+     return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+    }
     const body = await readJsonBody(req)
     const cleanSid = String(body.sessionId || '').trim()
     const cleanPkgId = String(body.packageId || '').trim()
@@ -712,6 +906,9 @@ export function createDataProxyHandler(options = {}) {
     }
 
     if (method === 'POST') {
+     if (!hasJsonContentType(req)) {
+      return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+     }
      const body = await readJsonBody(req)
      const reqDir = normalizeDataDir(body.basePath)
      const cleanLaneId = String(body.laneId || '').trim()
@@ -735,6 +932,9 @@ export function createDataProxyHandler(options = {}) {
     }
 
     if (method === 'DELETE') {
+     if (!hasJsonContentType(req)) {
+      return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+     }
      const body = await readJsonBody(req)
      const reqDir = normalizeDataDir(body.basePath)
      const cleanLaneId = String(body.laneId || '').trim()
@@ -755,6 +955,9 @@ export function createDataProxyHandler(options = {}) {
    }
 
    if (pathname === '/api/vault/resolve' && method === 'POST') {
+    if (!hasJsonContentType(req)) {
+     return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+    }
     const body = await readJsonBody(req)
     const reqDir = normalizeDataDir(body.basePath)
     const cleanLaneId = String(body.laneId || '').trim()
@@ -776,6 +979,23 @@ export function createDataProxyHandler(options = {}) {
     return sendJson(res, 200, { ok: true, value })
    }
 
+   if (pathname === '/api/vault/fetch' && method === 'POST') {
+    if (!hasJsonContentType(req)) {
+     return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+    }
+    const body = await readJsonBody(req)
+    const reqDir = normalizeDataDir(body.basePath)
+    const authCtx = resolveRawTokenAuth(extractRequestToken(req), reqDir, true, true)
+    if (!authCtx.ok) {
+     const extraHeaders = authCtx.needsBootstrap
+      ? { [TOKEN_BOOTSTRAP_HEADER]: '/api/vault/session' }
+      : null
+     return sendJson(res, authCtx.status, { ok: false, error: authCtx.error }, extraHeaders)
+    }
+    const out = await executeAuthorizedExternalFetch(body)
+    return sendJson(res, out.status, out.payload)
+   }
+
    return sendJson(res, 404, { ok: false, error: `Unknown vault endpoint: ${pathname}` })
   }
   catch (err) {
@@ -786,88 +1006,94 @@ export function createDataProxyHandler(options = {}) {
   }
  }
 
- async function handleDataProxyRequest(req, res) {
-  const method = String(req.method || 'GET').toUpperCase()
-  if (method !== 'GET' && method !== 'POST' && method !== 'DELETE' && method !== 'HEAD') {
-   return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
+ function isDeployRegistryKey(rawKey) {
+  if (typeof rawKey !== 'string') {
+   return false
   }
+  return (
+   rawKey.startsWith('deploy#') ||
+   rawKey === 'deploy-servers' ||
+   rawKey.startsWith('deploy-servers.') ||
+   rawKey.startsWith('deploy-servers-') ||
+   rawKey === 'deployments' ||
+   rawKey.startsWith('deployments.') ||
+   rawKey.startsWith('deployments-')
+  )
+ }
 
-  const url = new URL(req.url || '/', 'http://localhost')
-  const rawKey = url.searchParams.get('key')
-  if (rawKey === null || rawKey === '') {
-   return sendJson(res, 400, { ok: false, error: 'Missing required key query parameter' })
-  }
-
+ async function authorizeKvAccess({
+  rawToken,
+  method,
+  requestedBasePath,
+  rawKey,
+  bodyText = undefined,
+  readBodyText = null,
+  allowUnlockedAnyDir = false,
+  allowDeployRegistryFallback = false,
+ }) {
   if (isForbiddenDirectKvKey(rawKey)) {
-   return sendJson(res, 403, {
+   return {
     ok: false,
+    status: 403,
+    needsBootstrap: false,
     error: 'Direct KV access to server-only vault and secret keys is forbidden',
-   })
+   }
   }
 
   const classified = classifyKvKey(rawKey)
   if (classified.kind === 'invalid') {
-   return sendJson(res, 400, { ok: false, error: 'Invalid KV key' })
+   return { ok: false, status: 400, needsBootstrap: false, error: 'Invalid KV key' }
   }
 
-  const requestedBasePath = normalizeDataDir(url.searchParams.get('modeOptions.disk.basePath'))
+  const normDir = normalizeDataDir(requestedBasePath)
   const allowRegistryFallback =
    classified.kind === 'session-meta' ||
    classified.kind === 'session-packages' ||
-   (classified.kind === 'package-data' && classified.packageId === DEFAULT_PACKAGE_ID && rawKey.startsWith('packages#default/sessions'))
+   (classified.kind === 'package-data' && classified.packageId === DEFAULT_PACKAGE_ID && rawKey.startsWith('packages#default/sessions')) ||
+   (allowDeployRegistryFallback && isDeployRegistryKey(rawKey))
 
-  const authCtx = resolveRequestAuth(req, requestedBasePath, allowRegistryFallback)
+  const authCtx = resolveRawTokenAuth(rawToken, normDir, allowRegistryFallback, allowUnlockedAnyDir)
   if (!authCtx.ok) {
-   const extraHeaders = authCtx.needsBootstrap
-    ? { [TOKEN_BOOTSTRAP_HEADER]: '/api/vault/session' }
-    : null
-   return sendJson(res, authCtx.status, { ok: false, error: authCtx.error }, extraHeaders)
+   return authCtx
   }
 
-  let bodyBuf = null
-  try {
-   if (method === 'POST') {
-    bodyBuf = await readRawBody(req)
-   }
-  }
-  catch (err) {
-   return sendJson(res, err.status || 400, { ok: false, error: err.message || 'Invalid request body' })
+  let effectiveBodyText = bodyText
+  if (method === 'POST' && effectiveBodyText === undefined && typeof readBodyText === 'function') {
+   effectiveBodyText = await readBodyText()
   }
 
-  const sessionKv = getBoundSessionKv(requestedBasePath)
+  const sessionKv = getBoundSessionKv(normDir)
 
-  // Strict lane-scoped capability token enforcement
   if (Array.isArray(authCtx.claims.lanes)) {
    if (classified.kind === 'lane') {
     if (!authCtx.claims.lanes.includes(classified.laneId)) {
-     return sendJson(res, 403, { ok: false, error: 'Lane capability token is not authorized for this lane' })
+     return { ok: false, status: 403, needsBootstrap: false, error: 'Lane capability token is not authorized for this lane' }
     }
    }
    else if (classified.kind === 'lane-dot') {
     const owner = await resolveDotKeyOwnerPackage(sessionKv, classified.candidateLaneIds)
     const matched = classified.candidateLaneIds.some(id => authCtx.claims.lanes.includes(id))
     if (!matched || (owner.laneId && !authCtx.claims.lanes.includes(owner.laneId))) {
-     return sendJson(res, 403, { ok: false, error: 'Lane capability token is not authorized for this lane' })
+     return { ok: false, status: 403, needsBootstrap: false, error: 'Lane capability token is not authorized for this lane' }
     }
    }
    else {
-    return sendJson(res, 403, { ok: false, error: 'Lane capability token cannot access non-lane KV keys' })
+    return { ok: false, status: 403, needsBootstrap: false, error: 'Lane capability token cannot access non-lane KV keys' }
    }
   }
   else {
-   // Session / package capability enforcement
    if (classified.kind === 'package-meta') {
     if (method === 'POST' || method === 'DELETE') {
-     if (!(await isPackageAllowedForAuth(sessionKv, requestedBasePath, classified.packageId, authCtx))) {
-      return sendJson(res, 403, { ok: false, error: 'Access denied: package is locked or unopened in this session' })
+     if (!(await isPackageAllowedForAuth(sessionKv, normDir, classified.packageId, authCtx))) {
+      return { ok: false, status: 403, needsBootstrap: false, error: 'Access denied: package is locked or unopened in this session' }
      }
-     if (method === 'POST' && bodyBuf) {
-      const txt = bodyBuf.toString('utf8').trim()
+     if (method === 'POST' && typeof effectiveBodyText === 'string') {
+      const txt = effectiveBodyText.trim()
       if (txt.startsWith('{')) {
        try {
         const parsed = JSON.parse(txt)
         if (parsed && (Object.hasOwn(parsed, 'passphraseHash') || Object.hasOwn(parsed, 'passphraseSalt'))) {
-         return sendJson(res, 403, { ok: false, error: 'Package passphrase verifiers cannot be written via /api/data' })
+         return { ok: false, status: 403, needsBootstrap: false, error: 'Package passphrase verifiers cannot be written via /api/data' }
         }
        }
        catch {
@@ -882,30 +1108,32 @@ export function createDataProxyHandler(options = {}) {
      classified.packageId === DEFAULT_PACKAGE_ID &&
      rawKey.startsWith('packages#default/sessions')
     if (!isDefaultSessionIndex) {
-     if (!(await isPackageAllowedForAuth(sessionKv, requestedBasePath, classified.packageId, authCtx))) {
-      return sendJson(res, 403, { ok: false, error: 'Access denied: package is locked or unopened in this session' })
+     if (!(await isPackageAllowedForAuth(sessionKv, normDir, classified.packageId, authCtx))) {
+      return { ok: false, status: 403, needsBootstrap: false, error: 'Access denied: package is locked or unopened in this session' }
      }
     }
    }
    else if (classified.kind === 'session-packages') {
-    if (method === 'POST' && bodyBuf) {
-     const txt = bodyBuf.toString('utf8').trim()
+    if (method === 'POST' && typeof effectiveBodyText === 'string') {
+     const txt = effectiveBodyText.trim()
      if (txt.startsWith('[')) {
       try {
        const ids = JSON.parse(txt)
        if (Array.isArray(ids)) {
         for (const pid of ids) {
-         if (!(await isPackageAllowedForAuth(sessionKv, requestedBasePath, pid, authCtx))) {
-          return sendJson(res, 403, {
+         if (!(await isPackageAllowedForAuth(sessionKv, normDir, pid, authCtx))) {
+          return {
            ok: false,
+           status: 403,
+           needsBootstrap: false,
            error: `Cannot add locked package "${pid}" without unlocking via passphrase`,
-          })
+          }
          }
         }
        }
       }
       catch {
-       return sendJson(res, 400, { ok: false, error: 'Invalid session packages payload' })
+       return { ok: false, status: 400, needsBootstrap: false, error: 'Invalid session packages payload' }
       }
      }
     }
@@ -913,29 +1141,90 @@ export function createDataProxyHandler(options = {}) {
    else if (classified.kind === 'lane-package') {
     if (method === 'POST' || method === 'DELETE') {
      const currentPkg = await getLanePackageId(sessionKv, classified.laneId)
-     if (!(await isPackageAllowedForAuth(sessionKv, requestedBasePath, currentPkg, authCtx))) {
-      return sendJson(res, 403, { ok: false, error: 'Access denied: current lane package is locked or unopened' })
+     if (!(await isPackageAllowedForAuth(sessionKv, normDir, currentPkg, authCtx))) {
+      return { ok: false, status: 403, needsBootstrap: false, error: 'Access denied: current lane package is locked or unopened' }
      }
-     if (method === 'POST' && bodyBuf) {
-      const targetPkg = bodyBuf.toString('utf8').trim() || DEFAULT_PACKAGE_ID
-      if (!(await isPackageAllowedForAuth(sessionKv, requestedBasePath, targetPkg, authCtx))) {
-       return sendJson(res, 403, { ok: false, error: 'Access denied: target package is locked or unopened' })
+     if (method === 'POST' && typeof effectiveBodyText === 'string') {
+      const targetPkg = effectiveBodyText.trim() || DEFAULT_PACKAGE_ID
+      if (!(await isPackageAllowedForAuth(sessionKv, normDir, targetPkg, authCtx))) {
+       return { ok: false, status: 403, needsBootstrap: false, error: 'Access denied: target package is locked or unopened' }
       }
      }
     }
    }
    else if (classified.kind === 'lane') {
-    if (!(await isLaneAllowedForAuth(sessionKv, requestedBasePath, classified.laneId, authCtx))) {
-     return sendJson(res, 403, { ok: false, error: 'Access denied: lane belongs to a locked or unopened package' })
+    if (!(await isLaneAllowedForAuth(sessionKv, normDir, classified.laneId, authCtx))) {
+     return { ok: false, status: 403, needsBootstrap: false, error: 'Access denied: lane belongs to a locked or unopened package' }
     }
    }
    else if (classified.kind === 'lane-dot') {
     const owner = await resolveDotKeyOwnerPackage(sessionKv, classified.candidateLaneIds)
-    if (!(await isPackageAllowedForAuth(sessionKv, requestedBasePath, owner.packageId, authCtx))) {
-     return sendJson(res, 403, { ok: false, error: 'Access denied: lane belongs to a locked or unopened package' })
+    if (!(await isPackageAllowedForAuth(sessionKv, normDir, owner.packageId, authCtx))) {
+     return { ok: false, status: 403, needsBootstrap: false, error: 'Access denied: lane belongs to a locked or unopened package' }
     }
    }
   }
+
+  return {
+   ok: true,
+   authCtx,
+   classified,
+   reqDir: normDir,
+   sessionKv,
+  }
+ }
+
+ async function handleDataProxyRequest(req, res) {
+  if (!isAllowedLocalOrigin(req, options)) {
+   return sendJson(res, 403, { ok: false, error: 'Cross-origin data proxy access denied' })
+  }
+  const method = String(req.method || 'GET').toUpperCase()
+  if (method !== 'GET' && method !== 'POST' && method !== 'DELETE' && method !== 'HEAD') {
+   return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
+  }
+
+  const url = new URL(req.url || '/', 'http://localhost')
+  const rawKey = url.searchParams.get('key')
+  if (rawKey === null || rawKey === '') {
+   return sendJson(res, 400, { ok: false, error: 'Missing required key query parameter' })
+  }
+
+  const requestedBasePath = normalizeDataDir(url.searchParams.get('modeOptions.disk.basePath'))
+  const rawToken = extractRequestToken(req)
+  let bodyBuf = null
+  let bodyReadError = null
+
+  const authCheck = await authorizeKvAccess({
+   rawToken,
+   method,
+   requestedBasePath,
+   rawKey,
+   readBodyText: async () => {
+    try {
+     bodyBuf = await readRawBody(req)
+     return bodyBuf.toString('utf8')
+    }
+    catch (err) {
+     bodyReadError = err
+     return null
+    }
+   },
+   allowUnlockedAnyDir: false,
+   allowDeployRegistryFallback: false,
+  })
+
+  if (bodyReadError) {
+   return sendJson(res, bodyReadError.status || 400, { ok: false, error: bodyReadError.message || 'Invalid request body' })
+  }
+
+  if (!authCheck.ok) {
+   const extraHeaders = authCheck.needsBootstrap
+    ? { [TOKEN_BOOTSTRAP_HEADER]: '/api/vault/session' }
+    : null
+   return sendJson(res, authCheck.status, { ok: false, error: authCheck.error }, extraHeaders)
+  }
+
+  const { classified, sessionKv } = authCheck
 
   // Forward authorized KV request to backend civil-memory
   try {
@@ -974,7 +1263,7 @@ export function createDataProxyHandler(options = {}) {
    for (const [paramKey, paramVal] of url.searchParams.entries()) {
     targetUrl.searchParams.set(paramKey, paramVal)
    }
-   const upstream = await requestBackendBuffer(targetUrl.toString(), method, bodyBuf)
+   const upstream = await requestBackendBuffer(targetUrl.toString(), method, bodyBuf, 'text/plain;charset=UTF-8')
    let responseBody = upstream.body
    if ((method === 'GET' || method === 'HEAD') && upstream.statusCode === 200 && classified.kind === 'package-meta') {
     const scrubbed = sanitizePackageMetaJsonText(responseBody.toString('utf8'))
@@ -992,9 +1281,345 @@ export function createDataProxyHandler(options = {}) {
   }
  }
 
+ function createAuthorizedRootKv(rawToken) {
+  let currentToken = typeof rawToken === 'string' ? rawToken.trim() : ''
+  let activeSessionId = ''
+  const clientsByPath = new Map()
+  const encodeSeg = seg => encodeURIComponent(String(seg)).replace(/\./g, '%2E')
+
+  const getOrCreateRootClient = targetPath => {
+   const norm = normalizeDataDir(targetPath)
+   const key = norm === null ? '__default__' : norm
+   if (clientsByPath.has(key)) {
+    return clientsByPath.get(key)
+   }
+   const def = norm === null ? null : getOrCreateRootClient(null)
+   const client = createScopedClient({ namespace: '', basePath: norm, root: null, defaultRoot: def })
+   clientsByPath.set(key, client)
+   return client
+  }
+
+  function createScopedClient({ namespace = '', basePath = null, root = null, defaultRoot = null }) {
+   const cleanBasePath = normalizeDataDir(basePath)
+   const isHash = namespace.includes('#')
+   const qualify = key => {
+    if (isHash) {
+     return namespace.endsWith('#') ? `${namespace}${key}` : `${namespace}/${key}`
+    }
+    return namespace ? `${namespace}.${key}` : String(key)
+   }
+   const rawStorageClient = unwrapKv(getBoundSessionKv(cleanBasePath))
+
+   const authOrThrow = async (method, fullKey, bodyText = undefined) => {
+    const auth = await authorizeKvAccess({
+     rawToken: currentToken,
+     method,
+     requestedBasePath: cleanBasePath,
+     rawKey: fullKey,
+     bodyText,
+     allowUnlockedAnyDir: true,
+     allowDeployRegistryFallback: true,
+    })
+    if (!auth.ok) {
+     const err = new Error(auth.error || 'Access denied')
+     err.status = auth.status || 403
+     throw err
+    }
+    return auth
+   }
+
+   const fetchVaultApi = async (subpath, vaultOpts = {}) => {
+    const method = vaultOpts && vaultOpts.method ? String(vaultOpts.method).toUpperCase() : 'POST'
+    const cleanSub = String(subpath || '').replace(/^\/+/, '')
+    const query = vaultOpts && vaultOpts.query && typeof vaultOpts.query === 'object' ? vaultOpts.query : {}
+    const body = vaultOpts && vaultOpts.body && typeof vaultOpts.body === 'object' ? vaultOpts.body : {}
+    const targetDir = normalizeDataDir(
+     vaultOpts && vaultOpts.basePath !== undefined
+      ? vaultOpts.basePath
+      : (body.basePath !== undefined ? body.basePath : (query.basePath !== undefined ? query.basePath : cleanBasePath))
+    )
+
+    if (cleanSub === 'session' && method === 'POST') {
+     const rawSid = body.sessionId ? String(body.sessionId).trim() : ''
+     const authCtx = resolveRawTokenAuth(currentToken, targetDir, true, true)
+     if (!authCtx.ok) {
+      return { ok: false, status: authCtx.status, data: { ok: false, error: authCtx.error } }
+     }
+     if (!rawSid) {
+      return {
+       ok: true,
+       status: 200,
+       data: {
+        ok: true,
+        sessionId: null,
+        basePath: targetDir,
+        openPackageIds: [DEFAULT_PACKAGE_ID],
+       },
+      }
+     }
+     const summary = await loadSessionSummary(rawSid, targetDir)
+     const effectiveDir = body.basePath !== undefined && (!summary.meta || !summary.meta.dataDirConfirmed) ? targetDir : summary.dataDir
+     const prevGranted = authCtx.claims.sid === rawSid ? authCtx.effectivePkgs : null
+     const targetSessionKv = getBoundSessionKv(effectiveDir)
+     if (effectiveDir !== summary.dataDir) {
+      await ensureDefaultPackage(targetSessionKv)
+     }
+     const grantedPkgs = await computeSessionGrantedPackages(
+      targetSessionKv,
+      effectiveDir,
+      summary.openPackageIds,
+      prevGranted
+     )
+     return {
+      ok: true,
+      status: 200,
+      data: {
+       ok: true,
+       sessionId: rawSid,
+       basePath: effectiveDir,
+       openPackageIds: grantedPkgs,
+      },
+     }
+    }
+
+    if (cleanSub === 'secret') {
+     const authCtx = resolveRawTokenAuth(currentToken, targetDir, false, true)
+     if (!authCtx.ok) {
+      return { ok: false, status: authCtx.status, data: { ok: false, error: authCtx.error } }
+     }
+     const cleanLaneId = String((method === 'GET' ? query.laneId : body.laneId) || '').trim()
+     const sessionKv = getBoundSessionKv(authCtx.effectiveDir)
+     if (!(await isLaneAllowedForAuth(sessionKv, authCtx.effectiveDir, cleanLaneId, authCtx))) {
+      return {
+       ok: false,
+       status: 403,
+       data: { ok: false, error: 'Access denied: lane belongs to a locked or unopened package' },
+      }
+     }
+     if (method === 'GET') {
+      const cleanSecretId = String(query.secretId || '').trim()
+      const rec = await loadLaneSecretRecord(sessionKv, sessionKv.namespace(cleanLaneId), cleanLaneId, cleanSecretId)
+      return {
+       ok: true,
+       status: 200,
+       data: {
+        ok: true,
+        record: rec
+         ? {
+          v: rec.v || 1,
+          alg: rec.alg || 'AES-256-GCM',
+          laneId: cleanLaneId,
+          secretId: cleanSecretId,
+          secretSet: Boolean(rec.ciphertext),
+          createdAt: rec.createdAt || null,
+         }
+         : null,
+       },
+      }
+     }
+     if (method === 'POST') {
+      const result = await setLaneSecret(
+       sessionKv,
+       sessionKv.namespace(cleanLaneId),
+       cleanLaneId,
+       body.name || '',
+       body.plaintext,
+       body.existingSecretId || ''
+      )
+      return { ok: Boolean(result && result.ok), status: result && result.ok ? 200 : 400, data: result }
+     }
+     if (method === 'DELETE') {
+      const cleanSecretId = String(body.secretId || '').trim()
+      const result = await deleteLaneSecret(sessionKv, sessionKv.namespace(cleanLaneId), cleanLaneId, cleanSecretId)
+      return { ok: Boolean(result && result.ok), status: result && result.ok ? 200 : 400, data: result }
+     }
+    }
+
+    if (cleanSub === 'resolve' && method === 'POST') {
+     const authCtx = resolveRawTokenAuth(currentToken, targetDir, false, true)
+     if (!authCtx.ok) {
+      return { ok: false, status: authCtx.status, data: { ok: false, error: authCtx.error } }
+     }
+     const cleanLaneId = String(body.laneId || '').trim()
+     const cleanSecretId = String(body.secretId || '').trim()
+     const sessionKv = getBoundSessionKv(authCtx.effectiveDir)
+     if (!(await isLaneAllowedForAuth(sessionKv, authCtx.effectiveDir, cleanLaneId, authCtx))) {
+      return {
+       ok: false,
+       status: 403,
+       data: { ok: false, error: 'Access denied: lane belongs to a locked or unopened package' },
+      }
+     }
+     const value = await resolveLaneSecret(
+      sessionKv,
+      sessionKv.namespace(cleanLaneId),
+      cleanLaneId,
+      { type: 'secret', secretId: cleanSecretId, secretSet: true }
+     )
+     return { ok: true, status: 200, data: { ok: true, value } }
+    }
+
+    if (cleanSub === 'fetch' && method === 'POST') {
+     const authCtx = resolveRawTokenAuth(currentToken, targetDir, true, true)
+     if (!authCtx.ok) {
+      return { ok: false, status: authCtx.status, data: { ok: false, error: authCtx.error } }
+     }
+     const out = await executeAuthorizedExternalFetch(body)
+     return { ok: out.status >= 200 && out.status < 300, status: out.status, data: out.payload }
+    }
+
+    return { ok: false, status: 400, data: { ok: false, error: `Unsupported vault operation: ${cleanSub}` } }
+   }
+
+   const client = {
+    isProxyBacked: true,
+    prefix: namespace,
+    basePath: cleanBasePath,
+    root: null,
+    defaultRoot: null,
+    getActiveClient() {
+     return client
+    },
+    getSessionToken() {
+     return currentToken
+    },
+    setSessionToken(nextTok) {
+     if (typeof nextTok === 'string' && nextTok.trim()) {
+      currentToken = nextTok.trim()
+     }
+     return currentToken
+    },
+    setActiveSession(sid) {
+     activeSessionId = sid ? String(sid).trim() : ''
+    },
+    fetchVaultApi,
+    withBasePath(nextPath) {
+     return getOrCreateRootClient(nextPath)
+    },
+    namespace(name) {
+     const nextNs = isHash ? qualify(encodeSeg(name)) : qualify(name)
+     return createScopedClient({
+      namespace: nextNs,
+      basePath: cleanBasePath,
+      root: client.root,
+      defaultRoot: client.defaultRoot,
+     })
+    },
+    hashNamespace(name) {
+     return createScopedClient({
+      namespace: `${encodeSeg(name)}#`,
+      basePath: cleanBasePath,
+      root: client.root,
+      defaultRoot: client.defaultRoot,
+     })
+    },
+    async get(key) {
+     const fullKey = qualify(key)
+     const auth = await authOrThrow('GET', fullKey)
+     const val = await rawStorageClient.get(fullKey)
+     if (val === null || val === undefined) {
+      return null
+     }
+     return auth.classified.kind === 'package-meta'
+      ? sanitizePackageMetaJsonText(String(val))
+      : String(val)
+    },
+    async set(key, value, opts = null) {
+     const fullKey = qualify(key)
+     const textVal = value === null || value === undefined ? '' : String(value)
+     await authOrThrow('POST', fullKey, textVal)
+     await rawStorageClient.set(fullKey, textVal, opts)
+    },
+    async delete(key, opts = null) {
+     const fullKey = qualify(key)
+     await authOrThrow('DELETE', fullKey)
+     if (typeof rawStorageClient.delete === 'function') {
+      await rawStorageClient.delete(fullKey, opts)
+     }
+     else {
+      await rawStorageClient.set(fullKey, '', opts)
+     }
+    },
+   }
+
+   client.root = root || client
+   if (defaultRoot) {
+    client.defaultRoot = defaultRoot
+   }
+   else if (!namespace && !root) {
+    client.defaultRoot = cleanBasePath === null ? client : getOrCreateRootClient(null)
+   }
+   else if (client.root && client.root.defaultRoot) {
+    client.defaultRoot = client.root.defaultRoot
+   }
+   return client
+  }
+
+  const defaultClient = getOrCreateRootClient(null)
+  let activeClient = defaultClient
+  return {
+   isProxyBacked: true,
+   get prefix() {
+    return activeClient.prefix
+   },
+   get basePath() {
+    return activeClient.basePath
+   },
+   get root() {
+    return activeClient
+   },
+   defaultRoot: defaultClient,
+   getActiveClient() {
+    return activeClient
+   },
+   getSessionToken() {
+    return currentToken
+   },
+   setSessionToken(nextTok) {
+    if (typeof nextTok === 'string' && nextTok.trim()) {
+     currentToken = nextTok.trim()
+    }
+    return currentToken
+   },
+   setActiveSession(sid) {
+    activeSessionId = sid ? String(sid).trim() : ''
+    void activeSessionId
+   },
+   fetchVaultApi(subpath, vaultOpts = {}) {
+    return activeClient.fetchVaultApi(subpath, {
+     basePath: activeClient.basePath,
+     ...(vaultOpts || {}),
+    })
+   },
+   withBasePath(nextPath) {
+    return getOrCreateRootClient(nextPath)
+   },
+   setBasePath(nextPath) {
+    activeClient = getOrCreateRootClient(nextPath)
+    return activeClient
+   },
+   namespace(name) {
+    return activeClient.namespace(name)
+   },
+   hashNamespace(name) {
+    return activeClient.hashNamespace(name)
+   },
+   get(key) {
+    return activeClient.get(key)
+   },
+   set(key, value, opts) {
+    return activeClient.set(key, value, opts)
+   },
+   delete(key, opts) {
+    return activeClient.delete(key, opts)
+   },
+  }
+ }
+
  return {
   secretStore,
   backendRootKv,
+  createAuthorizedRootKv,
   handleDataProxyRequest,
   handleVaultApiRequest,
  }

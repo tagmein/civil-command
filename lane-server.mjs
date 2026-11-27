@@ -10,6 +10,7 @@ import {
  createExecutionBudget,
  deepFreezeScopeData,
  defaultValueForType,
+ isRemoteTable,
  normalizeFieldLimits,
  normalizePrimitiveType,
  resolveImportValue,
@@ -893,6 +894,29 @@ export function createLaneHttpServer(config = {}, opts = {}) {
    const depUnit = importedUnits.get(depId)
    importDigests[depId] = depUnit && depUnit.exists ? depUnit.unitRevision : 'missing'
    triggerValues[laneTriggerKey(depId)] = depUnit ? depUnit.preTriggerVal : null
+  }
+
+  const remoteOwnerIds = new Set()
+  const collectRemoteOwners = tblList => {
+   for (const tbl of Array.isArray(tblList) ? tblList : []) {
+    if (isRemoteTable(tbl) && tbl.remote.laneId !== laneId) {
+     remoteOwnerIds.add(tbl.remote.laneId)
+    }
+   }
+  }
+  collectRemoteOwners(mainUnit.tables)
+  for (const depUnit of importedUnits.values()) {
+   collectRemoteOwners(depUnit && depUnit.tables)
+  }
+  for (const ownerId of Array.from(remoteOwnerIds).sort()) {
+   if (!loadedLaneIds.includes(ownerId)) {
+    loadedLaneIds.push(ownerId)
+   }
+   const trigKey = laneTriggerKey(ownerId)
+   if (!Object.hasOwn(triggerValues, trigKey)) {
+    const rawTrig = await rootKv.get(trigKey)
+    triggerValues[trigKey] = rawTrig === null || rawTrig === undefined ? null : String(rawTrig)
+   }
   }
 
   const revision = computeLaneSnapshotRevision({

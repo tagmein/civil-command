@@ -15,6 +15,7 @@ import {
  resolveScrollbarColor,
  runTransportedScripts,
  serializeTransportPacket,
+ sha256Bytes,
 } from './field.mjs'
 
 export const OUTPUT_PROTOCOL = 'cc-lane-output-v1'
@@ -3089,6 +3090,37 @@ function buildIframeClientBootstrapSource(frameId) {
 `
 }
 
+function encodeBytesBase64(bytes) {
+ if (typeof Buffer === 'function') {
+  return Buffer.from(bytes).toString('base64')
+ }
+ let bin = ''
+ for (let i = 0; i < bytes.length; i++) {
+  bin += String.fromCharCode(bytes[i])
+ }
+ return btoa(bin)
+}
+
+export function buildSandboxedOutputCsp(inlineJsSource = '') {
+ const cleanJs = String(inlineJsSource).replace(/\r\n?/g, '\n')
+ const hashB64 = encodeBytesBase64(sha256Bytes(cleanJs))
+ return [
+  "default-src 'none'",
+  `script-src 'sha256-${hashB64}'`,
+  "style-src 'unsafe-inline'",
+  'img-src data: blob:',
+  'font-src data:',
+  'media-src data: blob:',
+  "connect-src 'none'",
+  "frame-src 'none'",
+  "child-src 'none'",
+  "worker-src 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+ ].join('; ')
+}
+
 export function buildSandboxedOutputSrcdoc({ frameId, fieldModuleSource, scrollbar = null } = {}) {
  const sb = scrollbar && typeof scrollbar === 'object' && scrollbar.css
   ? scrollbar
@@ -3096,13 +3128,15 @@ export function buildSandboxedOutputSrcdoc({ frameId, fieldModuleSource, scrollb
  const safeCss = String(sb.css || '#383838 transparent').replace(/[<>;"']/g, '')
  const safeThumb = String(sb.thumb || '#383838').replace(/[<>;"']/g, '')
  const safeTrack = String(sb.track || 'transparent').replace(/[<>;"']/g, '')
- const inlineJs = escapeInlineScript(`${fieldModuleSource}\n${buildIframeClientBootstrapSource(frameId)}`)
+ const inlineJs = escapeInlineScript(`${fieldModuleSource}\n${buildIframeClientBootstrapSource(frameId)}`).replace(/\r\n?/g, '\n')
+ const csp = buildSandboxedOutputCsp(inlineJs)
 
  return [
   '<!doctype html>',
   '<html lang="en">',
   '<head>',
   '<meta charset="utf-8">',
+  `<meta http-equiv="Content-Security-Policy" content="${csp}">`,
   '<style>',
   `:root { --scrollbar-color: ${safeCss}; --scrollbar-thumb-color: ${safeThumb}; --scrollbar-track-color: ${safeTrack}; color-scheme: dark; scrollbar-color: var(--scrollbar-color); }`,
   '@supports not (scrollbar-color: #383838 transparent) {',
@@ -3329,16 +3363,13 @@ async function mountMockVmIframeRealm({ iframeEl, frameId, fieldModuleSource, on
   get caches() {
    throw makeSecurityError('caches')
   },
-  async fetch(url) {
-   const s = String(url ?? '').trim()
-   if (!/^https?:\/\//i.test(s)) {
-    throw new TypeError(`Failed to parse URL from ${s} in opaque-origin sandboxed frame`)
-   }
-   const parsed = new URL(s)
-   if (parsed.pathname === '/api' || parsed.pathname.startsWith('/api/')) {
-    throw new TypeError('Failed to fetch: CORS blocked from null origin')
-   }
-   throw new TypeError('Network access disabled in mock sandboxed frame')
+  navigator: Object.freeze({
+   sendBeacon() {
+    throw new TypeError('Refused to send beacon because it violates the document Content Security Policy directive: "connect-src \'none\'"')
+   },
+  }),
+  async fetch(_url) {
+   throw new TypeError('Refused to connect because it violates the document Content Security Policy directive: "connect-src \'none\'"')
   },
   addEventListener(type, fn) {
    if (!frameListeners.has(type)) {
@@ -3403,6 +3434,7 @@ async function mountMockVmIframeRealm({ iframeEl, frameId, fieldModuleSource, on
   window: sandboxWindow,
   self: sandboxWindow,
   document: sandboxDocument,
+  navigator: sandboxWindow.navigator,
   console: sandboxConsole || { log() {}, info() {}, warn() {}, error() {} },
   Intl: globalThis.Intl,
   TextEncoder,

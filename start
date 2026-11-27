@@ -11,7 +11,32 @@ const kvChunkArg = process.argv.find(arg => arg.startsWith('--kv-chunk-bytes='))
 if (kvChunkArg) process.env.CC_KV_CHUNK_BYTES = kvChunkArg.slice('--kv-chunk-bytes='.length)
 
 const fsApiPromise = import('./fs-api.mjs')
-const deployApiPromise = import('./deploy-api.mjs')
+const httpSecurityPromise = import('./http-security.mjs')
+const deployApiPath = path.join(rootDir, 'deploy-api.mjs')
+let sharedTerminalManager = null
+let cachedDeployMtimeMs = -1
+let cachedDeployApiPromise = null
+
+async function getDeployApi() {
+ const stat = await fs.promises.stat(deployApiPath)
+ if (!cachedDeployApiPromise || stat.mtimeMs !== cachedDeployMtimeMs) {
+  cachedDeployMtimeMs = stat.mtimeMs
+  cachedDeployApiPromise = import(`./deploy-api.mjs?v=${stat.mtimeMs}`)
+   .then(mod => {
+    if (!sharedTerminalManager) {
+     sharedTerminalManager = mod.defaultTerminalManager
+    }
+    return mod
+   })
+   .catch(err => {
+    cachedDeployMtimeMs = -1
+    cachedDeployApiPromise = null
+    throw err
+   })
+ }
+ return cachedDeployApiPromise
+}
+
 const agentApiPromise = import('./agent-api.mjs')
 const dataProxyPromise = import('./data-proxy.mjs').then(({
  createDataProxyHandler,
@@ -60,11 +85,11 @@ function serveFile(filePath, res) {
  .pipe(res)
 }
 
-const server = http.createServer((req, res) => {
- const reqPathname = req.url.split('?')[0]
+function handleIncomingRequest(req, res) {
+ const reqPathname = (req.url || '/').split('?')[0]
  if (reqPathname === '/api/fs' || reqPathname.startsWith('/api/fs/')) {
-  return fsApiPromise
-   .then(({ handleFsApiRequest }) => handleFsApiRequest(req, res))
+  return Promise.all([fsApiPromise, dataProxyPromise])
+   .then(([{ handleFsApiRequest }, { secretStore }]) => handleFsApiRequest(req, res, { secretStore }))
    .catch(err => {
     if (!res.headersSent) {
      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
@@ -74,8 +99,10 @@ const server = http.createServer((req, res) => {
  }
 
  if (reqPathname === '/api/deploy' || reqPathname.startsWith('/api/deploy/')) {
-  return deployApiPromise
-   .then(({ handleDeployApiRequest }) => handleDeployApiRequest(req, res))
+  return Promise.all([getDeployApi(), dataProxyPromise])
+   .then(([{ handleDeployApiRequest }, { secretStore }]) =>
+    handleDeployApiRequest(req, res, { terminalManager: sharedTerminalManager, secretStore })
+   )
    .catch(err => {
     if (!res.headersSent) {
      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' })
@@ -86,8 +113,8 @@ const server = http.createServer((req, res) => {
 
  if (reqPathname === '/api/mcp' || reqPathname === '/api/agent' || reqPathname.startsWith('/api/agent/')) {
   return Promise.all([agentApiPromise, dataProxyPromise])
-   .then(([{ handleAgentApiRequest }, { backendRootKv }]) =>
-    handleAgentApiRequest(req, res, { rootKv: backendRootKv })
+   .then(([{ handleAgentApiRequest }, { secretStore, createAuthorizedRootKv }]) =>
+    handleAgentApiRequest(req, res, { secretStore, createAuthorizedRootKv })
    )
    .catch(err => {
     if (!res.headersSent) {
@@ -141,13 +168,47 @@ const server = http.createServer((req, res) => {
   // SPA fallback for client-side routes (e.g., /dashboard/settings)
   serveFile(indexPath, res)
  })
+}
+
+const server = http.createServer((req, res) => {
+ httpSecurityPromise
+  .then(({ isAllowedLocalHost }) => {
+   if (!isAllowedLocalHost(req, { requireHost: true })) {
+    const reqPathname = (req.url || '/').split('?')[0]
+    if (reqPathname === '/api' || reqPathname.startsWith('/api/')) {
+     res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+     res.end(JSON.stringify({ ok: false, error: 'Forbidden Host header' }))
+    }
+    else {
+     res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' })
+     res.end('Forbidden')
+    }
+    return
+   }
+   handleIncomingRequest(req, res)
+  })
+  .catch(err => {
+   if (!res.headersSent) {
+    res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' })
+   }
+   res.end('Internal server error: ' + (err && err.message ? err.message : 'Security error'))
+  })
 })
 
 server.on('upgrade', (req, socket, head) => {
  const reqPathname = (req.url || '/').split('?')[0]
  if (reqPathname === '/api/deploy/terminal/ws') {
-  deployApiPromise
-   .then(({ handleDeployUpgrade }) => handleDeployUpgrade(req, socket, head))
+  Promise.all([httpSecurityPromise, getDeployApi()])
+   .then(([{ isAllowedLocalHost, isAllowedLocalOrigin }, { handleDeployUpgrade }]) => {
+    if (!isAllowedLocalHost(req, { requireHost: true }) || !isAllowedLocalOrigin(req, { requireHost: true })) {
+     if (!socket.destroyed) {
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+      socket.destroy()
+     }
+     return
+    }
+    handleDeployUpgrade(req, socket, head, { terminalManager: sharedTerminalManager, requireHost: true })
+   })
    .catch(() => {
     if (!socket.destroyed) {
      socket.destroy()
