@@ -13,6 +13,7 @@ import {
  checkColumnChangeImpact,
  coerceDataValue,
  createIdleTracker,
+ createSourceWorkerRunner,
  dataValuesEqual,
  defaultDataValue,
  defaultValueForType,
@@ -421,6 +422,7 @@ test('Data tab supports tables, typed & multiple columns, editable rows, destruc
    primitiveTypes: PRIMITIVE_TYPES,
    resolveImportValue,
    resolveScopeColumns,
+   createSourceWorkerRunner: opts => createSourceWorkerRunner({ ...opts, onRun: () => { runCount += 1 } }),
    runLines: countedRunLines,
    runTransportedScripts,
   })

@@ -264,11 +264,28 @@
  )
  ; to server-view !lane-server.mount $lane $server-panel $lane-control $nb
  ; to output-view !lane-output.mount $lane $container $nb $lane-control
+ ; to source-runner [ match
+  { $createSourceWorkerRunner : !createSourceWorkerRunner [ object
+   { laneId $lane.id }
+   { hostOrigin [ match { $window.location.origin : $window.location.origin } { true : '' } ] }
+  ] }
+  { true : null }
+ ]
  ; to info-modal [ match
   { $lane-control.line-info-modal : $lane-control.line-info-modal }
   { true : !lane-line-info-mod.create $container $lane-control }
  ]
- ; assign $nb { element $root-el } { tabs-el $tabs-el } { tabs $tabs } { story-panel $story-panel } { story-view $story-view } { source-panel $source-panel } { input-panel $input-panel } { scope-panel $scope-panel } { data-panel $data-panel } { server-panel $server-panel } { lines-el $lines-el } { actions-el $actions-el } { add-btn $add-btn } { add-import-btn $add-import-btn } { add-export-btn $add-export-btn } { inputs-view $inputs-view } { inputs $inputs-view.inputs } { scope-view $scope-view } { data-view $data-view } { tables $data-view.tables } { server-view $server-view } { output-view $output-view } { info-modal $info-modal }
+ ; assign $nb { element $root-el } { tabs-el $tabs-el } { tabs $tabs } { story-panel $story-panel } { story-view $story-view } { source-panel $source-panel } { input-panel $input-panel } { scope-panel $scope-panel } { data-panel $data-panel } { server-panel $server-panel } { lines-el $lines-el } { actions-el $actions-el } { add-btn $add-btn } { add-import-btn $add-import-btn } { add-export-btn $add-export-btn } { inputs-view $inputs-view } { inputs $inputs-view.inputs } { scope-view $scope-view } { data-view $data-view } { tables $data-view.tables } { server-view $server-view } { output-view $output-view } { source-runner $source-runner } { info-modal $info-modal }
+
+ ; to nb.dispose (
+  -- Terminates the dedicated Source Web Worker and disposes any active sandboxed Lane Output iframes
+  [ match
+   { $nb.source-runner.dispose : !nb.source-runner.dispose }
+  ]
+  [ match
+   { $nb.output-view.dispose : !nb.output-view.dispose }
+  ]
+ )
 
  ; to nb.when-idle (
   -- Resolves once all in-flight runs of this lane have completed
@@ -935,7 +952,10 @@
      { lineContext $line-ctx }
      { lineRecords $nb.line-records }
     ]
-    ; to outcome !runLines $nb.lines $run-opts
+    ; to outcome [ match
+     { $nb.source-runner : !nb.source-runner.run $nb.lines $run-opts }
+     { true : !runLines $nb.lines $run-opts }
+    ]
     [ match
      { [ propertyIs $next-run-id nb.run-id ] (
       ; set $outcome.results nb.results

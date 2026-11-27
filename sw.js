@@ -1,5 +1,5 @@
 const CACHE_PREFIX = 'civil-command-'
-const CACHE_NAME = `${CACHE_PREFIX}v2`
+const CACHE_NAME = `${CACHE_PREFIX}v3`
 
 const APP_SHELL = [
  '/',
@@ -18,6 +18,8 @@ const APP_SHELL = [
  '/storage.mjs',
  '/story.mjs',
  '/lane-http.mjs',
+ '/sandbox.mjs',
+ '/source-worker.mjs',
  '/terminal-ui.mjs',
  '/src/main.fs',
  '/src/confirm-modal.fs',

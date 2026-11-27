@@ -697,6 +697,7 @@ export function field(initialState={}, options={}) {
   : (options.enforceRunBudget || hasExplicitRunLimits)
    ? createExecutionBudget(limits)
    : null
+ const disallowLoad = Boolean(options && options.disallowLoad)
  const runtimeState = {
   callDepth: Number.isInteger(options.initialCallDepth) ? options.initialCallDepth : 0,
   totalLoads: 0,
@@ -1276,6 +1277,9 @@ export function field(initialState={}, options={}) {
   }
 
   async function load(scriptPath, vars = {}) {
+   if (disallowLoad) {
+    throw new Error('FieldScript load is disabled in sandboxed lane execution')
+   }
    const normPath = scriptPath === null || scriptPath === undefined ? '' : String(scriptPath).trim()
    if (loadStack.includes(normPath)) {
     throw new Error(`Cyclic FieldScript load detected: ${[...loadStack, normPath].join(' -> ')}`)
@@ -6046,8 +6050,9 @@ export async function runTransportedScripts(packets, options = {}) {
    break
   }
   const raw = list[i]
+  let decoded = null
   try {
-   const decoded = typeof raw === 'string'
+   decoded = typeof raw === 'string'
     ? deserializeTransportPacket(raw)
     : raw && typeof raw.wire === 'string'
      ? deserializeTransportPacket(raw.wire)
@@ -6059,7 +6064,11 @@ export async function runTransportedScripts(packets, options = {}) {
      scriptState[k] = v
     }
    }
-   const runner = field(scriptState, { preservePrototype: true, argv: decoded.args || [] })
+   const runner = field(scriptState, {
+    preservePrototype: true,
+    argv: decoded.args || [],
+    disallowLoad: options.disallowLoad !== false,
+   })
    const value = await runner.evalBlock(decoded.ast || [])
    if (typeof isCancelled === 'function' && isCancelled()) {
     break
@@ -6084,10 +6093,14 @@ export async function runTransportedScripts(packets, options = {}) {
    })
   }
   catch (err) {
-   const message = err instanceof Error ? err.message : String(err)
+   const message = err && typeof err === 'object' && typeof err.message === 'string' ? err.message : String(err)
    results.push({
-    index: raw && typeof raw === 'object' && raw.index != null ? raw.index : i,
-    lineNumber: raw && typeof raw === 'object' && raw.lineNumber != null ? raw.lineNumber : null,
+    index: decoded && decoded.index != null
+     ? decoded.index
+     : (raw && typeof raw === 'object' && raw.index != null ? raw.index : i),
+    lineNumber: decoded && decoded.lineNumber != null
+     ? decoded.lineNumber
+     : (raw && typeof raw === 'object' && raw.lineNumber != null ? raw.lineNumber : null),
     value: undefined,
     preview: message,
     appended: false,
@@ -6257,7 +6270,10 @@ export async function runCompiledLines(compiledLines, options = {}) {
   preservePrototype: true,
   limits,
   executionBudget,
+  disallowLoad: Boolean(options && options.disallowLoad),
  })
+ const onLineStart = options && typeof options.onLineStart === 'function' ? options.onLineStart : null
+ const onLineComplete = options && typeof options.onLineComplete === 'function' ? options.onLineComplete : null
  const results = []
 
  for (let i = 0; i < list.length; i++) {
@@ -6273,12 +6289,15 @@ export async function runCompiledLines(compiledLines, options = {}) {
    lineContext.lineNumber = lineNumber
    lineContext.lineId = lineId
   }
+  if (onLineStart) {
+   onLineStart({ index: i, lineNumber, lineId, source })
+  }
   if (typeof transport.setLineNumber === 'function') {
    transport.setLineNumber(lineNumber)
   }
   if (entry.parseError) {
    const message = secretValues.length > 0 ? redactSecretText(entry.parseError, secretValues) : entry.parseError
-   results.push({
+   const resObj = {
     index: i,
     lineNumber,
     source,
@@ -6287,11 +6306,15 @@ export async function runCompiledLines(compiledLines, options = {}) {
     error: message,
     isEmpty: false,
     isComment: false,
-   })
+   }
+   results.push(resObj)
+   if (onLineComplete) {
+    onLineComplete(resObj)
+   }
    continue
   }
   if (entry.isEmpty) {
-   results.push({
+   const resObj = {
     index: i,
     lineNumber,
     source,
@@ -6300,11 +6323,15 @@ export async function runCompiledLines(compiledLines, options = {}) {
     error: null,
     isEmpty: true,
     isComment: false,
-   })
+   }
+   results.push(resObj)
+   if (onLineComplete) {
+    onLineComplete(resObj)
+   }
    continue
   }
   if (entry.isComment) {
-   results.push({
+   const resObj = {
     index: i,
     lineNumber,
     source,
@@ -6313,7 +6340,11 @@ export async function runCompiledLines(compiledLines, options = {}) {
     error: null,
     isEmpty: false,
     isComment: true,
-   })
+   }
+   results.push(resObj)
+   if (onLineComplete) {
+    onLineComplete(resObj)
+   }
    continue
   }
   const stmts = Array.isArray(entry.stmts) ? entry.stmts : []
@@ -6334,7 +6365,7 @@ export async function runCompiledLines(compiledLines, options = {}) {
     const rawPreview = formatValue(safeValue)
     preview = secretValues.length > 0 ? redactSecretText(rawPreview, secretValues) : rawPreview
    }
-   results.push({
+   const resObj = {
     index: i,
     lineNumber,
     source,
@@ -6343,12 +6374,16 @@ export async function runCompiledLines(compiledLines, options = {}) {
     error: null,
     isEmpty: false,
     isComment: false,
-   })
+   }
+   results.push(resObj)
+   if (onLineComplete) {
+    onLineComplete(resObj)
+   }
   }
   catch (err) {
    const rawMessage = err instanceof Error ? err.message : String(err)
    const message = secretValues.length > 0 ? redactSecretText(rawMessage, secretValues) : rawMessage
-   results.push({
+   const resObj = {
     index: i,
     lineNumber,
     source,
@@ -6357,7 +6392,11 @@ export async function runCompiledLines(compiledLines, options = {}) {
     error: message,
     isEmpty: false,
     isComment: false,
-   })
+   }
+   results.push(resObj)
+   if (onLineComplete) {
+    onLineComplete(resObj)
+   }
    if (executionBudget && executionBudget.exhausted) {
     break
    }

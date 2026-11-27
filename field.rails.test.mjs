@@ -2418,7 +2418,9 @@ test('Top-rail clock placement after chips, searchable timezone selector, and Pr
   await prefLane.notebook['add-line']("; send (\n ; to btn !document.createElement button\n !btn.addEventListener click : !syncTable timezones { [ object { name 'America/New_York' } ] [ object { name 'Asia/Tokyo' } ] } name\n $btn\n)")
   await lc['open-preferences-timezones-view']()
   assert.equal(prefLane.notebook['active-tab'], 'view')
-  const viewAddBtn = prefLane.notebook['output-view']['viewport-el'].children[0]
+  assert.equal(prefLane.notebook['output-view']['iframe-el'].tag, 'iframe')
+  assert.equal(prefLane.notebook['output-view']['iframe-el'].attributes.sandbox, 'allow-scripts')
+  const viewAddBtn = prefLane.notebook['output-view']['inline-host'].debugOutputEl.children[0]
   assert.ok(viewAddBtn)
   await viewAddBtn.listeners.click()
 
@@ -2460,9 +2462,12 @@ test('Top-rail clock placement after chips, searchable timezone selector, and Pr
   )
   await prefLane.notebook['add-line']("; send (\n ; to panel !document.createElement div\n ; set [ object\n  { syncChips ( ; to { rows } $argv , !syncTable chips $rows title ) }\n  { readChips : !readTable chips }\n  { setLine ( ; to { t v ins } $argv , !setSelfLine $t $v $ins ) }\n  { getLines : !getSelfLines }\n  { getMeta : !getSelfMeta }\n  { setFeats ( ; to { f } $argv , !setSelfFeatures $f ) }\n  { setClockFmt ( ; to { h s tz } $argv , !setClockHourFormat $h , !setClockShowSeconds $s , !setClockTimezone $tz ) }\n  { jumpChips : !openLaneTab data chips }\n ] window.__testPrefApi\n $panel\n)")
   await lc['open-preferences-timezones-view']()
-  const liveViewportNode = prefLane.notebook['output-view']['viewport-el'].children[1]
+  const liveIframe = prefLane.notebook['output-view']['iframe-el']
+  const liveViewportNode = prefLane.notebook['output-view']['inline-host'].debugOutputEl.children[1]
+  assert.ok(liveIframe)
   assert.ok(liveViewportNode)
-  const api = mockWindow.__testPrefApi
+  assert.equal(mockWindow.__testPrefApi, undefined)
+  const api = prefLane.notebook['output-view']['inline-host'].debugWindow.__testPrefApi
   assert.ok(api)
 
   const meta0 = await api.getMeta()
@@ -2475,7 +2480,8 @@ test('Top-rail clock placement after chips, searchable timezone selector, and Pr
    { title: 'Balance', url: 'https://example.test/b', color: '#40a000', value: '$100.00' },
    { title: 'Track', url: '', color: '#2266aa', value: 'Nate is in MI' },
   ])
-  assert.equal(prefLane.notebook['output-view']['viewport-el'].children[1], liveViewportNode)
+  assert.equal(prefLane.notebook['output-view']['iframe-el'], liveIframe)
+  assert.equal(prefLane.notebook['output-view']['inline-host'].debugOutputEl.children[1], liveViewportNode)
   assert.equal(rails['top-chip-items'].length, 2)
   assert.equal(rails['top-chip-items'][0].el.textContent, '$100.00')
   assert.equal(rails['top-chip-items'][1].el.textContent, 'Nate is in MI')
@@ -2500,7 +2506,8 @@ test('Top-rail clock placement after chips, searchable timezone selector, and Pr
   const setSbRes = await api.setLine('; to interface.scrollbarColor', "; to interface.scrollbarColor '#484848 #141414'", true)
   assert.equal(setSbRes.ok, true)
   assert.equal(mockDocument.documentElement.style.scrollbarColor, '#484848 #141414')
-  assert.equal(prefLane.notebook['output-view']['viewport-el'].children[1], liveViewportNode)
+  assert.equal(prefLane.notebook['output-view']['iframe-el'], liveIframe)
+  assert.equal(prefLane.notebook['output-view']['inline-host'].debugOutputEl.children[1], liveViewportNode)
 
   // Toggle runEvery30Minutes and clock preferences via extraEnv
   const nextFeats = await api.setFeats({ httpServer: false, runEvery30Minutes: true })
@@ -2523,7 +2530,8 @@ test('Top-rail clock placement after chips, searchable timezone selector, and Pr
   assert.equal(topRail.children[1].textContent, '$250.00')
   assert.equal(topRail.children[2], rails['fullscreen-btn'])
   assert.equal(topRail.children[8].textContent, 'Nate is in OH')
-  assert.equal(prefLane.notebook['output-view']['viewport-el'].children[1], liveViewportNode)
+  assert.equal(prefLane.notebook['output-view']['iframe-el'], liveIframe)
+  assert.equal(prefLane.notebook['output-view']['inline-host'].debugOutputEl.children[1], liveViewportNode)
 
   await api.setLine(
    '; to interface.rails.top.hidden',

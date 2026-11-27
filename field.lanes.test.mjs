@@ -19,6 +19,7 @@ import {
  computeLaneScrollLeft,
  computeLaneScrollTop,
  createIdleTracker,
+ createSourceWorkerRunner,
  defaultValueForType,
  deleteLaneDeployment,
  deployedScriptKey,
@@ -994,6 +995,7 @@ test('lane-notebook.fs tabs: Source (default), Input (primitive args, no Source 
    primitiveTypes: PRIMITIVE_TYPES,
    resolveImportValue,
    resolveScopeColumns,
+   createSourceWorkerRunner: opts => createSourceWorkerRunner({ ...opts, onRun: () => { runCount += 1 } }),
    runLines: countedRunLines,
    runTransportedScripts,
    window: mockWindow,
@@ -1652,7 +1654,7 @@ test('Lane Output mini-browser below each lane collects sent scripts, enforces n
   assert.match(nb1.rows[0]['preview-el'].textContent, /"document" not found/)
   assert.equal(out1.element.hidden, true)
 
-  // Enter the user's send block -> Lane Output mini-browser appears below the lane with the <h1>
+  // Enter the user's send block -> Lane Output mini-browser appears below the lane with the <h1> inside <iframe sandbox="allow-scripts">
   nb1.rows[0]['input-el'].value = "; send ( [ to title [ invoke { h1 } document createElement ] ] [set 'Hello from FieldScript' title textContent] [ get title ] ) -- if last item returned from script is an element it is appended to Lane Output below the lane"
   await nb1.rows[0]['input-el'].listeners.input()
   assert.equal(nb1.rows[0]['preview-el'].textContent, '[sent #1 · 3 stmts]')
@@ -1660,8 +1662,13 @@ test('Lane Output mini-browser below each lane collects sent scripts, enforces n
   assert.equal(out1['count-el'].textContent, '1 script')
   assert.equal(out1['errors-el'].hidden, true)
   assert.equal(out1['viewport-el'].children.length, 1)
-  assert.equal(out1['viewport-el'].children[0].tag, 'h1')
-  assert.equal(out1['viewport-el'].children[0].textContent, 'Hello from FieldScript')
+  assert.equal(out1['viewport-el'].children[0], out1['iframe-el'])
+  assert.equal(out1['iframe-el'].tag, 'iframe')
+  assert.equal(out1['iframe-el'].attributes.sandbox, 'allow-scripts')
+  assert.ok(!out1['iframe-el'].attributes.sandbox.includes('allow-same-origin'))
+  assert.equal(out1['inline-host'].debugOutputEl.children.length, 1)
+  assert.equal(out1['inline-host'].debugOutputEl.children[0].tag, 'h1')
+  assert.equal(out1['inline-host'].debugOutputEl.children[0].textContent, 'Hello from FieldScript')
 
   // Add a server value and an interactive button sent to the mini-browser
   await nb1['add-btn'].listeners.click()
@@ -1672,13 +1679,13 @@ test('Lane Output mini-browser below each lane collects sent scripts, enforces n
   await nb1.rows[2]['input-el'].listeners.input()
 
   assert.equal(out1['count-el'].textContent, '2 scripts')
-  assert.equal(out1['viewport-el'].children.length, 2)
-  assert.equal(out1['viewport-el'].children[1].tag, 'button')
-  assert.equal(out1['viewport-el'].children[1].textContent, 'Launch')
+  assert.equal(out1['inline-host'].debugOutputEl.children.length, 2)
+  assert.equal(out1['inline-host'].debugOutputEl.children[1].tag, 'button')
+  assert.equal(out1['inline-host'].debugOutputEl.children[1].textContent, 'Launch')
 
-  // Clicking the rendered button runs FieldScript in browser context
-  await out1['viewport-el'].children[1].listeners.click()
-  assert.equal(out1['viewport-el'].children[1].textContent, 'Launched!')
+  // Clicking the rendered button runs FieldScript in sandboxed browser context
+  await out1['inline-host'].debugOutputEl.children[1].listeners.click()
+  assert.equal(out1['inline-host'].debugOutputEl.children[1].textContent, 'Launched!')
 
   // Mock browser title displays the lane title, and popout button sits to the right of reload
   assert.equal(out1['address-el'].textContent, 'Lane 1')
@@ -1689,8 +1696,8 @@ test('Lane Output mini-browser below each lane collects sent scripts, enforces n
 
   // Clicking the mini-browser Reload button resets & re-runs sent scripts cleanly
   await out1['reload-btn'].listeners.click()
-  assert.equal(out1['viewport-el'].children.length, 2)
-  assert.equal(out1['viewport-el'].children[1].textContent, 'Launch')
+  assert.equal(out1['inline-host'].debugOutputEl.children.length, 2)
+  assert.equal(out1['inline-host'].debugOutputEl.children[1].textContent, 'Launch')
 
   // Pop out the lane output into a floating window
   let openedPopup = null
@@ -1708,6 +1715,11 @@ test('Lane Output mini-browser below each lane collects sent scripts, enforces n
     addEventListener(type, fn) {
      this.listeners[type] = fn
     },
+    removeEventListener(type, fn) {
+     if (this.listeners[type] === fn) {
+      delete this.listeners[type]
+     }
+    },
     focus() {},
     close() {
      this.closed = true
@@ -1724,13 +1736,15 @@ test('Lane Output mini-browser below each lane collects sent scripts, enforces n
   assert.equal(out1['viewport-el'].hidden, true)
   assert.equal(out1['popout-btn'].hidden, true)
   assert.equal(out1['popup-popin-btn'].className, 'lane-output-floating-popin')
-  assert.equal(out1['popup-viewport-el'].children.length, 2)
-  assert.equal(out1['popup-viewport-el'].children[1].textContent, 'Launch')
+  assert.equal(out1['popup-iframe-el'].tag, 'iframe')
+  assert.equal(out1['popup-iframe-el'].attributes.sandbox, 'allow-scripts')
+  assert.equal(out1['popup-host'].debugOutputEl.children.length, 2)
+  assert.equal(out1['popup-host'].debugOutputEl.children[1].textContent, 'Launch')
 
   // Live refresh while floating updates the floating window
   nb1.rows[1]['input-el'].value = "; to serverLabel 'Launch Floating'"
   await nb1.rows[1]['input-el'].listeners.input()
-  assert.equal(out1['popup-viewport-el'].children[1].textContent, 'Launch Floating')
+  assert.equal(out1['popup-host'].debugOutputEl.children[1].textContent, 'Launch Floating')
 
   // Clicking Attach output window recalls the floating window home into the lane
   await out1['attach-btn'].listeners.click()
@@ -1739,8 +1753,8 @@ test('Lane Output mini-browser below each lane collects sent scripts, enforces n
   assert.equal(out1['floating-el'].hidden, true)
   assert.equal(out1['viewport-el'].hidden, false)
   assert.equal(out1['popout-btn'].hidden, false)
-  assert.equal(out1['viewport-el'].children.length, 2)
-  assert.equal(out1['viewport-el'].children[1].textContent, 'Launch Floating')
+  assert.equal(out1['inline-host'].debugOutputEl.children.length, 2)
+  assert.equal(out1['inline-host'].debugOutputEl.children[1].textContent, 'Launch Floating')
 
   // Pop out again and use the top-right pop-in button inside the floating window
   await out1['popout-btn'].listeners.click()
@@ -1759,7 +1773,7 @@ test('Lane Output mini-browser below each lane collects sent scripts, enforces n
   nb1.rows[3]['input-el'].value = '; send ( !document.doesNotExist )'
   await nb1.rows[3]['input-el'].listeners.input()
   assert.equal(out1['count-el'].textContent, '3 scripts')
-  assert.equal(out1['viewport-el'].children.length, 2)
+  assert.equal(out1['inline-host'].debugOutputEl.children.length, 2)
   assert.equal(out1['errors-el'].hidden, false)
   assert.equal(out1['error-els'].length, 1)
   assert.match(out1['error-els'][0].textContent, /Line 4:/)
@@ -1779,8 +1793,8 @@ test('Lane Output mini-browser below each lane collects sent scripts, enforces n
   nb2.rows[1]['input-el'].value = "; send ( ; to p !document.createElement p, ; to text ; add 'Imported: ' $lbl, ; set $text p.textContent, $p )"
   await nb2.rows[1]['input-el'].listeners.input()
   assert.equal(out2.element.hidden, false)
-  assert.equal(out2['viewport-el'].children.length, 1)
-  assert.equal(out2['viewport-el'].children[0].textContent, 'Imported: Launch')
+  assert.equal(out2['inline-host'].debugOutputEl.children.length, 1)
+  assert.equal(out2['inline-host'].debugOutputEl.children[0].textContent, 'Imported: Launch')
 
   // Reload entire app -> persisted sent scripts restore & auto-render Lane Output below both lanes
   const fReload = field({
@@ -1807,9 +1821,9 @@ test('Lane Output mini-browser below each lane collects sent scripts, enforces n
   await fReload.run(parse(mainSource, '/src/main.fs'))
   const reloadedOut1 = fReload.state.lanes[0].notebook['output-view']
   assert.equal(reloadedOut1.element.hidden, false)
-  assert.equal(reloadedOut1['viewport-el'].children.length, 2)
-  assert.equal(reloadedOut1['viewport-el'].children[0].tag, 'h1')
-  assert.equal(reloadedOut1['viewport-el'].children[0].textContent, 'Hello from FieldScript')
+  assert.equal(reloadedOut1['inline-host'].debugOutputEl.children.length, 2)
+  assert.equal(reloadedOut1['inline-host'].debugOutputEl.children[0].tag, 'h1')
+  assert.equal(reloadedOut1['inline-host'].debugOutputEl.children[0].textContent, 'Hello from FieldScript')
 
   // Removing all `send` lines hides Lane Output again
   const reloadedNb1 = fReload.state.lanes[0].notebook
@@ -1817,6 +1831,7 @@ test('Lane Output mini-browser below each lane collects sent scripts, enforces n
   await reloadedNb1.rows[0]['remove-btn'].listeners.click()
   assert.equal(reloadedOut1.element.hidden, true)
   assert.equal(reloadedOut1['viewport-el'].children.length, 0)
+  assert.equal(reloadedOut1['iframe-el'], null)
  }
  finally {
   globalThis.fetch = origFetch
@@ -2069,7 +2084,8 @@ test('whole-lane import without picking a scope value powers a reactive Profile 
   const outView = vNb['output-view']
   assert.equal(outView.element.hidden, false)
   assert.equal(outView['errors-el'].hidden, true)
-  const card = outView['viewport-el'].children[0]
+  assert.equal(outView['iframe-el'].attributes.sandbox, 'allow-scripts')
+  const card = outView['inline-host'].debugOutputEl.children[0]
   assert.equal(card.children[0].textContent, 'NF')
   assert.equal(card.children[1].textContent, 'Nate Ferrero')
   assert.equal(card.children[2].textContent, 'Hello, Nate Ferrero')
@@ -2078,7 +2094,7 @@ test('whole-lane import without picking a scope value powers a reactive Profile 
   // Reactive cascade: editing Ledger balance automatically updates Profile -> Profile Viewer -> Lane Output!
   ledger.notebook.rows[0]['input-el'].value = '; to balance 500'
   await ledger.notebook.rows[0]['input-el'].listeners.input()
-  const updatedCard = outView['viewport-el'].children[0]
+  const updatedCard = outView['inline-host'].debugOutputEl.children[0]
   assert.equal(updatedCard.children[3].textContent, '$500.00')
  }
  finally {
@@ -2296,6 +2312,7 @@ test('Lane tab routing syncs URL on tab click, supports direct URL and popstate,
    primitiveTypes: PRIMITIVE_TYPES,
    resolveImportValue,
    resolveScopeColumns,
+   createSourceWorkerRunner: opts => createSourceWorkerRunner({ ...opts, onRun: () => { runCount += 1 } }),
    runLines: countedRunLines,
    runTransportedScripts,
   })
@@ -2350,7 +2367,7 @@ test('Lane tab routing syncs URL on tab click, supports direct URL and popstate,
   nb1.rows[0]['input-el'].value = "; send ( ; to h !document.createElement h2, ; set 'Hello View' h.textContent, $h )"
   await nb1.rows[0]['input-el'].listeners.input()
   assert.equal(out1.element.hidden, false)
-  assert.equal(out1['viewport-el'].children[0].textContent, 'Hello View')
+  assert.equal(out1['inline-host'].debugOutputEl.children[0].textContent, 'Hello View')
 
   // Switch to View -> hides Source and shows ONLY the output browser with rendered DOM
   await nb1.tabs.view.listeners.click()
@@ -2362,7 +2379,7 @@ test('Lane tab routing syncs URL on tab click, supports direct URL and popstate,
   assert.equal(out1.element.hidden, false)
   assert.equal(out1['empty-el'].hidden, true)
   assert.equal(out1['viewport-el'].hidden, false)
-  assert.equal(out1['viewport-el'].children[0].textContent, 'Hello View')
+  assert.equal(out1['inline-host'].debugOutputEl.children[0].textContent, 'Hello View')
 
   // Add second lane -> URL preserves Lane 1's ;view and adds Lane 2 on home Source
   await f.state.tableHeadRowAddButton.listeners.click()
@@ -2383,7 +2400,7 @@ test('Lane tab routing syncs URL on tab click, supports direct URL and popstate,
   assert.equal(rl1.notebook['active-tab'], 'view')
   assert.equal(rl1.notebook['source-panel'].hidden, true)
   assert.equal(rl1.notebook['output-view'].element.hidden, false)
-  assert.equal(rl1.notebook['output-view']['viewport-el'].children[0].textContent, 'Hello View')
+  assert.equal(rl1.notebook['output-view']['inline-host'].debugOutputEl.children[0].textContent, 'Hello View')
   assert.equal(rl2.id, secondId)
   assert.equal(rl2.notebook['active-tab'], 'data')
   assert.equal(rl2.notebook['data-panel'].hidden, false)
@@ -2526,6 +2543,7 @@ test('Lane header reload button reloads entire lane from server KV while keeping
    primitiveTypes: PRIMITIVE_TYPES,
    resolveImportValue,
    resolveScopeColumns,
+   createSourceWorkerRunner: opts => createSourceWorkerRunner({ ...opts, onRun: () => { runCount += 1 } }),
    runLines: countedRunLines,
    runTransportedScripts,
   })
@@ -2583,7 +2601,7 @@ test('Lane header reload button reloads entire lane from server KV while keeping
   assert.equal(lane1.notebook['active-tab'], 'view')
   assert.equal(lane1.notebook['source-panel'].hidden, true)
   assert.equal(lane1.notebook['output-view'].element.hidden, false)
-  assert.equal(lane1.notebook['output-view']['viewport-el'].children[0].textContent, 'Updated from Server')
+  assert.equal(lane1.notebook['output-view']['inline-host'].debugOutputEl.children[0].textContent, 'Updated from Server')
   assert.equal(mockWindow.location.pathname, `/${lane1.id};view/${lane2.id}`)
 
   // Switch lane1 to Source tab, update script on server -> reload keeps Source and evaluates fresh lines
@@ -3040,8 +3058,10 @@ test('PWA manifest, Civil icon assets, index.html metadata, server MIME types, a
  await Promise.all(waitPromises)
  assert.equal(skipWaitingCalled, true)
  const srcFiles = (await fs.readdir(new URL('./src', rootUrl))).filter(f => f.endsWith('.fs'))
- const activeCache = cacheStorage.get('civil-command-v2')
+ const activeCache = cacheStorage.get('civil-command-v3')
  assert.ok(activeCache.has('/kv-config.mjs'), 'sw.js APP_SHELL should precache /kv-config.mjs')
+ assert.ok(activeCache.has('/sandbox.mjs'), 'sw.js APP_SHELL should precache /sandbox.mjs')
+ assert.ok(activeCache.has('/source-worker.mjs'), 'sw.js APP_SHELL should precache /source-worker.mjs')
  for (const f of srcFiles) {
   assert.ok(activeCache.has(`/src/${f}`), `sw.js APP_SHELL should precache /src/${f}`)
  }
@@ -3052,7 +3072,7 @@ test('PWA manifest, Civil icon assets, index.html metadata, server MIME types, a
  await Promise.all(activatePromises)
  assert.equal(clientsClaimCalled, true)
  assert.equal(cacheStorage.has('civil-command-v0'), false)
- assert.equal(cacheStorage.has('civil-command-v2'), true)
+ assert.equal(cacheStorage.has('civil-command-v3'), true)
 
  // Fetch bypasses /api/data and non-GET requests
  let apiIntercepted = false
@@ -3935,6 +3955,7 @@ test('Lanes remember last navigated path across close/reopen, show Path and Widt
    primitiveTypes: PRIMITIVE_TYPES,
    resolveImportValue,
    resolveScopeColumns,
+   createSourceWorkerRunner: opts => createSourceWorkerRunner({ ...opts, onRun: () => { runCount += 1 } }),
    runLines: countedRunLines,
    runTransportedScripts,
   })

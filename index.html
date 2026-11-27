@@ -3284,6 +3284,18 @@
     padding: 0.85em 1em;
    }
 
+   .lane-output-viewport--framed {
+    padding: 0;
+   }
+
+   .lane-output-frame {
+    background: #0e0e0e;
+    border: 0;
+    display: block;
+    min-height: 2.5em;
+    width: 100%;
+   }
+
    .lane-output-viewport > :first-child {
     margin-top: 0;
    }
@@ -8031,8 +8043,6 @@
     resolveTopRailLayout,
     resolveWorkflowTarget,
     rowFilterValuesMatch,
-    runLines,
-    runTransportedScripts,
     seedPreferencesScrollbarRecords,
     seedPreferencesScrollbarSource,
     syncTableRowsInMemory,
@@ -8149,9 +8159,14 @@
    } from '/storage.mjs'
    import {
     createResponseHelper,
-    detectLaneHandlers,
-    simulateLaneRequest
+    detectLaneHandlers
    } from '/lane-http.mjs'
+   import {
+    createSandboxedOutputHost,
+    createSourceWorkerRunner,
+    runLinesInWorker,
+    simulateLaneRequestInWorker
+   } from '/sandbox.mjs'
    import {
     mountTerminalView
    } from '/terminal-ui.mjs'
@@ -8173,7 +8188,7 @@
     trackStoryExportTableCall,
     trackStoryImportCall
    } from '/story.mjs'
-   const main = globalThis.main = field({
+   const main = field({
     DEFAULT_PACKAGE_ID,
     DEFAULT_PACKAGE_NAME,
     DEFAULT_STORY_PAGE_SIZE,
@@ -8208,6 +8223,8 @@
     createNewTabSession,
     createPackage,
     createResponseHelper,
+    createSandboxedOutputHost,
+    createSourceWorkerRunner,
     createStoryRunRecorder,
     data,
     dataColumnTypes: DATA_COLUMN_TYPES,
@@ -8349,8 +8366,7 @@
     resyncDeployedLane,
     returnToBrowserSession,
     rowFilterValuesMatch,
-    runLines,
-    runTransportedScripts,
+    runLines: runLinesInWorker,
     saveDeployServer,
     saveDeployedLaneScript,
     saveLaneDeployment,
@@ -8372,7 +8388,7 @@
     setSessionLinks,
     setTargetLaneLine,
     sessionTableDisplayOptionsEqual,
-    simulateLaneRequest,
+    simulateLaneRequest: simulateLaneRequestInWorker,
     snapshotStoryValue,
     startDeployTerminalSession,
     subscribeAgentEvents,

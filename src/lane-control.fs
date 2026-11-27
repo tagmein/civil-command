@@ -3954,6 +3954,9 @@
       ]
       !scope.apply-lane-width $lane $stored-width
       [ match
+       { $lane.notebook.dispose : !lane.notebook.dispose }
+      ]
+      [ match
        { $lane.body (
         [ match
          { $lane.body.replaceChildren : !lane.body.replaceChildren }
@@ -4028,6 +4031,9 @@
     ]
     !scope.clear-lane-highlight $lane
     !scope.close-lane-modals $lane
+    [ match
+     { $lane.notebook.dispose : !lane.notebook.dispose }
+    ]
     ; to was-minimized $lane.is-minimized
     !rails.remove $id
     [ match
@@ -4623,6 +4629,9 @@
  ; while { propertyIsGreaterThan 0 scope.lanes.length } (
   ; to removing !scope.lanes.pop
   !scope.close-lane-modals $removing
+  [ match
+   { $removing.notebook.dispose : !removing.notebook.dispose }
+  ]
   !removing.element.remove
   [ match
    { $removing.body : !removing.body.remove }
@@ -5133,6 +5142,12 @@
   ] }
  ]
  ; set $prefs scope.preferences
+ ; each $scope.lanes (
+  ; to { ln } $argv
+  [ match
+   { $ln.notebook.output-view.sync-preferences : !ln.notebook.output-view.sync-preferences }
+  ]
+ )
  $prefs
 )
 ; to cron-interval-ms [ match
@@ -5543,7 +5558,7 @@
   { [ propertyIs undefined item ] : ; object { ok false } }
   { true (
    [ match
-    { $item.onSync.call : !item.onSync $item }
+    { [ and { $item.onSync.call } { [ propertyIs false [ propertyIs true item.onSync.__ccSandboxedStub ] ] } ] : ; try ( !item.onSync $item ) : null }
    ]
    ; to target-url [ match
     { $item.url.trim : !item.url.trim }
