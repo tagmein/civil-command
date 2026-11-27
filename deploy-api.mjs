@@ -4,7 +4,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { httpKV } from './data.mjs'
+import { httpKV, withKvTriggers } from './data.mjs'
 import { normalizeCivilMemoryBaseUrl } from './lane-server.mjs'
 import { createTerminalManager } from './pty-terminal.mjs'
 import {
@@ -364,6 +364,224 @@ function createMapVolatileFallback() {
 const HOST = process.env.HOST || '127.0.0.1'
 const PORT = Number(process.env.PORT || 3333)
 const DEFAULT_BASE_PATH = path.resolve(process.env.DEFAULT_BASE_PATH || '/opt/civil-command/data')
+
+const DEFAULT_TRIGGER_RULES_DEF = [
+ {
+  id: 'lane-split-script',
+  match: [
+   'lanes#<laneId>/script',
+   'lanes#<laneId>/script/**',
+   'lanes#<laneId>/script-index',
+   'lanes#<laneId>/script-index.chunks/**',
+   'lanes#<laneId>/script-pages/**',
+  ],
+  target: 'triggers#lanes/<laneId>',
+  encodeTarget: false,
+ },
+ {
+  id: 'lane-split-tables',
+  match: [
+   'lanes#<laneId>/tables',
+   'lanes#<laneId>/tables/**',
+   'lanes#<laneId>/tables-index',
+   'lanes#<laneId>/tables-index.chunks/**',
+   'lanes#<laneId>/tables-pages/**',
+  ],
+  exclude: [
+   'lanes#<laneId>/tables/*/updates',
+   'lanes#<laneId>/tables/*/updates/**',
+   'lanes#<laneId>/tables/*/updates.chunks/**',
+   'lanes#<laneId>/tables/*/updates-*',
+   'lanes#<laneId>/tables/*/updates-pages/**',
+  ],
+  target: 'triggers#lanes/<laneId>',
+  encodeTarget: false,
+ },
+ {
+  id: 'lane-legacy-meta',
+  match: [
+   '<laneId>.title',
+   '<laneId>.title.chunks/**',
+   '<laneId>.inputs',
+   '<laneId>.inputs.chunks/**',
+   '<laneId>.script',
+   '<laneId>.script.chunks/**',
+   '<laneId>.tables',
+   '<laneId>.tables.chunks/**',
+  ],
+  target: 'triggers#lanes/<laneId>',
+  encodeTarget: true,
+ },
+]
+
+function encodeTriggerSegment(segment) {
+ return encodeURIComponent(String(segment)).replace(/\./g, '%2E')
+}
+
+function compileTrigPattern(rawPattern) {
+ const pat = String(rawPattern || '')
+ let regexStr = '^'
+ const captureNames = []
+ for (let i = 0; i < pat.length; ) {
+  if (pat[i] === '*' && pat[i + 1] === '*') {
+   regexStr += '(?:.*)'
+   i += 2
+   continue
+  }
+  if (pat[i] === '*') {
+   regexStr += '(?:[^#/]*)'
+   i += 1
+   continue
+  }
+  if (pat[i] === '<') {
+   const endIdx = pat.indexOf('>', i + 1)
+   if (endIdx !== -1) {
+    const capName = pat.slice(i + 1, endIdx).trim()
+    if (/^[A-Za-z_][A-Za-z0-9_-]*$/.test(capName)) {
+     regexStr += '([^#/]+?)'
+     captureNames.push(capName)
+     i = endIdx + 1
+     continue
+    }
+   }
+  }
+  regexStr += pat[i].replace(/[.*+?^$()|[\]\\{}]/g, '\\$&')
+  i += 1
+ }
+ regexStr += '$'
+ return { regex: new RegExp(regexStr), captureNames }
+}
+
+function loadTriggerConfig() {
+ const flagRaw = String(process.env.CC_TRIGGERS === undefined ? 'true' : process.env.CC_TRIGGERS).trim().toLowerCase()
+ if (flagRaw === '0' || flagRaw === 'false' || flagRaw === 'off' || flagRaw === 'no' || flagRaw === 'none') {
+  return { enabled: false, rules: [] }
+ }
+ let rawRules = DEFAULT_TRIGGER_RULES_DEF
+ const jsonEnv = process.env.CC_TRIGGERS_JSON ? String(process.env.CC_TRIGGERS_JSON).trim() : ''
+ if (jsonEnv) {
+  try {
+   const parsed = JSON.parse(jsonEnv)
+   if (Array.isArray(parsed)) {
+    rawRules = parsed
+   }
+  }
+  catch {}
+ }
+ else {
+  const cfgPath = path.join(__dirname, 'triggers.json')
+  if (fs.existsSync(cfgPath)) {
+   try {
+    const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'))
+    if (Array.isArray(parsed)) {
+     rawRules = parsed
+    }
+   }
+   catch {}
+  }
+ }
+ const compiled = []
+ for (let i = 0; i < rawRules.length; i++) {
+  const r = rawRules[i]
+  if (!r || typeof r !== 'object') {
+   continue
+  }
+  const target = typeof r.target === 'string' ? r.target.trim() : ''
+  const rawMatch = Array.isArray(r.match) ? r.match : (typeof r.match === 'string' ? [r.match] : [])
+  const matchers = rawMatch.map(m => String(m || '').trim()).filter(Boolean).map(compileTrigPattern)
+  if (!target || matchers.length === 0) {
+   continue
+  }
+  const rawExclude = Array.isArray(r.exclude) ? r.exclude : (typeof r.exclude === 'string' ? [r.exclude] : [])
+  const excludes = rawExclude.map(e => String(e || '').trim()).filter(Boolean).map(compileTrigPattern)
+  const targetExcl = compileTrigPattern(target.replace(/<[A-Za-z_][A-Za-z0-9_-]*>/g, '*')).regex
+  compiled.push({
+   id: typeof r.id === 'string' && r.id.trim() ? r.id.trim() : ('trigger-' + (i + 1)),
+   matchers,
+   excludes,
+   target,
+   targetExclusionRegex: targetExcl,
+   encodeTarget: Boolean(r.encodeTarget),
+  })
+ }
+ return { enabled: compiled.length > 0, rules: compiled }
+}
+
+const triggerConfig = loadTriggerConfig()
+const TABLE_UPDATES_KEY_RE = /^lanes#[^/]+\/tables\/[^/]+\/updates(?:$|\/|\.|-)/
+let triggerRevSeq = 0
+const triggerWriteQueues = new Map()
+
+function resolveTriggerTargets(key) {
+ if (!triggerConfig.enabled || !key || typeof key !== 'string') {
+  return []
+ }
+ if (key.startsWith('triggers#') || key.startsWith('stories#') || key.startsWith('__cc_probe_') || TABLE_UPDATES_KEY_RE.test(key)) {
+  return []
+ }
+ for (const rule of triggerConfig.rules) {
+  if (rule.targetExclusionRegex.test(key)) {
+   return []
+  }
+ }
+ const targets = []
+ const seen = new Set()
+ for (const rule of triggerConfig.rules) {
+  if (rule.excludes.some(ex => ex.regex.test(key))) {
+   continue
+  }
+  for (const matcher of rule.matchers) {
+   const mRes = matcher.regex.exec(key)
+   if (!mRes) {
+    continue
+   }
+   const caps = {}
+   for (let c = 0; c < matcher.captureNames.length; c++) {
+    caps[matcher.captureNames[c]] = mRes[c + 1] || ''
+   }
+   const resolved = rule.target.replace(/<([A-Za-z_][A-Za-z0-9_-]*)>/g, (_f, capName) => {
+    const v = Object.prototype.hasOwnProperty.call(caps, capName) ? caps[capName] : ''
+    return rule.encodeTarget ? encodeTriggerSegment(v) : v
+   })
+   if (resolved && !seen.has(resolved)) {
+    seen.add(resolved)
+    targets.push(resolved)
+   }
+   break
+  }
+ }
+ return targets
+}
+
+async function emitWriteTriggers(kv, mode, basePath, key, op) {
+ const targets = resolveTriggerTargets(key)
+ if (targets.length === 0) {
+  return
+ }
+ const bucketKey = mode + '|' + (basePath || '')
+ await Promise.all(targets.map(targetKey => {
+  const qKey = bucketKey + '|' + targetKey
+  const prev = triggerWriteQueues.get(qKey) || Promise.resolve()
+  const next = prev.then(async () => {
+   triggerRevSeq += 1
+   const stamp = JSON.stringify({
+    rev: String(Date.now()) + '-' + String(triggerRevSeq),
+    updatedAt: new Date().toISOString(),
+    key,
+    op,
+   })
+   await kv.set(targetKey, stamp)
+  }).catch(() => {})
+  const tracked = next.finally(() => {
+   if (triggerWriteQueues.get(qKey) === tracked) {
+    triggerWriteQueues.delete(qKey)
+   }
+  })
+  triggerWriteQueues.set(qKey, tracked)
+  return next
+ }))
+}
+
 const diskCache = new Map()
 const volatileStore = volatileKV
  ? await Promise.resolve(volatileKV())
@@ -437,6 +655,8 @@ const server = http.createServer(async (req, res) => {
     factory: resolvedFactoryName,
     source: diskSourcePath,
     defaultBasePath: DEFAULT_BASE_PATH,
+    triggersEnabled: triggerConfig.enabled,
+    triggerRuleCount: triggerConfig.rules.length,
    }))
    return
   }
@@ -492,6 +712,9 @@ const server = http.createServer(async (req, res) => {
   if (method === 'POST' || method === 'PUT') {
    const body = await readBody(req)
    await kv.set(key, body)
+   if (mode !== 'http') {
+    await emitWriteTriggers(kv, mode, basePath, key, 'set')
+   }
    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' })
    res.end('ok')
    return
@@ -507,6 +730,9 @@ const server = http.createServer(async (req, res) => {
       throw err
      }
     }
+   }
+   if (mode !== 'http') {
+    await emitWriteTriggers(kv, mode, basePath, key, 'delete')
    }
    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' })
    res.end('ok')
@@ -1040,7 +1266,7 @@ export function generateRemoteKvSyncScript({
   }
  }
  const bundleJson = JSON.stringify(bundle || {})
- return [
+ const lines = [
   '#!/usr/bin/env bash',
   'set -euo pipefail',
   'TMPDIR="$(mktemp -d)"',
@@ -1048,6 +1274,11 @@ export function generateRemoteKvSyncScript({
   'printf \'{"type":"module","private":true}\\n\' > "$TMPDIR/package.json"',
   `printf '%s' ${shellQuote(encodeBase64(runtimeFiles['field.mjs']))} | base64 -d > "$TMPDIR/field.mjs"`,
   `printf '%s' ${shellQuote(encodeBase64(runtimeFiles['data.mjs']))} | base64 -d > "$TMPDIR/data.mjs"`,
+ ]
+ if (typeof runtimeFiles['kv-config.mjs'] === 'string' && runtimeFiles['kv-config.mjs'].length > 0) {
+  lines.push(`printf '%s' ${shellQuote(encodeBase64(runtimeFiles['kv-config.mjs']))} | base64 -d > "$TMPDIR/kv-config.mjs"`)
+ }
+ lines.push(
   `printf '%s' ${shellQuote(encodeBase64(runtimeFiles['storage.mjs']))} | base64 -d > "$TMPDIR/storage.mjs"`,
   `printf '%s' ${shellQuote(encodeBase64(bundleJson))} | base64 -d > "$TMPDIR/bundle.json"`,
   'cd "$TMPDIR"',
@@ -1056,13 +1287,14 @@ export function generateRemoteKvSyncScript({
   "import { httpKV } from './data.mjs'",
   "import { writeLaneSyncBundleToKv } from './storage.mjs'",
   "const bundle = JSON.parse(await fs.readFile('./bundle.json', 'utf8'))",
-  "const kv = httpKV({ baseUrl: process.env.CC_KV_URL, basePath: process.env.CC_KV_BASE || null, switchable: false })",
+  "const kv = httpKV({ baseUrl: process.env.CC_KV_URL, basePath: process.env.CC_KV_BASE || null, switchable: false, triggers: true })",
   'const res = await writeLaneSyncBundleToKv(kv, bundle, null)',
-  "try { const regRaw = await fs.readFile('/opt/civil-command/registry.json', 'utf8'); const reg = JSON.parse(regRaw); const syncedSet = new Set(res.laneIds || []); for (const entry of Object.values(reg || {})) { if (entry && entry.port && (syncedSet.has(entry.laneId) || (process.env.CC_KV_BASE && entry.dataBasePath === process.env.CC_KV_BASE))) { await fetch(`http://127.0.0.1:${entry.port}/_cc/reload`, { method: 'POST' }).catch(() => {}) } } } catch {}",
+  "try { const regRaw = await fs.readFile('/opt/civil-command/registry.json', 'utf8'); const reg = JSON.parse(regRaw); const syncedSet = new Set(res.laneIds || []); for (const entry of Object.values(reg || {})) { if (entry && entry.port && (syncedSet.has(entry.laneId) || ((entry.dataBasePath || '') === (process.env.CC_KV_BASE || '')))) { await fetch(`http://127.0.0.1:${entry.port}/_cc/reload`, { method: 'POST' }).catch(() => {}) } } } catch {}",
   "console.log('__CC_SYNC_OK__ ' + JSON.stringify(res))",
   'NODEEOF',
   '',
- ].join('\n')
+ )
+ return lines.join('\n')
 }
 
 export function generateDeployScript({
@@ -1156,6 +1388,9 @@ export function generateDeployScript({
  for (const name of required) {
   lines.push(`printf '%s' ${shellQuote(encodeBase64(runtimeFiles[name]))} | base64 -d > "$SERVICE_DIR/${name}"`)
  }
+ if (typeof runtimeFiles['kv-config.mjs'] === 'string' && runtimeFiles['kv-config.mjs'].length > 0) {
+  lines.push(`printf '%s' ${shellQuote(encodeBase64(runtimeFiles['kv-config.mjs']))} | base64 -d > "$SERVICE_DIR/kv-config.mjs"`)
+ }
  lines.push(`printf '%s' ${shellQuote(encodeBase64(configJson))} | base64 -d > "$SERVICE_DIR/config.json"`)
 
  if (syncBundle && Array.isArray(syncBundle.lanes) && syncBundle.lanes.length > 0) {
@@ -1167,7 +1402,7 @@ export function generateDeployScript({
   lines.push("import { httpKV } from './data.mjs'")
   lines.push("import { writeLaneSyncBundleToKv } from './storage.mjs'")
   lines.push("const bundle = JSON.parse(await fs.readFile(process.env.CC_SYNC_FILE, 'utf8'))")
-  lines.push("const kv = httpKV({ baseUrl: process.env.CC_KV_URL, basePath: process.env.CC_KV_BASE || null, switchable: false })")
+  lines.push("const kv = httpKV({ baseUrl: process.env.CC_KV_URL, basePath: process.env.CC_KV_BASE || null, switchable: false, triggers: true })")
   lines.push('const res = await writeLaneSyncBundleToKv(kv, bundle, null)')
   lines.push("console.log('__CC_SYNC_OK__ ' + JSON.stringify(res))")
   lines.push('NODEEOF')
@@ -1307,7 +1542,11 @@ export function generateDeployScript({
  lines.push(' sudo journalctl -u "civil-lane-${SLUG}.service" -n 30 --no-pager >&2 || true')
  lines.push(' exit 1')
  lines.push('fi')
- lines.push('curl -sf -X POST "http://127.0.0.1:${PORT}/_cc/reload" >/dev/null 2>&1 || true')
+ lines.push('if ! curl -sf -X POST "http://127.0.0.1:${PORT}/_cc/reload" >/dev/null; then')
+ lines.push(' echo "Lane service failed reload verification. Recent logs:" >&2')
+ lines.push(' sudo journalctl -u "civil-lane-${SLUG}.service" -n 30 --no-pager >&2 || true')
+ lines.push(' exit 1')
+ lines.push('fi')
 
  const okPayload = JSON.stringify({
   ok: true,
@@ -1361,7 +1600,7 @@ export function generateFastResyncScript(options = {}) {
   `PORT=${shellQuote(String(cleanPort))}`,
   'if [ -d "$SERVICE_DIR" ] && [ -f "$SERVICE_DIR/config.json" ] && sudo systemctl is-active --quiet "civil-lane-${SLUG}.service"; then',
  ]
- for (const name of ['field.mjs', 'data.mjs', 'storage.mjs', 'lane-http.mjs', 'lane-server.mjs']) {
+ for (const name of ['field.mjs', 'data.mjs', 'kv-config.mjs', 'storage.mjs', 'lane-http.mjs', 'lane-server.mjs']) {
   if (typeof runtimeFiles[name] === 'string' && runtimeFiles[name].length > 0) {
    fastLines.push(` printf '%s' ${shellQuote(encodeBase64(runtimeFiles[name]))} | base64 -d > "$SERVICE_DIR/${name}"`)
   }
@@ -1374,7 +1613,7 @@ export function generateFastResyncScript(options = {}) {
   "import { httpKV } from './data.mjs'",
   "import { writeLaneSyncBundleToKv } from './storage.mjs'",
   "const bundle = JSON.parse(await fs.readFile(process.env.CC_SYNC_FILE, 'utf8'))",
-  "const kv = httpKV({ baseUrl: process.env.CC_KV_URL, basePath: process.env.CC_KV_BASE || null, switchable: false })",
+  "const kv = httpKV({ baseUrl: process.env.CC_KV_URL, basePath: process.env.CC_KV_BASE || null, switchable: false, triggers: true })",
   'const res = await writeLaneSyncBundleToKv(kv, bundle, null)',
   "console.log('__CC_SYNC_OK__ ' + JSON.stringify(res))",
   'NODEEOF',
@@ -1566,9 +1805,10 @@ export async function executeLaneResync({
 
   if (cleanCmUrl) {
    const basePath = dep.dataBasePath ? String(dep.dataBasePath).trim() : null
-   const kv = kvFactory
+   const rawKv = kvFactory
     ? kvFactory({ baseUrl: cleanCmUrl, basePath })
     : httpKV({ baseUrl: cleanCmUrl, basePath, switchable: false })
+   const kv = withKvTriggers(rawKv, true)
    const syncRes = await writeLaneSyncBundleToKv(kv, bundle, null)
    let reloaded = false
    if (dep.reloadUrl || dep.port) {
@@ -1706,12 +1946,15 @@ export function generateServiceActionScript({
   requiredRuntime.every(name => typeof runtimeFiles[name] === 'string' && runtimeFiles[name].length > 0)
  )
  if (hasRuntimeFiles && (cleanAction === 'logs' || cleanAction === 'restart' || cleanAction === 'start')) {
+  const copyRuntime = typeof runtimeFiles['kv-config.mjs'] === 'string' && runtimeFiles['kv-config.mjs'].length > 0
+   ? ['field.mjs', 'data.mjs', 'kv-config.mjs', 'storage.mjs', 'lane-http.mjs', 'lane-server.mjs']
+   : requiredRuntime
   const cleanRoot = normalizeRemoteDirPath(installRoot, '/opt/civil-command')
   const serviceDir = `${cleanRoot}/${cleanSlug}`
   lines.push(`SERVICE_DIR=${shellQuote(serviceDir)}`)
   lines.push('if [ -d "$SERVICE_DIR" ]; then')
   lines.push(' CC_RUNTIME_UPDATED=0')
-  for (const name of requiredRuntime) {
+  for (const name of copyRuntime) {
    lines.push(' CC_TMP_FILE="$(mktemp)"')
    lines.push(` printf '%s' ${shellQuote(encodeBase64(runtimeFiles[name]))} | base64 -d > "$CC_TMP_FILE"`)
    lines.push(` if [ ! -f "$SERVICE_DIR/${name}" ] || ! cmp -s "$CC_TMP_FILE" "$SERVICE_DIR/${name}"; then`)
@@ -1869,7 +2112,7 @@ function readJsonBody(req) {
 }
 
 async function readRuntimeFiles(rootDir) {
- const names = ['field.mjs', 'data.mjs', 'storage.mjs', 'lane-http.mjs', 'lane-server.mjs']
+ const names = ['field.mjs', 'data.mjs', 'kv-config.mjs', 'storage.mjs', 'lane-http.mjs', 'lane-server.mjs']
  const entries = await Promise.all(
   names.map(async name => {
    const text = await fs.readFile(path.join(rootDir, name), 'utf8')
@@ -1997,11 +2240,28 @@ export async function handleDeployApiRequest(req, res, opts = {}) {
 
   const basePath = body.basePath ? String(body.basePath).trim() : null
   try {
-   const kv = opts.kvFactory
+   const rawKv = opts.kvFactory
     ? opts.kvFactory({ baseUrl: normalizedUrl, basePath })
     : httpKV({ baseUrl: normalizedUrl, basePath, switchable: false })
+   const kv = withKvTriggers(rawKv, true)
    const result = await writeLaneSyncBundleToKv(kv, body.bundle, null)
-   return sendJson(res, 200, result)
+   let reloaded = false
+   if (typeof body.reloadUrl === 'string' && body.reloadUrl.trim()) {
+    try {
+     const reloadTarget = new URL(body.reloadUrl.trim())
+     if (reloadTarget.protocol === 'http:' || reloadTarget.protocol === 'https:') {
+      const rResp = await fetchImpl(reloadTarget.toString(), {
+       method: 'POST',
+       signal: AbortSignal.timeout(5000),
+      })
+      reloaded = Boolean(rResp && rResp.ok)
+     }
+    }
+    catch {
+     reloaded = false
+    }
+   }
+   return sendJson(res, 200, { ...result, reloaded })
   }
   catch (err) {
    return sendJson(res, 502, {

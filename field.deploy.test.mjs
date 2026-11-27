@@ -9,17 +9,24 @@ import os from 'node:os'
 import path from 'node:path'
 import {
  DATA_RUNTIME_ENV,
+ DEFAULT_AUTO_RELOAD_CONFIG,
  DEFAULT_PACKAGE_ID,
+ DEFAULT_SERVER_LIMITS,
+ LANE_TRIGGER_KEY_PREFIX,
  MAX_KV_VALUE_BYTES,
  NEW_LOG_HIGHLIGHT_FADE_MS,
  NEW_LOG_HIGHLIGHT_HOLD_MS,
  NEW_LOG_HIGHLIGHT_TOTAL_MS,
  PRIMITIVE_TYPES,
+ TRIGGER_INTERNAL_PREFIX,
+ agentListDeployments,
  allocateNextPort,
  buildPublicEndpointUrl,
  buildRequestObject,
  buildSshBaseArgs,
  collectLaneSyncBundle,
+ computeLaneScriptHash,
+ computeLaneSnapshotRevision,
  computeNewLogHighlightAlpha,
  computeWebSocketAccept,
  createIdleTracker,
@@ -27,6 +34,7 @@ import {
  createResponseHelper,
  createTerminalBuffer,
  createTerminalManager,
+ createTriggerStamp,
  defaultValueForType,
  deleteDeployServer,
  deleteLaneDeployment,
@@ -60,10 +68,12 @@ import {
  hasImportCycle,
  httpKV,
  isAllowedLocalOrigin,
+ isTriggerExcludedKey,
  laneServerSource,
  laneServersModalSource,
  laneStorySource,
  laneTerminalModalSource,
+ laneTriggerKey,
  lineInfoModalSource,
  loadDeployServers,
  loadDeployments,
@@ -71,19 +81,29 @@ import {
  loadLaneDeployments,
  loadLaneTables,
  mountTerminalView,
+ normalizeAutoReloadConfig,
  normalizeCivilMemoryBaseUrl,
+ normalizeClockHourFormat,
+ normalizeClockShowSeconds,
+ normalizeColumnConstraint,
+ normalizeColumnWidth,
+ normalizeDataColumnType,
  normalizeDomainName,
  normalizeHttpResult,
  normalizePrimitiveType,
+ normalizeServerLimits,
  normalizeServiceSlug,
  normalizeSubpath,
+ normalizeTriggerRules,
  packageModalSource,
  parse,
  parseImportLine,
+ parseTriggerStamp,
  parseWsFrames,
  proxyDeployRequest,
  registerLaneInPackage,
  resolveImportValue,
+ resolveMatchingTriggerTargets,
  resolveRequestIp,
  resolveScopeColumns,
  runLines,
@@ -98,6 +118,7 @@ import {
  tableRowKey,
  utf8ByteLength,
  validateSshTarget,
+ withKvTriggers,
  writeLaneSyncBundleToKv,
 } from './field.fixtures.mjs'
 
@@ -2261,5 +2282,586 @@ test('Inventory -> Public Wishlist live table-triggered sync & deploy, access ch
  }
  finally {
   globalThis.fetch = origFetch
+ }
+})
+
+test('lane-server.mjs: concurrent request isolation across objects, Data tables, and imports with 0 per-request KV script/table reads', async () => {
+ const store = new Map()
+ const getCounts = new Map()
+ function makeMemKv(prefix = '') {
+  return {
+   async get(key) {
+    const full = prefix ? `${prefix}:${key}` : key
+    getCounts.set(full, (getCounts.get(full) || 0) + 1)
+    return store.has(full) ? store.get(full) : null
+   },
+   async set(key, value) {
+    const full = prefix ? `${prefix}:${key}` : key
+    store.set(full, String(value ?? ''))
+   },
+   async delete(key) {
+    const full = prefix ? `${prefix}:${key}` : key
+    store.delete(full)
+   },
+   namespace(ns) {
+    return makeMemKv(prefix ? `${prefix}:${ns}` : ns)
+   },
+  }
+ }
+ const kv = makeMemKv()
+ const mainId = 'iso-main'
+ const depId = 'iso-dep'
+
+ // Two-party async barrier server so Request A and Request B overlap in flight after mutating scope
+ let barrierWaiters = []
+ const barrierServer = http.createServer((_req, res) => {
+  barrierWaiters.push(res)
+  if (barrierWaiters.length === 2) {
+   const ready = barrierWaiters
+   barrierWaiters = []
+   for (const r of ready) {
+    r.writeHead(200, { 'Content-Type': 'text/plain' })
+    r.end('go')
+   }
+  }
+ })
+ await new Promise(resolve => barrierServer.listen(0, '127.0.0.1', resolve))
+ const barrierPort = barrierServer.address().port
+ const barrierUrl = `http://127.0.0.1:${barrierPort}/barrier`
+
+ await writeLaneSyncBundleToKv(kv, {
+  mainLaneId: mainId,
+  includeImports: true,
+  lanes: [
+   {
+    id: depId,
+    title: 'Dep Cfg',
+    inputsRaw: null,
+    records: [
+     { id: 'd1', text: '; to cfg [ object { owner \'default\' } { nested [ object { count 1 } ] } ]', updatedAt: null },
+    ],
+    tables: [],
+   },
+   {
+    id: mainId,
+    title: 'Isolation API',
+    inputsRaw: null,
+    records: [
+     { id: 'm1', text: '; to sharedObj [ object { user \'init\' } { tags [ list ] } ]', updatedAt: null },
+     { id: 'm2', text: `; to depCfg !importLane ${depId} cfg`, updatedAt: null },
+     {
+      id: 'm3',
+      text: `; to post (\n ; to { req } $argv\n ; to who $req.body.user\n ; set $who sharedObj.user\n !sharedObj.tags.push $who\n ; set $who depCfg.owner\n ; set [ add $depCfg.nested.count $req.body.delta ] depCfg.nested.count\n !items.push [ object { label $who } ]\n ; to bResp !fetch '${barrierUrl}'\n !bResp.text\n ; object { seenUser $sharedObj.user } { tagsLen $sharedObj.tags.length } { depOwner $depCfg.owner } { depCount $depCfg.nested.count } { itemCount $items.length } { lastItem $items.1.label }\n)`,
+      updatedAt: null,
+     },
+     {
+      id: 'm4',
+      text: '; to get (\n ; object { user $sharedObj.user } { depOwner $depCfg.owner } { depCount $depCfg.nested.count } { itemCount $items.length }\n)',
+      updatedAt: null,
+     },
+    ],
+    tables: [{
+     id: 't1',
+     name: 'items',
+     columns: [{ id: 'c1', name: 'label', type: 'text', multiple: false }],
+     rows: [{ id: 'r1', values: { c1: 'base' } }],
+    }],
+   },
+  ],
+ })
+
+ const srv = createLaneHttpServer({
+  slug: 'iso-api',
+  laneId: mainId,
+  includeImports: true,
+  logRequests: false,
+  autoReload: false,
+ }, { kv })
+
+ try {
+  const initStatus = await srv.reload()
+  assert.equal(initStatus.ok, true)
+  assert.equal(initStatus.reloadGeneration, 1)
+  assert.ok(typeof initStatus.revision === 'string' && initStatus.revision.length === 16)
+  assert.ok(typeof initStatus.scriptHash === 'string' && initStatus.scriptHash.length === 16)
+  assert.deepEqual(initStatus.loadedLaneIds, [mainId, depId])
+
+  const addr = await srv.listen(0, '127.0.0.1')
+  getCounts.clear()
+
+  const [respAlice, respBob] = await Promise.all([
+   fetch(`http://127.0.0.1:${addr.port}/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user: 'alice', delta: 10 }),
+   }),
+   fetch(`http://127.0.0.1:${addr.port}/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user: 'bob', delta: 20 }),
+   }),
+  ])
+
+  assert.equal(respAlice.status, 200)
+  assert.equal(respBob.status, 200)
+  assert.equal(respAlice.headers.get('x-civil-lane-rev'), initStatus.revision)
+  assert.match(respAlice.headers.get('access-control-expose-headers') || '', /X-Civil-Lane-Rev/)
+
+  const aliceBody = await respAlice.json()
+  const bobBody = await respBob.json()
+  assert.deepEqual(aliceBody, {
+   seenUser: 'alice',
+   tagsLen: 1,
+   depOwner: 'alice',
+   depCount: 11,
+   itemCount: 2,
+   lastItem: 'alice',
+  })
+  assert.deepEqual(bobBody, {
+   seenUser: 'bob',
+   tagsLen: 1,
+   depOwner: 'bob',
+   depCount: 21,
+   itemCount: 2,
+   lastItem: 'bob',
+  })
+
+  // Clean follow-up GET sees unmodified frozen baseline
+  const cleanGet = await fetch(`http://127.0.0.1:${addr.port}/`).then(r => r.json())
+  assert.deepEqual(cleanGet, {
+   user: 'init',
+   depOwner: 'default',
+   depCount: 1,
+   itemCount: 1,
+  })
+
+  // OPTIONS & 405 fast paths + overall zero script/table reads across requests
+  const optResp = await fetch(`http://127.0.0.1:${addr.port}/`, { method: 'OPTIONS' })
+  assert.equal(optResp.status, 204)
+  assert.equal(optResp.headers.get('x-civil-lane-rev'), initStatus.revision)
+  const delResp = await fetch(`http://127.0.0.1:${addr.port}/`, { method: 'DELETE' })
+  assert.equal(delResp.status, 405)
+
+  assert.equal(getCounts.size, 0, `Expected 0 KV reads across request evaluations, saw: ${Array.from(getCounts.keys()).join(', ')}`)
+ }
+ finally {
+  await srv.close()
+  if (typeof barrierServer.closeAllConnections === 'function') { barrierServer.closeAllConnections() }
+  await new Promise(resolve => barrierServer.close(resolve))
+ }
+})
+
+test('lane-server.mjs: generation-queued reload() barrier & KV outage preserves last-known-good snapshot', async () => {
+ const store = new Map()
+ let pauseFirstScriptRead = false
+ let pauseStartedResolve = null
+ let pauseStarted = new Promise(resolve => { pauseStartedResolve = resolve })
+ let resumeFirstRead = null
+ let kvOutage = false
+
+ function makeMemKv(prefix = '') {
+  return {
+   async get(key) {
+    if (kvOutage) {
+     throw new Error('ECONNREFUSED simulated KV outage')
+    }
+    const full = prefix ? `${prefix}:${key}` : key
+    if (pauseFirstScriptRead && !prefix && key === 'lanes#barrier-lane/script-index') {
+     pauseFirstScriptRead = false
+     pauseStartedResolve()
+     await new Promise(resolve => { resumeFirstRead = resolve })
+    }
+    return store.has(full) ? store.get(full) : null
+   },
+   async set(key, value) {
+    const full = prefix ? `${prefix}:${key}` : key
+    store.set(full, String(value ?? ''))
+   },
+   async delete(key) {
+    const full = prefix ? `${prefix}:${key}` : key
+    store.delete(full)
+   },
+   namespace(ns) {
+    return makeMemKv(prefix ? `${prefix}:${ns}` : ns)
+   },
+  }
+ }
+
+ const kv = makeMemKv()
+ const laneId = 'barrier-lane'
+ await saveLaneScript(kv, kv.namespace(laneId), laneId, ['; to ver 1', '$ver'], null)
+
+ const srv = createLaneHttpServer({
+  slug: 'barrier-test',
+  laneId,
+  logRequests: false,
+  autoReload: false,
+ }, { kv })
+
+ try {
+  await srv.reload()
+  const addr = await srv.listen(0, '127.0.0.1')
+  assert.equal(await fetch(`http://127.0.0.1:${addr.port}/`).then(r => r.json()), 1)
+
+  // Pause reload #1 mid-flight, update KV to ver=2, then issue concurrent reload #2
+  pauseFirstScriptRead = true
+  const pReload1 = srv.reload()
+  await pauseStarted
+  await saveLaneScript(kv, kv.namespace(laneId), laneId, ['; to ver 2', '$ver'], null)
+  const pReload2 = srv.reload()
+  resumeFirstRead()
+
+  const [r1, r2] = await Promise.all([pReload1, pReload2])
+  assert.equal(r1.ok, true)
+  assert.equal(r2.ok, true)
+  assert.ok(r2.reloadGeneration > r1.reloadGeneration)
+  assert.equal(r2.scriptHash, computeLaneScriptHash(['; to ver 2', '$ver']))
+  assert.equal(await fetch(`http://127.0.0.1:${addr.port}/`).then(r => r.json()), 2)
+
+  // KV outage during POST /_cc/reload returns 500 but leaves last-known-good snapshot serving 200
+  kvOutage = true
+  const failReload = await fetch(`http://127.0.0.1:${addr.port}/_cc/reload`, { method: 'POST' })
+  assert.equal(failReload.status, 500)
+  const failBody = await failReload.json()
+  assert.equal(failBody.ok, false)
+  assert.equal(failBody.reloaded, false)
+  assert.match(failBody.error, /ECONNREFUSED/)
+  assert.equal(await fetch(`http://127.0.0.1:${addr.port}/`).then(r => r.json()), 2)
+
+  // Recover KV and mutate to ver=3
+  kvOutage = false
+  await saveLaneScript(kv, kv.namespace(laneId), laneId, ['; to ver 3', '$ver'], null)
+  const recoverReload = await fetch(`http://127.0.0.1:${addr.port}/_cc/reload`, { method: 'POST' })
+  assert.equal(recoverReload.status, 200)
+  const recBody = await recoverReload.json()
+  assert.equal(recBody.ok, true)
+  assert.equal(recBody.reloaded, true)
+  assert.equal(await fetch(`http://127.0.0.1:${addr.port}/`).then(r => r.json()), 3)
+ }
+ finally {
+  await srv.close()
+ }
+})
+
+test('KV write triggers, cc-server.mjs triggers, deduplicated /_cc/reload, auto-reload poller, and loop immunity', async () => {
+ // 1. Pure trigger matching & loop exclusions
+ assert.deepEqual(resolveMatchingTriggerTargets('lanes#lane-1/script/l1'), ['triggers#lanes/lane-1'])
+ assert.deepEqual(resolveMatchingTriggerTargets('lanes#lane-1/tables/t1/rows/r1'), ['triggers#lanes/lane-1'])
+ assert.deepEqual(resolveMatchingTriggerTargets('lanes#lane-1/tables/t1/updates'), [])
+ assert.deepEqual(resolveMatchingTriggerTargets('lanes#lane-1/tables/t1/updates-index'), [])
+ assert.deepEqual(resolveMatchingTriggerTargets('stories#lane-1/r/2026-01-01/run-1'), [])
+ assert.deepEqual(resolveMatchingTriggerTargets('triggers#lanes/lane-1'), [])
+ assert.deepEqual(resolveMatchingTriggerTargets('lane-1.hits'), [])
+ assert.deepEqual(resolveMatchingTriggerTargets('lane-1.title'), ['triggers#lanes/lane-1'])
+ assert.deepEqual(resolveMatchingTriggerTargets('lane.v1.title'), ['triggers#lanes/lane%2Ev1'])
+ assert.equal(isTriggerExcludedKey('triggers#lanes/lane-1'), true)
+ assert.equal(isTriggerExcludedKey('stories#lane-1/idx/root'), true)
+ assert.equal(isTriggerExcludedKey('lanes#lane-1/tables/t1/updates/u1'), true)
+ assert.equal(laneTriggerKey('lane.v1'), 'triggers#lanes/lane%2Ev1')
+ assert.equal(normalizeAutoReloadConfig({ enabled: true, intervalMs: 5 }).intervalMs, 20)
+ assert.equal(normalizeAutoReloadConfig(false, {}).enabled, false)
+ assert.equal(normalizeServerLimits({}, { CC_MAX_IMPORT_DEPTH: '12', CC_MAX_EXECUTION_MS: '5000' }).maxImportDepth, 12)
+ assert.equal(normalizeServerLimits({}, { CC_MAX_IMPORT_DEPTH: '12', CC_MAX_EXECUTION_MS: '5000' }).maxExecutionMs, 5000)
+ assert.ok(DEFAULT_AUTO_RELOAD_CONFIG.intervalMs >= 1000)
+ assert.ok(DEFAULT_SERVER_LIMITS.maxImportDepth >= 16)
+
+ // Custom trigger rules test via withKvTriggers
+ const customMap = new Map()
+ const customRaw = {
+  async get(k) { return customMap.has(k) ? customMap.get(k) : null },
+  async set(k, v) { customMap.set(k, String(v)) },
+  async delete(k) { customMap.delete(k) },
+  namespace(ns) {
+   return {
+    async get(k) { return customRaw.get(`${ns}:${k}`) },
+    async set(k, v) { return customRaw.set(`${ns}:${k}`, v) },
+    async delete(k) { return customRaw.delete(`${ns}:${k}`) },
+   }
+  },
+ }
+ const trigKv = withKvTriggers(customRaw, [{ match: 'items/<itemId>/body', target: 'triggers#items/<itemId>' }])
+ await trigKv.set('items/box-7/body', 'hello')
+ const stamp = parseTriggerStamp(customMap.get('triggers#items/box-7'))
+ assert.equal(stamp.key, 'items/box-7/body')
+ assert.equal(stamp.op, 'set')
+
+ // 2. Live cc-server.mjs + auto-reload + /_cc/reload noop & force + loop immunity
+ const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-cm-trig-'))
+ let cmChild = null
+ let cmExit = null
+ let laneSrv = null
+ try {
+  const defaultData = path.join(tmpDir, 'data')
+  await fs.mkdir(path.join(tmpDir, 'dist', 'kv'), { recursive: true })
+  await fs.writeFile(path.join(tmpDir, 'package.json'), JSON.stringify({ name: '@tagmein/civil-memory', version: '0.1.5' }))
+  await fs.writeFile(path.join(tmpDir, 'dist', 'kv', 'diskKV.js'), [
+   'exports.diskKV = function diskKV({ rootDir, fsPromises, path }) {',
+   ' async function resolveKey(fullKey) {',
+   '  const parts = fullKey.includes("#") ? fullKey.split("#") : ["main", fullKey]',
+   '  const ns = parts.shift() || "main"',
+   '  const k = parts.join("#") || "index"',
+   '  const segs = [encodeURIComponent(ns.split("/").map(encodeURIComponent).join("/")), ...k.split("/").map(encodeURIComponent)]',
+   '  const leaf = segs.pop()',
+   '  if (segs.length > 0) await fsPromises.mkdir(path.join(rootDir, ...segs), { recursive: true })',
+   '  return path.join(rootDir, ...segs, leaf)',
+   ' }',
+   ' return {',
+   '  async get(k) { try { return (await fsPromises.readFile(await resolveKey(k))).toString("utf8") } catch { return null } },',
+   '  async set(k, v) { await fsPromises.writeFile(await resolveKey(k), String(v), "utf8") },',
+   '  async delete(k) { try { await fsPromises.unlink(await resolveKey(k)) } catch {} },',
+   ' }',
+   '}',
+  ].join('\n'))
+  await fs.writeFile(path.join(tmpDir, 'cc-server.mjs'), generateCivilMemoryServerScript())
+
+  const cmPort = await new Promise((resolve, reject) => {
+   const s = net.createServer()
+   s.unref()
+   s.on('error', reject)
+   s.listen(0, '127.0.0.1', () => {
+    const { port } = s.address()
+    s.close(() => resolve(port))
+   })
+  })
+  let logs = ''
+  cmChild = spawn(process.execPath, [path.join(tmpDir, 'cc-server.mjs')], {
+   cwd: tmpDir,
+   env: { ...process.env, HOST: '127.0.0.1', PORT: String(cmPort), DEFAULT_BASE_PATH: defaultData },
+   stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  cmChild.stdout.on('data', d => { logs += d.toString('utf8') })
+  cmChild.stderr.on('data', d => { logs += d.toString('utf8') })
+  cmExit = new Promise(resolve => cmChild.once('exit', resolve))
+
+  let health = null
+  const deadline = Date.now() + 8000
+  while (Date.now() < deadline) {
+   try {
+    const r = await fetch(`http://127.0.0.1:${cmPort}/health`)
+    if (r.ok) {
+     health = await r.json()
+     break
+    }
+   }
+   catch {}
+   await new Promise(r => setTimeout(r, 30))
+  }
+  assert.ok(health, `cc-server failed to start: ${logs}`)
+  assert.equal(health.triggersEnabled, true)
+
+  const cmUrl = `http://127.0.0.1:${cmPort}/?mode=disk`
+  // Bare httpKV (NO client-side triggers) relies on cc-server.mjs server-side triggers
+  const kvClient = httpKV({ baseUrl: cmUrl, switchable: false })
+  const laneId = 'auto-lane'
+  await writeLaneSyncBundleToKv(kvClient, {
+   mainLaneId: laneId,
+   includeImports: false,
+   lanes: [{
+    id: laneId,
+    title: 'Auto Lane',
+    inputsRaw: null,
+    records: [{
+     id: 'l1',
+     text: '; to get (\n ; to prev [ !data.get hits ]\n ; to n ; add [ match { $prev : !JSON.parse $prev } { true : 0 } ] 1\n !data.set hits [ ; add \'\' $n ]\n ; object { ver 1 } { hits $n }\n)',
+     updatedAt: null,
+    }],
+    tables: [],
+   }],
+  })
+
+  const stamp1 = parseTriggerStamp(await kvClient.get(laneTriggerKey(laneId)))
+  assert.ok(stamp1 && typeof stamp1.rev === 'string' && stamp1.rev.length > 0, 'cc-server.mjs should write trigger stamp automatically')
+
+  laneSrv = createLaneHttpServer({
+   slug: 'auto-lane',
+   laneId,
+   civilMemoryUrl: cmUrl,
+   logRequests: false,
+   autoReload: { enabled: true, intervalMs: 35, debounceMs: 10, maxReloadsPerMinute: 60 },
+  })
+  await laneSrv.reload()
+  const laneAddr = await laneSrv.listen(0, '127.0.0.1')
+  const base = `http://127.0.0.1:${laneAddr.port}`
+
+  const g1 = await fetch(`${base}/`).then(r => r.json())
+  assert.deepEqual(g1, { ver: 1, hits: 1 })
+  // Handler !data.set hits wrote auto-lane.hits — must NOT touch trigger stamp or cause auto-reload
+  const stampAfterHit = parseTriggerStamp(await kvClient.get(laneTriggerKey(laneId)))
+  assert.equal(stampAfterHit.rev, stamp1.rev)
+  await fetch(`${base}/`).then(r => r.json())
+  await new Promise(r => setTimeout(r, 120))
+  assert.equal((await fetch(`${base}/_cc/health`).then(r => r.json())).reloadGeneration, 1)
+
+  // Update lane script out-of-band WITHOUT calling /_cc/reload
+  await saveLaneScript(kvClient, kvClient.namespace(laneId), laneId, [
+   '; to get (\n ; object { ver 2 } { hits [ !data.get hits ] }\n)',
+  ], null)
+
+  let h2 = null
+  const pollDeadline = Date.now() + 3000
+  while (Date.now() < pollDeadline) {
+   const curHealth = await fetch(`${base}/_cc/health`).then(r => r.json())
+   if (curHealth.reloadGeneration >= 2) {
+    h2 = curHealth
+    break
+   }
+   await new Promise(r => setTimeout(r, 25))
+  }
+  assert.ok(h2 && h2.reloadGeneration === 2, 'Auto-reload poller should reload automatically on trigger stamp change')
+  const g2 = await fetch(`${base}/`).then(r => r.json())
+  assert.equal(g2.ver, 2)
+
+  // Subsequent POST /_cc/reload is deduplicated as noop: true
+  const noopResp = await fetch(`${base}/_cc/reload`, { method: 'POST' }).then(r => r.json())
+  assert.equal(noopResp.ok, true)
+  assert.equal(noopResp.reloaded, false)
+  assert.equal(noopResp.noop, true)
+  assert.equal(noopResp.reloadGeneration, 2)
+
+  // POST /_cc/reload?force=1 forces reload even with matching trigger stamp
+  const forceResp = await fetch(`${base}/_cc/reload?force=1`, { method: 'POST' }).then(r => r.json())
+  assert.equal(forceResp.ok, true)
+  assert.equal(forceResp.reloaded, true)
+  assert.equal(forceResp.noop, false)
+  assert.equal(forceResp.reloadGeneration, 3)
+
+  // Broken deterministic script loads ONCE (generation 4) and does NOT loop-reload
+  await saveLaneScript(kvClient, kvClient.namespace(laneId), laneId, ['!nonExistentStartupFn 123'], null)
+  let h4 = null
+  const errDeadline = Date.now() + 3000
+  while (Date.now() < errDeadline) {
+   const curHealth = await fetch(`${base}/_cc/health`).then(r => r.json())
+   if (curHealth.reloadGeneration >= 4) {
+    h4 = curHealth
+    break
+   }
+   await new Promise(r => setTimeout(r, 25))
+  }
+  assert.ok(h4 && h4.reloadGeneration === 4)
+  assert.equal(h4.ok, false)
+  assert.match(h4.error, /is not a function/)
+  await new Promise(r => setTimeout(r, 150))
+  const h4Later = await fetch(`${base}/_cc/health`).then(r => r.json())
+  assert.equal(h4Later.reloadGeneration, 4, 'Deterministic script error must NOT trigger infinite auto-reload loop')
+ }
+ finally {
+  if (laneSrv) {
+   await laneSrv.close()
+  }
+  if (cmChild) {
+   cmChild.kill('SIGTERM')
+   await cmExit
+  }
+  await fs.rm(tmpDir, { recursive: true, force: true })
+ }
+})
+
+test('agentListDeployments --ping liveCodeMatches & /api/deploy/kv/sync reloadUrl integration', async () => {
+ const store = new Map()
+ function makeMemKv(prefix = '') {
+  return {
+   async get(key) {
+    const full = prefix ? `${prefix}:${key}` : key
+    return store.has(full) ? store.get(full) : null
+   },
+   async set(key, value) {
+    const full = prefix ? `${prefix}:${key}` : key
+    store.set(full, String(value ?? ''))
+   },
+   async delete(key) {
+    const full = prefix ? `${prefix}:${key}` : key
+    store.delete(full)
+   },
+   namespace(ns) {
+    return makeMemKv(prefix ? `${prefix}:${ns}` : ns)
+   },
+  }
+ }
+ const rootKv = makeMemKv()
+ const laneId = 'dep-match-lane'
+ await saveLaneScript(rootKv, rootKv.namespace(laneId), laneId, ['; to x 42', '$x'], null)
+
+ const srv = createLaneHttpServer({
+  slug: 'dep-match-lane',
+  laneId,
+  logRequests: false,
+  autoReload: false,
+ }, { kv: rootKv })
+ const reloadCalls = []
+ const syncMockCm = http.createServer((_req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' })
+  res.end('ok')
+ })
+ const reloadSpy = http.createServer((req, res) => {
+  reloadCalls.push({ method: req.method, url: req.url })
+  res.writeHead(200, { 'Content-Type': 'application/json' })
+  res.end('{"ok":true}')
+ })
+ const apiServer = http.createServer((req, res) => {
+  handleDeployApiRequest(req, res, { rootDir: process.cwd() })
+ })
+
+ try {
+  await srv.reload()
+  const addr = await srv.listen(0, '127.0.0.1')
+  await Promise.all([
+   new Promise(r => syncMockCm.listen(0, '127.0.0.1', r)),
+   new Promise(r => reloadSpy.listen(0, '127.0.0.1', r)),
+   new Promise(r => apiServer.listen(0, '127.0.0.1', r)),
+  ])
+  const cmPort = syncMockCm.address().port
+  const spyPort = reloadSpy.address().port
+  const apiPort = apiServer.address().port
+
+  await saveLaneDeployment(rootKv, {
+   laneId,
+   slug: 'dep-match-lane',
+   port: addr.port,
+   publicUrl: `http://127.0.0.1:${addr.port}`,
+   lastDeployedAt: new Date().toISOString(),
+  })
+
+  const listed1 = await agentListDeployments(rootKv, { ping: true })
+  assert.equal(listed1.ok, true)
+  assert.equal(listed1.deployments.length, 1)
+  const d1 = listed1.deployments[0]
+  assert.equal(d1.expectedScriptHash, computeLaneScriptHash(['; to x 42', '$x']))
+  assert.equal(d1.liveScriptHash, d1.expectedScriptHash)
+  assert.equal(d1.liveCodeMatches, true)
+  assert.ok(typeof d1.liveRevision === 'string' && d1.liveRevision.length === 16)
+
+  // Mutate local KV script without calling /_cc/reload -> liveCodeMatches flips false!
+  await saveLaneScript(rootKv, rootKv.namespace(laneId), laneId, ['; to x 99', '$x'], null)
+  const listed2 = await agentListDeployments(rootKv, { ping: true })
+  const d2 = listed2.deployments[0]
+  assert.equal(d2.expectedScriptHash, computeLaneScriptHash(['; to x 99', '$x']))
+  assert.equal(d2.liveScriptHash, d1.liveScriptHash)
+  assert.equal(d2.liveCodeMatches, false)
+
+  // Verify /api/deploy/kv/sync forwards reloadUrl
+  const syncResp = await fetch(`http://127.0.0.1:${apiPort}/api/deploy/kv/sync`, {
+   method: 'POST',
+   headers: { 'Content-Type': 'application/json' },
+   body: JSON.stringify({
+    url: `http://127.0.0.1:${cmPort}`,
+    reloadUrl: `http://127.0.0.1:${spyPort}/_cc/reload`,
+    bundle: { mainLaneId: 'x', includeImports: false, lanes: [{ id: 'x', title: 'X', records: [{ id: 'r1', text: '1' }], tables: [] }] },
+   }),
+  }).then(r => r.json())
+  assert.equal(syncResp.ok, true)
+  assert.equal(syncResp.reloaded, true)
+  assert.equal(reloadCalls.length, 1)
+  assert.deepEqual(reloadCalls[0], { method: 'POST', url: '/_cc/reload' })
+ }
+ finally {
+  await srv.close()
+  for (const s of [syncMockCm, reloadSpy, apiServer]) {
+   if (typeof s.closeAllConnections === 'function') { s.closeAllConnections() }
+  }
+  await Promise.all([
+   new Promise(r => syncMockCm.close(r)),
+   new Promise(r => reloadSpy.close(r)),
+   new Promise(r => apiServer.close(r)),
+  ])
  }
 })

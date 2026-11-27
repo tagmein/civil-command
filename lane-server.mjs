@@ -3,25 +3,223 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+ DEFAULT_FIELD_LIMITS,
  buildTablesScope,
+ cloneScopeData,
+ compileFieldScriptLines,
+ createExecutionBudget,
+ deepFreezeScopeData,
  defaultValueForType,
+ normalizeFieldLimits,
  normalizePrimitiveType,
  resolveImportValue,
- runLines,
+ runCompiledLines,
 } from './field.mjs'
-import { httpKV } from './data.mjs'
-import { loadLaneScript, loadLaneTables } from './storage.mjs'
+import {
+ httpKV,
+ laneTriggerKey,
+} from './data.mjs'
+import {
+ collectImportTargetsFromLine,
+ computeLaneScriptHash,
+ computeLaneSnapshotRevision,
+ loadLaneScript,
+ loadLaneTables,
+} from './storage.mjs'
 import {
  buildRequestObject,
  createResponseHelper,
  detectLaneHandlers,
  executeLaneHttpRequest,
+ normalizeHttpResult,
  resolveRequestIp,
 } from './lane-http.mjs'
 
 const MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024
 
+export const DEFAULT_SERVER_LIMITS = Object.freeze({
+ ...DEFAULT_FIELD_LIMITS,
+ maxExecutionMs: 30000,
+ maxImportDepth: 32,
+ maxImportedLanes: 256,
+})
+
+export const DEFAULT_AUTO_RELOAD_CONFIG = Object.freeze({
+ enabled: true,
+ intervalMs: 1500,
+ debounceMs: 75,
+ maxReloadsPerMinute: 120,
+ watchKeys: Object.freeze([]),
+})
+
 export { resolveRequestIp }
+
+function parseBooleanFlag(raw) {
+ if (raw === undefined || raw === null || raw === '') {
+  return undefined
+ }
+ if (typeof raw === 'boolean') {
+  return raw
+ }
+ if (typeof raw === 'number') {
+  return raw !== 0
+ }
+ const lower = String(raw).trim().toLowerCase()
+ if (lower === '1' || lower === 'true' || lower === 'on' || lower === 'yes') {
+  return true
+ }
+ if (lower === '0' || lower === 'false' || lower === 'off' || lower === 'no') {
+  return false
+ }
+ return undefined
+}
+
+function parseNonNegInt(raw) {
+ if (raw === undefined || raw === null || raw === '') {
+  return undefined
+ }
+ if (raw === false || raw === 0 || raw === Infinity) {
+  return 0
+ }
+ if (typeof raw === 'string') {
+  const lower = raw.trim().toLowerCase()
+  if (!lower) {
+   return undefined
+  }
+  if (lower === 'false' || lower === 'off' || lower === '0' || lower === 'infinity' || lower === 'unlimited') {
+   return 0
+  }
+ }
+ const n = Number(raw)
+ if (!Number.isFinite(n)) {
+  return undefined
+ }
+ return n <= 0 ? 0 : Math.trunc(n)
+}
+
+export function normalizeServerLimits(
+ raw = {},
+ env = typeof process !== 'undefined' && process && process.env ? process.env : null
+) {
+ const src = raw && typeof raw === 'object' ? raw : {}
+ const globalLimits = typeof globalThis !== 'undefined' && globalThis.CC_FIELD_LIMITS && typeof globalThis.CC_FIELD_LIMITS === 'object'
+  ? globalThis.CC_FIELD_LIMITS
+  : null
+ const baseEnv = env && typeof env === 'object' ? env : null
+
+ const preResolved = {}
+ const envNames = {
+  maxScriptBytes: 'CC_MAX_SCRIPT_BYTES',
+  maxLineBytes: 'CC_MAX_LINE_BYTES',
+  maxScriptLines: 'CC_MAX_SCRIPT_LINES',
+  maxAstDepth: 'CC_MAX_AST_DEPTH',
+  maxAstNodes: 'CC_MAX_AST_NODES',
+  maxLoopIterations: 'CC_MAX_LOOP_ITERATIONS',
+  maxCallDepth: 'CC_MAX_CALL_DEPTH',
+  maxSteps: 'CC_MAX_STEPS',
+  maxExecutionMs: 'CC_MAX_EXECUTION_MS',
+  maxLoadDepth: 'CC_MAX_LOAD_DEPTH',
+  maxTotalLoads: 'CC_MAX_TOTAL_LOADS',
+ }
+ for (const key of Object.keys(DEFAULT_FIELD_LIMITS)) {
+  if (src[key] !== undefined) {
+   preResolved[key] = src[key]
+  }
+  else if (globalLimits && globalLimits[key] !== undefined) {
+   preResolved[key] = globalLimits[key]
+  }
+  else if (baseEnv && envNames[key] && baseEnv[envNames[key]] !== undefined) {
+   preResolved[key] = baseEnv[envNames[key]]
+  }
+  else if (key === 'maxExecutionMs') {
+   preResolved[key] = DEFAULT_SERVER_LIMITS.maxExecutionMs
+  }
+ }
+
+ const fieldLimits = normalizeFieldLimits(preResolved, { useEnv: false })
+ const importDepthCandidate = src.maxImportDepth !== undefined
+  ? src.maxImportDepth
+  : (baseEnv && baseEnv.CC_MAX_IMPORT_DEPTH !== undefined ? baseEnv.CC_MAX_IMPORT_DEPTH : DEFAULT_SERVER_LIMITS.maxImportDepth)
+ const importedLanesCandidate = src.maxImportedLanes !== undefined
+  ? src.maxImportedLanes
+  : (baseEnv && baseEnv.CC_MAX_IMPORTED_LANES !== undefined ? baseEnv.CC_MAX_IMPORTED_LANES : DEFAULT_SERVER_LIMITS.maxImportedLanes)
+
+ const maxImportDepth = parseNonNegInt(importDepthCandidate)
+ const maxImportedLanes = parseNonNegInt(importedLanesCandidate)
+
+ return Object.freeze({
+  ...fieldLimits,
+  maxImportDepth: maxImportDepth !== undefined ? maxImportDepth : DEFAULT_SERVER_LIMITS.maxImportDepth,
+  maxImportedLanes: maxImportedLanes !== undefined ? maxImportedLanes : DEFAULT_SERVER_LIMITS.maxImportedLanes,
+ })
+}
+
+export function normalizeAutoReloadConfig(
+ raw = undefined,
+ env = typeof process !== 'undefined' && process && process.env ? process.env : null
+) {
+ const baseEnv = env && typeof env === 'object' ? env : null
+ let srcObj = {}
+ let explicitEnabled
+ if (typeof raw === 'boolean') {
+  explicitEnabled = raw
+ }
+ else if (raw && typeof raw === 'object') {
+  srcObj = raw
+  if (raw.enabled !== undefined) {
+   explicitEnabled = parseBooleanFlag(raw.enabled)
+  }
+ }
+
+ const envEnabled = baseEnv ? parseBooleanFlag(baseEnv.CC_AUTO_RELOAD) : undefined
+ const envInterval = baseEnv ? parseNonNegInt(baseEnv.CC_AUTO_RELOAD_MS) : undefined
+ const rawInterval = parseNonNegInt(srcObj.intervalMs)
+ const rawDebounce = parseNonNegInt(srcObj.debounceMs)
+ const rawMaxPerMin = parseNonNegInt(srcObj.maxReloadsPerMinute)
+
+ let intervalMs = rawInterval !== undefined
+  ? rawInterval
+  : (envInterval !== undefined ? envInterval : DEFAULT_AUTO_RELOAD_CONFIG.intervalMs)
+ if (intervalMs > 0 && intervalMs < 20) {
+  intervalMs = 20
+ }
+
+ let enabled
+ if (explicitEnabled !== undefined) {
+  enabled = explicitEnabled
+ }
+ else if (envEnabled !== undefined) {
+  enabled = envEnabled
+ }
+ else {
+  enabled = DEFAULT_AUTO_RELOAD_CONFIG.enabled
+ }
+ if (intervalMs === 0) {
+  enabled = false
+ }
+
+ const debounceMs = rawDebounce !== undefined ? rawDebounce : DEFAULT_AUTO_RELOAD_CONFIG.debounceMs
+ const maxReloadsPerMinute = rawMaxPerMin !== undefined ? rawMaxPerMin : DEFAULT_AUTO_RELOAD_CONFIG.maxReloadsPerMinute
+
+ const rawWatchKeys = Array.isArray(srcObj.watchKeys) ? srcObj.watchKeys : []
+ const watchKeys = []
+ const seenKeys = new Set()
+ for (const k of rawWatchKeys) {
+  const clean = k === null || k === undefined ? '' : String(k).trim()
+  if (clean && !seenKeys.has(clean)) {
+   seenKeys.add(clean)
+   watchKeys.push(clean)
+  }
+ }
+
+ return Object.freeze({
+  enabled: Boolean(enabled),
+  intervalMs,
+  debounceMs,
+  maxReloadsPerMinute,
+  watchKeys: Object.freeze(watchKeys),
+ })
+}
 
 export function formatRequestLogLine({
  slug = '',
@@ -120,6 +318,38 @@ function readBodyBuffer(req, maxBytes = MAX_REQUEST_BODY_BYTES) {
  })
 }
 
+function createSnapshotError(message) {
+ const err = new Error(message)
+ err.isDeterministicSnapshotError = true
+ return err
+}
+
+function isDeterministicError(err) {
+ return Boolean(
+  err && (
+   err.isDeterministicSnapshotError ||
+   err.code === 'FIELD_LIMIT_EXCEEDED' ||
+   err instanceof SyntaxError
+  )
+ )
+}
+
+function collectStaticImportTargets(lines) {
+ const out = []
+ const seen = new Set()
+ for (const line of lines) {
+  const deps = collectImportTargetsFromLine(line)
+  for (const dep of deps) {
+   const clean = dep ? String(dep).trim() : ''
+   if (clean && !seen.has(clean)) {
+    seen.add(clean)
+    out.push(clean)
+   }
+  }
+ }
+ return out
+}
+
 export function createLaneHttpServer(config = {}, opts = {}) {
  const laneId = String(config.laneId || '').trim()
  if (!laneId) {
@@ -139,18 +369,50 @@ export function createLaneHttpServer(config = {}, opts = {}) {
   throw new Error('createLaneHttpServer requires config.civilMemoryUrl or opts.kv')
  }
 
+ const limits = normalizeServerLimits(
+  opts.limits !== undefined ? opts.limits : config.limits
+ )
+ const autoReloadConfig = normalizeAutoReloadConfig(
+  opts.autoReload !== undefined ? opts.autoReload : config.autoReload
+ )
+
  const rootKv = opts.kv || httpKV({
   baseUrl: normalizedUrl,
   basePath: config.dataBasePath || null,
   switchable: false,
  })
 
+ function buildEmptySnapshot(errorMsg = null, loadedAt = null) {
+  return Object.freeze({
+   mainUnit: null,
+   importedUnits: new Map(),
+   loadedLaneIds: Object.freeze([laneId]),
+   title: String(config.title || ''),
+   hasHandlers: false,
+   methods: Object.freeze([]),
+   startupError: errorMsg,
+   scriptHash: '',
+   revision: '',
+   loadedAt,
+  })
+ }
+
  let currentTitle = String(config.title || '')
- let startupState = {}
- let startupResults = []
- let startupError = null
- let handlersInfo = { hasHandlers: false, methods: [], handlers: {} }
- let loadedAt = null
+ let currentSnapshot = buildEmptySnapshot(null, null)
+ let hasLoadedOnce = false
+ let reloadGeneration = 0
+ let lastTriggerState = null
+ let activeReloadPromise = null
+ let queuedReloadForce = null
+ let queuedReloadPromise = null
+
+ let closed = false
+ let pollTimer = null
+ let debounceTimer = null
+ let debounceResolve = null
+ let pollInFlight = false
+ const recentAutoReloads = []
+ let throttleWarnedUntilMs = 0
 
  function logRequest(entry) {
   const line = formatRequestLogLine({
@@ -174,12 +436,78 @@ export function createLaneHttpServer(config = {}, opts = {}) {
   }
  }
 
- async function evaluateLane(targetId, { req = null, stack = new Set(), requireExists = false } = {}) {
-  const laneData = rootKv.namespace(targetId)
+ async function readTriggerState(laneIds = [laneId], preReadMap = null) {
+  const keys = []
+  const seen = new Set()
+  for (const id of laneIds) {
+   const k = laneTriggerKey(id)
+   if (k && !seen.has(k)) {
+    seen.add(k)
+    keys.push(k)
+   }
+  }
+  for (const wk of autoReloadConfig.watchKeys) {
+   if (wk && !seen.has(wk)) {
+    seen.add(wk)
+    keys.push(wk)
+   }
+  }
+  const valuesByKey = Object.create(null)
+  const missingKeys = []
+  for (const k of keys) {
+   if (preReadMap && Object.hasOwn(preReadMap, k)) {
+    valuesByKey[k] = preReadMap[k]
+   }
+   else {
+    missingKeys.push(k)
+   }
+  }
+  if (missingKeys.length > 0) {
+   const fetched = await Promise.all(missingKeys.map(k => rootKv.get(k)))
+   for (let i = 0; i < missingKeys.length; i++) {
+    const raw = fetched[i]
+    valuesByKey[missingKeys[i]] = raw === null || raw === undefined ? null : String(raw)
+   }
+  }
+  let complete = keys.length > 0
+  let hasAny = false
+  const pairs = []
+  for (const k of keys) {
+   const val = valuesByKey[k]
+   if (val === null || val === undefined || val === '') {
+    complete = false
+   }
+   else {
+    hasAny = true
+   }
+   pairs.push([k, val ?? null])
+  }
+  return {
+   keys,
+   valuesByKey,
+   complete,
+   hasAny,
+   signature: JSON.stringify(pairs),
+  }
+ }
+
+ async function loadLaneUnit(targetId, { requireExists = false, preReadTriggers = null } = {}) {
+  const cleanId = String(targetId || '').trim()
+  const trigKey = laneTriggerKey(cleanId)
+  let preTriggerVal
+  if (preReadTriggers && Object.hasOwn(preReadTriggers, trigKey)) {
+   preTriggerVal = preReadTriggers[trigKey]
+  }
+  else {
+   const rawTrig = await rootKv.get(trigKey)
+   preTriggerVal = rawTrig === null || rawTrig === undefined ? null : String(rawTrig)
+  }
+
+  const laneData = rootKv.namespace(cleanId)
   const [loadedScript, storedInputs, tables, storedTitle] = await Promise.all([
-   loadLaneScript(rootKv, laneData, targetId, null),
+   loadLaneScript(rootKv, laneData, cleanId, null),
    laneData.get('inputs'),
-   loadLaneTables(rootKv, laneData, targetId),
+   loadLaneTables(rootKv, laneData, cleanId),
    laneData.get('title'),
   ])
 
@@ -191,15 +519,95 @@ export function createLaneHttpServer(config = {}, opts = {}) {
   )
 
   if (requireExists && !hasData) {
-   return { exists: false, state: null, results: [], title: '' }
+   return Object.freeze({
+    id: cleanId,
+    exists: false,
+    title: '',
+    lines: Object.freeze([]),
+    compiledLines: null,
+    inputs: Object.freeze([]),
+    tables: Object.freeze([]),
+    tablesScopeTemplate: Object.freeze({}),
+    staticImportTargets: Object.freeze([]),
+    scriptHash: '',
+    unitRevision: '',
+    compileError: null,
+    preTriggerVal,
+   })
   }
 
-  const lines = Array.isArray(loadedScript && loadedScript.records)
-   ? loadedScript.records.map(r => (r && r.text !== undefined && r.text !== null ? String(r.text) : ''))
-   : []
-  const inputs = parseStoredInputs(storedInputs)
-  const nextStack = new Set(stack)
-  nextStack.add(targetId)
+  const records = Array.isArray(loadedScript && loadedScript.records) ? loadedScript.records : []
+  const lines = records.map(r => (r && r.text !== undefined && r.text !== null ? String(r.text) : ''))
+  const inputs = parseStoredInputs(storedInputs).map(entry => Object.freeze({ ...entry }))
+  const cleanTables = Array.isArray(tables) ? tables : []
+  const titleStr = storedTitle === null || storedTitle === undefined ? '' : String(storedTitle)
+  const scriptHash = computeLaneScriptHash(lines)
+  const unitRevision = computeLaneSnapshotRevision({
+   laneId: cleanId,
+   title: titleStr,
+   inputs,
+   lines,
+   tables: cleanTables,
+  })
+  const staticImportTargets = includeImports ? collectStaticImportTargets(lines) : []
+
+  let compiledLines = null
+  let compileError = null
+  try {
+   compiledLines = compileFieldScriptLines(lines, { filename: cleanId, limits })
+  }
+  catch (err) {
+   if (isDeterministicError(err)) {
+    compileError = err instanceof Error ? err.message : String(err)
+   }
+   else {
+    throw err
+   }
+  }
+
+  const tablesScopeTemplate = cleanTables.length > 0
+   ? deepFreezeScopeData(buildTablesScope(cleanTables))
+   : Object.freeze({})
+
+  return Object.freeze({
+   id: cleanId,
+   exists: hasData,
+   title: titleStr,
+   lines: Object.freeze(lines),
+   compiledLines,
+   inputs: Object.freeze(inputs),
+   tables: Object.freeze(cleanTables),
+   tablesScopeTemplate,
+   staticImportTargets: Object.freeze(staticImportTargets),
+   scriptHash,
+   unitRevision,
+   compileError,
+   preTriggerVal,
+  })
+ }
+
+ async function evaluateUnit(unit, {
+  importedUnits,
+  dynamicUnits = null,
+  req = null,
+  executionBudget,
+  evalCache = new Map(),
+  activeStack = new Set(),
+  preReadTriggers = null,
+ } = {}) {
+  if (!unit) {
+   return { exists: false, state: {}, results: [] }
+  }
+  if (unit.compileError) {
+   return {
+    exists: unit.exists,
+    state: {},
+    results: [{ index: 0, lineNumber: 1, error: unit.compileError, isEmpty: false, isComment: false }],
+   }
+  }
+
+  const nextStack = new Set(activeStack)
+  nextStack.add(unit.id)
 
   const importLane = async (depId, ...propPath) => {
    if (!includeImports) {
@@ -209,19 +617,53 @@ export function createLaneHttpServer(config = {}, opts = {}) {
    if (!cleanDep) {
     return undefined
    }
-   if (cleanDep === targetId || nextStack.has(cleanDep)) {
+   if (cleanDep === unit.id || nextStack.has(cleanDep)) {
     return resolveImportValue({ ok: false, state: null, error: 'Circular lane import detected' }, propPath)
    }
-   const depRes = await evaluateLane(cleanDep, { req: null, stack: nextStack, requireExists: true })
-   if (!depRes.exists) {
+   if (limits.maxImportDepth > 0 && nextStack.size >= limits.maxImportDepth) {
+    throw createSnapshotError(`Maximum lane import depth (${limits.maxImportDepth}) exceeded`)
+   }
+
+   if (!evalCache.has(cleanDep)) {
+    let depUnit = importedUnits.get(cleanDep) || (dynamicUnits && dynamicUnits !== importedUnits ? dynamicUnits.get(cleanDep) : null)
+    if (!depUnit) {
+     const distinctCount = importedUnits.size + (dynamicUnits && dynamicUnits !== importedUnits ? dynamicUnits.size : 0)
+     if (limits.maxImportedLanes > 0 && distinctCount >= limits.maxImportedLanes) {
+      throw createSnapshotError(`Maximum imported lanes (${limits.maxImportedLanes}) exceeded`)
+     }
+     depUnit = await loadLaneUnit(cleanDep, { requireExists: true, preReadTriggers })
+     if (dynamicUnits) {
+      dynamicUnits.set(cleanDep, depUnit)
+     }
+    }
+    if (!depUnit || !depUnit.exists) {
+     evalCache.set(cleanDep, { exists: false, state: null })
+    }
+    else {
+     const depOutcome = await evaluateUnit(depUnit, {
+      importedUnits,
+      dynamicUnits,
+      req: null,
+      executionBudget,
+      evalCache,
+      activeStack: nextStack,
+      preReadTriggers,
+     })
+     evalCache.set(cleanDep, { exists: true, state: depOutcome.state })
+    }
+   }
+
+   const cached = evalCache.get(cleanDep)
+   if (!cached || !cached.exists) {
     return undefined
    }
-   return resolveImportValue({ ok: true, state: depRes.state, error: null }, propPath)
+   const resolved = resolveImportValue({ ok: true, state: cached.state, error: null }, propPath)
+   return cloneScopeData(resolved)
   }
 
   const env = {
    console: logger,
-   data: laneData,
+   data: rootKv.namespace(unit.id),
    Math,
    Number,
    JSON,
@@ -233,7 +675,7 @@ export function createLaneHttpServer(config = {}, opts = {}) {
    ...(req ? { req } : {}),
   }
 
-  for (const entry of inputs) {
+  for (const entry of unit.inputs) {
    const trimmed = entry.name.trim()
    if (!trimmed) {
     continue
@@ -241,60 +683,271 @@ export function createLaneHttpServer(config = {}, opts = {}) {
    env[trimmed] = defaultValueForType(entry.type)
   }
 
-  if (Array.isArray(tables) && tables.length > 0) {
-   Object.assign(env, buildTablesScope(tables))
+  if (unit.tablesScopeTemplate && Object.keys(unit.tablesScopeTemplate).length > 0) {
+   Object.assign(env, cloneScopeData(unit.tablesScopeTemplate))
   }
 
-  const outcome = await runLines(lines, {
-   filename: targetId,
+  const outcome = await runCompiledLines(unit.compiledLines, {
+   filename: unit.id,
    initialState: env,
+   includePreviews: false,
+   limits,
+   executionBudget,
   })
 
   return {
-   exists: hasData,
+   exists: unit.exists,
    state: outcome.state,
    results: outcome.results,
-   title: storedTitle || '',
   }
  }
 
- async function reload() {
-  try {
-   const evaluated = await evaluateLane(laneId, { req: null, stack: new Set(), requireExists: false })
-   startupState = evaluated.state || {}
-   startupResults = Array.isArray(evaluated.results) ? evaluated.results : []
-   if (evaluated.title) {
-    currentTitle = evaluated.title
+ async function preloadStaticImports(unit, importedUnits, activeStack, preReadTriggers) {
+  if (!includeImports || !unit || !Array.isArray(unit.staticImportTargets) || unit.staticImportTargets.length === 0) {
+   return
+  }
+  for (const depId of unit.staticImportTargets) {
+   if (!depId || depId === unit.id || activeStack.has(depId)) {
+    continue
    }
-   handlersInfo = detectLaneHandlers(startupState)
-   const lineErr = startupResults.find(r => r && r.error)
-   startupError = lineErr ? (lineErr.lineNumber ? `Line ${lineErr.lineNumber}: ${lineErr.error}` : lineErr.error) : null
-   loadedAt = new Date().toISOString()
+   if (limits.maxImportDepth > 0 && activeStack.size >= limits.maxImportDepth) {
+    throw createSnapshotError(`Maximum lane import depth (${limits.maxImportDepth}) exceeded`)
+   }
+   let depUnit = importedUnits.get(depId)
+   if (!depUnit) {
+    if (limits.maxImportedLanes > 0 && importedUnits.size >= limits.maxImportedLanes) {
+     throw createSnapshotError(`Maximum imported lanes (${limits.maxImportedLanes}) exceeded`)
+    }
+    depUnit = await loadLaneUnit(depId, { requireExists: true, preReadTriggers })
+    importedUnits.set(depId, depUnit)
+   }
+   if (depUnit.exists) {
+    const nextStack = new Set(activeStack)
+    nextStack.add(depId)
+    await preloadStaticImports(depUnit, importedUnits, nextStack, preReadTriggers)
+   }
+  }
+ }
+
+ async function buildSnapshot(preReadTriggers = null) {
+  const mainUnit = await loadLaneUnit(laneId, { requireExists: false, preReadTriggers })
+  const importedUnits = new Map()
+  const triggerValues = { ...(preReadTriggers || {}) }
+  triggerValues[laneTriggerKey(laneId)] = mainUnit.preTriggerVal
+
+  let preloadError = null
+  if (includeImports) {
+   try {
+    await preloadStaticImports(mainUnit, importedUnits, new Set([laneId]), triggerValues)
+   }
+   catch (err) {
+    if (isDeterministicError(err)) {
+     preloadError = err instanceof Error ? err.message : String(err)
+    }
+    else {
+     throw err
+    }
+   }
+  }
+
+  let hasHandlers = false
+  let methods = []
+  let startupError = mainUnit.compileError || preloadError || null
+
+  if (!startupError) {
+   const validationBudget = createExecutionBudget(limits)
+   try {
+    const evaluated = await evaluateUnit(mainUnit, {
+     importedUnits,
+     dynamicUnits: importedUnits,
+     req: null,
+     executionBudget: validationBudget,
+     evalCache: new Map(),
+     activeStack: new Set(),
+     preReadTriggers: triggerValues,
+    })
+    const info = detectLaneHandlers(evaluated.state)
+    hasHandlers = Boolean(info.hasHandlers)
+    methods = info.methods.slice()
+    const lineErr = Array.isArray(evaluated.results) ? evaluated.results.find(r => r && r.error) : null
+    if (lineErr) {
+     startupError = lineErr.lineNumber ? `Line ${lineErr.lineNumber}: ${lineErr.error}` : lineErr.error
+    }
+   }
+   catch (err) {
+    if (isDeterministicError(err)) {
+     startupError = err instanceof Error ? err.message : String(err)
+    }
+    else {
+     throw err
+    }
+   }
+  }
+
+  const loadedLaneIds = [laneId]
+  const importDigests = {}
+  const sortedImportedIds = Array.from(importedUnits.keys()).sort()
+  for (const depId of sortedImportedIds) {
+   loadedLaneIds.push(depId)
+   const depUnit = importedUnits.get(depId)
+   importDigests[depId] = depUnit && depUnit.exists ? depUnit.unitRevision : 'missing'
+   triggerValues[laneTriggerKey(depId)] = depUnit ? depUnit.preTriggerVal : null
+  }
+
+  const revision = computeLaneSnapshotRevision({
+   laneId,
+   title: mainUnit.title || String(config.title || ''),
+   inputs: mainUnit.inputs,
+   lines: mainUnit.lines,
+   tables: mainUnit.tables,
+   imports: importDigests,
+  })
+
+  const snap = Object.freeze({
+   mainUnit,
+   importedUnits,
+   loadedLaneIds: Object.freeze(loadedLaneIds),
+   title: mainUnit.title || '',
+   hasHandlers,
+   methods: Object.freeze(methods),
+   startupError,
+   scriptHash: mainUnit.scriptHash,
+   revision,
+   loadedAt: new Date().toISOString(),
+  })
+
+  return { snap, triggerValues }
+ }
+
+ async function evaluateSnapshot(snap, reqObj, executionBudget) {
+  if (!snap || !snap.mainUnit) {
+   throw new Error(snap && snap.startupError ? snap.startupError : 'Lane snapshot not loaded')
+  }
+  return evaluateUnit(snap.mainUnit, {
+   importedUnits: snap.importedUnits,
+   dynamicUnits: new Map(),
+   req: reqObj,
+   executionBudget,
+   evalCache: new Map(),
+   activeStack: new Set(),
+  })
+ }
+
+ async function performReload({ force = false } = {}) {
+  const watchIds = hasLoadedOnce && currentSnapshot
+   ? currentSnapshot.loadedLaneIds
+   : [laneId]
+  try {
+   const preTrigger = await readTriggerState(watchIds)
+   if (
+    !force &&
+    hasLoadedOnce &&
+    preTrigger.complete &&
+    lastTriggerState &&
+    lastTriggerState.complete &&
+    preTrigger.signature === lastTriggerState.signature
+   ) {
+    return {
+     ...getStatus(),
+     reloaded: false,
+     noop: true,
+    }
+   }
+
+   const { snap, triggerValues } = await buildSnapshot(preTrigger.valuesByKey)
+   const finalTrigger = await readTriggerState(snap.loadedLaneIds, triggerValues)
+
+   reloadGeneration += 1
+   currentSnapshot = snap
+   if (snap.title) {
+    currentTitle = snap.title
+   }
+   hasLoadedOnce = true
+   lastTriggerState = finalTrigger
+
+   return {
+    ...getStatus(),
+    reloaded: true,
+    noop: false,
+   }
   }
   catch (err) {
-   startupState = {}
-   startupResults = []
-   handlersInfo = { hasHandlers: false, methods: [], handlers: {} }
-   startupError = err instanceof Error ? err.message : String(err)
-   loadedAt = new Date().toISOString()
+   const msg = err instanceof Error ? err.message : String(err)
+   if (!hasLoadedOnce) {
+    currentSnapshot = buildEmptySnapshot(msg, new Date().toISOString())
+   }
+   return {
+    ...getStatus(),
+    ok: false,
+    error: msg,
+    reloaded: false,
+    noop: false,
+   }
   }
-  return getStatus()
+ }
+
+ function reload(options = {}) {
+  const force = Boolean(options && options.force)
+  if (!activeReloadPromise) {
+   activeReloadPromise = (async () => {
+    try {
+     return await performReload({ force })
+    }
+    finally {
+     activeReloadPromise = null
+    }
+   })()
+   return activeReloadPromise
+  }
+
+  queuedReloadForce = queuedReloadForce === null ? force : (queuedReloadForce || force)
+  if (!queuedReloadPromise) {
+   queuedReloadPromise = activeReloadPromise.then(async () => {
+    const nextForce = Boolean(queuedReloadForce)
+    queuedReloadForce = null
+    queuedReloadPromise = null
+    return reload({ force: nextForce })
+   })
+  }
+  return queuedReloadPromise
  }
 
  function getStatus() {
   return {
-   ok: !startupError,
+   ok: !currentSnapshot.startupError,
    slug: config.slug || '',
    laneId,
    title: currentTitle || config.title || '',
-   mode: handlersInfo.hasHandlers ? 'handler' : 'expression',
-   handlers: handlersInfo.methods.slice(),
-   loadedAt,
-   error: startupError,
+   mode: currentSnapshot.hasHandlers ? 'handler' : 'expression',
+   handlers: currentSnapshot.methods.slice(),
+   loadedAt: currentSnapshot.loadedAt,
+   error: currentSnapshot.startupError,
    civilMemoryUrl: normalizedUrl,
    dataBasePath: config.dataBasePath || null,
    includeImports,
+   revision: currentSnapshot.revision,
+   scriptHash: currentSnapshot.scriptHash,
+   reloadGeneration,
+   loadedLaneIds: currentSnapshot.loadedLaneIds.slice(),
+   autoReload: {
+    enabled: autoReloadConfig.enabled,
+    intervalMs: autoReloadConfig.intervalMs,
+    debounceMs: autoReloadConfig.debounceMs,
+    maxReloadsPerMinute: autoReloadConfig.maxReloadsPerMinute,
+   },
+   limits,
   }
+ }
+
+ function buildResponseHeaders(baseHeaders = {}, revision = currentSnapshot.revision) {
+  const headers = { ...baseHeaders }
+  if (revision) {
+   headers['X-Civil-Lane-Rev'] = revision
+   if (cors && !Object.keys(headers).some(k => k.toLowerCase() === 'access-control-expose-headers')) {
+    headers['Access-Control-Expose-Headers'] = 'X-Civil-Lane-Rev'
+   }
+  }
+  return headers
  }
 
  function sendJsonResponse(res, status, payload) {
@@ -307,8 +960,97 @@ export function createLaneHttpServer(config = {}, opts = {}) {
    headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS'
    headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
   }
-  res.writeHead(status, headers)
+  res.writeHead(status, buildResponseHeaders(headers))
   res.end(JSON.stringify(payload))
+ }
+
+ async function waitForDebounce(ms) {
+  if (!ms || ms <= 0 || closed) {
+   return
+  }
+  await new Promise(resolve => {
+   debounceResolve = resolve
+   debounceTimer = setTimeout(() => {
+    debounceTimer = null
+    debounceResolve = null
+    resolve()
+   }, ms)
+   if (typeof debounceTimer.unref === 'function') {
+    debounceTimer.unref()
+   }
+  })
+ }
+
+ async function runAutoReloadPollTick() {
+  if (closed || pollInFlight || activeReloadPromise || !hasLoadedOnce) {
+   return
+  }
+  pollInFlight = true
+  try {
+   const cur = await readTriggerState(currentSnapshot.loadedLaneIds)
+   if (closed || !cur.hasAny) {
+    return
+   }
+   if (lastTriggerState && cur.signature === lastTriggerState.signature) {
+    return
+   }
+   if (autoReloadConfig.maxReloadsPerMinute > 0) {
+    const nowMs = Date.now()
+    while (recentAutoReloads.length > 0 && nowMs - recentAutoReloads[0] >= 60000) {
+     recentAutoReloads.shift()
+    }
+    if (recentAutoReloads.length >= autoReloadConfig.maxReloadsPerMinute) {
+     if (nowMs >= throttleWarnedUntilMs && logger && typeof logger.warn === 'function') {
+      throttleWarnedUntilMs = nowMs + 60000
+      logger.warn(`[civil-lane:${config.slug || laneId}] auto-reload throttled after ${recentAutoReloads.length} reloads in 60s`)
+     }
+     return
+    }
+    recentAutoReloads.push(nowMs)
+   }
+   if (autoReloadConfig.debounceMs > 0) {
+    await waitForDebounce(autoReloadConfig.debounceMs)
+    if (closed) {
+     return
+    }
+   }
+   await reload({ force: false })
+  }
+  catch {
+   // Transient poll error; keep serving existing snapshot and retry next interval
+  }
+  finally {
+   pollInFlight = false
+  }
+ }
+
+ function startAutoReloadPoller() {
+  stopAutoReloadPoller()
+  if (closed || !autoReloadConfig.enabled || autoReloadConfig.intervalMs <= 0) {
+   return
+  }
+  pollTimer = setInterval(() => {
+   runAutoReloadPollTick()
+  }, autoReloadConfig.intervalMs)
+  if (typeof pollTimer.unref === 'function') {
+   pollTimer.unref()
+  }
+ }
+
+ function stopAutoReloadPoller() {
+  if (pollTimer) {
+   clearInterval(pollTimer)
+   pollTimer = null
+  }
+  if (debounceTimer) {
+   clearTimeout(debounceTimer)
+   debounceTimer = null
+  }
+  if (debounceResolve) {
+   const fn = debounceResolve
+   debounceResolve = null
+   fn()
+  }
  }
 
  const server = http.createServer(async (req, res) => {
@@ -334,7 +1076,14 @@ export function createLaneHttpServer(config = {}, opts = {}) {
   }
 
   if (pathname === '/_cc/reload' && reqMethod === 'POST') {
-   const status = await reload()
+   let force = false
+   try {
+    const parsedUrl = new URL(rawUrl, 'http://localhost')
+    const rawForce = parsedUrl.searchParams.get('force')
+    force = rawForce === '1' || rawForce === 'true'
+   }
+   catch {}
+   const status = await reload({ force })
    const code = status.ok ? 200 : 500
    sendJsonResponse(res, code, status)
    logRequest({
@@ -381,27 +1130,69 @@ export function createLaneHttpServer(config = {}, opts = {}) {
    remoteAddress: req.socket && req.socket.remoteAddress,
   })
 
-  const runFreshLane = async freshReq => {
-   const evaluated = await evaluateLane(laneId, {
-    req: freshReq,
-    stack: new Set(),
-    requireExists: false,
-   })
-   return evaluated
-  }
-
-  if (handlersInfo.hasHandlers) {
+  if (!hasLoadedOnce) {
    await reload()
   }
 
-  const result = await executeLaneHttpRequest({
-   req: reqObj,
-   laneState: startupState,
-   runFreshLane,
-   cors,
-  })
+  const snap = currentSnapshot
+  const executionBudget = createExecutionBudget(limits)
+  let result
 
-  res.writeHead(result.status, result.headers)
+  if (snap.hasHandlers) {
+   const methodMatchesHandler =
+    snap.methods.includes(reqMethod) ||
+    (reqMethod === 'HEAD' && snap.methods.includes('GET')) ||
+    snap.methods.includes('ALL')
+
+   if (!methodMatchesHandler) {
+    const stubState = {}
+    for (const m of snap.methods) {
+     stubState[m.toLowerCase()] = () => {}
+    }
+    result = await executeLaneHttpRequest({
+     req: reqObj,
+     laneState: stubState,
+     cors,
+    })
+   }
+   else {
+    const respondHelper = createResponseHelper()
+    try {
+     const outcome = await evaluateSnapshot(snap, reqObj, executionBudget)
+     if (executionBudget.exhausted) {
+      result = normalizeHttpResult(
+       respondHelper(500, { error: executionBudget.exhaustedError || 'Execution limit exceeded' }),
+       { cors, method: reqMethod }
+      )
+     }
+     else {
+      result = await executeLaneHttpRequest({
+       req: reqObj,
+       laneState: outcome.state,
+       runFreshLane: async () => outcome,
+       cors,
+      })
+     }
+    }
+    catch (err) {
+     const msg = err instanceof Error ? err.message : String(err)
+     result = normalizeHttpResult(
+      respondHelper(500, { error: msg }),
+      { cors, method: reqMethod }
+     )
+    }
+   }
+  }
+  else {
+   result = await executeLaneHttpRequest({
+    req: reqObj,
+    laneState: {},
+    runFreshLane: freshReq => evaluateSnapshot(snap, freshReq, executionBudget),
+    cors,
+   })
+  }
+
+  res.writeHead(result.status, buildResponseHeaders(result.headers, snap.revision))
   res.end(result.bodyText)
 
   const loggedPath = reqObj.queryString ? `${reqObj.path}?${reqObj.queryString}` : reqObj.path
@@ -419,6 +1210,7 @@ export function createLaneHttpServer(config = {}, opts = {}) {
   reload,
   getStatus,
   listen(port = config.port || 4100, host = config.host || '127.0.0.1') {
+   closed = false
    return new Promise((resolve, reject) => {
     const onError = err => {
      server.removeListener('listening', onListening)
@@ -426,6 +1218,7 @@ export function createLaneHttpServer(config = {}, opts = {}) {
     }
     const onListening = () => {
      server.removeListener('error', onError)
+     startAutoReloadPoller()
      resolve(server.address())
     }
     server.once('error', onError)
@@ -434,6 +1227,8 @@ export function createLaneHttpServer(config = {}, opts = {}) {
    })
   },
   close() {
+   closed = true
+   stopAutoReloadPoller()
    return new Promise((resolve, reject) => {
     if (typeof server.closeAllConnections === 'function') {
      server.closeAllConnections()
@@ -472,9 +1267,9 @@ async function runCli() {
 const isEntrypoint = process.argv[1] &&
  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
 
-if (isEntrypoint) {
- runCli().catch(err => {
-  console.error(err && err.stack ? err.stack : err)
-  process.exit(1)
- })
-}
+ if (isEntrypoint) {
+  runCli().catch(err => {
+   console.error(err && err.stack ? err.stack : err)
+   process.exit(1)
+  })
+ }

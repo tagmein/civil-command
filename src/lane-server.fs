@@ -1331,7 +1331,16 @@
        ) }
        { $syncLaneToRemoteCivilMemory (
         !set-deploy-status 'Syncing lane bundle to external civil-memory...'
-        ; to res !syncLaneToRemoteCivilMemory [ object { url $cm-url } { basePath $base-path } { bundle $bundle } ]
+        ; to clean-pub [ match { $view.deployment.publicUrl : !view.deployment.publicUrl.trim } { true : '' } ]
+        ; while { propertyIs '/' [ !clean-pub.slice -1 ] } (
+         ; to pub-len [ subtract $clean-pub.length 1 ]
+         ; to clean-pub !clean-pub.slice 0 $pub-len
+        )
+        ; to reload-url [ match
+         { $clean-pub : ; add $clean-pub '/_cc/reload' }
+         { true : '' }
+        ]
+        ; to res !syncLaneToRemoteCivilMemory [ object { url $cm-url } { basePath $base-path } { bundle $bundle } { reloadUrl $reload-url } ]
         [ match
          { [ propertyIs true res.ok ] (
           ; to synced-at [ match { $res.syncedAt : $res.syncedAt } { true : !window.Date } ]

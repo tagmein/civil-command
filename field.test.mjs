@@ -1,11 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
+ DEFAULT_FIELD_LIMITS,
  PRIMITIVE_TYPES,
  TRANSPORT_PACKET_TYPE,
  VALID_FIELD_COMMANDS,
+ compileFieldScriptLines,
  createTransport,
  defaultValueForType,
  describeValue,
@@ -17,13 +20,17 @@ import {
  isParseableFieldScriptLine,
  isTransportPacket,
  listScopeEntries,
+ normalizeFieldLimits,
  normalizePrimitiveType,
  parse,
  resolveScopeColumns,
+ runCompiledLines,
  runLines,
  runScript,
  runTransportedScripts,
  serializeTransportPacket,
+ sha256Bytes,
+ sha256Hex,
  validateFieldScriptLine,
  validateFieldScriptLines,
 } from './field.fixtures.mjs'
@@ -1330,4 +1337,203 @@ test('FieldScript parser & syntax validator: rejects all unparseable and syntax-
  assert.equal(batch.errors.length, 1)
  assert.equal(batch.errors[0].lineNumber, 2)
  assert.match(batch.error, /line 2/)
+})
+
+test('sha256Hex and sha256Bytes match node:crypto SHA-256 across empty, ASCII, multi-block, and UTF-8 inputs', () => {
+ const cases = [
+  '',
+  'abc',
+  'a'.repeat(55),
+  'a'.repeat(56),
+  'a'.repeat(64),
+  'a'.repeat(200),
+  'Civil Command 🚀 café 日本語',
+ ]
+ for (const input of cases) {
+  const expected = crypto.createHash('sha256').update(input, 'utf8').digest('hex')
+  assert.equal(sha256Hex(input), expected)
+  assert.equal(Buffer.from(sha256Bytes(input)).toString('hex'), expected)
+ }
+ const rawBytes = new Uint8Array([0, 1, 2, 254, 255])
+ assert.equal(sha256Hex(rawBytes), crypto.createHash('sha256').update(rawBytes).digest('hex'))
+})
+
+test('compileFieldScriptLines & runCompiledLines: frozen ASTs, parse errors, includePreviews false, and isolated repeated runs', async () => {
+ const lines = [
+  '; to total 10',
+  '; add $total 5',
+  '; unknownBadCmd 1',
+  '; add $total 32',
+ ]
+ const compiled = compileFieldScriptLines(lines, { filename: 'compiled-lane' })
+ assert.equal(Object.isFrozen(compiled), true)
+ assert.equal(compiled.length, 4)
+ assert.equal(Object.isFrozen(compiled[0]), true)
+ assert.equal(Object.isFrozen(compiled[0].stmts), true)
+ assert.equal(Object.isFrozen(compiled[0].stmts[0]), true)
+ assert.equal(compiled[2].parseError !== null, true)
+
+ const run1 = await runCompiledLines(compiled, { includePreviews: false })
+ assert.equal(run1.results[0].value, 10)
+ assert.equal(run1.results[0].preview, '')
+ assert.equal(run1.results[1].value, 15)
+ assert.match(run1.results[2].error, /is not a valid FieldScript command/)
+ assert.equal(run1.results[3].value, 42)
+
+ // Same compiled AST evaluated twice with separate initialState values must not leak
+ const isolatedAst = compileFieldScriptLines([
+  '; to obj [ object { count 1 } ]',
+  '; set [ add $obj.count $delta ] obj.count',
+  '$obj.count',
+ ], { filename: 'isolated-ast' })
+ const [outA, outB] = await Promise.all([
+  runCompiledLines(isolatedAst, { initialState: { delta: 5 }, includePreviews: false }),
+  runCompiledLines(isolatedAst, { initialState: { delta: 100 }, includePreviews: false }),
+ ])
+ assert.equal(outA.results[2].value, 6)
+ assert.equal(outB.results[2].value, 101)
+})
+
+test('FieldScript execution guards: while loops, self-growing each, sync/async recursion depth, maxSteps, and maxExecutionMs', async () => {
+ // Defaults must be comfortably above normal workloads
+ assert.ok(DEFAULT_FIELD_LIMITS.maxScriptBytes >= 16 * 1024 * 1024)
+ assert.ok(DEFAULT_FIELD_LIMITS.maxScriptLines >= 100000)
+ assert.ok(DEFAULT_FIELD_LIMITS.maxLoopIterations >= 1000000)
+ assert.ok(DEFAULT_FIELD_LIMITS.maxCallDepth >= 512)
+ assert.ok(DEFAULT_FIELD_LIMITS.maxSteps >= 10000000)
+ assert.ok(DEFAULT_FIELD_LIMITS.maxAstNodes >= 1000000)
+ const norm = normalizeFieldLimits({ maxLoopIterations: 0 }, { useEnv: false })
+ assert.equal(norm.maxLoopIterations, 0)
+
+ // 1. Runaway while loop hits maxLoopIterations
+ const whileOut = await runLines([
+  '; to i 0',
+  '; while { propertyIsLessThan 999999 i } ( ; set [ add $i 1 ] i )',
+ ], { limits: { maxLoopIterations: 25 } })
+ assert.match(whileOut.results[1].error, /Maximum FieldScript loop iterations \(25\) exceeded/)
+
+ // 2. Self-growing each list hits maxLoopIterations
+ const eachOut = await runLines([
+  '; to xs [ list 1 2 ]',
+  '; each $xs ( !xs.push 3 )',
+ ], { limits: { maxLoopIterations: 15 } })
+ assert.match(eachOut.results[1].error, /Maximum FieldScript loop iterations \(15\) exceeded/)
+ assert.ok(eachOut.state.xs.length <= 17)
+
+ // 3. Sync recursion hits maxCallDepth
+ const syncRecOut = await runLines([
+  '; to ping (\n ; to { n } $argv\n !ping [ add $n 1 ]\n)',
+  '!ping 0',
+ ], { limits: { maxCallDepth: 6 } })
+ assert.match(syncRecOut.results[1].error, /Maximum FieldScript call stack depth \(6\) exceeded/)
+
+ // 4. Async Promise-chained tail recursion hits maxCallDepth
+ const tick = () => new Promise(resolve => setTimeout(resolve, 1))
+ const asyncRecOut = await runLines([
+  '; to spin (\n ; to { n } $argv\n !tick\n !spin [ add $n 1 ]\n)',
+  '!spin 0',
+ ], { initialState: { tick }, limits: { maxCallDepth: 6 } })
+ assert.match(asyncRecOut.results[1].error, /Maximum FieldScript call stack depth \(6\) exceeded/)
+
+ // 5. Sequential & parallel sibling async calls at shallow depth do NOT falsely trip maxCallDepth
+ const siblingAsyncOut = await runLines([
+  '; to leaf (\n ; to { n } $argv\n !tick\n ; add $n 1\n)',
+  '; to i 0',
+  '; while { propertyIsLessThan 20 i } (\n !leaf $i\n ; set [ add $i 1 ] i\n)',
+  '$i',
+ ], { initialState: { tick }, limits: { maxCallDepth: 6 } })
+ assert.equal(siblingAsyncOut.results[2].error, null)
+ assert.equal(siblingAsyncOut.results[3].value, 20)
+
+ // 6. Nested loops stopped by maxSteps and halting subsequent lines
+ const stepsOut = await runLines([
+  '; to i 0',
+  '; while { propertyIsLessThan 50 i } (\n ; to j 0\n ; while { propertyIsLessThan 50 j } ( ; set [ add $j 1 ] j )\n ; set [ add $i 1 ] i\n)',
+  '; to afterShouldNotRun true',
+ ], { limits: { maxSteps: 150 } })
+ assert.match(stepsOut.results[1].error, /Maximum FieldScript execution steps \(150\) exceeded/)
+ assert.equal(stepsOut.results.length, 2)
+ assert.equal(stepsOut.state.afterShouldNotRun, undefined)
+
+ // 7. Async execution stopped by maxExecutionMs
+ const slowOut = await runLines([
+  '; to i 0',
+  '; while { propertyIsLessThan 1000 i } (\n !tick\n ; set [ add $i 1 ] i\n)',
+ ], { initialState: { tick }, limits: { maxExecutionMs: 30 } })
+ assert.match(slowOut.results[1].error, /FieldScript execution timed out after 30ms/)
+})
+
+test('FieldScript load cycle / depth / total guards and parser / AST size limits', async () => {
+ const origFetch = globalThis.fetch
+ const files = new Map([
+  ['/cycle-a.fs', '; load /cycle-b.fs\n'],
+  ['/cycle-b.fs', '; load /cycle-a.fs\n'],
+  ['/helper.fs', '; add 1 2\n'],
+  ['/chain-1.fs', '; load /chain-2.fs\n'],
+  ['/chain-2.fs', '; load /chain-3.fs\n'],
+  ['/chain-3.fs', '; load /chain-4.fs\n'],
+  ['/chain-4.fs', '42\n'],
+  ['/many-siblings.fs', '; load /helper.fs\n; load /helper.fs\n; load /helper.fs\n; load /helper.fs\n'],
+ ])
+ globalThis.fetch = async url => {
+  const txt = files.get(String(url))
+  if (txt === undefined) {
+   throw new Error(`Unexpected fetch: ${url}`)
+  }
+  return { ok: true, status: 200, text: async () => txt }
+ }
+ try {
+  // Cyclic load triggers explicit error
+  const fCycle = field({}, { limits: { maxLoadDepth: 32 } })
+  await assert.rejects(
+   () => fCycle.run(parse('; load /cycle-a.fs\n', 'cycle-root')),
+   /Cyclic FieldScript load detected: \/cycle-a\.fs -> \/cycle-b\.fs -> \/cycle-a\.fs/
+  )
+
+  // Non-cyclic sequential loads of the same helper succeed
+  const fOk = field({}, { limits: { maxLoadDepth: 4, maxTotalLoads: 5 } })
+  const resOk = await fOk.run(parse('; to a ; load /helper.fs\n; to b ; load /helper.fs\n; add $a $b\n', 'ok-root'))
+  assert.equal(resOk, 6)
+
+  // maxLoadDepth enforced
+  const fDepth = field({}, { limits: { maxLoadDepth: 3 } })
+  await assert.rejects(
+   () => fDepth.run(parse('; load /chain-1.fs\n', 'depth-root')),
+   /Maximum FieldScript load depth \(3\) exceeded/
+  )
+
+  // maxTotalLoads enforced
+  const fTotal = field({}, { limits: { maxTotalLoads: 3 } })
+  await assert.rejects(
+   () => fTotal.run(parse('; load /many-siblings.fs\n', 'total-root')),
+   /Maximum FieldScript total loads \(3\) exceeded/
+  )
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+
+ // Parser & validator size / depth / node caps
+ const tinyByteRes = validateFieldScriptLines(['; to x 1234567890'], { limits: { maxScriptBytes: 8 } })
+ assert.equal(tinyByteRes.ok, false)
+ assert.match(tinyByteRes.error, /exceeds maximum \(8 bytes\)/)
+
+ const tinyLineRes = validateFieldScriptLine('; to x 1234567890', { limits: { maxLineBytes: 8 } })
+ assert.equal(tinyLineRes.ok, false)
+ assert.match(tinyLineRes.error, /line exceeds maximum \(8 bytes\)/)
+
+ const tinyCountRes = validateFieldScriptLines(['1', '2', '3'], { limits: { maxScriptLines: 2 } })
+ assert.equal(tinyCountRes.ok, false)
+ assert.match(tinyCountRes.error, /line count exceeds maximum \(2 lines\)/)
+
+ const deepLine = `${'( '.repeat(12)}1${' )'.repeat(12)}`
+ assert.throws(
+  () => parse(`${deepLine}\n`, 'deep', 0, { limits: { maxAstDepth: 6 } }),
+  /AST depth exceeds maximum \(6\)/
+ )
+
+ assert.throws(
+  () => parse('= ; add @1 @2\n 1 2\n 3 4\n 5 6\n 7 8\n=\n', 'macro-nodes', 0, { limits: { maxAstNodes: 10 } }),
+  /AST node count exceeds maximum \(10\)/
+ )
 })

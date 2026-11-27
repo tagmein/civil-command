@@ -1,7 +1,342 @@
 const RUN_IN_SCOPE = Symbol('runInScope')
 const LEXICAL_SCOPE = Symbol('lexicalScope')
 const FIELD_ERROR_TAGGED = Symbol('fieldErrorTagged')
+const FIELD_LIMIT_EXCEEDED = Symbol('fieldLimitExceeded')
 const AST_LOC = new WeakMap()
+const utf8Encoder = new TextEncoder()
+
+const SHA256_K = new Uint32Array([
+ 0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+ 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+ 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+ 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+ 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+ 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+ 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+ 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+])
+
+export function sha256Bytes(input) {
+ const bytes = input instanceof Uint8Array ? input : utf8Encoder.encode(String(input ?? ''))
+ const rotr = (x, n) => (x >>> n) | (x << (32 - n))
+ const len = bytes.length
+ const bitLen = len * 8
+ const padLen = ((len + 9 + 63) & ~63)
+ const buf = new Uint8Array(padLen)
+ buf.set(bytes)
+ buf[len] = 0x80
+ const dv = new DataView(buf.buffer)
+ dv.setUint32(padLen - 8, Math.floor(bitLen / 0x100000000), false)
+ dv.setUint32(padLen - 4, bitLen >>> 0, false)
+
+ const h = new Uint32Array([
+  0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+  0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+ ])
+ const w = new Uint32Array(64)
+
+ for (let offset = 0; offset < padLen; offset += 64) {
+  for (let i = 0; i < 16; i++) {
+   w[i] = dv.getUint32(offset + i * 4, false)
+  }
+  for (let i = 16; i < 64; i++) {
+   const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3)
+   const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10)
+   w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0
+  }
+  let [a, b, c, d, e, f, g, hh] = h
+  for (let i = 0; i < 64; i++) {
+   const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)
+   const ch = (e & f) ^ (~e & g)
+   const temp1 = (hh + S1 + ch + SHA256_K[i] + w[i]) >>> 0
+   const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)
+   const maj = (a & b) ^ (a & c) ^ (b & c)
+   const temp2 = (S0 + maj) >>> 0
+   hh = g
+   g = f
+   f = e
+   e = (d + temp1) >>> 0
+   d = c
+   c = b
+   b = a
+   a = (temp1 + temp2) >>> 0
+  }
+  h[0] = (h[0] + a) >>> 0
+  h[1] = (h[1] + b) >>> 0
+  h[2] = (h[2] + c) >>> 0
+  h[3] = (h[3] + d) >>> 0
+  h[4] = (h[4] + e) >>> 0
+  h[5] = (h[5] + f) >>> 0
+  h[6] = (h[6] + g) >>> 0
+  h[7] = (h[7] + hh) >>> 0
+ }
+ const out = new Uint8Array(32)
+ const outDv = new DataView(out.buffer)
+ for (let i = 0; i < 8; i++) {
+  outDv.setUint32(i * 4, h[i], false)
+ }
+ return out
+}
+
+export function sha256Hex(input) {
+ const digest = sha256Bytes(input)
+ let out = ''
+ for (let i = 0; i < digest.length; i++) {
+  out += digest[i].toString(16).padStart(2, '0')
+ }
+ return out
+}
+
+export const DEFAULT_FIELD_LIMITS = Object.freeze({
+ maxScriptBytes: 16 * 1024 * 1024,
+ maxLineBytes: 1 * 1024 * 1024,
+ maxScriptLines: 100000,
+ maxAstDepth: 256,
+ maxAstNodes: 1000000,
+ maxLoopIterations: 1000000,
+ maxCallDepth: 512,
+ maxSteps: 10000000,
+ maxExecutionMs: 0,
+ maxLoadDepth: 64,
+ maxTotalLoads: 512,
+})
+
+export const FIELD_LIMIT_ENV_VARS = Object.freeze({
+ maxScriptBytes: 'CC_MAX_SCRIPT_BYTES',
+ maxLineBytes: 'CC_MAX_LINE_BYTES',
+ maxScriptLines: 'CC_MAX_SCRIPT_LINES',
+ maxAstDepth: 'CC_MAX_AST_DEPTH',
+ maxAstNodes: 'CC_MAX_AST_NODES',
+ maxLoopIterations: 'CC_MAX_LOOP_ITERATIONS',
+ maxCallDepth: 'CC_MAX_CALL_DEPTH',
+ maxSteps: 'CC_MAX_STEPS',
+ maxExecutionMs: 'CC_MAX_EXECUTION_MS',
+ maxLoadDepth: 'CC_MAX_LOAD_DEPTH',
+ maxTotalLoads: 'CC_MAX_TOTAL_LOADS',
+})
+
+function hasPositiveLimit(val) {
+ return typeof val === 'number' && Number.isFinite(val) && val > 0
+}
+
+function parseFieldLimitCandidate(raw) {
+ if (raw === undefined || raw === null || raw === '') {
+  return undefined
+ }
+ if (raw === false || raw === 0 || raw === Infinity) {
+  return 0
+ }
+ if (typeof raw === 'string') {
+  const lower = raw.trim().toLowerCase()
+  if (!lower) {
+   return undefined
+  }
+  if (lower === 'false' || lower === 'off' || lower === '0' || lower === 'infinity' || lower === 'unlimited') {
+   return 0
+  }
+ }
+ const n = Number(raw)
+ if (!Number.isFinite(n)) {
+  return undefined
+ }
+ return n <= 0 ? 0 : Math.trunc(n)
+}
+
+export function normalizeFieldLimits(raw = {}, options = {}) {
+ const src = raw && typeof raw === 'object' ? raw : {}
+ const useEnv = !options || options.useEnv !== false
+ const globalLimits = typeof globalThis !== 'undefined' && globalThis.CC_FIELD_LIMITS && typeof globalThis.CC_FIELD_LIMITS === 'object'
+  ? globalThis.CC_FIELD_LIMITS
+  : null
+ const envObj = useEnv && typeof process !== 'undefined' && process && process.env ? process.env : null
+ const out = {}
+ for (const key of Object.keys(DEFAULT_FIELD_LIMITS)) {
+  const envName = FIELD_LIMIT_ENV_VARS[key]
+  const parsedExplicit = parseFieldLimitCandidate(src[key])
+  const parsedGlobal = globalLimits ? parseFieldLimitCandidate(globalLimits[key]) : undefined
+  const parsedEnv = envObj && envName ? parseFieldLimitCandidate(envObj[envName]) : undefined
+  if (parsedExplicit !== undefined) {
+   out[key] = parsedExplicit
+  }
+  else if (parsedGlobal !== undefined) {
+   out[key] = parsedGlobal
+  }
+  else if (parsedEnv !== undefined) {
+   out[key] = parsedEnv
+  }
+  else {
+   out[key] = DEFAULT_FIELD_LIMITS[key]
+  }
+ }
+ return Object.freeze(out)
+}
+
+export function createExecutionBudget(limits = DEFAULT_FIELD_LIMITS, nowMs = Date.now()) {
+ const norm = limits && typeof limits === 'object' ? normalizeFieldLimits(limits) : DEFAULT_FIELD_LIMITS
+ const maxSteps = hasPositiveLimit(norm.maxSteps) ? norm.maxSteps : 0
+ const maxExecutionMs = hasPositiveLimit(norm.maxExecutionMs) ? norm.maxExecutionMs : 0
+ return {
+  steps: 0,
+  maxSteps,
+  maxExecutionMs,
+  deadlineMs: maxExecutionMs > 0 ? nowMs + maxExecutionMs : 0,
+  exhausted: false,
+  exhaustedKind: null,
+  exhaustedError: null,
+ }
+}
+
+function makeLimitExceededError(message, kind = 'limit', loc = null) {
+ const suffix = formatLoc(loc)
+ const err = new RangeError(`${message}${suffix}`)
+ err[FIELD_LIMIT_EXCEEDED] = kind
+ if (loc) {
+  err.fieldLocation = loc
+  err[FIELD_ERROR_TAGGED] = true
+ }
+ return err
+}
+
+function tickExecutionBudget(budget, forceClock = false) {
+ if (!budget) {
+  return
+ }
+ if (budget.exhausted && budget.exhaustedError) {
+  throw budget.exhaustedError
+ }
+ budget.steps += 1
+ if (budget.maxSteps > 0 && budget.steps > budget.maxSteps) {
+  const err = makeLimitExceededError(`Maximum FieldScript execution steps (${budget.maxSteps}) exceeded`, 'maxSteps')
+  budget.exhausted = true
+  budget.exhaustedKind = 'maxSteps'
+  budget.exhaustedError = err
+  throw err
+ }
+ if (budget.deadlineMs > 0 && (forceClock || (budget.steps & 1023) === 0)) {
+  if (Date.now() > budget.deadlineMs) {
+   const err = makeLimitExceededError(`FieldScript execution timed out after ${budget.maxExecutionMs}ms`, 'maxExecutionMs')
+   budget.exhausted = true
+   budget.exhaustedKind = 'maxExecutionMs'
+   budget.exhaustedError = err
+   throw err
+  }
+ }
+}
+
+function utf8ByteLengthField(text) {
+ return utf8Encoder.encode(String(text)).length
+}
+
+function exceedsUtf8Limit(text, limitBytes) {
+ if (!hasPositiveLimit(limitBytes)) {
+  return false
+ }
+ const len = text.length
+ if (len > limitBytes) {
+  return true
+ }
+ if (len * 3 <= limitBytes) {
+  return false
+ }
+ return utf8ByteLengthField(text) > limitBytes
+}
+
+function deepFreezeAst(node, seen = new WeakSet()) {
+ if (!node || typeof node !== 'object' || seen.has(node)) {
+  return node
+ }
+ seen.add(node)
+ if (Array.isArray(node)) {
+  for (let i = 0; i < node.length; i++) {
+   deepFreezeAst(node[i], seen)
+  }
+  return Object.freeze(node)
+ }
+ if (isPlainObject(node)) {
+  for (const key of Object.keys(node)) {
+   deepFreezeAst(node[key], seen)
+  }
+  return Object.freeze(node)
+ }
+ return node
+}
+
+export function deepFreezeScopeData(value, seen = new WeakSet()) {
+ if (value === null || value === undefined || typeof value !== 'object') {
+  return value
+ }
+ if (seen.has(value) || isMaskedSecretValue(value) || isDomElement(value)) {
+  return value
+ }
+ seen.add(value)
+ if (Array.isArray(value)) {
+  for (let i = 0; i < value.length; i++) {
+   deepFreezeScopeData(value[i], seen)
+  }
+  return Object.freeze(value)
+ }
+ if (isPlainObject(value)) {
+  for (const key of Object.keys(value)) {
+   deepFreezeScopeData(value[key], seen)
+  }
+  return Object.freeze(value)
+ }
+ return value
+}
+
+export function cloneScopeData(value, seen = new WeakMap()) {
+ if (value === null || value === undefined || typeof value !== 'object') {
+  return value
+ }
+ if (isMaskedSecretValue(value) || isDomElement(value)) {
+  return value
+ }
+ if (seen.has(value)) {
+  return seen.get(value)
+ }
+ if (value instanceof Date) {
+  return new Date(value.getTime())
+ }
+ if (Array.isArray(value)) {
+  const copy = new Array(value.length)
+  seen.set(value, copy)
+  for (let i = 0; i < value.length; i++) {
+   copy[i] = cloneScopeData(value[i], seen)
+  }
+  return copy
+ }
+ if (value instanceof Map) {
+  const copy = new Map()
+  seen.set(value, copy)
+  for (const [k, v] of value.entries()) {
+   copy.set(cloneScopeData(k, seen), cloneScopeData(v, seen))
+  }
+  return copy
+ }
+ if (value instanceof Set) {
+  const copy = new Set()
+  seen.set(value, copy)
+  for (const v of value.values()) {
+   copy.add(cloneScopeData(v, seen))
+  }
+  return copy
+ }
+ if (ArrayBuffer.isView(value)) {
+  if (value instanceof DataView) {
+   return new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength))
+  }
+  return typeof value.slice === 'function' ? value.slice() : value
+ }
+ if (isPlainObject(value)) {
+  const copy = {}
+  seen.set(value, copy)
+  for (const key of Object.keys(value)) {
+   copy[key] = cloneScopeData(value[key], seen)
+  }
+  return copy
+ }
+ return value
+}
 
 function splitRootPath(a, rest) {
  if (typeof a === 'string' && a.includes('.')) {
@@ -350,7 +685,57 @@ export function createTransport() {
 
 export function field(initialState={}, options={}) {
  const transport = options.transport || createTransport()
- function createScope(state, argv = []) {
+ const limits = normalizeFieldLimits(options.limits, options)
+ const hasExplicitBudget = Boolean(options && options.executionBudget)
+ const hasExplicitRunLimits = Boolean(
+  options &&
+  options.limits &&
+  (Object.hasOwn(options.limits, 'maxSteps') || Object.hasOwn(options.limits, 'maxExecutionMs'))
+ )
+ const executionBudget = hasExplicitBudget
+  ? options.executionBudget
+  : (options.enforceRunBudget || hasExplicitRunLimits)
+   ? createExecutionBudget(limits)
+   : null
+ const runtimeState = {
+  callDepth: Number.isInteger(options.initialCallDepth) ? options.initialCallDepth : 0,
+  totalLoads: 0,
+ }
+
+ function createScope(state, argv = [], scopeMeta = {}) {
+  const frameDepth = Number.isInteger(scopeMeta.depth) ? scopeMeta.depth : 0
+  const loadStack = Array.isArray(scopeMeta.loadStack) ? scopeMeta.loadStack : []
+
+  function runAtDepth(depth, fn) {
+   const prev = runtimeState.callDepth
+   runtimeState.callDepth = depth
+   try {
+    return fn()
+   }
+   finally {
+    runtimeState.callDepth = prev
+   }
+  }
+
+  function scopeThen(value, onFulfilled, onRejected) {
+   if (!isThenable(value)) {
+    return onFulfilled(value)
+   }
+   const savedDepth = frameDepth
+   return value.then(
+    v => runAtDepth(savedDepth, () => {
+     tickExecutionBudget(executionBudget, true)
+     return onFulfilled(v)
+    }),
+    onRejected
+     ? err => runAtDepth(savedDepth, () => {
+      tickExecutionBudget(executionBudget, true)
+      return onRejected(err)
+     })
+     : undefined
+   )
+  }
+
   function get(a, ...p) {
    const [root, ...path] = splitRootPath(a, p)
    let v = root === 'argv' ? argv : state[root]
@@ -506,6 +891,12 @@ export function field(initialState={}, options={}) {
     return invokeBranch(t)
    }
   }
+  function assertLoopIteration(iterations) {
+   if (hasPositiveLimit(limits.maxLoopIterations) && iterations > limits.maxLoopIterations) {
+    throw makeLimitExceededError(`Maximum FieldScript loop iterations (${limits.maxLoopIterations}) exceeded`, 'maxLoopIterations')
+   }
+   tickExecutionBudget(executionBudget)
+  }
   function match(...pairs) {
    const step = i => {
     while (i < pairs.length) {
@@ -518,7 +909,7 @@ export function field(initialState={}, options={}) {
       ? me[cond[0]](...cond.slice(1))
       : cond
      if (isThenable(matched)) {
-      return matched.then(m => (m ? invokeBranch(body) : step(i + 1)))
+      return scopeThen(matched, m => (m ? invokeBranch(body) : step(i + 1)))
      }
      if (matched) {
       return invokeBranch(body)
@@ -538,6 +929,7 @@ export function field(initialState={}, options={}) {
    }
    const iter = iterable[Symbol.iterator]()
    let index = 0
+   let iterations = 0
    let last
    const step = () => {
     while (true) {
@@ -545,9 +937,11 @@ export function field(initialState={}, options={}) {
      if (next.done) {
       return last
      }
+     iterations += 1
+     assertLoopIteration(iterations)
      const res = fn(next.value, index++)
      if (isThenable(res)) {
-      return res.then(v => {
+      return scopeThen(res, v => {
        last = v
        return step()
       })
@@ -559,6 +953,7 @@ export function field(initialState={}, options={}) {
   }
   function whileLoop(cond, body) {
    let last
+   let iterations = 0
    const loop = () => {
     while (true) {
      const c = Array.isArray(cond) && typeof cond[0] === 'string' && typeof me[cond[0]] === 'function'
@@ -567,9 +962,11 @@ export function field(initialState={}, options={}) {
        ? invokeBranch(cond)
        : cond
      if (isThenable(c)) {
-      return c.then(ok => {
+      return scopeThen(c, ok => {
        if (!ok) { return last }
-       return then(invokeBranch(body), v => {
+       iterations += 1
+       assertLoopIteration(iterations)
+       return scopeThen(invokeBranch(body), v => {
         last = v
         return loop()
        })
@@ -578,9 +975,11 @@ export function field(initialState={}, options={}) {
      if (!c) {
       return last
      }
+     iterations += 1
+     assertLoopIteration(iterations)
      const res = invokeBranch(body)
      if (isThenable(res)) {
-      return res.then(v => {
+      return scopeThen(res, v => {
        last = v
        return loop()
       })
@@ -595,11 +994,19 @@ export function field(initialState={}, options={}) {
    try {
     const res = invokeBranch(body)
     if (isThenable(res)) {
-     return res.catch(err => (typeof onError === 'function' ? onError(err) : onError))
+     return scopeThen(res, v => v, err => {
+      if (err && err[FIELD_LIMIT_EXCEEDED] && executionBudget && executionBudget.exhausted) {
+       throw err
+      }
+      return typeof onError === 'function' ? onError(err) : onError
+     })
     }
     return res
    }
    catch (err) {
+    if (err && err[FIELD_LIMIT_EXCEEDED] && executionBudget && executionBudget.exhausted) {
+     throw err
+    }
     return typeof onError === 'function' ? onError(err) : onError
    }
   }
@@ -612,10 +1019,16 @@ export function field(initialState={}, options={}) {
 
   function willSeries(...b) {
    return function func(...a) {
-    const child = createScope(Object.create(state), a)
-    for (const [c, ...d] of b) {
-     child[c](...d)
+    const nextDepth = runtimeState.callDepth + 1
+    if (hasPositiveLimit(limits.maxCallDepth) && nextDepth > limits.maxCallDepth) {
+     throw makeLimitExceededError(`Maximum FieldScript call stack depth (${limits.maxCallDepth}) exceeded`, 'maxCallDepth')
     }
+    const child = createScope(Object.create(state), a, { depth: nextDepth, loadStack })
+    return runAtDepth(nextDepth, () => {
+     for (const [c, ...d] of b) {
+      child[c](...d)
+     }
+    })
    }
   }
 
@@ -632,7 +1045,7 @@ export function field(initialState={}, options={}) {
     while (i < source.length) {
      const res = fn(source[i])
      if (isThenable(res)) {
-      return res.then(v => {
+      return scopeThen(res, v => {
        out.push(v)
        return step(i + 1)
       })
@@ -652,10 +1065,10 @@ export function field(initialState={}, options={}) {
     typeof condAst[0] === 'string' &&
     typeof me[condAst[0]] === 'function'
    ) {
-    return then(seriesAll(condAst.slice(1), compile), args => me[condAst[0]](...args))
+    return scopeThen(seriesAll(condAst.slice(1), compile), args => me[condAst[0]](...args))
    }
    if (Array.isArray(condAst) && condAst[0] === '@' && condAst[1] === 'will') {
-    return then(compile(condAst), fn => invokeBranch(fn))
+    return scopeThen(compile(condAst), fn => invokeBranch(fn))
    }
    return compile(condAst)
   }
@@ -668,12 +1081,12 @@ export function field(initialState={}, options={}) {
       const [condAst, bodyAst] = armAst
       const matched = evalCondition(condAst)
       if (isThenable(matched)) {
-       return matched.then(m =>
-        m ? then(compile(bodyAst), invokeBranch) : step(i + 1)
+       return scopeThen(matched, m =>
+        m ? scopeThen(compile(bodyAst), invokeBranch) : step(i + 1)
        )
       }
       if (matched) {
-       return then(compile(bodyAst), invokeBranch)
+       return scopeThen(compile(bodyAst), invokeBranch)
       }
      }
      else {
@@ -685,10 +1098,10 @@ export function field(initialState={}, options={}) {
        const matched = Array.isArray(cond) && typeof cond[0] === 'string' && typeof me[cond[0]] === 'function'
         ? me[cond[0]](...cond.slice(1))
         : cond
-       return then(matched, m => (m ? invokeBranch(body) : step(i + 1)))
+       return scopeThen(matched, m => (m ? invokeBranch(body) : step(i + 1)))
       }
       const pair = compile(armAst)
-      return isThenable(pair) ? pair.then(handlePair) : handlePair(pair)
+      return isThenable(pair) ? scopeThen(pair, handlePair) : handlePair(pair)
      }
      i++
     }
@@ -701,14 +1114,17 @@ export function field(initialState={}, options={}) {
    const isWillBody = Array.isArray(bodyAst) && bodyAst[0] === '@' && bodyAst[1] === 'will'
    const runWithBody = compiledBody => {
     let last
+    let iterations = 0
     const loop = () => {
      while (true) {
       const cond = evalCondition(condAst)
       if (isThenable(cond)) {
-       return cond.then(c => {
+       return scopeThen(cond, c => {
         if (!c) { return last }
-        const bodyRes = isWillBody ? invokeBranch(compiledBody) : then(compile(bodyAst), invokeBranch)
-        return then(bodyRes, v => {
+        iterations += 1
+        assertLoopIteration(iterations)
+        const bodyRes = isWillBody ? invokeBranch(compiledBody) : scopeThen(compile(bodyAst), invokeBranch)
+        return scopeThen(bodyRes, v => {
          last = v
          return loop()
         })
@@ -717,9 +1133,11 @@ export function field(initialState={}, options={}) {
       if (!cond) {
        return last
       }
-      const bodyRes = isWillBody ? invokeBranch(compiledBody) : then(compile(bodyAst), invokeBranch)
+      iterations += 1
+      assertLoopIteration(iterations)
+      const bodyRes = isWillBody ? invokeBranch(compiledBody) : scopeThen(compile(bodyAst), invokeBranch)
       if (isThenable(bodyRes)) {
-       return bodyRes.then(v => {
+       return scopeThen(bodyRes, v => {
         last = v
         return loop()
        })
@@ -729,7 +1147,7 @@ export function field(initialState={}, options={}) {
     }
     return loop()
    }
-   return isWillBody ? then(compile(bodyAst), runWithBody) : runWithBody(null)
+   return isWillBody ? scopeThen(compile(bodyAst), runWithBody) : runWithBody(null)
   }
 
   function evalBlock(stmts) {
@@ -739,7 +1157,7 @@ export function field(initialState={}, options={}) {
      const stmt = stmts[i]
      const value = compile(stmt)
      if (isThenable(value)) {
-      return value.then(v => {
+      return scopeThen(value, v => {
        if (!isCommentNode(stmt)) {
         last = v
        }
@@ -753,7 +1171,7 @@ export function field(initialState={}, options={}) {
     }
     return last
    }
-   return step(0)
+   return runAtDepth(frameDepth, () => step(0))
   }
 
   function compile(x) {
@@ -764,6 +1182,7 @@ export function field(initialState={}, options={}) {
        return x.slice(1)
       }
       try {
+       tickExecutionBudget(executionBudget)
        if (!Object.hasOwn(me, x[1]) || typeof me[x[1]] !== 'function') {
         throw new Error(`${JSON.stringify(x[1])} is not a valid FieldScript command`)
        }
@@ -776,7 +1195,7 @@ export function field(initialState={}, options={}) {
        if (x[1] === 'while') {
         return wrapErrorCatch(evalWhile(x[2], x[3]), x)
        }
-       const res = then(
+       const res = scopeThen(
         seriesAll(x.slice(2), compile),
         args => me[x[1]](...args)
        )
@@ -788,10 +1207,10 @@ export function field(initialState={}, options={}) {
      }
      return seriesAll(x, compile)
     case typeof x === 'object' && x:
-     return then(
+     return scopeThen(
       seriesAll(
        Object.entries(x),
-       ([k, v]) => then(compile(v), val => [k, val])
+       ([k, v]) => scopeThen(compile(v), val => [k, val])
       ),
       entries => Object.fromEntries(entries)
      )
@@ -848,18 +1267,36 @@ export function field(initialState={}, options={}) {
 
   async function run(program, vars) {
    const templated = me.template(program, vars)
-   if (Array.isArray(templated) && templated[0] !== '@') {
-    return evalBlock(templated)
-   }
-   return me.compile(templated)
+   return runAtDepth(frameDepth, () => {
+    if (Array.isArray(templated) && templated[0] !== '@') {
+     return evalBlock(templated)
+    }
+    return me.compile(templated)
+   })
   }
 
   async function load(scriptPath, vars = {}) {
+   const normPath = scriptPath === null || scriptPath === undefined ? '' : String(scriptPath).trim()
+   if (loadStack.includes(normPath)) {
+    throw new Error(`Cyclic FieldScript load detected: ${[...loadStack, normPath].join(' -> ')}`)
+   }
+   const nextLoadStack = [...loadStack, normPath]
+   if (hasPositiveLimit(limits.maxLoadDepth) && nextLoadStack.length > limits.maxLoadDepth) {
+    throw makeLimitExceededError(`Maximum FieldScript load depth (${limits.maxLoadDepth}) exceeded`, 'maxLoadDepth')
+   }
+   runtimeState.totalLoads += 1
+   if (hasPositiveLimit(limits.maxTotalLoads) && runtimeState.totalLoads > limits.maxTotalLoads) {
+    throw makeLimitExceededError(`Maximum FieldScript total loads (${limits.maxTotalLoads}) exceeded`, 'maxTotalLoads')
+   }
    const scriptText = await (
     await fetch(scriptPath)
    ).text()
-   const program = parse(scriptText, scriptPath)
-   const child = createScope(Object.create(state), [])
+   const program = parse(scriptText, scriptPath, 0, { limits })
+   const nextDepth = frameDepth + 1
+   if (hasPositiveLimit(limits.maxCallDepth) && nextDepth > limits.maxCallDepth) {
+    throw makeLimitExceededError(`Maximum FieldScript call stack depth (${limits.maxCallDepth}) exceeded`, 'maxCallDepth')
+   }
+   const child = createScope(Object.create(state), [], { depth: nextDepth, loadStack: nextLoadStack })
    return child.run(program, vars)
   }
 
@@ -888,8 +1325,13 @@ export function field(initialState={}, options={}) {
     ? blocks[0].slice(1)
     : blocks
    function fn(...a) {
-    const child = createScope(Object.create(state), a)
-    return child.evalBlock(stmts)
+    const nextDepth = runtimeState.callDepth + 1
+    if (hasPositiveLimit(limits.maxCallDepth) && nextDepth > limits.maxCallDepth) {
+     throw makeLimitExceededError(`Maximum FieldScript call stack depth (${limits.maxCallDepth}) exceeded`, 'maxCallDepth')
+    }
+    tickExecutionBudget(executionBudget)
+    const child = createScope(Object.create(state), a, { depth: nextDepth, loadStack })
+    return runAtDepth(nextDepth, () => child.evalBlock(stmts))
    }
    fn.ast = stmts
    fn[LEXICAL_SCOPE] = me
@@ -941,7 +1383,7 @@ export function field(initialState={}, options={}) {
 
  const rootState = options.preservePrototype ? initialState : { ...initialState }
  const rootArgv = Array.isArray(options.argv) ? options.argv : []
- return createScope(rootState, rootArgv)
+ return createScope(rootState, rootArgv, { depth: 0, loadStack: [] })
 }
 
 export const VALID_FIELD_COMMANDS = Object.freeze([
@@ -1057,58 +1499,79 @@ function validateDestructuringPattern(pattern, loc) {
 }
 
 export function validateFieldScriptAst(node, options = {}) {
- if (!Array.isArray(node)) {
-  return node
- }
  const allowPatternPlaceholders = Boolean(options && options.allowPatternPlaceholders)
- if (node[0] === '@') {
-  const loc = AST_LOC.get(node)
-  if (node.length < 2) {
-   throw makeSyntaxError('Empty command block', loc)
+ const limits = options && options._limits ? options._limits : normalizeFieldLimits(options && options.limits, options)
+ const counter = (options && options._nodeCounter) || { count: 0 }
+
+ function walkAst(cur, depth) {
+  counter.count += 1
+  if (hasPositiveLimit(limits.maxAstNodes) && counter.count > limits.maxAstNodes) {
+   const loc = Array.isArray(cur) ? AST_LOC.get(cur) : undefined
+   throw makeLimitExceededError(`FieldScript AST node count exceeds maximum (${limits.maxAstNodes})`, 'maxAstNodes', loc)
   }
-  const cmd = node[1]
-  if (cmd === '@') {
-   return node
+  if (!Array.isArray(cur)) {
+   return cur
   }
-  if (typeof cmd !== 'string') {
-   throw makeSyntaxError(`${JSON.stringify(cmd)} is not a valid FieldScript command`, loc)
+  const loc = AST_LOC.get(cur)
+  if (hasPositiveLimit(limits.maxAstDepth) && depth > limits.maxAstDepth) {
+   throw makeLimitExceededError(`FieldScript AST depth exceeds maximum (${limits.maxAstDepth})`, 'maxAstDepth', loc)
   }
-  if (!cmd.startsWith('template#') && !VALID_FIELD_COMMAND_SET.has(cmd)) {
-   throw makeSyntaxError(`${JSON.stringify(cmd)} is not a valid FieldScript command`, loc)
-  }
-  const minArgs = COMMAND_MIN_ARGS[cmd]
-  if (minArgs !== undefined) {
-   const argCount = node.length - 2
-   const hasPatternRest = allowPatternPlaceholders && node.slice(2).some(isPatternRestToken)
-   if (!hasPatternRest && argCount < minArgs) {
-    const noun = minArgs === 1 ? 'argument' : 'arguments'
-    throw makeSyntaxError(`"${cmd}" requires at least ${minArgs} ${noun}`, loc)
+  if (cur[0] === '@') {
+   if (cur.length < 2) {
+    throw makeSyntaxError('Empty command block', loc)
    }
-  }
-  if (cmd === 'to' && node.length >= 4) {
-   const targetSlot = node[node.length - 2]
-   if (Array.isArray(targetSlot) && targetSlot[0] !== '@') {
-    validateDestructuringPattern(targetSlot, AST_LOC.get(targetSlot) || loc)
+   const cmd = cur[1]
+   if (cmd === '@') {
+    return cur
    }
-  }
-  else if (cmd === 'set' && node.length >= 4) {
-   const targetSlot = node[node.length - 1]
-   if (Array.isArray(targetSlot) && targetSlot[0] !== '@') {
-    validateDestructuringPattern(targetSlot, AST_LOC.get(targetSlot) || loc)
+   if (typeof cmd !== 'string') {
+    throw makeSyntaxError(`${JSON.stringify(cmd)} is not a valid FieldScript command`, loc)
    }
+   if (!cmd.startsWith('template#') && !VALID_FIELD_COMMAND_SET.has(cmd)) {
+    throw makeSyntaxError(`${JSON.stringify(cmd)} is not a valid FieldScript command`, loc)
+   }
+   const minArgs = COMMAND_MIN_ARGS[cmd]
+   if (minArgs !== undefined) {
+    const argCount = cur.length - 2
+    const hasPatternRest = allowPatternPlaceholders && cur.slice(2).some(isPatternRestToken)
+    if (!hasPatternRest && argCount < minArgs) {
+     const noun = minArgs === 1 ? 'argument' : 'arguments'
+     throw makeSyntaxError(`"${cmd}" requires at least ${minArgs} ${noun}`, loc)
+    }
+   }
+   if (cmd === 'to' && cur.length >= 4) {
+    const targetSlot = cur[cur.length - 2]
+    if (Array.isArray(targetSlot) && targetSlot[0] !== '@') {
+     validateDestructuringPattern(targetSlot, AST_LOC.get(targetSlot) || loc)
+    }
+   }
+   else if (cmd === 'set' && cur.length >= 4) {
+    const targetSlot = cur[cur.length - 1]
+    if (Array.isArray(targetSlot) && targetSlot[0] !== '@') {
+     validateDestructuringPattern(targetSlot, AST_LOC.get(targetSlot) || loc)
+    }
+   }
+   for (let i = 2; i < cur.length; i++) {
+    walkAst(cur[i], depth + 1)
+   }
+   return cur
   }
-  for (let i = 2; i < node.length; i++) {
-   validateFieldScriptAst(node[i], options)
+  for (let i = 0; i < cur.length; i++) {
+   walkAst(cur[i], depth + 1)
   }
-  return node
+  return cur
  }
- for (let i = 0; i < node.length; i++) {
-  validateFieldScriptAst(node[i], options)
- }
- return node
+
+ return walkAst(node, 0)
 }
 
-export function parse(text, filename, startRow = 0) {
+export function parse(text, filename, startRow = 0, options = {}) {
+ const limits = options && options._limits ? options._limits : normalizeFieldLimits(options && options.limits, options)
+ if (exceedsUtf8Limit(text, limits.maxScriptBytes)) {
+  const loc = filename ? { filename, line: startRow + 1, col: 1 } : { line: startRow + 1, col: 1 }
+  throw makeLimitExceededError(`FieldScript size exceeds maximum (${limits.maxScriptBytes} bytes)`, 'maxScriptBytes', loc)
+ }
+ const parseCounter = (options && options._parseCounter) || { count: 0 }
  const output = []
  const root = { block: output }
  const stack = [ root ]
@@ -1134,6 +1597,20 @@ export function parse(text, filename, startRow = 0) {
    col: colIndex + 1,
    sourceLine: (sourceLines[lineIndex - startRow] || '').replace(/\r$/, ''),
   }
+ }
+ function countParseNode(loc, delta = 1) {
+  parseCounter.count += delta
+  if (hasPositiveLimit(limits.maxAstNodes) && parseCounter.count > limits.maxAstNodes) {
+   throw makeLimitExceededError(`FieldScript AST node count exceeds maximum (${limits.maxAstNodes})`, 'maxAstNodes', loc)
+  }
+ }
+ function pushParserScope(nextScope, loc) {
+  if (hasPositiveLimit(limits.maxAstDepth) && stack.length > limits.maxAstDepth) {
+   throw makeLimitExceededError(`FieldScript AST depth exceeds maximum (${limits.maxAstDepth})`, 'maxAstDepth', loc)
+  }
+  countParseNode(loc)
+  stack.push(nextScope)
+  scope = nextScope
  }
  function flushAutoBlock() {
   if (!scope.autoBlock) { throw new SyntaxError('no autoBlock') }
@@ -1170,10 +1647,12 @@ export function parse(text, filename, startRow = 0) {
  function flushPendingWord(isString = false) {
   if (isString || pendingWord.length > 0) {
    let pendingValue = pendingWord
+   const wordLoc = makeLoc(pendingWordStartRow, pendingWordStartCol)
    if (!isString) {
     if (pendingValue.length > 1 && pendingValue[0] === '$') {
      pendingValue = [ '@', 'get', ...pendingValue.slice(1).split('.') ]
-     AST_LOC.set(pendingValue, makeLoc(pendingWordStartRow, pendingWordStartCol))
+     AST_LOC.set(pendingValue, wordLoc)
+     countParseNode(wordLoc, pendingValue.length)
     }
     else if (pendingValue === 'false') {
      pendingValue = false
@@ -1202,6 +1681,7 @@ export function parse(text, filename, startRow = 0) {
      }
     }
    }
+   countParseNode(wordLoc)
    if (pattern) {
     if (sinceLastNewline.length === 0) {
      patternLineRow = pendingWordStartRow
@@ -1219,6 +1699,7 @@ export function parse(text, filename, startRow = 0) {
  function resolvePattern(x, vars, overrideLoc) {
   switch (true) {
    case x && Array.isArray(x): {
+    countParseNode(overrideLoc)
     const resolved = x.reduce(
      (init, y) => init.concat(resolvePattern(y, vars, overrideLoc)), []
     )
@@ -1229,6 +1710,7 @@ export function parse(text, filename, startRow = 0) {
     return [ resolved ]
    }
    case typeof x === 'object' && x:
+    countParseNode(overrideLoc)
     return [
      Object.fromEntries(
       Object.entries(x).map(
@@ -1242,16 +1724,20 @@ export function parse(text, filename, startRow = 0) {
      const candidateStringForRest = candidateString.substr(0, candidateString.length - 1)
      const candidateIntForRest = parseInt(candidateStringForRest, 10)
      if (candidateIntForRest.toString(10) === candidateStringForRest) {
-      return vars.slice(candidateIntForRest)
+      const sliced = vars.slice(candidateIntForRest)
+      countParseNode(overrideLoc, Math.max(1, sliced.length))
+      return sliced
      }
     }
     else {
      const candidateInt = parseInt(candidateString, 10)
      if (candidateInt.toString(10) === candidateString) {
+      countParseNode(overrideLoc)
       return [ vars[candidateInt] ]
      }
     }
    case typeof x === 'string' && x.includes('.') && x.includes('@'):
+    countParseNode(overrideLoc)
     return [
      x.split('.').map(seg => {
       if (seg.length > 1 && seg[0] === '@') {
@@ -1264,6 +1750,7 @@ export function parse(text, filename, startRow = 0) {
      }).join('.')
     ]
    default:
+    countParseNode(overrideLoc)
     return [ x ]
   }
  }
@@ -1339,9 +1826,10 @@ export function parse(text, filename, startRow = 0) {
      pattern = undefined
     }
     else {
-     validateFieldScriptAst(pattern, { allowPatternPlaceholders: true })
+     validateFieldScriptAst(pattern, { allowPatternPlaceholders: true, _limits: limits })
     }
    }
+   countParseNode(commentLoc)
    const commentNode = [ '@', 'comment', commentText ]
    AST_LOC.set(commentNode, commentLoc)
    scope.block.push(commentNode)
@@ -1364,12 +1852,12 @@ export function parse(text, filename, startRow = 0) {
    case '!': {
     const isDeferred = chr === ':'
     const isInvoke = chr === '!'
+    const blockLoc = makeLoc(row, col)
     flushPendingWord()
     const block = []
     scope.block.push(block)
-    const autoScope = { block, autoBlock: true, isDeferred, isInvoke, loc: makeLoc(row, col) }
-    stack.push(autoScope)
-    scope = autoScope
+    const autoScope = { block, autoBlock: true, isDeferred, isInvoke, loc: blockLoc }
+    pushParserScope(autoScope, blockLoc)
     break
    }
    case '\n':
@@ -1390,7 +1878,7 @@ export function parse(text, filename, startRow = 0) {
        pattern = undefined
       }
       else {
-       validateFieldScriptAst(pattern, { allowPatternPlaceholders: true })
+       validateFieldScriptAst(pattern, { allowPatternPlaceholders: true, _limits: limits })
       }
      }
     }
@@ -1405,16 +1893,17 @@ export function parse(text, filename, startRow = 0) {
     break
    case '{':
    case '[':
-   case '(':
+   case '(': {
+    const blockLoc = makeLoc(row, col)
     flushPendingWord()
     const isDeferred = chr === '('
     const isList = chr === '{'
     const inner = isDeferred ? [ 'will' ] : isList ? [ 'list' ] : []
     scope.block.push(inner)
-    const branch = { block: inner, isDeferred, isList, loc: makeLoc(row, col) }
-    stack.push(branch)
-    scope = branch
+    const branch = { block: inner, isDeferred, isList, loc: blockLoc }
+    pushParserScope(branch, blockLoc)
     break
+   }
    case '}':
    case ']':
    case ')': {
@@ -1503,29 +1992,38 @@ export function parse(text, filename, startRow = 0) {
  if (inPatternDefinition) {
   const unusedPattern = patternScope.block.splice(collectedPatternIndex)
   if (unusedPattern.length > 0) {
-   validateFieldScriptAst(unusedPattern, { allowPatternPlaceholders: true })
+   validateFieldScriptAst(unusedPattern, { allowPatternPlaceholders: true, _limits: limits })
   }
  }
  else if (pattern && sinceLastNewline.length > 0) {
   flushPatternLine(pattern, sinceLastNewline)
  }
- validateFieldScriptAst(output)
+ validateFieldScriptAst(output, {
+  _limits: limits,
+  _nodeCounter: options && options._validateCounter ? options._validateCounter : undefined,
+ })
  return output
 }
 
 export function validateFieldScriptLine(source, options = {}) {
  const text = source === null || source === undefined ? '' : String(source)
- if (text.trim().length === 0) {
-  return { ok: true, ast: [], error: null, location: null }
- }
+ const limits = options && options._limits ? options._limits : normalizeFieldLimits(options && options.limits, options)
  const filename = options && typeof options.filename === 'string' && options.filename.length > 0
   ? options.filename
   : undefined
  const rawIndex = options && Number.isInteger(options.lineIndex) && options.lineIndex >= 0
   ? options.lineIndex
   : 0
+ if (exceedsUtf8Limit(text, limits.maxLineBytes)) {
+  const loc = { filename, line: rawIndex + 1, col: 1, sourceLine: text }
+  const err = makeLimitExceededError(`FieldScript line exceeds maximum (${limits.maxLineBytes} bytes)`, 'maxLineBytes', loc)
+  return { ok: false, ast: null, error: err.message, location: loc }
+ }
+ if (text.trim().length === 0) {
+  return { ok: true, ast: [], error: null, location: null }
+ }
  try {
-  const ast = parse(`${text}\n`, filename, rawIndex)
+  const ast = parse(`${text}\n`, filename, rawIndex, { _limits: limits })
   return { ok: true, ast, error: null, location: null }
  }
  catch (err) {
@@ -1541,10 +2039,27 @@ export function isParseableFieldScriptLine(source, options = {}) {
 
 export function validateFieldScriptLines(linesOrRecords, options = {}) {
  const list = Array.from(linesOrRecords || [])
+ const limits = normalizeFieldLimits(options && options.limits, options)
  const filename = options && typeof options.filename === 'string' && options.filename.length > 0
   ? options.filename
   : undefined
+ if (hasPositiveLimit(limits.maxScriptLines) && list.length > limits.maxScriptLines) {
+  const err = makeLimitExceededError(`FieldScript line count exceeds maximum (${limits.maxScriptLines} lines)`, 'maxScriptLines')
+  return {
+   ok: false,
+   error: err.message,
+   errors: [{
+    index: limits.maxScriptLines,
+    lineNumber: limits.maxScriptLines + 1,
+    lineId: '',
+    source: '',
+    error: err.message,
+    location: null,
+   }],
+  }
+ }
  const errors = []
+ let totalBytes = 0
  for (let i = 0; i < list.length; i++) {
   const item = list[i]
   const isObj = item !== null && typeof item === 'object'
@@ -1552,7 +2067,23 @@ export function validateFieldScriptLines(linesOrRecords, options = {}) {
    ? (item.text === null || item.text === undefined ? '' : String(item.text))
    : (item === null || item === undefined ? '' : String(item))
   const lineId = isObj && typeof item.id === 'string' ? item.id : ''
-  const res = validateFieldScriptLine(text, { filename, lineIndex: i })
+  if (hasPositiveLimit(limits.maxScriptBytes)) {
+   totalBytes += utf8ByteLengthField(text) + (i > 0 ? 1 : 0)
+   if (totalBytes > limits.maxScriptBytes) {
+    const loc = { filename, line: i + 1, col: 1, sourceLine: text }
+    const msg = makeLimitExceededError(`FieldScript total size exceeds maximum (${limits.maxScriptBytes} bytes)`, 'maxScriptBytes', loc).message
+    errors.push({
+     index: i,
+     lineNumber: i + 1,
+     lineId,
+     source: text,
+     error: msg,
+     location: loc,
+    })
+    break
+   }
+  }
+  const res = validateFieldScriptLine(text, { filename, lineIndex: i, _limits: limits })
   if (!res.ok) {
    errors.push({
     index: i,
@@ -5568,14 +6099,134 @@ export async function runTransportedScripts(packets, options = {}) {
  return { results, state: browserState }
 }
 
-export async function runLines(lines, options = {}) {
+export function compileFieldScriptLines(linesOrRecords, options = {}) {
+ const list = Array.from(linesOrRecords || [])
+ const filename = options && typeof options.filename === 'string' && options.filename.length > 0
+  ? options.filename
+  : 'lane'
+ const limits = options && options._limits ? options._limits : normalizeFieldLimits(options && options.limits, options)
+ if (hasPositiveLimit(limits.maxScriptLines) && list.length > limits.maxScriptLines) {
+  throw makeLimitExceededError(`FieldScript line count exceeds maximum (${limits.maxScriptLines} lines)`, 'maxScriptLines')
+ }
+
+ const compiled = []
+ const parseCounter = { count: 0 }
+ const validateCounter = { count: 0 }
+ let totalBytes = 0
+
+ for (let i = 0; i < list.length; i++) {
+  const item = list[i]
+  const isObj = item !== null && typeof item === 'object'
+  const source = isObj
+   ? (item.text === null || item.text === undefined ? '' : String(item.text))
+   : (item === null || item === undefined ? '' : String(item))
+  const lineId = isObj && typeof item.id === 'string' ? item.id : ''
+  const lineNumber = i + 1
+
+  if (exceedsUtf8Limit(source, limits.maxLineBytes)) {
+   throw makeLimitExceededError(
+    `FieldScript line exceeds maximum (${limits.maxLineBytes} bytes)`,
+    'maxLineBytes',
+    { filename, line: lineNumber, col: 1, sourceLine: source }
+   )
+  }
+  if (hasPositiveLimit(limits.maxScriptBytes)) {
+   totalBytes += utf8ByteLengthField(source) + (i > 0 ? 1 : 0)
+   if (totalBytes > limits.maxScriptBytes) {
+    throw makeLimitExceededError(
+     `FieldScript total size exceeds maximum (${limits.maxScriptBytes} bytes)`,
+     'maxScriptBytes',
+     { filename, line: lineNumber, col: 1, sourceLine: source }
+    )
+   }
+  }
+
+  if (source.trim().length === 0) {
+   compiled.push(Object.freeze({
+    index: i,
+    lineNumber,
+    lineId,
+    source,
+    ast: null,
+    stmts: null,
+    isEmpty: true,
+    isComment: false,
+    parseError: null,
+   }))
+   continue
+  }
+
+  try {
+   const ast = parse(`${source}\n`, filename, i, {
+    _limits: limits,
+    _parseCounter: parseCounter,
+    _validateCounter: validateCounter,
+   })
+   if (ast.length === 0) {
+    compiled.push(Object.freeze({
+     index: i,
+     lineNumber,
+     lineId,
+     source,
+     ast: deepFreezeAst(ast),
+     stmts: Object.freeze([]),
+     isEmpty: true,
+     isComment: false,
+     parseError: null,
+    }))
+    continue
+   }
+   const stmts = ast.filter(node => !isCommentNode(node))
+   deepFreezeAst(ast)
+   Object.freeze(stmts)
+   compiled.push(Object.freeze({
+    index: i,
+    lineNumber,
+    lineId,
+    source,
+    ast,
+    stmts,
+    isEmpty: false,
+    isComment: stmts.length === 0,
+    parseError: null,
+   }))
+  }
+  catch (err) {
+   if (err && err[FIELD_LIMIT_EXCEEDED]) {
+    throw err
+   }
+   const message = err instanceof Error ? err.message : String(err)
+   compiled.push(Object.freeze({
+    index: i,
+    lineNumber,
+    lineId,
+    source,
+    ast: null,
+    stmts: null,
+    isEmpty: false,
+    isComment: false,
+    parseError: message,
+   }))
+  }
+ }
+
+ return Object.freeze(compiled)
+}
+
+export async function runCompiledLines(compiledLines, options = {}) {
  const {
   initialState = {},
-  filename = 'lane',
   transport = createTransport(),
   lineContext = null,
   lineRecords = null,
+  includePreviews = true,
  } = options
+ const list = Array.isArray(compiledLines) ? compiledLines : []
+ const limits = normalizeFieldLimits(options && options.limits, options)
+ const executionBudget = options && options.executionBudget
+  ? options.executionBudget
+  : createExecutionBudget(limits)
+
  const rawSecretNames = Array.isArray(options.secretNames)
   ? options.secretNames
   : (Array.isArray(initialState.__secretNames) ? initialState.__secretNames : [])
@@ -5601,14 +6252,22 @@ export async function runLines(lines, options = {}) {
  delete cleanInitialState.__secretValues
  delete cleanInitialState.__secretSetNames
 
- const runner = field(cleanInitialState, { transport, preservePrototype: true })
+ const runner = field(cleanInitialState, {
+  transport,
+  preservePrototype: true,
+  limits,
+  executionBudget,
+ })
  const results = []
 
- for (let i = 0; i < lines.length; i++) {
-  const source = String(lines[i] ?? '')
-  const lineNumber = i + 1
+ for (let i = 0; i < list.length; i++) {
+  const entry = list[i] || {}
+  const source = entry.source === undefined || entry.source === null ? '' : String(entry.source)
+  const lineNumber = Number.isInteger(entry.lineNumber) ? entry.lineNumber : i + 1
   const lineRecord = Array.isArray(lineRecords) ? lineRecords[i] : null
-  const lineId = lineRecord && typeof lineRecord.id === 'string' ? lineRecord.id : ''
+  const lineId = lineRecord && typeof lineRecord.id === 'string'
+   ? lineRecord.id
+   : (typeof entry.lineId === 'string' ? entry.lineId : '')
   if (lineContext && typeof lineContext === 'object') {
    lineContext.index = i
    lineContext.lineNumber = lineNumber
@@ -5617,7 +6276,21 @@ export async function runLines(lines, options = {}) {
   if (typeof transport.setLineNumber === 'function') {
    transport.setLineNumber(lineNumber)
   }
-  if (source.trim().length === 0) {
+  if (entry.parseError) {
+   const message = secretValues.length > 0 ? redactSecretText(entry.parseError, secretValues) : entry.parseError
+   results.push({
+    index: i,
+    lineNumber,
+    source,
+    value: undefined,
+    preview: message,
+    error: message,
+    isEmpty: false,
+    isComment: false,
+   })
+   continue
+  }
+  if (entry.isEmpty) {
    results.push({
     index: i,
     lineNumber,
@@ -5630,35 +6303,21 @@ export async function runLines(lines, options = {}) {
    })
    continue
   }
+  if (entry.isComment) {
+   results.push({
+    index: i,
+    lineNumber,
+    source,
+    value: undefined,
+    preview: '',
+    error: null,
+    isEmpty: false,
+    isComment: true,
+   })
+   continue
+  }
+  const stmts = Array.isArray(entry.stmts) ? entry.stmts : []
   try {
-   const ast = parse(`${source}\n`, filename, i)
-   if (ast.length === 0) {
-    results.push({
-     index: i,
-     lineNumber,
-     source,
-     value: undefined,
-     preview: '',
-     error: null,
-     isEmpty: true,
-     isComment: false,
-    })
-    continue
-   }
-   const stmts = ast.filter(node => !isCommentNode(node))
-   if (stmts.length === 0) {
-    results.push({
-     index: i,
-     lineNumber,
-     source,
-     value: undefined,
-     preview: '',
-     error: null,
-     isEmpty: false,
-     isComment: true,
-    })
-    continue
-   }
    let value
    if (stmts.length === 1) {
     value = await runner.compile(stmts[0])
@@ -5670,8 +6329,11 @@ export async function runLines(lines, options = {}) {
     }
    }
    const safeValue = secretValues.length > 0 ? redactSecretValue(value, secretValues) : value
-   const rawPreview = formatValue(safeValue)
-   const preview = secretValues.length > 0 ? redactSecretText(rawPreview, secretValues) : rawPreview
+   let preview = ''
+   if (includePreviews) {
+    const rawPreview = formatValue(safeValue)
+    preview = secretValues.length > 0 ? redactSecretText(rawPreview, secretValues) : rawPreview
+   }
    results.push({
     index: i,
     lineNumber,
@@ -5696,6 +6358,9 @@ export async function runLines(lines, options = {}) {
     isEmpty: false,
     isComment: false,
    })
+   if (executionBudget && executionBudget.exhausted) {
+    break
+   }
   }
  }
  if (lineContext && typeof lineContext === 'object') {
@@ -5729,7 +6394,15 @@ export async function runLines(lines, options = {}) {
    }
   }
  }
- return { results, state: runner.state, sent }
+ return { results, state: runner.state, sent, executionBudget }
+}
+
+export async function runLines(lines, options = {}) {
+ const compiled = compileFieldScriptLines(lines, {
+  filename: options && options.filename ? options.filename : 'lane',
+  limits: options && options.limits,
+ })
+ return runCompiledLines(compiled, options)
 }
 
 export function isValidTimeZone(tz, intlObj = globalThis.Intl) {

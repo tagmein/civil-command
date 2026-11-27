@@ -27,6 +27,7 @@ import {
  checkLaneAccess,
  clearTableRows,
  collectLaneSyncBundle,
+ computeLaneScriptHash,
  deleteLaneSecret,
  deleteLaneTable,
  deleteTableRow,
@@ -1663,6 +1664,11 @@ export async function agentListDeployments(rootKv, options = {}) {
      }
     }
    }
+   const expectedScriptHash = computeLaneScriptHash(status.currentRecords)
+   const healthBody = liveHealth && liveHealth.body && typeof liveHealth.body === 'object' ? liveHealth.body : null
+   const liveScriptHash = healthBody && typeof healthBody.scriptHash === 'string' ? healthBody.scriptHash : null
+   const liveRevision = healthBody && typeof healthBody.revision === 'string' ? healthBody.revision : null
+   const liveCodeMatches = liveScriptHash ? (liveScriptHash === expectedScriptHash) : null
    return {
     ...dep,
     serverName: server ? server.name : '',
@@ -1671,6 +1677,10 @@ export async function agentListDeployments(rootKv, options = {}) {
     hasChanges: status.hasChanges,
     changedLinesCount: status.diff && Array.isArray(status.diff.changedLines) ? status.diff.changedLines.length : 0,
     diff: status.diff,
+    expectedScriptHash,
+    liveScriptHash,
+    liveRevision,
+    liveCodeMatches,
     liveHealth,
    }
   })
