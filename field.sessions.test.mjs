@@ -4238,3 +4238,281 @@ test('./cc CLI eval --apply-exports --no-prompt and ./cc open-package enforce ex
   await fs.rm(tmpDir, { recursive: true, force: true })
  }
 })
+
+test('workspace summary, rails menus, and lane modal show loading states while session init and catalog reads are in flight', async () => {
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  const styleProps = {}
+  return {
+   tag,
+   nodeType: 1,
+   style: {
+    setProperty(name, value) { styleProps[name] = value; this[name] = value },
+    removeProperty(name) { delete styleProps[name]; delete this[name] },
+    getPropertyValue(name) { return styleProps[name] || '' },
+   },
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   removed: false,
+   focused: false,
+   getBoundingClientRect() { return { left: 200, width: 12, top: 2, height: 12 } },
+   contains(target) {
+    if (target === this) return true
+    return this.children.some(child => typeof child.contains === 'function' && child.contains(target))
+   },
+   setAttribute(name, value) { this.attributes[name] = value },
+   removeAttribute(name) { delete this.attributes[name] },
+   appendChild(child) {
+    if (child && typeof child === 'object') {
+     if (child.parentNode && Array.isArray(child.parentNode.children)) {
+      const prevIdx = child.parentNode.children.indexOf(child)
+      if (prevIdx !== -1) child.parentNode.children.splice(prevIdx, 1)
+     }
+     child.parentNode = this
+     child.removed = false
+     this.children.push(child)
+    }
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child && typeof child === 'object') {
+     if (child.parentNode && Array.isArray(child.parentNode.children)) {
+      const prevIdx = child.parentNode.children.indexOf(child)
+      if (prevIdx !== -1) child.parentNode.children.splice(prevIdx, 1)
+     }
+     child.parentNode = this
+     child.removed = false
+     const idx = this.children.indexOf(ref)
+     if (idx === -1) this.children.push(child)
+     else this.children.splice(idx, 0, child)
+    }
+    return child
+   },
+   replaceChildren(...nodes) {
+    this.children = []
+    for (const n of nodes) this.appendChild(n)
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode && Array.isArray(this.parentNode.children)) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) this.parentNode.children.splice(idx, 1)
+     this.parentNode = null
+    }
+   },
+  }
+ }
+
+ const kv = new Map()
+ let f = null
+ let releaseBoot = null
+ const bootGate = new Promise(resolve => { releaseBoot = resolve })
+ let pauseGet = () => (f && f.state && f.state['lane-control'] ? bootGate : null)
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) {
+    if (pauseGet) {
+     const p = pauseGet(qualify(key))
+     if (p) await p
+    }
+    return kv.has(qualify(key)) ? kv.get(qualify(key)) : null
+   },
+   async set(key, value) { kv.set(qualify(key), String(value)) },
+   async delete(key) { kv.delete(qualify(key)) },
+  }
+ }
+ const rootKv = createMockKV()
+
+ const makeMemStorage = () => {
+  const m = new Map()
+  return {
+   getItem(k) { return m.has(k) ? m.get(k) : null },
+   setItem(k, v) { m.set(k, String(v)) },
+   removeItem(k) { m.delete(k) },
+  }
+ }
+ const localStore = makeMemStorage()
+ const sessionStore = makeMemStorage()
+ let uuid = 0
+
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  Intl,
+  JSON,
+  Math,
+  Number,
+  Object,
+  Reflect,
+  String,
+  decodeURIComponent,
+  encodeURIComponent,
+  localStorage: localStore,
+  sessionStorage: sessionStore,
+  crypto: { randomUUID: () => `boot-load-uuid-${++uuid}` },
+  history: {
+   pushState(_s, _t, url) { mockWindow.location.pathname = String(url).split('#')[0] || '/' },
+   replaceState(_s, _t, url) { mockWindow.location.pathname = String(url).split('#')[0] || '/' },
+  },
+  location: { pathname: '/', search: '', hash: '' },
+  addEventListener() {},
+  removeEventListener() {},
+ }
+ const mockDocument = {
+  body: createMockElement('body'),
+  documentElement: createMockElement('html'),
+  defaultView: mockWindow,
+  createElement: createMockElement,
+  addEventListener() {},
+ }
+
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  const map = {
+   '/src/lane-control.fs': laneSource,
+   '/src/lane-notebook.fs': notebookSource,
+   '/src/lane-inputs.fs': inputsSource,
+   '/src/lane-scope.fs': scopeSource,
+   '/src/lane-data.fs': dataSource,
+   '/src/confirm-modal.fs': confirmModalSource,
+   '/src/lane-row-picker-modal.fs': rowPickerModalSource,
+   '/src/lane-output.fs': outputSource,
+   '/src/lane-modal.fs': modalSource,
+   '/src/lane-config-modal.fs': configModalSource,
+   '/src/lane-import-modal.fs': importModalSource,
+   '/src/lane-rails.fs': railsSource,
+   '/src/lane-line-info-modal.fs': lineInfoModalSource,
+   '/src/lane-export-modal.fs': exportModalSource,
+   '/src/lane-export-deploy-modal.fs': exportDeployModalSource,
+   '/src/lane-server.fs': laneServerSource,
+   '/src/lane-story.fs': laneStorySource,
+   '/src/lane-servers-modal.fs': laneServersModalSource,
+   '/src/lane-terminal-modal.fs': laneTerminalModalSource,
+   '/src/lane-session-modal.fs': sessionModalSource,
+   '/src/lane-package-modal.fs': packageModalSource,
+   '/src/lane-dir-modal.fs': dirModalSource,
+  }
+  if (map[url]) return { text: async () => map[url] }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {}, error() {}, warn() {} },
+   createIdleTracker,
+   data: rootKv,
+   defaultValueForType,
+   document: mockDocument,
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+   window: mockWindow,
+  })
+
+  // 1. Pause boot inside initSessionState -> inspect workspace summary and rails before session resolves
+  const bootPromise = f.run(parse(mainSource, '/src/main.fs'))
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  const lc = f.state['lane-control']
+  const summary = lc['workspace-summary']
+  const rails = lc.rails
+
+  assert.equal(lc['session-id'], null)
+  assert.equal(lc['session-status-pending'], true)
+  assert.equal(lc['preferences-loading'], true)
+
+  assert.equal(summary['pkg-loading-el'].hidden, false)
+  assert.equal(summary['pkg-loading-el'].textContent, 'Loading packages…')
+  assert.equal(summary['sess-dir-btn'].hidden, true)
+  assert.equal(summary['sess-ver'].textContent, '')
+  assert.equal(summary['quick-fork-btn'].disabled, true)
+
+  assert.equal(rails['session-fork-btn'].disabled, true)
+  rails['sync-preferences-menu']()
+  assert.equal(rails['preferences-status-el'].textContent, 'Loading preferences…')
+  const openPkgP = rails['open-packages-menu']()
+  assert.equal(rails['is-packages-open'], true)
+  assert.equal(rails['pkg-menu-loading-el'].hidden, false)
+  assert.equal(rails['pkg-menu-loading-el'].textContent, 'Loading packages…')
+
+  // 2. Release boot gate and settle session initialization
+  pauseGet = null
+  releaseBoot()
+  await bootPromise
+  await openPkgP
+  await lc['confirm-session-data-dir']('')
+
+  assert.equal(lc['session-status-pending'], false)
+  assert.equal(lc['preferences-loading'], false)
+  assert.equal(summary['pkg-loading-el'].hidden, true)
+  assert.equal(summary['sess-dir-btn'].hidden, false)
+  assert.equal(summary['quick-fork-btn'].disabled, false)
+  assert.equal(rails['preferences-status-el'].textContent, 'No preferences lane set')
+  assert.equal(rails['pkg-menu-loading-el'].hidden, true)
+
+  // 3. Test lane-modal loading state while list-known is in flight
+  let releaseListKnown = null
+  const listKnownGate = new Promise(resolve => { releaseListKnown = resolve })
+  lc['list-known'] = async () => {
+   await listKnownGate
+   return []
+  }
+
+  const laneModal = lc['lane-modal']
+  const openModalP = laneModal.open()
+  await new Promise(resolve => setTimeout(resolve, 10))
+
+  assert.equal(laneModal['is-open'], true)
+  assert.equal(laneModal['is-loading'], true)
+  assert.equal(laneModal['count-el'].textContent, 'Loading…')
+  assert.equal(laneModal['list-el'].children[0].className, 'cc-loading')
+  assert.equal(laneModal['list-el'].children[0].textContent, 'Loading lanes…')
+
+  releaseListKnown()
+  await openModalP
+
+  assert.equal(laneModal['is-loading'], false)
+  assert.equal(laneModal['count-el'].textContent, '0 lanes')
+  assert.equal(laneModal['list-el'].children[0].textContent, 'No saved lanes yet. Click + Lane to create one.')
+ }
+ finally {
+  pauseGet = null
+  releaseBoot()
+  globalThis.fetch = origFetch
+ }
+})

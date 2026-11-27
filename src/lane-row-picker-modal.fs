@@ -1849,7 +1849,7 @@
     { $modal.loading (
      ; to msg [ ternary $has-query [ add 'Searching ' [ add $noun-many '…' ] ] [ add 'Loading ' [ add $noun-many '…' ] ] ]
      ; set $msg status-el.textContent
-     ; set lane-import-status status-el.className
+     ; set 'lane-import-status cc-loading' status-el.className
      ; set false status-el.hidden
     ) }
     { true (

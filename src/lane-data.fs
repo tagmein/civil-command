@@ -31,6 +31,7 @@
   { row-picker $row-picker }
   { row-page-size $page-size }
   { tables {} }
+  { is-loading true }
   { active-table-id '' }
   { schema-open true }
   { table-menu-open false }
@@ -54,16 +55,19 @@
  ; to bar-actions-el !document.createElement div
  ; set lane-data-bar-actions bar-actions-el.className
  ; to add-table-btn !document.createElement button
- ; assign $add-table-btn { type button } { className lane-data-add-table } { textContent '+ Table' } { title 'Create a new table' }
+ ; assign $add-table-btn { type button } { className lane-data-add-table } { textContent '+ Table' } { title 'Create a new table' } { disabled true }
  ; to import-table-btn !document.createElement button
- ; assign $import-table-btn { type button } { className lane-data-import-table } { textContent Import } { title 'Import a remote table from another lane' }
+ ; assign $import-table-btn { type button } { className lane-data-import-table } { textContent Import } { title 'Import a remote table from another lane' } { disabled true }
  !bar-actions-el.appendChild $add-table-btn
  !bar-actions-el.appendChild $import-table-btn
  !bar-el.appendChild $tabs-el
  !bar-el.appendChild $bar-actions-el
 
+ ; to loading-el !document.createElement div
+ ; assign $loading-el { className cc-loading } { textContent 'Loading tables…' } { hidden false }
+
  ; to empty-el !document.createElement div
- ; assign $empty-el { className lane-data-empty } { textContent 'No tables yet. Create a table to define columns and add rows.' }
+ ; assign $empty-el { className lane-data-empty } { textContent 'No tables yet. Create a table to define columns and add rows.' } { hidden true }
 
  ; to active-el !document.createElement div
  ; set lane-data-active active-el.className
@@ -229,11 +233,12 @@
  !active-el.appendChild $rows-section
 
  !root-el.appendChild $bar-el
+ !root-el.appendChild $loading-el
  !root-el.appendChild $empty-el
  !root-el.appendChild $active-el
  !container.appendChild $root-el
 
- ; assign $view { element $root-el } { bar-el $bar-el } { tabs-el $tabs-el } { bar-actions-el $bar-actions-el } { add-table-btn $add-table-btn } { import-table-btn $import-table-btn } { empty-el $empty-el } { active-el $active-el } { remote-bar-el $remote-bar-el } { remote-mode-badge $remote-mode-badge } { remote-jump-btn $remote-jump-btn } { remote-status-el $remote-status-el } { remote-edit-btn $remote-edit-btn } { table-name-input $table-name-input } { header-actions-el $header-actions-el } { schema-toggle-btn $schema-toggle-btn } { table-menu-wrap $table-menu-wrap } { table-menu-btn $table-menu-btn } { table-menu $table-menu } { jump-owner-btn $jump-owner-btn } { edit-import-btn $edit-import-btn } { clear-rows-btn $clear-rows-btn } { delete-table-btn $delete-table-btn } { schema-section $schema-section } { schema-tbody $schema-tbody } { schema-empty-el $schema-empty-el } { add-col-btn $add-col-btn } { updates-section $updates-section } { updates-header $updates-header } { updates-title-wrap $updates-title-wrap } { updates-title $updates-title } { updates-count-badge $updates-count-badge } { updates-status-badge $updates-status-badge } { updates-caption $updates-caption } { updates-list $updates-list } { rows-section $rows-section } { rows-title $rows-title } { add-row-btn $add-row-btn } { grid-wrap $grid-wrap } { display-options-el $display-options-el } { display-options-label $display-options-label } { display-options-list $display-options-list } { grid-hrow $grid-hrow } { grid-tbody $grid-tbody } { rows-empty-el $rows-empty-el }
+ ; assign $view { element $root-el } { bar-el $bar-el } { tabs-el $tabs-el } { bar-actions-el $bar-actions-el } { add-table-btn $add-table-btn } { import-table-btn $import-table-btn } { loading-el $loading-el } { empty-el $empty-el } { active-el $active-el } { remote-bar-el $remote-bar-el } { remote-mode-badge $remote-mode-badge } { remote-jump-btn $remote-jump-btn } { remote-status-el $remote-status-el } { remote-edit-btn $remote-edit-btn } { table-name-input $table-name-input } { header-actions-el $header-actions-el } { schema-toggle-btn $schema-toggle-btn } { table-menu-wrap $table-menu-wrap } { table-menu-btn $table-menu-btn } { table-menu $table-menu } { jump-owner-btn $jump-owner-btn } { edit-import-btn $edit-import-btn } { clear-rows-btn $clear-rows-btn } { delete-table-btn $delete-table-btn } { schema-section $schema-section } { schema-tbody $schema-tbody } { schema-empty-el $schema-empty-el } { add-col-btn $add-col-btn } { updates-section $updates-section } { updates-header $updates-header } { updates-title-wrap $updates-title-wrap } { updates-title $updates-title } { updates-count-badge $updates-count-badge } { updates-status-badge $updates-status-badge } { updates-caption $updates-caption } { updates-list $updates-list } { rows-section $rows-section } { rows-title $rows-title } { add-row-btn $add-row-btn } { grid-wrap $grid-wrap } { display-options-el $display-options-el } { display-options-label $display-options-label } { display-options-list $display-options-list } { grid-hrow $grid-hrow } { grid-tbody $grid-tbody } { rows-empty-el $rows-empty-el }
 
  ; to view.close-table-menu (
   -- Closes the "..." table actions dropdown menu
@@ -860,19 +865,24 @@
 
  ; to view.open-import-modal (
   -- Opens the Import Table modal to pick an owner lane, source table, access mode, and local alias
-  !view.close-table-menu
   [ match
-   { $lane-control.pick-table-import (
-    ; to opts [ object
-     { lane $view.lane }
-     { current-lane-id $view.lane.id }
-     { existing-tables $view.tables }
-     { on-confirm (
-      ; to { spec } $argv
-      !view.import-table $spec
+   { [ propertyIs true view.is-loading ] : null }
+   { true (
+    !view.close-table-menu
+    [ match
+     { $lane-control.pick-table-import (
+      ; to opts [ object
+       { lane $view.lane }
+       { current-lane-id $view.lane.id }
+       { existing-tables $view.tables }
+       { on-confirm (
+        ; to { spec } $argv
+        !view.import-table $spec
+       ) }
+      ]
+      !lane-control.pick-table-import $opts
      ) }
     ]
-    !lane-control.pick-table-import $opts
    ) }
   ]
  )
@@ -3676,11 +3686,21 @@
       )
 
       ; set $has-rows rows-empty-el.hidden
-      ; set [ ternary $is-ro 'No rows in remote table.' 'No rows yet. Click + Row to add data.' ] rows-empty-el.textContent
+      ; set [ match
+       { [ propertyIs true tbl.remote.accessDenied ] : 'Owner lane package is locked.' }
+       { [ propertyIs true tbl.remote.missing ] : 'Owner table was deleted.' }
+       { $is-ro : 'No rows in remote table.' }
+       { true : 'No rows yet. Click + Row to add data.' }
+      ] rows-empty-el.textContent
      ) }
      { true (
       ; set false rows-empty-el.hidden
-      ; set [ ternary $is-ro 'Remote table has no columns.' 'Add at least one column to start entering rows.' ] rows-empty-el.textContent
+      ; set [ match
+       { [ propertyIs true tbl.remote.accessDenied ] : 'Owner lane package is locked.' }
+       { [ propertyIs true tbl.remote.missing ] : 'Owner table was deleted.' }
+       { $is-ro : 'Remote table has no columns.' }
+       { true : 'Add at least one column to start entering rows.' }
+      ] rows-empty-el.textContent
      ) }
     ]
    ) }
@@ -3773,6 +3793,9 @@
     ; to coerced !coerceDataValue $cur $next-spec $next-spec.multiple $from-spec $view.tables
     ; to row.values $col.id $coerced
    )
+   [ match
+    { [ and { [ propertyIs lane col.type ] } { $lane-control.load-catalog } ] : !lane-control.load-catalog }
+   ]
    !view.render-schema
    !view.render-grid
    !view.save-schema-and-rows $tbl
@@ -4031,7 +4054,12 @@
     ; set [ ternary $view.schema-open false true ] schema-section.hidden
     ; to has-cols [ propertyIsGreaterThan 0 col-count ]
     ; set $has-cols schema-empty-el.hidden
-    ; set [ ternary $is-ro 'Remote table has no columns defined.' 'No columns defined.' ] schema-empty-el.textContent
+    ; set [ match
+     { [ propertyIs true tbl.remote.accessDenied ] : 'Owner lane package is locked.' }
+     { [ propertyIs true tbl.remote.missing ] : 'Owner table was deleted.' }
+     { $is-ro : 'Remote table has no columns defined.' }
+     { true : 'No columns defined.' }
+    ] schema-empty-el.textContent
     ; set $is-ro add-col-btn.hidden
     ; set $is-ro add-col-btn.disabled
 
@@ -4941,29 +4969,40 @@
   -- Re-renders table tabs, remote origin banner, active table header, schema columns, and editable rows grid
   !view.close-table-menu
   !view.render-table-tabs
-  ; to tbl !view.get-active-table
+  ; set [ ternary $view.is-loading false true ] loading-el.hidden
   [ match
-   { $tbl (
+   { [ propertyIs true view.is-loading ] (
     ; set true empty-el.hidden
-    ; set false active-el.hidden
-    !view.render-remote-bar
-    ; to is-ro !view.is-readonly-table $tbl
-    ; set $is-ro table-name-input.disabled
-    ; set $is-ro table-name-input.readOnly
-    ; set $tbl.name table-name-input.value
-    !view.render-schema
-    !view.render-updates
-    !view.render-grid
+    ; set true active-el.hidden
    ) }
    { true (
-    ; set false empty-el.hidden
-    ; set true active-el.hidden
-    !view.render-remote-bar
-    ; set false table-name-input.disabled
-    ; set false table-name-input.readOnly
-    !view.render-schema
-    !view.render-updates
-    !view.render-grid
+    ; set false add-table-btn.disabled
+    ; set false import-table-btn.disabled
+    ; to tbl !view.get-active-table
+    [ match
+     { $tbl (
+      ; set true empty-el.hidden
+      ; set false active-el.hidden
+      !view.render-remote-bar
+      ; to is-ro !view.is-readonly-table $tbl
+      ; set $is-ro table-name-input.disabled
+      ; set $is-ro table-name-input.readOnly
+      ; set $tbl.name table-name-input.value
+      !view.render-schema
+      !view.render-updates
+      !view.render-grid
+     ) }
+     { true (
+      ; set false empty-el.hidden
+      ; set true active-el.hidden
+      !view.render-remote-bar
+      ; set false table-name-input.disabled
+      ; set false table-name-input.readOnly
+      !view.render-schema
+      !view.render-updates
+      !view.render-grid
+     ) }
+    ]
    ) }
   ]
  )
@@ -5046,44 +5085,49 @@
  ; to view.add-table (
   -- Creates a new table, selects it, renders, focuses its name input, and saves
   ; to { name } $argv
-  ; to next-num ; add $view.tables.length 1
-  ; to clean-name [ match
-   { [ propertyIs undefined name ] : ; add 'table_' $next-num }
-   { [ propertyIs null name ] : ; add 'table_' $next-num }
-   { true : ; add '' $name }
-  ]
-  ; to tbl [ object
-   { id !view.next-id tbl }
-   { name $clean-name }
-   { columns {} }
-   { rows {} }
-  ]
-  !view.tables.push $tbl
-  ; set $tbl.id view.active-table-id
-  ; set $tbl.name lane.subroute
-  ; set true view.schema-open
-  !view.render
   [ match
-   { $table-name-input.focus : !table-name-input.focus }
+   { [ propertyIs true view.is-loading ] : null }
+   { true (
+    ; to next-num ; add $view.tables.length 1
+    ; to clean-name [ match
+     { [ propertyIs undefined name ] : ; add 'table_' $next-num }
+     { [ propertyIs null name ] : ; add 'table_' $next-num }
+     { true : ; add '' $name }
+    ]
+    ; to tbl [ object
+     { id !view.next-id tbl }
+     { name $clean-name }
+     { columns {} }
+     { rows {} }
+    ]
+    !view.tables.push $tbl
+    ; set $tbl.id view.active-table-id
+    ; set $tbl.name lane.subroute
+    ; set true view.schema-open
+    !view.render
+    [ match
+     { $table-name-input.focus : !table-name-input.focus }
+    ]
+    [ match
+     { $table-name-input.select : !table-name-input.select }
+    ]
+    [ match
+     { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Saving…' }
+    ]
+    ; try (
+     ; to table-ids !collect-ids $view.tables
+     !addLaneTable $data $view.lane.data $view.lane.id $tbl $table-ids
+     !view.sync-data-path
+     [ match
+      { $lane-control.update-url : !lane-control.update-url }
+     ]
+    ) : null
+    [ match
+     { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
+    ]
+    $tbl
+   ) }
   ]
-  [ match
-   { $table-name-input.select : !table-name-input.select }
-  ]
-  [ match
-   { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Saving…' }
-  ]
-  ; try (
-   ; to table-ids !collect-ids $view.tables
-   !addLaneTable $data $view.lane.data $view.lane.id $tbl $table-ids
-   !view.sync-data-path
-   [ match
-    { $lane-control.update-url : !lane-control.update-url }
-   ]
-  ) : null
-  [ match
-   { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
-  ]
-  $tbl
  )
 
  ; to view.add-column (
@@ -5147,6 +5191,9 @@
       ; to def-val !defaultDataValue $col
       ; to row.values $col.id $def-val
      )
+     [ match
+      { [ and { [ propertyIs lane col.type ] } { $lane-control.load-catalog } ] : !lane-control.load-catalog }
+     ]
      ; set true view.schema-open
      !view.render-schema
      !view.render-grid
@@ -5299,49 +5346,54 @@
   ) }
  ]
 
- ; to load-opts [ match
-  { $lane-control.open-package-ids : [ object { openPackageIds $lane-control.open-package-ids } ] }
-  { true : ; object }
- ]
- ; to initial-tables !loadLaneTables $data $lane.data $lane.id $load-opts
- ; to needs-catalog ; object { hit false }
- ; each $initial-tables (
-  ; to { tbl } $argv
-  ; to view.used-ids $tbl.id true
-  ; to is-rem !view.is-remote-table $tbl
-  ; condition { propertyIs true is-rem } : ; set true needs-catalog.hit
-  ; each $tbl.columns (
-   ; to { col } $argv
-   ; to view.used-ids $col.id true
-   ; condition { propertyIs lane col.type } : ; set true needs-catalog.hit
-  )
-  ; each $tbl.rows (
-   ; to { row } $argv
-   ; to view.used-ids $row.id true
+ ; try (
+  ; to load-opts [ match
+   { $lane-control.open-package-ids : [ object { openPackageIds $lane-control.open-package-ids } ] }
+   { true : ; object }
+  ]
+  ; to initial-tables !loadLaneTables $data $lane.data $lane.id $load-opts
+  ; to needs-catalog ; object { hit false }
+  ; each $initial-tables (
+   ; to { tbl } $argv
+   ; to view.used-ids $tbl.id true
+   ; to is-rem !view.is-remote-table $tbl
+   ; condition { propertyIs true is-rem } : ; set true needs-catalog.hit
+   ; each $tbl.columns (
+    ; to { col } $argv
+    ; to view.used-ids $col.id true
+    ; condition { propertyIs lane col.type } : ; set true needs-catalog.hit
+   )
+   ; each $tbl.rows (
+    ; to { row } $argv
+    ; to view.used-ids $row.id true
+   )
+   [ match
+    { $loadTableUpdates (
+     ; to loaded-upds !loadTableUpdates $data $lane.data $lane.id $tbl.id
+     ; to view.table-updates $tbl.id $loaded-upds
+    ) }
+   ]
+   !view.tables.push $tbl
   )
   [ match
-   { $loadTableUpdates (
-    ; to loaded-upds !loadTableUpdates $data $lane.data $lane.id $tbl.id
-    ; to view.table-updates $tbl.id $loaded-upds
-   ) }
+   { $needs-catalog.hit [ match
+    { $lane-control.load-catalog : !lane-control.load-catalog }
+   ] }
   ]
-  !view.tables.push $tbl
- )
- [ match
-  { $needs-catalog.hit [ match
-   { $lane-control.load-catalog : !lane-control.load-catalog }
-  ] }
- ]
- ; condition { propertyIsGreaterThan 0 view.tables.length } (
-  ; to matched-tbl !view.find-table-by-name $lane.subroute
-  ; to initial-tbl [ match
-   { $matched-tbl : $matched-tbl }
-   { true : [ get view.tables 0 ] }
-  ]
-  ; set $initial-tbl.id view.active-table-id
-  ; set $initial-tbl.name lane.subroute
-  ; set [ !view.default-schema-open $initial-tbl ] view.schema-open
- )
+  ; condition { propertyIsGreaterThan 0 view.tables.length } (
+   ; to matched-tbl !view.find-table-by-name $lane.subroute
+   ; to initial-tbl [ match
+    { $matched-tbl : $matched-tbl }
+    { true : [ get view.tables 0 ] }
+   ]
+   ; set $initial-tbl.id view.active-table-id
+   ; set $initial-tbl.name lane.subroute
+   ; set [ !view.default-schema-open $initial-tbl ] view.schema-open
+  )
+ ) : null
+ ; set false view.is-loading
+ ; set false add-table-btn.disabled
+ ; set false import-table-btn.disabled
  !view.render
  $view
 )

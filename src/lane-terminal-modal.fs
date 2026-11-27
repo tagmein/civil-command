@@ -37,7 +37,7 @@
  ; to header-right !document.createElement div
  ; set cc-term-header-right header-right.className
  ; to status-el !document.createElement span
- ; assign $status-el { className cc-term-status } { textContent 'Connecting…' }
+ ; assign $status-el { className 'cc-term-status cc-term-status--connecting' } { textContent 'Connecting…' }
  ; to close-btn !document.createElement button
  ; assign $close-btn { type button } { className lane-modal-close } { textContent '×' } { title Close }
  !header-right.appendChild $status-el
@@ -151,6 +151,7 @@
   ]
   ; to cls [ match
    { $is-running : 'cc-term-status cc-term-status--live' }
+   { $is-connecting : 'cc-term-status cc-term-status--connecting' }
    { $is-exited (
     [ match
      { [ propertyIs 0 modal.exit-code ] : 'cc-term-status cc-term-status--ok' }

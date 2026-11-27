@@ -109,6 +109,7 @@
   { lane-items {} }
   { lane-els {} }
   { load-seq 0 }
+  { open-seq 0 }
   { on-confirm null }
  ]
 
@@ -142,7 +143,7 @@
     ; set $message status-el.textContent
     ; to cls [ match
      { $is-error : 'lane-import-status lane-import-status--error' }
-     { true : 'lane-import-status' }
+     { true : 'lane-import-status cc-loading' }
     ]
     ; set $cls status-el.className
     ; set false status-el.hidden
@@ -267,8 +268,17 @@
   ; set $lane-id modal.selected-lane-id
   !modal.update-lane-buttons
   !modal.clear-lines
-  !modal.set-status 'Loading lane lines...' false
-  ; to records !load-lane-records $lane-id
+  !modal.set-status 'Loading lane lines…' false
+  ; to recs-box ; object { list {} }
+  ; try (
+   ; to r !load-lane-records $lane-id
+   ; set $r recs-box.list
+  ) (
+   ; to { err } $argv
+   ; condition { propertyIs $seq modal.load-seq } : !modal.set-status 'Failed to load lane lines.' true
+   null
+  )
+  ; to records $recs-box.list
   ; condition { propertyIs $seq modal.load-seq } (
    !modal.set-status '' false
    [ match
@@ -324,6 +334,10 @@
    !old-el.remove
   )
   ; set 0 modal.lane-items.length
+  ; to lanes-load-el !document.createElement div
+  ; assign $lanes-load-el { className 'cc-loading cc-loading--compact' } { textContent 'Loading lanes…' }
+  !lanes-el.appendChild $lanes-load-el
+  !modal.lane-els.push $lanes-load-el
   ; to seen ; object
   ; to candidates {}
 
@@ -337,7 +351,7 @@
    )
   )
 
-  ; to known !lane-control.list-known
+  ; to known ; try ( !lane-control.list-known ) ( {} )
   ; each $known (
    ; to { entry } $argv
    ; to is-self [ propertyIs $entry.id modal.current-lane-id ]
@@ -351,6 +365,11 @@
      ) }
     ]
    )
+  )
+
+  ; while { propertyIsGreaterThan 0 modal.lane-els.length } (
+   ; to old-el !modal.lane-els.pop
+   !old-el.remove
   )
 
   [ match
@@ -391,6 +410,8 @@
   ; condition { propertyIs true modal.is-open } (
    ; to prev-lane $modal.lane
    ; set false modal.is-open
+   ; set [ ; add $modal.open-seq 1 ] modal.open-seq
+   ; set [ ; add $modal.load-seq 1 ] modal.load-seq
    ; set null modal.lane
    ; set null modal.on-confirm
    !backdrop.remove
@@ -442,9 +463,14 @@
   ; set '' modal.selected-lane-id
   ; set $init-expr expr-input.value
   ; set $opts.on-confirm modal.on-confirm
+  ; to oseq ; add $modal.open-seq 1
+  ; set $oseq modal.open-seq
+  ; set [ ; add $modal.load-seq 1 ] modal.load-seq
   ; set 0 modal.selected-targets.length
   ; to seen-lanes ; object
   ; to unique-target-lanes {}
+  !modal.clear-lines
+  !modal.set-status 'Loading lanes…' false
   [ match
    { $opts.targets (
     ; each $opts.targets (
@@ -492,26 +518,31 @@
    ) }
    { $document.body.appendChild : !document.body.appendChild $backdrop }
   ]
+  !modal.render-chips
 
   ; to candidates !modal.render-lanes
 
   -- Pre-populate line numbers for all already-selected target lanes
-  ; each $unique-target-lanes (
-   ; to { lid } $argv
-   ; to recs !load-lane-records $lid
-   ; each $recs (
-    ; to { rec idx } $argv
-    ; to k !target-key $lid $rec.id
-    ; to num ; add $idx 1
-    ; to modal.line-num-cache $k $num
+  ; condition { and { [ propertyIs true modal.is-open ] } { [ propertyIs $oseq modal.open-seq ] } } (
+   ; each $unique-target-lanes (
+    ; to { lid } $argv
+    ; to recs ; try ( !load-lane-records $lid ) ( {} )
+    ; each $recs (
+     ; to { rec idx } $argv
+     ; to k !target-key $lid $rec.id
+     ; to num ; add $idx 1
+     ; to modal.line-num-cache $k $num
+    )
+   )
+   ; condition { and { [ propertyIs true modal.is-open ] } { [ propertyIs $oseq modal.open-seq ] } } (
+    !modal.render-chips
+
+    [ match
+     { [ propertyIsGreaterThan 0 modal.selected-targets.length ] : !modal.select-lane $modal.selected-targets.0.laneId }
+     { [ propertyIsGreaterThan 0 candidates.length ] : !modal.select-lane $candidates.0.id }
+    ]
    )
   )
-  !modal.render-chips
-
-  [ match
-   { [ propertyIsGreaterThan 0 modal.selected-targets.length ] : !modal.select-lane $modal.selected-targets.0.laneId }
-   { [ propertyIsGreaterThan 0 candidates.length ] : !modal.select-lane $candidates.0.id }
-  ]
 
   $modal
  )

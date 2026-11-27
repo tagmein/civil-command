@@ -125,6 +125,7 @@
   { highlight-timer null }
   { script-initialized false }
   { has-completed-initial-run false }
+  { is-loading-script true }
   { disposed false }
   { load-task null }
   { pre-load-finish null }
@@ -200,6 +201,9 @@
  !story-panel.setAttribute role tabpanel
  !story-panel.setAttribute data-panel story
  ; set [ ternary $init-is-story false true ] story-panel.hidden
+ ; to story-boot-el !document.createElement div
+ ; assign $story-boot-el { className cc-loading } { textContent 'Loading story…' } { hidden false }
+ !story-panel.appendChild $story-boot-el
 
  ; to source-panel !document.createElement div
  ; set lane-tab-panel source-panel.className
@@ -212,38 +216,53 @@
  !input-panel.setAttribute role tabpanel
  !input-panel.setAttribute data-panel input
  ; set [ ternary $init-is-input false true ] input-panel.hidden
+ ; to input-boot-el !document.createElement div
+ ; assign $input-boot-el { className cc-loading } { textContent 'Loading inputs…' } { hidden false }
+ !input-panel.appendChild $input-boot-el
 
  ; to scope-panel !document.createElement div
  ; set lane-tab-panel scope-panel.className
  !scope-panel.setAttribute role tabpanel
  !scope-panel.setAttribute data-panel scope
  ; set [ ternary $init-is-scope false true ] scope-panel.hidden
+ ; to scope-boot-el !document.createElement div
+ ; assign $scope-boot-el { className 'cc-loading cc-loading--scope' } { textContent 'Loading scope…' } { hidden false }
+ !scope-panel.appendChild $scope-boot-el
 
  ; to data-panel !document.createElement div
  ; set lane-tab-panel data-panel.className
  !data-panel.setAttribute role tabpanel
  !data-panel.setAttribute data-panel data
  ; set [ ternary $init-is-data false true ] data-panel.hidden
+ ; to data-boot-el !document.createElement div
+ ; assign $data-boot-el { className cc-loading } { textContent 'Loading tables…' } { hidden false }
+ !data-panel.appendChild $data-boot-el
 
  ; to server-panel !document.createElement div
  ; set lane-tab-panel server-panel.className
  !server-panel.setAttribute role tabpanel
  !server-panel.setAttribute data-panel server
  ; set [ ternary $init-is-server false true ] server-panel.hidden
+ ; to server-boot-el !document.createElement div
+ ; assign $server-boot-el { className cc-loading } { textContent 'Loading server…' } { hidden false }
+ !server-panel.appendChild $server-boot-el
 
+ ; to source-loading-el !document.createElement div
+ ; assign $source-loading-el { className cc-loading } { textContent 'Loading source…' } { hidden false }
  ; to lines-el !document.createElement div
  ; set lane-lines lines-el.className
  ; to actions-el !document.createElement div
  ; set lane-line-actions actions-el.className
  ; to add-btn !document.createElement button
- ; assign $add-btn { type button } { className lane-add-line } { textContent '+' } { title 'Add line' }
+ ; assign $add-btn { type button } { className lane-add-line } { textContent '+' } { title 'Add line' } { disabled true }
  ; to add-import-btn !document.createElement button
- ; assign $add-import-btn { type button } { className lane-add-import } { textContent '+ Import' } { title 'Import value from another lane' }
+ ; assign $add-import-btn { type button } { className lane-add-import } { textContent '+ Import' } { title 'Import value from another lane' } { disabled true }
  ; to add-export-btn !document.createElement button
- ; assign $add-export-btn { type button } { className lane-add-export } { textContent '+ Export' } { title 'Export evaluated line content to another lane' }
+ ; assign $add-export-btn { type button } { className lane-add-export } { textContent '+ Export' } { title 'Export evaluated line content to another lane' } { disabled true }
  !actions-el.appendChild $add-btn
  !actions-el.appendChild $add-import-btn
  !actions-el.appendChild $add-export-btn
+ !source-panel.appendChild $source-loading-el
  !source-panel.appendChild $lines-el
  !source-panel.appendChild $actions-el
 
@@ -260,7 +279,7 @@
  ]
 
  ; to tabs ; object { story $story-tab } { source $source-tab } { input $input-tab } { scope $scope-tab } { data $data-tab } { view $view-tab } { server $server-tab }
- ; assign $nb { element $root-el } { tabs-el $tabs-el } { tabs $tabs } { story-panel $story-panel } { source-panel $source-panel } { input-panel $input-panel } { scope-panel $scope-panel } { data-panel $data-panel } { server-panel $server-panel } { lines-el $lines-el } { actions-el $actions-el } { add-btn $add-btn } { add-import-btn $add-import-btn } { add-export-btn $add-export-btn }
+ ; assign $nb { element $root-el } { tabs-el $tabs-el } { tabs $tabs } { story-panel $story-panel } { source-panel $source-panel } { input-panel $input-panel } { scope-panel $scope-panel } { data-panel $data-panel } { server-panel $server-panel } { source-loading-el $source-loading-el } { lines-el $lines-el } { actions-el $actions-el } { add-btn $add-btn } { add-import-btn $add-import-btn } { add-export-btn $add-export-btn }
 
  ; to nb.dispose (
   -- Terminates the dedicated Source Web Worker and disposes any active sandboxed Lane Output iframes
@@ -313,12 +332,163 @@
 
  ; set $nb lane.notebook
 
+ ; to nb.apply-tab-ui (
+  -- Updates tab button active styles, panel visibility, and View output mode for the current active tab
+  ; to active $nb.active-tab
+  ; to is-story [ propertyIs story active ]
+  ; to is-source [ propertyIs source active ]
+  ; to is-input [ propertyIs input active ]
+  ; to is-scope [ propertyIs scope active ]
+  ; to is-data [ propertyIs data active ]
+  ; to is-view [ propertyIs view active ]
+  ; to is-server [ propertyIs server active ]
+
+  ; set [ ternary $is-story 'lane-tab lane-tab--active' lane-tab ] story-tab.className
+  ; set [ ternary $is-source 'lane-tab lane-tab--active' lane-tab ] source-tab.className
+  ; set [ ternary $is-input 'lane-tab lane-tab--active' lane-tab ] input-tab.className
+  ; set [ ternary $is-scope 'lane-tab lane-tab--active' lane-tab ] scope-tab.className
+  ; set [ ternary $is-data 'lane-tab lane-tab--active' lane-tab ] data-tab.className
+  ; set [ ternary $is-view 'lane-tab lane-tab--active' lane-tab ] view-tab.className
+  ; set [ ternary $is-server 'lane-tab lane-tab--active' lane-tab ] server-tab.className
+  !story-tab.setAttribute aria-selected [ ternary $is-story 'true' 'false' ]
+  !source-tab.setAttribute aria-selected [ ternary $is-source 'true' 'false' ]
+  !input-tab.setAttribute aria-selected [ ternary $is-input 'true' 'false' ]
+  !scope-tab.setAttribute aria-selected [ ternary $is-scope 'true' 'false' ]
+  !data-tab.setAttribute aria-selected [ ternary $is-data 'true' 'false' ]
+  !view-tab.setAttribute aria-selected [ ternary $is-view 'true' 'false' ]
+  !server-tab.setAttribute aria-selected [ ternary $is-server 'true' 'false' ]
+
+  ; set [ ternary $is-story false true ] story-panel.hidden
+  ; set [ ternary $is-source false true ] source-panel.hidden
+  ; set [ ternary $is-input false true ] input-panel.hidden
+  ; set [ ternary $is-scope false true ] scope-panel.hidden
+  ; set [ ternary $is-data false true ] data-panel.hidden
+  ; set [ ternary $is-server false true ] server-panel.hidden
+  [ match
+   { $nb.output-view.set-always-visible : !nb.output-view.set-always-visible $is-view }
+  ]
+  [ match
+   { $nb.output-view.set-suppressed : !nb.output-view.set-suppressed $is-story }
+  ]
+  [ match
+   { [ and { $is-view } { $nb.output-view.set-loading } { [ propertyIs false nb.has-completed-initial-run ] } { [ propertyIs false nb.disposed ] } ] : !nb.output-view.set-loading true }
+  ]
+  [ match
+   { $is-story (
+    [ match
+     { $nb.story-view.activate : !nb.story-view.activate }
+    ]
+   ) }
+  ]
+  [ match
+   { $is-source (
+    !nb.auto-size-rows
+    [ match
+     { $window.requestAnimationFrame (
+      !window.requestAnimationFrame : !nb.auto-size-rows
+     ) }
+    ]
+   ) }
+  ]
+ )
+
+ ; to nb.set-features (
+  -- Updates enabled lane features, toggles Server tab visibility, and falls back to Source if disabled while active
+  ; to { raw-features } $argv
+  ; to next-features [ match
+   { $normalizeLaneFeatures : !normalizeLaneFeatures $raw-features }
+   { $raw-features : $raw-features }
+   { true : ; object { httpServer false } }
+  ]
+  ; set $next-features nb.lane.features
+  ; to show-server [ ternary $next-features.httpServer true false ]
+  ; set [ ternary $show-server false true ] server-tab.hidden
+  [ match
+   { [ propertyIs false show-server ] (
+    ; condition { propertyIs server nb.active-tab } : !nb.set-tab source
+   ) }
+  ]
+  $next-features
+ )
+
+ ; to nb.set-tab (
+  -- Switches the active lane tab, updates lane route URL unless skipped, and runs Source on Source, Scope, View, and Server (never on Input or Data)
+  ; to { tab skip-url } $argv
+  ; to normalized-tab !normalizeLaneTab $tab
+  ; to is-server-enabled [ match
+   { [ propertyIs true nb.lane.features.httpServer ] : true }
+   { true : false }
+  ]
+  ; to next-tab [ match
+   { [ propertyIs server normalized-tab ] (
+    [ match
+     { $is-server-enabled : server }
+     { true : source }
+    ]
+   ) }
+   { true : $normalized-tab }
+  ]
+  ; set $next-tab nb.active-tab
+  ; set $next-tab nb.lane.tab
+  !nb.apply-tab-ui
+  [ match
+   { $skip-url : null }
+   { true (
+    [ match
+     { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Saving…' }
+    ]
+    ; try (
+     [ match
+      { $lane-control.remember-path : !lane-control.remember-path $nb.lane }
+     ]
+     [ match
+      { $lane-control.update-url : !lane-control.update-url }
+     ]
+    ) : null
+    [ match
+     { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
+    ]
+   ) }
+  ]
+  [ match
+   { [ propertyIs story next-tab ] : null }
+   { [ propertyIs input next-tab ] : null }
+   { [ propertyIs data next-tab ] : null }
+   { $nb.run : !nb.run }
+  ]
+  $next-tab
+ )
+
+ !story-tab.addEventListener click : !nb.set-tab story
+ !source-tab.addEventListener click : !nb.set-tab source
+ !input-tab.addEventListener click : !nb.set-tab input
+ !scope-tab.addEventListener click : !nb.set-tab scope
+ !data-tab.addEventListener click : !nb.set-tab data
+ !view-tab.addEventListener click : !nb.set-tab view
+ !server-tab.addEventListener click : !nb.set-tab server
+
+ ; to clear-boot-placeholder (
+  ; to { panel boot-el } $argv
+  ; set true boot-el.hidden
+  !boot-el.remove
+  [ match
+   { [ and { $panel.children } { $panel.children.indexOf } { $panel.children.splice } ] (
+    ; to bidx !panel.children.indexOf $boot-el
+    ; condition { propertyIsGreaterThanOrEqual 0 bidx } : !panel.children.splice $bidx 1
+   ) }
+  ]
+ )
+
  ; to load-notebook-body (
   ; to { pre-finish } $argv
   ; set $pre-finish nb.pre-load-finish
+  !clear-boot-placeholder $story-panel $story-boot-el
   ; to story-view !lane-story.mount $lane $story-panel $lane-control $nb
+  !clear-boot-placeholder $input-panel $input-boot-el
   ; to inputs-view !lane-inputs.mount $lane $input-panel
-  ; to scope-view !lane-scope.mount $lane $scope-panel
+  !clear-boot-placeholder $scope-panel $scope-boot-el
+  ; to scope-view !lane-scope.mount $lane $scope-panel [ object { initial-loading true } ]
+  !clear-boot-placeholder $data-panel $data-boot-el
   ; to data-view !lane-data.mount $lane $data-panel $lane-control
   ; to data-view.on-record-change (
    ; to { change-info } $argv
@@ -332,8 +502,12 @@
    ]
    !nb.run-on-table-change $change-info
   )
+  !clear-boot-placeholder $server-panel $server-boot-el
   ; to server-view !lane-server.mount $lane $server-panel $lane-control $nb
   ; to output-view !lane-output.mount $lane $container $nb $lane-control
+  [ match
+   { $output-view.set-loading : !output-view.set-loading [ propertyIs false nb.disposed ] }
+  ]
   ; to source-runner [ match
    { $createSourceWorkerRunner : !createSourceWorkerRunner [ object
     { laneId $lane.id }
@@ -524,136 +698,6 @@
    )
   )
  )
-
- ; to nb.apply-tab-ui (
-  -- Updates tab button active styles, panel visibility, and View output mode for the current active tab
-  ; to active $nb.active-tab
-  ; to is-story [ propertyIs story active ]
-  ; to is-source [ propertyIs source active ]
-  ; to is-input [ propertyIs input active ]
-  ; to is-scope [ propertyIs scope active ]
-  ; to is-data [ propertyIs data active ]
-  ; to is-view [ propertyIs view active ]
-  ; to is-server [ propertyIs server active ]
-
-  ; set [ ternary $is-story 'lane-tab lane-tab--active' lane-tab ] story-tab.className
-  ; set [ ternary $is-source 'lane-tab lane-tab--active' lane-tab ] source-tab.className
-  ; set [ ternary $is-input 'lane-tab lane-tab--active' lane-tab ] input-tab.className
-  ; set [ ternary $is-scope 'lane-tab lane-tab--active' lane-tab ] scope-tab.className
-  ; set [ ternary $is-data 'lane-tab lane-tab--active' lane-tab ] data-tab.className
-  ; set [ ternary $is-view 'lane-tab lane-tab--active' lane-tab ] view-tab.className
-  ; set [ ternary $is-server 'lane-tab lane-tab--active' lane-tab ] server-tab.className
-  !story-tab.setAttribute aria-selected [ ternary $is-story 'true' 'false' ]
-  !source-tab.setAttribute aria-selected [ ternary $is-source 'true' 'false' ]
-  !input-tab.setAttribute aria-selected [ ternary $is-input 'true' 'false' ]
-  !scope-tab.setAttribute aria-selected [ ternary $is-scope 'true' 'false' ]
-  !data-tab.setAttribute aria-selected [ ternary $is-data 'true' 'false' ]
-  !view-tab.setAttribute aria-selected [ ternary $is-view 'true' 'false' ]
-  !server-tab.setAttribute aria-selected [ ternary $is-server 'true' 'false' ]
-
-  ; set [ ternary $is-story false true ] story-panel.hidden
-  ; set [ ternary $is-source false true ] source-panel.hidden
-  ; set [ ternary $is-input false true ] input-panel.hidden
-  ; set [ ternary $is-scope false true ] scope-panel.hidden
-  ; set [ ternary $is-data false true ] data-panel.hidden
-  ; set [ ternary $is-server false true ] server-panel.hidden
-  !output-view.set-always-visible $is-view
-  [ match
-   { $output-view.set-suppressed : !output-view.set-suppressed $is-story }
-  ]
-  [ match
-   { $is-story (
-    [ match
-     { $story-view.activate : !story-view.activate }
-    ]
-   ) }
-  ]
-  [ match
-   { $is-source (
-    !nb.auto-size-rows
-    [ match
-     { $window.requestAnimationFrame (
-      !window.requestAnimationFrame : !nb.auto-size-rows
-     ) }
-    ]
-   ) }
-  ]
- )
-
- ; to nb.set-features (
-  -- Updates enabled lane features, toggles Server tab visibility, and falls back to Source if disabled while active
-  ; to { raw-features } $argv
-  ; to next-features [ match
-   { $normalizeLaneFeatures : !normalizeLaneFeatures $raw-features }
-   { $raw-features : $raw-features }
-   { true : ; object { httpServer false } }
-  ]
-  ; set $next-features nb.lane.features
-  ; to show-server [ ternary $next-features.httpServer true false ]
-  ; set [ ternary $show-server false true ] server-tab.hidden
-  [ match
-   { [ propertyIs false show-server ] (
-    ; condition { propertyIs server nb.active-tab } : !nb.set-tab source
-   ) }
-  ]
-  $next-features
- )
-
- ; to nb.set-tab (
-  -- Switches the active lane tab, updates lane route URL unless skipped, and runs Source on Source, Scope, View, and Server (never on Input or Data)
-  ; to { tab skip-url } $argv
-  ; to normalized-tab !normalizeLaneTab $tab
-  ; to is-server-enabled [ match
-   { [ propertyIs true nb.lane.features.httpServer ] : true }
-   { true : false }
-  ]
-  ; to next-tab [ match
-   { [ propertyIs server normalized-tab ] (
-    [ match
-     { $is-server-enabled : server }
-     { true : source }
-    ]
-   ) }
-   { true : $normalized-tab }
-  ]
-  ; set $next-tab nb.active-tab
-  ; set $next-tab nb.lane.tab
-  !nb.apply-tab-ui
-  [ match
-   { $skip-url : null }
-   { true (
-    [ match
-     { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Saving…' }
-    ]
-    ; try (
-     [ match
-      { $lane-control.remember-path : !lane-control.remember-path $nb.lane }
-     ]
-     [ match
-      { $lane-control.update-url : !lane-control.update-url }
-     ]
-    ) : null
-    [ match
-     { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
-    ]
-   ) }
-  ]
-  [ match
-   { [ propertyIs story next-tab ] : null }
-   { [ propertyIs input next-tab ] : null }
-   { [ propertyIs data next-tab ] : null }
-   { true : !nb.run }
-  ]
-  $next-tab
- )
-
- !story-tab.addEventListener click : !nb.set-tab story
- !source-tab.addEventListener click : !nb.set-tab source
- !input-tab.addEventListener click : !nb.set-tab input
- !scope-tab.addEventListener click : !nb.set-tab scope
- !data-tab.addEventListener click : !nb.set-tab data
- !view-tab.addEventListener click : !nb.set-tab view
- !server-tab.addEventListener click : !nb.set-tab server
 
  ; to collect-line-ids (
   -- Extracts ordered line IDs from nb.line-records
@@ -854,6 +898,12 @@
       ; set null nb.pre-load-finish
      ) }
     ]
+    [ match
+     { $scope-view.set-loading : !scope-view.set-loading true }
+    ]
+    [ match
+     { $output-view.set-loading : !output-view.set-loading true }
+    ]
     ; to trigger [ match
      { $run-meta.trigger : $run-meta.trigger }
      { $table-change : 'table-change' }
@@ -1008,100 +1058,121 @@
      { lineContext $line-ctx }
      { lineRecords $nb.line-records }
     ]
-    ; to outcome [ match
-     { $nb.source-runner : !nb.source-runner.run $nb.lines $run-opts }
-     { true : !runLines $nb.lines $run-opts }
-    ]
-    [ match
-     { [ propertyIs $next-run-id nb.run-id ] (
-      ; set $outcome.results nb.results
-      ; set $outcome.sent nb.sent
-      ; set $outcome.state nb.state
-      ; each $outcome.results (
-       ; to { res idx } $argv
-       ; to row [ get nb.rows $idx ]
-       [ match
-        { $row (
-         ; set $res.preview row.preview-el.textContent
-         ; set $res.preview row.preview-el.title
-         ; to cls [ match
-          { $res.error : 'lane-line-preview lane-line-preview--error' }
-          { [ propertyIs true res.value.requiresPackageUnlock ] : 'lane-line-preview lane-line-preview--error' }
-          { $res.isComment : 'lane-line-preview lane-line-preview--comment' }
-          { true : 'lane-line-preview' }
-         ]
-         ; set $cls row.preview-el.className
-         ; condition { propertyIs export row.kind } (
-          [ match
-           { $row.render-deploy-status : !row.render-deploy-status $res.value }
-          ]
-         )
-        ) }
-       ]
-      )
-      !scope-view.render $outcome.state
-      !output-view.render $outcome.sent
-      [ match
-       { $server-view.refresh-handlers : !server-view.refresh-handlers $outcome }
-      ]
-      ; to modal-already-open [ match
-       { $lane-control.package-modal.is-open : [ propertyIs true lane-control.package-modal.is-open ] }
-       { true : false }
-      ]
-      ; to should-prompt-unlock [ match
-       { [ propertyIs 0 run-locked-pkgs.length ] : false }
-       { $modal-already-open : false }
-       { [ propertyIs true non-export-locked.hit ] : true }
-       { [ propertyIs export trigger ] : true }
-       { [ propertyIs 'table-change' trigger ] : true }
-       { true : false }
-      ]
-      ; condition { and { [ propertyIs true should-prompt-unlock ] } { $lane-control.prompt-unlock-packages-for-export } } (
-       !lane-control.prompt-unlock-packages-for-export [ object
-        { locked-packages $run-locked-pkgs }
-        { source-lane-id $nb.lane.id }
-        { source-lane-title $nb.lane.title }
-        { on-unlocked (
-         !nb.run null false null [ object { trigger export-unlock } ]
-        ) }
-       ]
-      )
-      ; to all-blank-box ; object { val true }
-      ; each $nb.lines (
-       ; to { ln-txt } $argv
-       ; condition { propertyIs true all-blank-box.val } (
-        ; to s [ match
-         { [ propertyIs null ln-txt ] : '' }
-         { [ propertyIs undefined ln-txt ] : '' }
-         { true : ; add '' $ln-txt }
-        ]
-        ; to trimmed [ match { $s.trim : !s.trim } { true : $s } ]
-        ; condition { propertyIsGreaterThan 0 trimmed.length } : ; set false all-blank-box.val
-       )
-      )
-      ; to skip-empty-mount [ ternary [ and
-       { [ propertyIs mount trigger ] }
-       { [ propertyIs false nb.script-initialized ] }
-       { [ propertyIs true all-blank-box.val ] }
-       { [ propertyIs 0 inputs-view.inputs.length ] }
-      ] true false ]
-      ; set true nb.has-completed-initial-run
-      !$finish true
-      [ match
-       { [ and { [ propertyIs false skip-empty-mount ] } { $recordLaneStoryFromRun } ] (
-        ; to story-entry !recordLaneStoryFromRun $data $nb.lane.data $nb.lane.id $story-rec $captured-inputs $outcome $nb.line-records [ object { trigger $trigger } ]
+    ; to run-res ; object { val null }
+    ; try (
+     ; to outcome [ match
+      { $nb.source-runner : !nb.source-runner.run $nb.lines $run-opts }
+      { true : !runLines $nb.lines $run-opts }
+     ]
+     ; set $outcome run-res.val
+     [ match
+      { [ propertyIs $next-run-id nb.run-id ] (
+       ; set $outcome.results nb.results
+       ; set $outcome.sent nb.sent
+       ; set $outcome.state nb.state
+       ; each $outcome.results (
+        ; to { res idx } $argv
+        ; to row [ get nb.rows $idx ]
         [ match
-         { $story-view.on-new-entry : !story-view.on-new-entry $story-entry }
+         { $row (
+          ; set $res.preview row.preview-el.textContent
+          ; set $res.preview row.preview-el.title
+          ; to cls [ match
+           { $res.error : 'lane-line-preview lane-line-preview--error' }
+           { [ propertyIs true res.value.requiresPackageUnlock ] : 'lane-line-preview lane-line-preview--error' }
+           { $res.isComment : 'lane-line-preview lane-line-preview--comment' }
+           { true : 'lane-line-preview' }
+          ]
+          ; set $cls row.preview-el.className
+          ; condition { propertyIs export row.kind } (
+           [ match
+            { $row.render-deploy-status : !row.render-deploy-status $res.value }
+           ]
+          )
+         ) }
         ]
-       ) }
-      ]
-      [ match
-       { $lane-control.notify-lane-idle : !lane-control.notify-lane-idle $nb.lane.id $visited }
-      ]
-     ) }
-     { true : !$finish false }
-    ]
-    $outcome
+       )
+       !scope-view.render $outcome.state
+       !output-view.render $outcome.sent
+       [ match
+        { $server-view.refresh-handlers : !server-view.refresh-handlers $outcome }
+       ]
+       ; to modal-already-open [ match
+        { $lane-control.package-modal.is-open : [ propertyIs true lane-control.package-modal.is-open ] }
+        { true : false }
+       ]
+       ; to should-prompt-unlock [ match
+        { [ propertyIs 0 run-locked-pkgs.length ] : false }
+        { $modal-already-open : false }
+        { [ propertyIs true non-export-locked.hit ] : true }
+        { [ propertyIs export trigger ] : true }
+        { [ propertyIs 'table-change' trigger ] : true }
+        { true : false }
+       ]
+       ; condition { and { [ propertyIs true should-prompt-unlock ] } { $lane-control.prompt-unlock-packages-for-export } } (
+        !lane-control.prompt-unlock-packages-for-export [ object
+         { locked-packages $run-locked-pkgs }
+         { source-lane-id $nb.lane.id }
+         { source-lane-title $nb.lane.title }
+         { on-unlocked (
+          !nb.run null false null [ object { trigger export-unlock } ]
+         ) }
+        ]
+       )
+       ; to all-blank-box ; object { val true }
+       ; each $nb.lines (
+        ; to { ln-txt } $argv
+        ; condition { propertyIs true all-blank-box.val } (
+         ; to s [ match
+          { [ propertyIs null ln-txt ] : '' }
+          { [ propertyIs undefined ln-txt ] : '' }
+          { true : ; add '' $ln-txt }
+         ]
+         ; to trimmed [ match { $s.trim : !s.trim } { true : $s } ]
+         ; condition { propertyIsGreaterThan 0 trimmed.length } : ; set false all-blank-box.val
+        )
+       )
+       ; to skip-empty-mount [ ternary [ and
+        { [ propertyIs mount trigger ] }
+        { [ propertyIs false nb.script-initialized ] }
+        { [ propertyIs true all-blank-box.val ] }
+        { [ propertyIs 0 inputs-view.inputs.length ] }
+       ] true false ]
+       ; set true nb.has-completed-initial-run
+       !$finish true
+       [ match
+        { [ and { [ propertyIs false skip-empty-mount ] } { $recordLaneStoryFromRun } ] (
+         ; to story-entry !recordLaneStoryFromRun $data $nb.lane.data $nb.lane.id $story-rec $captured-inputs $outcome $nb.line-records [ object { trigger $trigger } ]
+         [ match
+          { $story-view.on-new-entry : !story-view.on-new-entry $story-entry }
+         ]
+        ) }
+       ]
+       [ match
+        { $lane-control.notify-lane-idle : !lane-control.notify-lane-idle $nb.lane.id $visited }
+       ]
+      ) }
+      { true : !$finish false }
+     ]
+    ) (
+     ; to { err } $argv
+     [ match
+      { $console.error : !console.error 'Failed to run lane:' $err }
+     ]
+     [ match
+      { [ propertyIs $next-run-id nb.run-id ] (
+       [ match
+        { $scope-view.set-loading : !scope-view.set-loading false }
+       ]
+       [ match
+        { $output-view.set-loading : !output-view.set-loading false }
+       ]
+      ) }
+     ]
+     !$finish false
+     null
+    )
+    $run-res.val
    ) }
   ]
  )
@@ -1174,8 +1245,25 @@
   !info-btn.addEventListener click (
    ; to line-num ; add $row.index 1
    ; to sb $row.set-by
+   ; to on-sb-resolved [ match
+    { $sb (
+     ; to resolved-cb (
+      [ match
+       { $row.update-set-by-label : !row.update-set-by-label }
+      ]
+      ; to fresh-lbl !resolve-lane-line-label $sb.laneId $sb.lineId null
+      ; to fresh-title [ match
+       { $lane-control.get-lane-title : !lane-control.get-lane-title $sb.laneId }
+       { true : $sb.laneId }
+      ]
+      ; set [ ; add 'Line info · Set by ' ; add $fresh-title ; add ' ' $fresh-lbl ] info-btn.title
+     )
+     $resolved-cb
+    ) }
+    { true : null }
+   ]
    ; to sb-line-lbl [ match
-    { $sb : !resolve-lane-line-label $sb.laneId $sb.lineId null }
+    { $sb : !resolve-lane-line-label $sb.laneId $sb.lineId $on-sb-resolved }
     { true : '' }
    ]
    !info-modal.open [ object
@@ -2873,37 +2961,67 @@
   $nb.line-records
  )
 
- !add-btn.addEventListener click : !nb.insert-line $nb.lines.length ''
- !add-import-btn.addEventListener click $nb.add-import
- !add-export-btn.addEventListener click $nb.add-export
+ !add-btn.addEventListener click (
+  ; condition { propertyIs false nb.is-loading-script } : !nb.insert-line $nb.lines.length ''
+ )
+ !add-import-btn.addEventListener click (
+  ; condition { propertyIs false nb.is-loading-script } : !nb.add-import
+ )
+ !add-export-btn.addEventListener click (
+  ; condition { propertyIs false nb.is-loading-script } : !nb.add-export
+ )
 
  [ match
   { [ propertyIs true nb.disposed ] : !nb.dispose }
   { true (
-   ; to loaded !loadLaneScript $data $lane.data $lane.id $window
-   [ match
-    { [ propertyIs true nb.disposed ] : !nb.dispose }
-    { true (
-     ; set $loaded.initialized nb.script-initialized
-     ; each $loaded.records (
-      ; to { rec } $argv
-      ; to row !nb.create-row $rec.text $rec
-      !nb.lines.push $rec.text
-      !nb.line-records.push $rec
-      !nb.rows.push $row
-      !lines-el.appendChild $row.el
-     )
-     !nb.renumber
-     !restore-stored-drafts $loaded.initialized
-     [ match
-      { $lane-control.sync-export-links : !lane-control.sync-export-links }
-     ]
-     !nb.apply-tab-ui
-     !nb.run
-    ) }
-   ]
+   ; try (
+    ; to loaded !loadLaneScript $data $lane.data $lane.id $window
+    [ match
+     { [ propertyIs true nb.disposed ] : !nb.dispose }
+     { true (
+      ; set $loaded.initialized nb.script-initialized
+      ; each $loaded.records (
+       ; to { rec } $argv
+       ; to row !nb.create-row $rec.text $rec
+       !nb.lines.push $rec.text
+       !nb.line-records.push $rec
+       !nb.rows.push $row
+       !lines-el.appendChild $row.el
+      )
+      !nb.renumber
+      !restore-stored-drafts $loaded.initialized
+      ; set false nb.is-loading-script
+      ; set true source-loading-el.hidden
+      ; set false add-btn.disabled
+      ; set false add-import-btn.disabled
+      ; set false add-export-btn.disabled
+      [ match
+       { $lane-control.sync-export-links : !lane-control.sync-export-links }
+      ]
+      !nb.apply-tab-ui
+      !nb.run
+     ) }
+    ]
+   ) (
+    ; to { err } $argv
+    [ match
+     { $console.error : !console.error 'Failed to load lane script:' $err }
+    ]
+    ; set false nb.is-loading-script
+    ; set true source-loading-el.hidden
+    ; set false add-btn.disabled
+    ; set false add-import-btn.disabled
+    ; set false add-export-btn.disabled
+    !nb.apply-tab-ui
+    null
+   )
   ) }
  ]
+ ; set false nb.is-loading-script
+ ; set true source-loading-el.hidden
+ ; set false add-btn.disabled
+ ; set false add-import-btn.disabled
+ ; set false add-export-btn.disabled
  ; set null nb.load-task
  ; condition { propertyIs $nb lane.notebook } : ; set null lane.load-task
  )

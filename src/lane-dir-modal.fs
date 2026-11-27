@@ -190,6 +190,12 @@
   { directories {} }
   { dir-els {} }
   { dir-items {} }
+  { roots-loading false }
+  { dirs-loading false }
+  { roots-seq 0 }
+  { nav-seq 0 }
+  { creating-folder false }
+  { submitting false }
   { on-complete null }
  ]
 
@@ -272,6 +278,12 @@
   !clear-els $modal.root-els
   ; set 0 modal.root-items.length
   [ match
+   { [ and { [ propertyIs true modal.roots-loading ] } { [ propertyIs 0 modal.roots.length ] } ] (
+    ; to load-r !document.createElement div
+    ; assign $load-r { className 'cc-loading cc-loading--compact' } { textContent 'Loading locations…' }
+    !roots-list.appendChild $load-r
+    !modal.root-els.push $load-r
+   ) }
    { [ propertyIs 0 modal.roots.length ] (
     ; to empty-r !document.createElement div
     ; assign $empty-r { className lane-dir-empty } { textContent 'No locations found' }
@@ -336,127 +348,150 @@
  ; to render-directories (
   !clear-els $modal.dir-els
   ; set 0 modal.dir-items.length
-  ; to raw-q !modal.filter-query.trim
-  ; to q !raw-q.toLowerCase
-  ; to q-dot [ match
-   { $q.startsWith : !q.startsWith '.' }
-   { true : false }
-  ]
-  ; to reveal-hidden [ match
-   { $modal.show-hidden : true }
-   { $q-dot : true }
-   { true : false }
-  ]
   [ match
-   { $modal.parent-path (
+   { [ propertyIs true modal.dirs-loading ] (
+    ; to load-d !document.createElement div
+    ; assign $load-d { className 'cc-loading cc-loading--dir' } { textContent 'Loading folders…' }
+    !dir-list.appendChild $load-d
+    !modal.dir-els.push $load-d
+   ) }
+   { true (
+    ; to raw-q !modal.filter-query.trim
+    ; to q !raw-q.toLowerCase
+    ; to q-dot [ match
+     { $q.startsWith : !q.startsWith '.' }
+     { true : false }
+    ]
+    ; to reveal-hidden [ match
+     { $modal.show-hidden : true }
+     { $q-dot : true }
+     { true : false }
+    ]
     [ match
-     { [ propertyIs '' q ] (
-      ; to pbtn !document.createElement button
-      ; assign $pbtn { type button } { className 'lane-dir-row lane-dir-row--parent' } { title $modal.parent-path }
-      ; to pico !document.createElement span
-      ; assign $pico { className lane-dir-row-icon } { textContent '↩' }
-      ; to pname !document.createElement span
-      ; assign $pname { className lane-dir-row-name } { textContent '..' }
-      !pbtn.appendChild $pico
-      !pbtn.appendChild $pname
-      !pbtn.addEventListener click : !modal.navigate $modal.parent-path
-      !dir-list.appendChild $pbtn
-      !modal.dir-els.push $pbtn
+     { $modal.parent-path (
+      [ match
+       { [ propertyIs '' q ] (
+        ; to pbtn !document.createElement button
+        ; assign $pbtn { type button } { className 'lane-dir-row lane-dir-row--parent' } { title $modal.parent-path }
+        ; to pico !document.createElement span
+        ; assign $pico { className lane-dir-row-icon } { textContent '↩' }
+        ; to pname !document.createElement span
+        ; assign $pname { className lane-dir-row-name } { textContent '..' }
+        !pbtn.appendChild $pico
+        !pbtn.appendChild $pname
+        !pbtn.addEventListener click : !modal.navigate $modal.parent-path
+        !dir-list.appendChild $pbtn
+        !modal.dir-els.push $pbtn
+       ) }
+      ]
      ) }
     ]
-   ) }
-  ]
-  ; to stats ; object { shown 0 } { omitted-hidden 0 }
-  ; each $modal.directories (
-   ; to { dir } $argv
-   ; to skip-hidden [ match
-    { [ propertyIs true dir.hidden ] : [ ternary $reveal-hidden false true ] }
-    { true : false }
-   ]
-   [ match
-    { $skip-hidden : ; set [ ; add $stats.omitted-hidden 1 ] stats.omitted-hidden }
-    { true (
-     ; to low !dir.name.toLowerCase
-     ; to hit [ match
-      { [ propertyIs '' q ] : true }
-      { [ !low.includes $q ] : true }
+    ; to stats ; object { shown 0 } { omitted-hidden 0 }
+    ; each $modal.directories (
+     ; to { dir } $argv
+     ; to skip-hidden [ match
+      { [ propertyIs true dir.hidden ] : [ ternary $reveal-hidden false true ] }
       { true : false }
      ]
      [ match
-      { $hit (
-       ; set [ ; add $stats.shown 1 ] stats.shown
-       ; to row !document.createElement button
-       ; assign $row { type button } { className lane-dir-row } { title $dir.path }
-       ; to ico !document.createElement span
-       ; assign $ico { className lane-dir-row-icon } { textContent '▸' }
-       ; to nm !document.createElement span
-       ; assign $nm { className lane-dir-row-name } { textContent $dir.name }
-       !row.appendChild $ico
-       !row.appendChild $nm
-       [ match
-        { $dir.hidden (
-         ; to htag !document.createElement span
-         ; assign $htag { className lane-dir-tag } { textContent hidden }
-         !row.appendChild $htag
-        ) }
+      { $skip-hidden : ; set [ ; add $stats.omitted-hidden 1 ] stats.omitted-hidden }
+      { true (
+       ; to low !dir.name.toLowerCase
+       ; to hit [ match
+        { [ propertyIs '' q ] : true }
+        { [ !low.includes $q ] : true }
+        { true : false }
        ]
        [ match
-        { $dir.symlink (
-         ; to stag !document.createElement span
-         ; assign $stag { className lane-dir-tag } { textContent link }
-         !row.appendChild $stag
+        { $hit (
+         ; set [ ; add $stats.shown 1 ] stats.shown
+         ; to row !document.createElement button
+         ; assign $row { type button } { className lane-dir-row } { title $dir.path }
+         ; to ico !document.createElement span
+         ; assign $ico { className lane-dir-row-icon } { textContent '▸' }
+         ; to nm !document.createElement span
+         ; assign $nm { className lane-dir-row-name } { textContent $dir.name }
+         !row.appendChild $ico
+         !row.appendChild $nm
+         [ match
+          { $dir.hidden (
+           ; to htag !document.createElement span
+           ; assign $htag { className lane-dir-tag } { textContent hidden }
+           !row.appendChild $htag
+          ) }
+         ]
+         [ match
+          { $dir.symlink (
+           ; to stag !document.createElement span
+           ; assign $stag { className lane-dir-tag } { textContent link }
+           !row.appendChild $stag
+          ) }
+         ]
+         !row.addEventListener click : !modal.navigate $dir.path
+         !dir-list.appendChild $row
+         !modal.dir-els.push $row
+         !modal.dir-items.push ; object { dir $dir } { el $row }
         ) }
        ]
-       !row.addEventListener click : !modal.navigate $dir.path
-       !dir-list.appendChild $row
-       !modal.dir-els.push $row
-       !modal.dir-items.push ; object { dir $dir } { el $row }
       ) }
      ]
-    ) }
-   ]
-  )
-  [ match
-   { [ propertyIs 0 stats.shown ] (
-    ; to msg [ match
-     { [ propertyIsGreaterThan 0 q.length ] : 'No matching folders' }
-     { [ propertyIsGreaterThan 0 stats.omitted-hidden ] : ; add 'No visible subfolders (' ; add $stats.omitted-hidden ' hidden — click "Show hidden")' }
-     { true : 'No subfolders in this directory' }
+    )
+    [ match
+     { [ propertyIs 0 stats.shown ] (
+      ; to msg [ match
+       { [ propertyIsGreaterThan 0 q.length ] : 'No matching folders' }
+       { [ propertyIsGreaterThan 0 stats.omitted-hidden ] : ; add 'No visible subfolders (' ; add $stats.omitted-hidden ' hidden — click "Show hidden")' }
+       { true : 'No subfolders in this directory' }
+      ]
+      ; to empty-d !document.createElement div
+      ; assign $empty-d { className lane-dir-empty } { textContent $msg }
+      !dir-list.appendChild $empty-d
+      !modal.dir-els.push $empty-d
+     ) }
     ]
-    ; to empty-d !document.createElement div
-    ; assign $empty-d { className lane-dir-empty } { textContent $msg }
-    !dir-list.appendChild $empty-d
-    !modal.dir-els.push $empty-d
    ) }
   ]
  )
 
  ; to modal.load-roots (
   -- Fetches attached disks and base locations from the server FS API
+  ; to rseq ; add $modal.roots-seq 1
+  ; set $rseq modal.roots-seq
+  ; set true modal.roots-loading
+  ; condition { propertyIs 0 modal.roots.length } : !render-roots
   [ match
    { $fetchFsRoots (
     ; try (
      ; to res !fetchFsRoots
-     ; to roots [ match
-      { $res.roots : $res.roots }
-      { true : {} }
-     ]
-     ; set $roots modal.roots
-     [ match
-      { $res.home : ; set $res.home modal.home-path }
-     ]
-     !render-roots
+     ; condition { propertyIs $rseq modal.roots-seq } (
+      ; set false modal.roots-loading
+      ; to roots [ match
+       { $res.roots : $res.roots }
+       { true : {} }
+      ]
+      ; set $roots modal.roots
+      [ match
+       { $res.home : ; set $res.home modal.home-path }
+      ]
+      !render-roots
+     )
      $res
     ) (
      ; to { err } $argv
      ; to msg [ match { $err.message : $err.message } { true : 'Failed to load computer locations' } ]
-     !set-error $msg
-     !render-roots
+     ; condition { propertyIs $rseq modal.roots-seq } (
+      ; set false modal.roots-loading
+      !set-error $msg
+      !render-roots
+     )
      null
     )
    ) }
    { true (
-    !render-roots
+    ; condition { propertyIs $rseq modal.roots-seq } (
+     ; set false modal.roots-loading
+     !render-roots
+    )
     null
    ) }
   ]
@@ -465,8 +500,12 @@
  ; to modal.navigate (
   -- Navigates the directory browser to target-path and lists its subfolders
   ; to { target-path } $argv
+  ; to nseq ; add $modal.nav-seq 1
+  ; set $nseq modal.nav-seq
+  ; set true modal.dirs-loading
   ; set true new-folder-row.hidden
   ; set '' new-folder-input.value
+  !render-directories
   [ match
    { $fetchFsList (
     ; try (
@@ -475,49 +514,59 @@
       { true : '' }
      ]
      ; to res !fetchFsList $req-path
-     [ match
-      { $res.path (
-       ; set $res.path modal.current-path
-       ; set $res.path path-input.value
-      ) }
-     ]
-     ; set [ match { $res.parent : $res.parent } { true : null } ] modal.parent-path
-     ; set [ match { $res.breadcrumbs : $res.breadcrumbs } { true : {} } ] modal.breadcrumbs
-     ; set [ ternary [ propertyIs false res.writable ] false true ] modal.writable
-     [ match
-      { [ propertyIs false res.ok ] (
-       !set-error [ match { $res.error : $res.error } { true : 'Unable to open directory' } ]
-       !set-warning ''
-       ; set {} modal.directories
-      ) }
-      { true (
-       !set-error ''
-       [ match
-        { $res.writable : !set-warning '' }
-        { true : !set-warning 'This folder is read-only. Choose a writable folder or create a subfolder elsewhere.' }
-       ]
-       ; set [ match { $res.directories : $res.directories } { true : {} } ] modal.directories
-       ; set '' modal.filter-query
-       ; set '' filter-input.value
-      ) }
-     ]
-     !render-roots
-     !render-breadcrumbs
-     !render-directories
-     !sync-controls
+     ; condition { propertyIs $nseq modal.nav-seq } (
+      ; set false modal.dirs-loading
+      [ match
+       { $res.path (
+        ; set $res.path modal.current-path
+        ; set $res.path path-input.value
+       ) }
+      ]
+      ; set [ match { $res.parent : $res.parent } { true : null } ] modal.parent-path
+      ; set [ match { $res.breadcrumbs : $res.breadcrumbs } { true : {} } ] modal.breadcrumbs
+      ; set [ ternary [ propertyIs false res.writable ] false true ] modal.writable
+      [ match
+       { [ propertyIs false res.ok ] (
+        !set-error [ match { $res.error : $res.error } { true : 'Unable to open directory' } ]
+        !set-warning ''
+        ; set {} modal.directories
+       ) }
+       { true (
+        !set-error ''
+        [ match
+         { $res.writable : !set-warning '' }
+         { true : !set-warning 'This folder is read-only. Choose a writable folder or create a subfolder elsewhere.' }
+        ]
+        ; set [ match { $res.directories : $res.directories } { true : {} } ] modal.directories
+        ; set '' modal.filter-query
+        ; set '' filter-input.value
+       ) }
+      ]
+      !render-roots
+      !render-breadcrumbs
+      !render-directories
+      !sync-controls
+     )
      $res
     ) (
      ; to { err } $argv
      ; to msg [ match { $err.message : $err.message } { true : 'Failed to list directory' } ]
-     !set-error $msg
-     !sync-controls
+     ; condition { propertyIs $nseq modal.nav-seq } (
+      ; set false modal.dirs-loading
+      !set-error $msg
+      !render-directories
+      !sync-controls
+     )
      null
     )
    ) }
    { true (
-    !render-breadcrumbs
-    !render-directories
-    !sync-controls
+    ; condition { propertyIs $nseq modal.nav-seq } (
+     ; set false modal.dirs-loading
+     !render-breadcrumbs
+     !render-directories
+     !sync-controls
+    )
     null
    ) }
   ]
@@ -526,42 +575,56 @@
  ; to modal.create-folder (
   -- Creates a new subfolder inside the currently open directory and navigates into it
   ; to { raw-name } $argv
-  ; to clean [ match
-   { $raw-name : !raw-name.trim }
-   { true : '' }
-  ]
   [ match
-   { [ propertyIs '' clean ] (
-    !set-error 'Enter a folder name'
-    null
+   { [ propertyIs true modal.creating-folder ] : null }
+   { true (
+    ; to clean [ match
+     { $raw-name : !raw-name.trim }
+     { true : '' }
+    ]
+    [ match
+     { [ propertyIs '' clean ] (
+      !set-error 'Enter a folder name'
+      null
+     ) }
+     { [ propertyIs '' modal.current-path ] (
+      !set-error 'Navigate to a parent folder first'
+      null
+     ) }
+     { $createFsDir (
+      ; set true modal.creating-folder
+      ; set true new-folder-submit.disabled
+      ; set 'lane-modal-action lane-modal-action--open cc-btn-busy' new-folder-submit.className
+      ; set 'Creating…' new-folder-submit.textContent
+      ; to create-res null
+      ; try (
+       ; to res !createFsDir $modal.current-path $clean
+       ; set $res create-res
+       [ match
+        { [ propertyIs false res.ok ] (
+         !set-error [ match { $res.error : $res.error } { true : 'Could not create folder' } ]
+        ) }
+        { true (
+         !set-error ''
+         ; set true new-folder-row.hidden
+         ; set '' new-folder-input.value
+         !modal.navigate $res.path
+        ) }
+       ]
+      ) (
+       ; to { err } $argv
+       !set-error [ match { $err.message : $err.message } { true : 'Could not create folder' } ]
+       null
+      )
+      ; set false modal.creating-folder
+      ; set false new-folder-submit.disabled
+      ; set 'lane-modal-action lane-modal-action--open' new-folder-submit.className
+      ; set Create new-folder-submit.textContent
+      $create-res
+     ) }
+     { true null }
+    ]
    ) }
-   { [ propertyIs '' modal.current-path ] (
-    !set-error 'Navigate to a parent folder first'
-    null
-   ) }
-   { $createFsDir (
-    ; try (
-     ; to res !createFsDir $modal.current-path $clean
-     [ match
-      { [ propertyIs false res.ok ] (
-       !set-error [ match { $res.error : $res.error } { true : 'Could not create folder' } ]
-       $res
-      ) }
-      { true (
-       !set-error ''
-       ; set true new-folder-row.hidden
-       ; set '' new-folder-input.value
-       !modal.navigate $res.path
-       $res
-      ) }
-     ]
-    ) (
-     ; to { err } $argv
-     !set-error [ match { $err.message : $err.message } { true : 'Could not create folder' } ]
-     null
-    )
-   ) }
-   { true null }
   ]
  )
 
@@ -569,6 +632,10 @@
   -- Closes the directory picker modal and detaches it from the DOM
   ; condition { propertyIs true modal.is-open } (
    ; set false modal.is-open
+   ; set false modal.roots-loading
+   ; set false modal.dirs-loading
+   ; set [ ; add $modal.roots-seq 1 ] modal.roots-seq
+   ; set [ ; add $modal.nav-seq 1 ] modal.nav-seq
    ; set null modal.on-complete
    ; set true new-folder-row.hidden
    !set-error ''
@@ -604,54 +671,77 @@
 
  ; to modal.use-selected (
   -- Confirms or creates the session permanently using modal.current-path
-  ; to has-cur [ match
-   { [ propertyIs '' modal.current-path ] : false }
-   { [ propertyIs null modal.current-path ] : false }
-   { [ propertyIs undefined modal.current-path ] : false }
-   { true : true }
-  ]
   [ match
-   { [ propertyIs false has-cur ] (
-    !set-error 'Navigate to a directory first or choose Default'
-    null
-   ) }
-   { [ propertyIs false modal.writable ] (
-    !set-error 'This directory is read-only. Choose a writable folder or choose Default.'
-    null
-   ) }
+   { [ propertyIs true modal.submitting ] : null }
    { true (
-    ; to chosen $modal.current-path
-    ; to cur-mode $modal.mode
-    ; to is-tab $modal.tab-only
-    ; to sess-name !name-input.value.trim
-    ; to cb $modal.on-complete
+    ; to has-cur [ match
+     { [ propertyIs '' modal.current-path ] : false }
+     { [ propertyIs null modal.current-path ] : false }
+     { [ propertyIs undefined modal.current-path ] : false }
+     { true : true }
+    ]
     [ match
-     { [ propertyIs create cur-mode ] (
-      !modal.close
-      ; to res [ match
-       { $is-tab : !lane-control.new-tab-session $sess-name $chosen true }
-       { true : !lane-control.new-session $sess-name $chosen true }
-      ]
-      [ match
-       { $cb : !$cb $res }
-      ]
-      $res
+     { [ propertyIs false has-cur ] (
+      !set-error 'Navigate to a directory first or choose Default'
+      null
+     ) }
+     { [ propertyIs false modal.writable ] (
+      !set-error 'This directory is read-only. Choose a writable folder or choose Default.'
+      null
      ) }
      { true (
-      ; to res !lane-control.confirm-session-data-dir $chosen
-      [ match
-       { [ propertyIs false res.ok ] (
-        !set-error [ match { $res.error : $res.error } { true : 'Could not set directory' } ]
-        $res
-       ) }
-       { true (
-        !modal.close
-        [ match
-         { $cb : !$cb $res }
-        ]
-        $res
-       ) }
-      ]
+      ; set true modal.submitting
+      ; to prev-lbl $select-btn.textContent
+      ; set true select-btn.disabled
+      ; set true default-btn.disabled
+      ; set 'lane-modal-action lane-modal-action--open cc-btn-busy' select-btn.className
+      ; set [ ternary [ propertyIs create modal.mode ] 'Creating…' 'Saving…' ] select-btn.textContent
+      ; to out-res null
+      ; try (
+       ; to chosen $modal.current-path
+       ; to cur-mode $modal.mode
+       ; to is-tab $modal.tab-only
+       ; to sess-name !name-input.value.trim
+       ; to cb $modal.on-complete
+       [ match
+        { [ propertyIs create cur-mode ] (
+         !modal.close
+         ; to res [ match
+          { $is-tab : !lane-control.new-tab-session $sess-name $chosen true }
+          { true : !lane-control.new-session $sess-name $chosen true }
+         ]
+         ; set $res out-res
+         [ match
+          { $cb : !$cb $res }
+         ]
+        ) }
+        { true (
+         ; to res !lane-control.confirm-session-data-dir $chosen
+         ; set $res out-res
+         [ match
+          { [ propertyIs false res.ok ] (
+           !set-error [ match { $res.error : $res.error } { true : 'Could not set directory' } ]
+          ) }
+          { true (
+           !modal.close
+           [ match
+            { $cb : !$cb $res }
+           ]
+          ) }
+         ]
+        ) }
+       ]
+      ) (
+       ; to { err } $argv
+       !set-error [ match { $err.message : $err.message } { true : 'Operation failed' } ]
+       null
+      )
+      ; set false modal.submitting
+      ; set 'lane-modal-action lane-modal-action--open' select-btn.className
+      ; set $prev-lbl select-btn.textContent
+      ; set false default-btn.disabled
+      !sync-controls
+      $out-res
      ) }
     ]
    ) }
@@ -660,37 +750,60 @@
 
  ; to modal.use-default (
   -- Explicitly selects or confirms Default storage for the session
-  ; to cur-mode $modal.mode
-  ; to is-tab $modal.tab-only
-  ; to sess-name !name-input.value.trim
-  ; to cb $modal.on-complete
   [ match
-   { [ propertyIs create cur-mode ] (
-    !modal.close
-    ; to res [ match
-     { $is-tab : !lane-control.new-tab-session $sess-name null true }
-     { true : !lane-control.new-session $sess-name null true }
-    ]
-    [ match
-     { $cb : !$cb $res }
-    ]
-    $res
-   ) }
+   { [ propertyIs true modal.submitting ] : null }
    { true (
-    ; to res !lane-control.confirm-session-data-dir null
-    [ match
-     { [ propertyIs false res.ok ] (
-      !set-error [ match { $res.error : $res.error } { true : 'Could not confirm Default directory' } ]
-      $res
-     ) }
-     { true (
-      !modal.close
-      [ match
-       { $cb : !$cb $res }
-      ]
-      $res
-     ) }
-    ]
+    ; set true modal.submitting
+    ; to prev-def-lbl $default-btn.textContent
+    ; set true default-btn.disabled
+    ; set true select-btn.disabled
+    ; set 'lane-modal-action cc-btn-busy' default-btn.className
+    ; set 'Saving…' default-btn.textContent
+    ; to out-res null
+    ; try (
+     ; to cur-mode $modal.mode
+     ; to is-tab $modal.tab-only
+     ; to sess-name !name-input.value.trim
+     ; to cb $modal.on-complete
+     [ match
+      { [ propertyIs create cur-mode ] (
+       !modal.close
+       ; to res [ match
+        { $is-tab : !lane-control.new-tab-session $sess-name null true }
+        { true : !lane-control.new-session $sess-name null true }
+       ]
+       ; set $res out-res
+       [ match
+        { $cb : !$cb $res }
+       ]
+      ) }
+      { true (
+       ; to res !lane-control.confirm-session-data-dir null
+       ; set $res out-res
+       [ match
+        { [ propertyIs false res.ok ] (
+         !set-error [ match { $res.error : $res.error } { true : 'Could not confirm Default directory' } ]
+        ) }
+        { true (
+         !modal.close
+         [ match
+          { $cb : !$cb $res }
+         ]
+        ) }
+       ]
+      ) }
+     ]
+    ) (
+     ; to { err } $argv
+     !set-error [ match { $err.message : $err.message } { true : 'Operation failed' } ]
+     null
+    )
+    ; set false modal.submitting
+    ; set lane-modal-action default-btn.className
+    ; set $prev-def-lbl default-btn.textContent
+    ; set false default-btn.disabled
+    !sync-controls
+    $out-res
    ) }
   ]
  )
@@ -709,7 +822,11 @@
   ; set true modal.writable
   ; set {} modal.breadcrumbs
   ; set {} modal.directories
+  ; set true modal.roots-loading
+  ; set true modal.dirs-loading
   !sync-controls
+  !render-roots
+  !render-directories
   ; condition { propertyIs false modal.is-open } (
    ; set true modal.is-open
    [ match

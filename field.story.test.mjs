@@ -985,3 +985,179 @@ test('Story infinite scroller, cross-page heading deduplication & Jump to... buc
   globalThis.fetch = origFetch
  }
 })
+
+test('lane-story shows initial loading state before empty state and preserves existing entries while refreshing', async () => {
+ function createMockElement(tag) {
+  return {
+   tag,
+   nodeType: 1,
+   style: {},
+   attributes: {},
+   children: [],
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   placeholder: '',
+   title: '',
+   className: '',
+   hidden: false,
+   disabled: false,
+   checked: false,
+   scrollHeight: 0,
+   scrollTop: 0,
+   clientHeight: 0,
+   setAttribute(k, v) { this.attributes[k] = String(v) },
+   getAttribute(k) { return this.attributes[k] ?? null },
+   removeAttribute(k) { delete this.attributes[k] },
+   appendChild(c) {
+    if (c && typeof c === 'object') {
+     c.parentNode = this
+     this.children.push(c)
+    }
+    return c
+   },
+   insertBefore(c, ref) {
+    if (c && typeof c === 'object') c.parentNode = this
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) this.children.push(c)
+    else this.children.splice(idx, 0, c)
+    return c
+   },
+   replaceChildren(...nodes) {
+    this.children = []
+    for (const n of nodes) this.appendChild(n)
+   },
+   addEventListener(ev, handler) { this.listeners[ev] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode && Array.isArray(this.parentNode.children)) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) this.parentNode.children.splice(idx, 1)
+    }
+   },
+  }
+ }
+
+ const pendingResolvers = []
+ const deferredQuery = async () => new Promise(resolve => {
+  pendingResolvers.push(resolve)
+ })
+
+ const kvMap = new Map()
+ const makeKv = (prefix = '') => ({
+  namespace(name) { return makeKv(prefix ? `${prefix}/${name}` : name) },
+  async get(k) {
+   const full = prefix ? `${prefix}/${k}` : k
+   return kvMap.has(full) ? kvMap.get(full) : null
+  },
+  async set(k, v) { kvMap.set(prefix ? `${prefix}/${k}` : k, String(v)) },
+  async delete(k) { kvMap.delete(prefix ? `${prefix}/${k}` : k) },
+ })
+ const rootKv = makeKv()
+
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  Intl,
+  JSON,
+  Math,
+  Number,
+  Object,
+  Reflect,
+  String,
+  decodeURIComponent,
+  encodeURIComponent,
+  addEventListener() {},
+ }
+ const mockDocument = {
+  body: createMockElement('body'),
+  documentElement: createMockElement('html'),
+  defaultView: mockWindow,
+  createElement: createMockElement,
+  addEventListener() {},
+ }
+
+ const f = field({
+  ...DATA_RUNTIME_ENV,
+  console: { log() {}, error() {}, warn() {} },
+  data: rootKv,
+  document: mockDocument,
+  queryLaneStories: deferredQuery,
+  window: mockWindow,
+ })
+ const storyMod = await f.run(parse(laneStorySource, '/src/lane-story.fs'))
+ const containerEl = createMockElement('div')
+ const lane = { id: 'story-load-lane', title: 'Story Load', data: rootKv.namespace('story-load-lane') }
+ const sv = await storyMod.mount(lane, containerEl, { 'clock-timezone': 'UTC' }, { 'active-tab': 'story' })
+
+ // 1. Initial load: shows Loading… and Loading runs…, never premature No runs recorded yet.
+ const actP = sv.activate()
+ await new Promise(resolve => setTimeout(resolve, 10))
+ assert.equal(sv['is-loading'], true)
+ assert.equal(sv['is-loaded'], false)
+ assert.equal(sv['status-el'].textContent, 'Loading…')
+ assert.equal(sv['loading-el'].hidden, false)
+ assert.equal(sv['loading-el'].textContent, 'Loading runs…')
+ assert.equal(sv['empty-el'].hidden, true)
+ assert.equal(sv['refresh-btn'].disabled, true)
+ assert.equal(sv['refresh-btn'].className.includes('lane-story-refresh-btn--loading'), true)
+
+ // 2. Resolve empty: switches cleanly to 0 runs and No runs recorded yet.
+ assert.equal(pendingResolvers.length, 1)
+ pendingResolvers.shift()({ entries: [], hasMore: false, nextCursor: null, total: 0 })
+ await actP
+ assert.equal(sv['is-loading'], false)
+ assert.equal(sv['is-loaded'], true)
+ assert.equal(sv['loading-el'].hidden, true)
+ assert.equal(sv['empty-el'].hidden, false)
+ assert.equal(sv['empty-el'].textContent, 'No runs recorded yet.')
+ assert.equal(sv['status-el'].textContent, '0 runs')
+ assert.equal(sv['refresh-btn'].disabled, false)
+
+ // 3. Load 1 entry
+ const reload1 = sv.reload()
+ await new Promise(resolve => setTimeout(resolve, 10))
+ assert.equal(pendingResolvers.length, 1)
+ pendingResolvers.shift()({
+  entries: [{ id: 'run-1', ts: Date.now(), ok: true, trig: 'manual', ms: 12, inCnt: 0, impCnt: 0, expCnt: 0, sentCnt: 0, fin: { p: '42' } }],
+  hasMore: false,
+  nextCursor: null,
+  total: 1,
+ })
+ await reload1
+ assert.equal(sv.entries.length, 1)
+ assert.equal(sv['status-el'].textContent, '1 run')
+ assert.equal(sv['empty-el'].hidden, true)
+ assert.equal(sv['entries-el'].children.length >= 2, true)
+ const renderedBeforeRefresh = sv['entries-el'].children.slice()
+
+ // 4. Refresh while entries exist: shows Refreshing… and preserves existing entry card until response arrives
+ const reload2 = sv.reload()
+ await new Promise(resolve => setTimeout(resolve, 10))
+ assert.equal(sv['is-loading'], true)
+ assert.equal(sv['status-el'].textContent, 'Refreshing…')
+ assert.equal(sv['loading-el'].hidden, true)
+ assert.equal(sv['empty-el'].hidden, true)
+ assert.equal(sv['entries-el'].children.length >= 2, true)
+ assert.equal(sv['entries-el'].children[1], renderedBeforeRefresh[1])
+
+ assert.equal(pendingResolvers.length, 1)
+ const nowTs = Date.now()
+ pendingResolvers.shift()({
+  entries: [
+   { id: 'run-2', ts: nowTs, ok: true, trig: 'manual', ms: 8, inCnt: 0, impCnt: 0, expCnt: 0, sentCnt: 0, fin: { p: '99' } },
+   { id: 'run-1', ts: nowTs - 1000, ok: true, trig: 'manual', ms: 12, inCnt: 0, impCnt: 0, expCnt: 0, sentCnt: 0, fin: { p: '42' } },
+  ],
+  hasMore: false,
+  nextCursor: null,
+  total: 2,
+ })
+ await reload2
+ assert.equal(sv['is-loading'], false)
+ assert.equal(sv.entries.length, 2)
+ assert.equal(sv['status-el'].textContent, '2 runs')
+})

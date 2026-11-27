@@ -21,6 +21,8 @@
   { last-filter-col-idx 0 }
   { show-proto true }
   { copy-timer null }
+  { is-loading [ match { $options.initial-loading : true } { true : false } ] }
+  { has-rendered false }
  ]
 
  ; to root-el !document.createElement div
@@ -61,6 +63,11 @@
 
  ; to columns-el !document.createElement div
  ; set lane-scope-columns columns-el.className
+ ; to loading-el !document.createElement div
+ ; assign $loading-el { className 'cc-loading cc-loading--scope' } { textContent 'Loading scope…' } { hidden [ ternary $view.is-loading false true ] }
+ [ match
+  { [ propertyIs true view.is-loading ] : !columns-el.appendChild $loading-el }
+ ]
 
  !root-el.appendChild $toolbar-el
  !root-el.appendChild $breadcrumb-el
@@ -77,7 +84,41 @@
   { crumb-list-el $crumb-list-el }
   { copy-btn $copy-btn }
   { columns-el $columns-el }
+  { loading-el $loading-el }
  ]
+
+ ; to view.set-loading (
+  -- Toggles in-flight scope loading indicator when columns have not yet rendered
+  ; to { loading } $argv
+  ; to next-loading [ ternary $loading true false ]
+  ; set $next-loading view.is-loading
+  [ match
+   { $next-loading (
+    [ match
+     { [ and { [ propertyIs false view.has-rendered ] } { [ propertyIs 0 view.col-els.length ] } ] (
+      ; set false loading-el.hidden
+      [ match
+       { [ and { $columns-el.children } { $columns-el.children.indexOf } ] (
+        ; to lidx !columns-el.children.indexOf $loading-el
+        ; condition { propertyIsLessThan 0 lidx } : !columns-el.appendChild $loading-el
+       ) }
+       { true : !columns-el.appendChild $loading-el }
+      ]
+     ) }
+    ]
+   ) }
+   { true (
+    ; set true loading-el.hidden
+    !loading-el.remove
+    [ match
+     { [ and { $columns-el.children } { $columns-el.children.indexOf } { $columns-el.children.splice } ] (
+      ; to lidx !columns-el.children.indexOf $loading-el
+      ; condition { propertyIsGreaterThanOrEqual 0 lidx } : !columns-el.children.splice $lidx 1
+     ) }
+    ]
+   ) }
+  ]
+ )
 
  ; to view.deepest-entries-index (
   -- Finds the index of the deepest entries column currently rendered
@@ -411,6 +452,16 @@
  ; to view.render (
   -- Resolves and renders all Miller columns for the given final scope state
   ; to { next-state } $argv
+  ; set false view.is-loading
+  ; set true view.has-rendered
+  ; set true loading-el.hidden
+  !loading-el.remove
+  [ match
+   { [ and { $columns-el.children } { $columns-el.children.indexOf } { $columns-el.children.splice } ] (
+    ; to lidx !columns-el.children.indexOf $loading-el
+    ; condition { propertyIsGreaterThanOrEqual 0 lidx } : !columns-el.children.splice $lidx 1
+   ) }
+  ]
   [ match
    { $next-state : ; set $next-state view.state }
   ]

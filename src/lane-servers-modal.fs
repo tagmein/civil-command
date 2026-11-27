@@ -225,6 +225,9 @@
   { deployments {} }
   { deployment-items {} }
   { is-open false }
+  { is-loading false }
+  { refresh-seq 0 }
+  { saving-server false }
  ]
 
  ; to clear-list (
@@ -485,15 +488,16 @@
   ) null
  )
 
- ; to render-servers (
+ ; to render-servers-list (
   !clear-list $servers-list
   ; set 0 modal.server-items.length
-  ; to list [ match
-   { $loadDeployServers : !loadDeployServers $data }
-   { true : {} }
-  ]
-  ; set $list modal.servers
+  ; to list $modal.servers
   [ match
+   { [ and { [ propertyIs true modal.is-loading ] } { [ propertyIs 0 list.length ] } ] (
+    ; to load-el !document.createElement div
+    ; assign $load-el { className cc-loading } { textContent 'Loading servers…' }
+    !servers-list.appendChild $load-el
+   ) }
    { [ propertyIs 0 list.length ] (
     ; to empty-el !document.createElement div
     ; assign $empty-el { className lane-modal-empty } { textContent 'No SSH servers saved yet. Click "+ Add Server" to configure a deployment target.' }
@@ -609,15 +613,16 @@
   $found.val
  )
 
- ; to render-deployments (
+ ; to render-deployments-list (
   !clear-list $deps-list
   ; set 0 modal.deployment-items.length
-  ; to deps [ match
-   { $loadDeployments : !loadDeployments $data }
-   { true : {} }
-  ]
-  ; set $deps modal.deployments
+  ; to deps $modal.deployments
   [ match
+   { [ and { [ propertyIs true modal.is-loading ] } { [ propertyIs 0 deps.length ] } ] (
+    ; to load-el !document.createElement div
+    ; assign $load-el { className cc-loading } { textContent 'Loading deployments…' }
+    !deps-list.appendChild $load-el
+   ) }
    { [ propertyIs 0 deps.length ] (
     ; to empty-el !document.createElement div
     ; assign $empty-el { className lane-modal-empty } { textContent 'No lanes deployed yet. Enable "HTTP Server" in a lane\'s Configure modal and open its Server tab.' }
@@ -757,14 +762,42 @@
  )
 
  ; to modal.refresh (
-  !render-servers
-  !render-deployments
+  ; to rseq ; add $modal.refresh-seq 1
+  ; set $rseq modal.refresh-seq
+  ; set true modal.is-loading
+  ; condition { propertyIs 0 modal.servers.length } : !render-servers-list
+  ; condition { propertyIs 0 modal.deployments.length } : !render-deployments-list
+  ; to srv-box ; object { list null }
+  ; to dep-box ; object { list null }
+  ; try (
+   [ match
+    { $loadDeployServers : ; set [ !loadDeployServers $data ] srv-box.list }
+   ]
+   [ match
+    { $loadDeployments : ; set [ !loadDeployments $data ] dep-box.list }
+   ]
+  ) : null
+  ; condition { propertyIs $rseq modal.refresh-seq } (
+   ; set false modal.is-loading
+   [ match
+    { $srv-box.list : ; set $srv-box.list modal.servers }
+    { true : ; set {} modal.servers }
+   ]
+   [ match
+    { $dep-box.list : ; set $dep-box.list modal.deployments }
+    { true : ; set {} modal.deployments }
+   ]
+   !render-servers-list
+   !render-deployments-list
+  )
  )
 
  ; to modal.close (
   ; condition { propertyIs true modal.is-open } (
    ; to prev-lane $modal.lane
    ; set false modal.is-open
+   ; set false modal.is-loading
+   ; set [ ; add $modal.refresh-seq 1 ] modal.refresh-seq
    ; set null modal.lane
    !set-error ''
    !set-status ''
@@ -781,13 +814,14 @@
   !set-error ''
   !set-status ''
   !close-form
-  !modal.refresh
-  ; condition { propertyIs 0 modal.servers.length } : !open-form null
   ; to start-tab [ match
    { [ propertyIs deployments initial-tab ] : deployments }
    { true : servers }
   ]
   !modal.set-tab $start-tab
+  ; set true modal.is-loading
+  ; condition { propertyIs 0 modal.servers.length } : !render-servers-list
+  ; condition { propertyIs 0 modal.deployments.length } : !render-deployments-list
   ; condition { propertyIs true modal.is-open } (
    [ match
     { [ and { $modal.lane } { $lane-control.unmount-lane-modal } ] : !lane-control.unmount-lane-modal $modal.lane $modal }
@@ -805,6 +839,8 @@
    { $lane-control.mount-lane-modal : !lane-control.mount-lane-modal null $modal }
    { $document.body.appendChild : !document.body.appendChild $backdrop }
   ]
+  !modal.refresh
+  ; condition { and { [ propertyIs true modal.is-open ] } { [ propertyIs 0 modal.servers.length ] } } : !open-form null
   $modal
  )
 
@@ -820,53 +856,72 @@
   [ match
    { $ev.preventDefault : !ev.preventDefault }
   ]
-  !set-error ''
-  ; to host !f-host.input.value.trim
-  ; to raw-name !f-name.input.value.trim
-  ; to name [ match { $raw-name : $raw-name } { true : $host } ]
   [ match
-   { [ propertyIs '' host ] : !set-error 'SSH Host is required.' }
+   { [ propertyIs true modal.saving-server ] : null }
    { true (
-    ; to ssh-port !safe-int $f-ssh-port.input.value 22
-    ; to raw-user !f-user.input.value.trim
-    ; to user [ match { $raw-user : $raw-user } { true : root } ]
-    ; to base-port !safe-int $f-base-port.input.value 4100
-    ; to raw-root !f-install-root.input.value.trim
-    ; to install-root [ match { $raw-root : $raw-root } { true : '/opt/civil-command' } ]
-    ; to cm-mode $cm-mode-select.value
-    ; to cm-port !safe-int $f-cm-port.input.value 3333
-    ; to raw-cm-url !f-cm-url.input.value.trim
-    ; to cm-url [ match
-     { $raw-cm-url : $raw-cm-url }
-     { [ propertyIs local cm-mode ] : ; add 'http://127.0.0.1:' $cm-port }
-     { true : '' }
-    ]
-    ; to raw-cm-root !f-cm-data-root.input.value.trim
-    ; to cm-data-root [ match { $raw-cm-root : $raw-cm-root } { true : '/opt/civil-command/data' } ]
-    ; to record [ object
-     { id $modal.editing-id }
-     { name $name }
-     { host $host }
-     { sshPort $ssh-port }
-     { user $user }
-     { identityFile !f-identity.input.value.trim }
-     { defaultDomain !f-domain.input.value.trim }
-     { basePort $base-port }
-     { installRoot $install-root }
-     { civilMemoryMode $cm-mode }
-     { civilMemoryUrl $cm-url }
-     { civilMemoryPort $cm-port }
-     { civilMemoryDataRoot $cm-data-root }
-     { civilMemoryVerified false }
-     { createdAt $modal.editing-created-at }
-    ]
+    !set-error ''
+    ; to host !f-host.input.value.trim
+    ; to raw-name !f-name.input.value.trim
+    ; to name [ match { $raw-name : $raw-name } { true : $host } ]
     [ match
-     { $saveDeployServer : !saveDeployServer $data $record }
+     { [ propertyIs '' host ] : !set-error 'SSH Host is required.' }
+     { true (
+      ; to ssh-port !safe-int $f-ssh-port.input.value 22
+      ; to raw-user !f-user.input.value.trim
+      ; to user [ match { $raw-user : $raw-user } { true : root } ]
+      ; to base-port !safe-int $f-base-port.input.value 4100
+      ; to raw-root !f-install-root.input.value.trim
+      ; to install-root [ match { $raw-root : $raw-root } { true : '/opt/civil-command' } ]
+      ; to cm-mode $cm-mode-select.value
+      ; to cm-port !safe-int $f-cm-port.input.value 3333
+      ; to raw-cm-url !f-cm-url.input.value.trim
+      ; to cm-url [ match
+       { $raw-cm-url : $raw-cm-url }
+       { [ propertyIs local cm-mode ] : ; add 'http://127.0.0.1:' $cm-port }
+       { true : '' }
+      ]
+      ; to raw-cm-root !f-cm-data-root.input.value.trim
+      ; to cm-data-root [ match { $raw-cm-root : $raw-cm-root } { true : '/opt/civil-command/data' } ]
+      ; to record [ object
+       { id $modal.editing-id }
+       { name $name }
+       { host $host }
+       { sshPort $ssh-port }
+       { user $user }
+       { identityFile !f-identity.input.value.trim }
+       { defaultDomain !f-domain.input.value.trim }
+       { basePort $base-port }
+       { installRoot $install-root }
+       { civilMemoryMode $cm-mode }
+       { civilMemoryUrl $cm-url }
+       { civilMemoryPort $cm-port }
+       { civilMemoryDataRoot $cm-data-root }
+       { civilMemoryVerified false }
+       { createdAt $modal.editing-created-at }
+      ]
+      ; set true modal.saving-server
+      ; set true form-save-btn.disabled
+      ; set 'lane-modal-action lane-config-btn--save cc-btn-busy' form-save-btn.className
+      ; set 'Saving…' form-save-btn.textContent
+      ; try (
+       [ match
+        { $saveDeployServer : !saveDeployServer $data $record }
+       ]
+       !close-form
+       !modal.refresh
+       !notify-servers-updated
+       !set-status ; add 'Saved server "' ; add $name '"'
+      ) (
+       ; to { err } $argv
+       !set-error [ match { $err.message : $err.message } { true : 'Failed to save server' } ]
+       null
+      )
+      ; set false modal.saving-server
+      ; set false form-save-btn.disabled
+      ; set 'lane-modal-action lane-config-btn--save' form-save-btn.className
+      ; set 'Save Server' form-save-btn.textContent
+     ) }
     ]
-    !close-form
-    !modal.refresh
-    !notify-servers-updated
-    !set-status ; add 'Saved server "' ; add $name '"'
    ) }
   ]
  )

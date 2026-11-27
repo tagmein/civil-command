@@ -223,6 +223,7 @@
   { needs-refresh true }
   { is-loaded false }
   { is-loading false }
+  { is-loading-more false }
   { is-jump-open false }
   { is-jumped false }
   { jump-mode null }
@@ -239,6 +240,7 @@
   { start-ts null }
   { end-ts null }
   { query-seq 0 }
+  { bucket-seq 0 }
  ]
 
  ; to get-now-ms (
@@ -284,7 +286,7 @@
  ; to toolbar-left !document.createElement div
  ; set lane-story-toolbar-left toolbar-left.className
  ; to status-el !document.createElement span
- ; assign $status-el { className lane-story-status } { textContent '0 runs' }
+ ; assign $status-el { className lane-story-status } { textContent 'Loading…' }
  ; to latest-btn !document.createElement button
  ; assign $latest-btn { type button } { className lane-story-latest-btn } { textContent '↑ Latest' } { title 'Return to latest runs' } { hidden true }
  !toolbar-left.appendChild $status-el
@@ -337,8 +339,10 @@
  ; set lane-story-scroller scroller-el.className
  ; to entries-el !document.createElement div
  ; set lane-story-list entries-el.className
+ ; to loading-el !document.createElement div
+ ; assign $loading-el { className cc-loading } { textContent 'Loading runs…' } { hidden false }
  ; to empty-el !document.createElement div
- ; assign $empty-el { className lane-story-empty } { textContent 'No runs recorded yet.' }
+ ; assign $empty-el { className lane-story-empty } { textContent 'No runs recorded yet.' } { hidden true }
  ; to footer-el !document.createElement div
  ; assign $footer-el { className lane-story-footer } { hidden true }
  ; to load-more-btn !document.createElement button
@@ -346,6 +350,7 @@
  !footer-el.appendChild $load-more-btn
 
  !scroller-el.appendChild $entries-el
+ !scroller-el.appendChild $loading-el
  !scroller-el.appendChild $empty-el
  !scroller-el.appendChild $footer-el
 
@@ -354,7 +359,7 @@
  !root-el.appendChild $scroller-el
  !container.appendChild $root-el
 
- ; assign $view { element $root-el } { toolbar-el $toolbar-el } { status-el $status-el } { latest-btn $latest-btn } { jump-btn $jump-btn } { refresh-btn $refresh-btn } { jump-panel $jump-panel } { buckets-el $buckets-el } { range-from-input $range-from-input } { range-to-input $range-to-input } { range-go-btn $range-go-btn } { range-reset-btn $range-reset-btn } { scroller-el $scroller-el } { entries-el $entries-el } { empty-el $empty-el } { footer-el $footer-el } { load-more-btn $load-more-btn }
+ ; assign $view { element $root-el } { toolbar-el $toolbar-el } { status-el $status-el } { latest-btn $latest-btn } { jump-btn $jump-btn } { refresh-btn $refresh-btn } { jump-panel $jump-panel } { buckets-el $buckets-el } { range-from-input $range-from-input } { range-to-input $range-to-input } { range-go-btn $range-go-btn } { range-reset-btn $range-reset-btn } { scroller-el $scroller-el } { entries-el $entries-el } { loading-el $loading-el } { empty-el $empty-el } { footer-el $footer-el } { load-more-btn $load-more-btn }
 
  ; to sync-status (
   ; to has-total !has-val $view.total
@@ -362,13 +367,25 @@
    { $has-total : $view.total }
    { true : $view.entries.length }
   ]
+  ; to has-entries [ propertyIsGreaterThan 0 view.entries.length ]
+  ; to show-loading [ and { [ propertyIs true view.is-loading ] } { [ propertyIs false has-entries ] } ]
+  ; to show-empty [ and { [ propertyIs true view.is-loaded ] } { [ propertyIs false view.is-loading ] } { [ propertyIs false has-entries ] } ]
   ; set [ ternary $view.is-jumped false true ] latest-btn.hidden
   ; set [ ternary $view.is-jumped 'No runs in selected range.' 'No runs recorded yet.' ] empty-el.textContent
-  ; set [ propertyIsGreaterThan 0 view.entries.length ] empty-el.hidden
+  ; set [ ternary $show-loading false true ] loading-el.hidden
+  ; set [ ternary $show-empty false true ] empty-el.hidden
   ; set [ ternary $view.has-more false true ] footer-el.hidden
-  ; set [ ternary $view.is-loading 'Loading…' 'Load older runs' ] load-more-btn.textContent
-  ; set [ ternary $view.is-loading true false ] load-more-btn.disabled
+  ; set [ ternary $view.is-loading-more 'Loading…' 'Load older runs' ] load-more-btn.textContent
+  ; set [ match { $view.is-loading : true } { $view.is-loading-more : true } { true : false } ] load-more-btn.disabled
+  ; set [ ternary $view.is-loading true false ] refresh-btn.disabled
+  ; set [ ternary $view.is-loading 'lane-story-refresh-btn lane-story-refresh-btn--loading' lane-story-refresh-btn ] refresh-btn.className
   ; to status-txt [ match
+   { $view.is-loading (
+    [ match
+     { $view.is-loaded : 'Refreshing…' }
+     { true : 'Loading…' }
+    ]
+   ) }
    { $view.is-jumped (
     [ match
      { [ propertyIs range view.jump-mode ] : ; add 'Range: ' $view.jump-label }
@@ -870,9 +887,11 @@
       ]
      )
      ; set false card-state.detail-loading
-     ; set true card-state.detail-loaded
      [ match
-      { $loaded-detail.val : !render-detail $detail-el $entry $loaded-detail.val }
+      { $loaded-detail.val (
+       ; set true card-state.detail-loaded
+       !render-detail $detail-el $entry $loaded-detail.val
+      ) }
       { true (
        !clear-el $detail-el
        ; to no-det !document.createElement div
@@ -934,19 +953,30 @@
  )
 
  ; to view.reload (
-  -- Clears current list and queries the first page for the active timeline or jump filter
+  -- Queries the first page for the active timeline or jump filter, keeping existing cards visible unless clear-existing is requested
+  ; to { opts } $argv
+  ; to clear-existing [ match
+   { $opts.clear-existing : true }
+   { [ propertyIs true opts ] : true }
+   { true : false }
+  ]
   ; to next-seq ; add $view.query-seq 1
   ; set $next-seq view.query-seq
   ; set true view.is-loading
-  ; set false view.has-more
-  ; set null view.next-cursor
-  ; set 0 view.entries.length
-  ; set 0 view.entry-els.length
-  ; set 0 view.rendered-nodes.length
-  ; set null view.last-heading-key
-  ; set null view.first-heading-key
-  ; set null view.first-heading-el
-  !clear-el $entries-el
+  ; set false view.is-loading-more
+  [ match
+   { $clear-existing (
+    ; set false view.has-more
+    ; set null view.next-cursor
+    ; set 0 view.entries.length
+    ; set 0 view.entry-els.length
+    ; set 0 view.rendered-nodes.length
+    ; set null view.last-heading-key
+    ; set null view.first-heading-key
+    ; set null view.first-heading-el
+    !clear-el $entries-el
+   ) }
+  ]
   !sync-status
 
   ; to page-size [ match
@@ -974,6 +1004,17 @@
    ; set false view.is-loading
    ; set true view.is-loaded
    ; set false view.needs-refresh
+   [ match
+    { [ propertyIs false clear-existing ] (
+     ; set 0 view.entries.length
+     ; set 0 view.entry-els.length
+     ; set 0 view.rendered-nodes.length
+     ; set null view.last-heading-key
+     ; set null view.first-heading-key
+     ; set null view.first-heading-el
+     !clear-el $entries-el
+    ) }
+   ]
    ; to res [ match
     { $res-box.res : $res-box.res }
     { true : ; object { entries {} } { hasMore false } { nextCursor null } { total 0 } }
@@ -995,9 +1036,9 @@
  ; to view.load-more (
   -- Queries and appends the next page of older story entries
   [ match
-   { [ and { $view.has-more } { [ propertyIs false view.is-loading ] } { $view.next-cursor } ] (
+   { [ and { $view.has-more } { [ propertyIs false view.is-loading ] } { [ propertyIs false view.is-loading-more ] } { $view.next-cursor } ] (
     ; to seq $view.query-seq
-    ; set true view.is-loading
+    ; set true view.is-loading-more
     !sync-status
     ; to page-size [ match
      { $DEFAULT_STORY_PAGE_SIZE : $DEFAULT_STORY_PAGE_SIZE }
@@ -1021,7 +1062,7 @@
      ]
     )
     ; condition { propertyIs $seq view.query-seq } (
-     ; set false view.is-loading
+     ; set false view.is-loading-more
      ; to res $res-box.res
      [ match
       { $res (
@@ -1134,8 +1175,17 @@
 
  ; to view.refresh-buckets (
   -- Queries and renders timeline buckets inside the Jump to... popover
-  !clear-el $buckets-el
-  ; set 0 view.bucket-els.length
+  ; to bseq ; add $view.bucket-seq 1
+  ; set $bseq view.bucket-seq
+  ; to had-buckets [ propertyIsGreaterThan 0 view.bucket-els.length ]
+  [ match
+   { [ propertyIs false had-buckets ] (
+    !clear-el $buckets-el
+    ; to bload !document.createElement div
+    ; assign $bload { className 'cc-loading cc-loading--compact' } { textContent 'Loading history…' }
+    !buckets-el.appendChild $bload
+   ) }
+  ]
   ; to now-ms !get-now-ms
   ; to tz !resolve-active-tz
   ; to res-box ; object { res null }
@@ -1151,49 +1201,53 @@
     { $console.error : !console.error 'Failed to load story buckets:' $err }
    ]
   )
-  ; to buckets-list [ match
-   { $res-box.res.buckets : $res-box.res.buckets }
-   { true : {} }
-  ]
-  [ match
-   { [ propertyIs 0 buckets-list.length ] (
-    ; to empty-b !document.createElement div
-    ; assign $empty-b { className lane-story-buckets-empty } { textContent 'No story history yet.' }
-    !buckets-el.appendChild $empty-b
-   ) }
-   { true (
-    ; each $buckets-list (
-     ; to { bucket } $argv
-     ; to btn !document.createElement button
-     ; assign $btn { type button } { className lane-story-bucket-btn }
-     ; to lbl-el !document.createElement span
-     ; assign $lbl-el { className lane-story-bucket-label } { textContent !safe-str $bucket.label }
-     ; to cnt-el !document.createElement span
-     ; assign $cnt-el { className lane-story-bucket-count } { textContent !safe-str $bucket.count }
-     !btn.appendChild $lbl-el
-     !btn.appendChild $cnt-el
-     !btn.addEventListener click : !view.jump-to-bucket $bucket
-     !buckets-el.appendChild $btn
-     !view.bucket-els.push $btn
+  ; condition { propertyIs $bseq view.bucket-seq } (
+   !clear-el $buckets-el
+   ; set 0 view.bucket-els.length
+   ; to buckets-list [ match
+    { $res-box.res.buckets : $res-box.res.buckets }
+    { true : {} }
+   ]
+   [ match
+    { [ propertyIs 0 buckets-list.length ] (
+     ; to empty-b !document.createElement div
+     ; assign $empty-b { className lane-story-buckets-empty } { textContent 'No story history yet.' }
+     !buckets-el.appendChild $empty-b
+    ) }
+    { true (
+     ; each $buckets-list (
+      ; to { bucket } $argv
+      ; to btn !document.createElement button
+      ; assign $btn { type button } { className lane-story-bucket-btn }
+      ; to lbl-el !document.createElement span
+      ; assign $lbl-el { className lane-story-bucket-label } { textContent !safe-str $bucket.label }
+      ; to cnt-el !document.createElement span
+      ; assign $cnt-el { className lane-story-bucket-count } { textContent !safe-str $bucket.count }
+      !btn.appendChild $lbl-el
+      !btn.appendChild $cnt-el
+      !btn.addEventListener click : !view.jump-to-bucket $bucket
+      !buckets-el.appendChild $btn
+      !view.bucket-els.push $btn
 
-     ; to subs [ match { $bucket.subBuckets : $bucket.subBuckets } { true : {} } ]
-     ; each $subs (
-      ; to { sub } $argv
-      ; to sbtn !document.createElement button
-      ; assign $sbtn { type button } { className 'lane-story-bucket-btn lane-story-bucket-btn--sub' }
-      ; to slbl !document.createElement span
-      ; assign $slbl { className lane-story-bucket-label } { textContent !safe-str $sub.label }
-      ; to scnt !document.createElement span
-      ; assign $scnt { className lane-story-bucket-count } { textContent !safe-str $sub.count }
-      !sbtn.appendChild $slbl
-      !sbtn.appendChild $scnt
-      !sbtn.addEventListener click : !view.jump-to-bucket $sub
-      !buckets-el.appendChild $sbtn
-      !view.bucket-els.push $sbtn
+      ; to subs [ match { $bucket.subBuckets : $bucket.subBuckets } { true : {} } ]
+      ; each $subs (
+       ; to { sub } $argv
+       ; to sbtn !document.createElement button
+       ; assign $sbtn { type button } { className 'lane-story-bucket-btn lane-story-bucket-btn--sub' }
+       ; to slbl !document.createElement span
+       ; assign $slbl { className lane-story-bucket-label } { textContent !safe-str $sub.label }
+       ; to scnt !document.createElement span
+       ; assign $scnt { className lane-story-bucket-count } { textContent !safe-str $sub.count }
+       !sbtn.appendChild $slbl
+       !sbtn.appendChild $scnt
+       !sbtn.addEventListener click : !view.jump-to-bucket $sub
+       !buckets-el.appendChild $sbtn
+       !view.bucket-els.push $sbtn
+      )
      )
-    )
-   ) }
-  ]
+    ) }
+   ]
+  )
   $view.bucket-els
  )
 

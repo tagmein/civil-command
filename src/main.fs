@@ -108,6 +108,9 @@
 ; to message !document.createElement div
 ; set 'Civil Command\n\nHome\n ' message.textContent
 !document.body.appendChild $message
+; to boot-loading-el !document.createElement div
+; assign $boot-loading-el { className cc-loading } { textContent 'Loading workspace…' } { hidden false }
+!document.body.appendChild $boot-loading-el
 !console.log $data
 ; to state ; object
 = ; set [ !data.get @1 ] state @1
@@ -222,8 +225,10 @@
 [ match
  { $lane-control.mount-workspace-summary : !lane-control.mount-workspace-summary $tableBodyRowSpacer }
 ]
-!lane-control.init
+; set true boot-loading-el.hidden
+!boot-loading-el.remove
 !window.addEventListener scroll $on-scroll
 !window.addEventListener hashchange $restore-scroll-left
 !tableHeadRowAddButton.addEventListener click $lane-control.add
 !tableHeadRowOpenButton.addEventListener click $lane-modal.open
+!lane-control.init

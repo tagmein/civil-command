@@ -21,6 +21,11 @@
   { tester-mode mock }
   { headers-open false }
   { resp-meta-open false }
+  { is-loading false }
+  { is-loaded false }
+  { load-seq 0 }
+  { tester-seq 0 }
+  { tester-running false }
   { servers {} }
   { server-option-els {} }
   { deployments {} }
@@ -80,6 +85,9 @@
  ; assign $deployment-lbl { className lane-config-label } { textContent Deployment }
  ; to deployment-select !document.createElement select
  ; assign $deployment-select { className 'lane-input-type lane-config-input lane-config-select cc-deployment-select' } { disabled true }
+ ; to init-dep-opt !document.createElement option
+ ; assign $init-dep-opt { value '' } { textContent 'Loading deployments…' } { disabled true }
+ !deployment-select.appendChild $init-dep-opt
  !deployment-field.appendChild $deployment-lbl
  !deployment-field.appendChild $deployment-select
 
@@ -170,12 +178,15 @@
  ; to deployments-title !document.createElement div
  ; assign $deployments-title { className cc-card-title } { textContent Deployments }
  ; to deployments-count-badge !document.createElement span
- ; assign $deployments-count-badge { className cc-badge } { textContent '0' }
+ ; assign $deployments-count-badge { className cc-badge } { textContent '…' }
  !deployments-hdr.appendChild $deployments-title
  !deployments-hdr.appendChild $deployments-count-badge
 
+ ; to deployments-loading-el !document.createElement div
+ ; assign $deployments-loading-el { className 'cc-loading cc-loading--compact' } { textContent 'Loading deployments…' } { hidden true }
+
  ; to deployments-empty-el !document.createElement div
- ; assign $deployments-empty-el { className 'cc-deployments-empty cc-muted-meta' } { textContent 'No known deployments yet. Save or deploy a configuration below.' }
+ ; assign $deployments-empty-el { className 'cc-deployments-empty cc-muted-meta' } { textContent 'No known deployments yet. Save or deploy a configuration below.' } { hidden true }
 
  ; to deployments-table-wrap !document.createElement div
  ; assign $deployments-table-wrap { className cc-deployments-table-wrap } { hidden true }
@@ -200,6 +211,7 @@
  !deployments-table-wrap.appendChild $deployments-table
 
  !deployments-card.appendChild $deployments-hdr
+ !deployments-card.appendChild $deployments-loading-el
  !deployments-card.appendChild $deployments-empty-el
  !deployments-card.appendChild $deployments-table-wrap
 
@@ -227,6 +239,9 @@
  ; assign $srv-lbl { className lane-config-label } { textContent 'Target SSH Server' }
  ; to srv-select !document.createElement select
  ; set 'lane-input-type lane-config-input lane-config-select' srv-select.className
+ ; to init-srv-opt !document.createElement option
+ ; assign $init-srv-opt { value '' } { textContent 'Loading servers…' } { disabled true }
+ !srv-select.appendChild $init-srv-opt
  !srv-field.appendChild $srv-lbl
  !srv-field.appendChild $srv-select
 
@@ -442,6 +457,7 @@
   { resp-details-box $resp-details-box }
   { deployments-card $deployments-card }
   { deployments-count-badge $deployments-count-badge }
+  { deployments-loading-el $deployments-loading-el }
   { deployments-empty-el $deployments-empty-el }
   { deployments-table-wrap $deployments-table-wrap }
   { deployments-table $deployments-table }
@@ -786,6 +802,12 @@
  )
 
  ; to run-tester-request (
+  ; to tseq ; add $view.tester-seq 1
+  ; set $tseq view.tester-seq
+  ; set true view.tester-running
+  ; set true send-btn.disabled
+  ; set 'lane-modal-action lane-config-btn--save cc-send-btn cc-btn-busy' send-btn.className
+  ; set 'Sending…' send-btn.textContent
   !set-tester-error ''
   ; to req-method $method-select.value
   ; to trimmed-path !path-input.value.trim
@@ -801,127 +823,183 @@
    ]
   ) : null
 
-  [ match
-   { [ propertyIs null parsed-headers ] (
-    !set-tester-error 'Request Headers must be valid JSON object.'
-    ; object { ok false } { status 0 } { error 'Request Headers must be valid JSON object.' }
-   ) }
-   { [ propertyIs mock view.tester-mode ] (
-    [ match
-     { $simulateLaneRequest (
-      ; to import-fn (
-       ; to { target-id ...path } $argv
-       [ match
-        { [ propertyIs '' target-id ] : undefined }
-        { [ propertyIs undefined target-id ] : undefined }
-        { $lane-control.get-lane-final-state (
-         ; to res !lane-control.get-lane-final-state $target-id $lane.id
-         !resolveImportValue $res $path
-        ) }
-        { true : undefined }
+  ; to req-outcome ; try (
+   [ match
+    { [ propertyIs null parsed-headers ] (
+     ; condition { propertyIs $tseq view.tester-seq } : !set-tester-error 'Request Headers must be valid JSON object.'
+     ; object { ok false } { status 0 } { error 'Request Headers must be valid JSON object.' }
+    ) }
+    { [ propertyIs mock view.tester-mode ] (
+     [ match
+      { $simulateLaneRequest (
+       ; to import-fn (
+        ; to { target-id ...path } $argv
+        [ match
+         { [ propertyIs '' target-id ] : undefined }
+         { [ propertyIs undefined target-id ] : undefined }
+         { $lane-control.get-lane-final-state (
+          ; to res !lane-control.get-lane-final-state $target-id $lane.id
+          !resolveImportValue $res $path
+         ) }
+         { true : undefined }
+        ]
+       )
+       ; to sim-opts [ object
+        { lines $nb.lines }
+        { inputs $nb.inputs }
+        { tables $nb.tables }
+        { laneId $lane.id }
+        { laneData $lane.data }
+        { importLaneFn $import-fn }
+        { cors $cors-check.checked }
+        { forceFresh true }
+        { req [ object
+         { method $req-method }
+         { path $req-path }
+         { headers $parsed-headers }
+         { rawBody $body-input.value }
+        ] }
        ]
-      )
-      ; to sim-opts [ object
-       { lines $nb.lines }
-       { inputs $nb.inputs }
-       { tables $nb.tables }
-       { laneId $lane.id }
-       { laneData $lane.data }
-       { importLaneFn $import-fn }
-       { cors $cors-check.checked }
-       { forceFresh true }
-       { req [ object
+       ; to resp !simulateLaneRequest $sim-opts
+       ; condition { propertyIs $tseq view.tester-seq } : !render-response $resp
+       ; to code [ match { $resp.status : $resp.status } { true : 200 } ]
+       ; to is-pass [ match
+        { [ propertyIsLessThan 200 code ] : false }
+        { [ propertyIsLessThan 300 code ] : true }
+        { true : false }
+       ]
+       ; object { ok $is-pass } { status $code } { response $resp }
+      ) }
+      { true (
+       ; condition { propertyIs $tseq view.tester-seq } : !set-tester-error 'Mock simulator is not available.'
+       ; object { ok false } { status 0 } { error 'Mock simulator is not available.' }
+      ) }
+     ]
+    ) }
+    { true (
+     ; to sel-dep !selected-tester-deployment
+     ; to dep-url !resolve-deployment-url $sel-dep
+     ; to base-url [ match
+      { $dep-url : $dep-url }
+      { true : !compute-public-url }
+     ]
+     [ match
+      { [ propertyIs '' base-url ] (
+       [ match
+        { [ propertyIs $tseq view.tester-seq ] (
+         ; set true resp-box.hidden
+         !set-tester-error 'Configure a domain (or deploy first) to send live requests.'
+        ) }
+       ]
+       ; object { ok false } { status 0 } { error 'Configure a domain (or deploy first) to send live requests.' } { deployment $sel-dep }
+      ) }
+      { $proxyDeployRequest (
+       ; to clean-path [ match
+        { [ !req-path.startsWith '/' ] : $req-path }
+        { true : ; add '/' $req-path }
+       ]
+       ; to full-url ; add $base-url $clean-path
+       ; to proxy-res !proxyDeployRequest [ object
+        { url $full-url }
         { method $req-method }
-        { path $req-path }
         { headers $parsed-headers }
-        { rawBody $body-input.value }
-       ] }
-      ]
-      ; to resp !simulateLaneRequest $sim-opts
-      !render-response $resp
-      ; to code [ match { $resp.status : $resp.status } { true : 200 } ]
-      ; to is-pass [ match
-       { [ propertyIsLessThan 200 code ] : false }
-       { [ propertyIsLessThan 300 code ] : true }
-       { true : false }
-      ]
-      ; object { ok $is-pass } { status $code } { response $resp }
-     ) }
-     { true (
-      !set-tester-error 'Mock simulator is not available.'
-      ; object { ok false } { status 0 } { error 'Mock simulator is not available.' }
-     ) }
-    ]
-   ) }
-   { true (
-    ; to sel-dep !selected-tester-deployment
-    ; to dep-url !resolve-deployment-url $sel-dep
-    ; to base-url [ match
-     { $dep-url : $dep-url }
-     { true : !compute-public-url }
-    ]
-    [ match
-     { [ propertyIs '' base-url ] (
-      !set-tester-error 'Configure a domain (or deploy first) to send live requests.'
-      ; object { ok false } { status 0 } { error 'Configure a domain (or deploy first) to send live requests.' } { deployment $sel-dep }
-     ) }
-     { $proxyDeployRequest (
-      ; to clean-path [ match
-       { [ !req-path.startsWith '/' ] : $req-path }
-       { true : ; add '/' $req-path }
-      ]
-      ; to full-url ; add $base-url $clean-path
-      ; to proxy-res !proxyDeployRequest [ object
-       { url $full-url }
-       { method $req-method }
-       { headers $parsed-headers }
-       { body $body-input.value }
-      ]
-      [ match
-       { [ propertyIs true proxy-res.ok ] (
-        !render-response $proxy-res
-        ; to code [ match { $proxy-res.status : $proxy-res.status } { true : 200 } ]
-        ; to is-pass [ match
-         { [ propertyIsLessThan 200 code ] : false }
-         { [ propertyIsLessThan 300 code ] : true }
-         { true : false }
-        ]
-        [ match
-         { [ propertyIs null sel-dep ] : null }
-         { [ propertyIs false [ propertyIs GET req-method ] ] : null }
-         { [ propertyIs '/' clean-path ] : !update-row-test-status $sel-dep.id $is-pass }
-        ]
-        ; object { ok $is-pass } { status $code } { response $proxy-res } { deployment $sel-dep }
-       ) }
-       { true (
-        ; to err-msg [ match { $proxy-res.error : $proxy-res.error } { true : 'Live request failed' } ]
-        !set-tester-error $err-msg
-        [ match
-         { [ propertyIs null sel-dep ] : null }
-         { [ propertyIs false [ propertyIs GET req-method ] ] : null }
-         { [ propertyIs '/' clean-path ] : !update-row-test-status $sel-dep.id false }
-        ]
-        ; object { ok false } { status 0 } { error $err-msg } { response $proxy-res } { deployment $sel-dep }
-       ) }
-      ]
-     ) }
-     { true (
-      !set-tester-error 'Live proxy API is not available.'
-      ; object { ok false } { status 0 } { error 'Live proxy API is not available.' } { deployment $sel-dep }
-     ) }
-    ]
+        { body $body-input.value }
+       ]
+       ; to is-get-req [ propertyIs GET req-method ]
+       [ match
+        { [ propertyIs true proxy-res.ok ] (
+         ; condition { propertyIs $tseq view.tester-seq } : !render-response $proxy-res
+         ; to code [ match { $proxy-res.status : $proxy-res.status } { true : 200 } ]
+         ; to is-pass [ match
+          { [ propertyIsLessThan 200 code ] : false }
+          { [ propertyIsLessThan 300 code ] : true }
+          { true : false }
+         ]
+         [ match
+          { [ propertyIs null sel-dep ] : null }
+          { [ propertyIs false is-get-req ] : null }
+          { [ propertyIs '/' clean-path ] : !update-row-test-status $sel-dep.id $is-pass }
+         ]
+         ; object { ok $is-pass } { status $code } { response $proxy-res } { deployment $sel-dep }
+        ) }
+        { true (
+         ; to err-msg [ match { $proxy-res.error : $proxy-res.error } { true : 'Live request failed' } ]
+         [ match
+          { [ propertyIs $tseq view.tester-seq ] (
+           ; set true resp-box.hidden
+           !set-tester-error $err-msg
+          ) }
+         ]
+         [ match
+          { [ propertyIs null sel-dep ] : null }
+          { [ propertyIs false is-get-req ] : null }
+          { [ propertyIs '/' clean-path ] : !update-row-test-status $sel-dep.id false }
+         ]
+         ; object { ok false } { status 0 } { error $err-msg } { response $proxy-res } { deployment $sel-dep }
+        ) }
+       ]
+      ) }
+      { true (
+       [ match
+        { [ propertyIs $tseq view.tester-seq ] (
+         ; set true resp-box.hidden
+         !set-tester-error 'Live proxy API is not available.'
+        ) }
+       ]
+       ; object { ok false } { status 0 } { error 'Live proxy API is not available.' } { deployment $sel-dep }
+      ) }
+     ]
+    ) }
+   ]
+  ) (
+   ; to { err } $argv
+   ; to emsg [ match { $err.message : $err.message } { true : 'Request failed' } ]
+   [ match
+    { [ propertyIs $tseq view.tester-seq ] (
+     ; set true resp-box.hidden
+     !set-tester-error $emsg
+    ) }
+   ]
+   ; object { ok false } { status 0 } { error $emsg }
+  )
+  [ match
+   { [ propertyIs $tseq view.tester-seq ] (
+    ; set false view.tester-running
+    ; set false send-btn.disabled
+    ; set 'lane-modal-action lane-config-btn--save cc-send-btn' send-btn.className
+    ; set Send send-btn.textContent
    ) }
   ]
+  $req-outcome
  )
 
  ; to test-deployment (
   -- Selects the deployment in HTTP Request Tester (Live mode), runs GET /, displays full details in tester, and records pass/fail in the table row
   ; to { dep } $argv
+  ; to matched-row ; object { val null }
+  ; each $view.deployment-rows (
+   ; to { r } $argv
+   ; condition { propertyIs $dep.id r.deployment.id } : ; set $r matched-row.val
+  )
+  [ match
+   { $matched-row.val.test-btn (
+    ; set true matched-row.val.test-btn.disabled
+    ; set 'lane-modal-action cc-dep-test-btn cc-btn-busy' matched-row.val.test-btn.className
+    ; set 'Testing…' matched-row.val.test-btn.textContent
+   ) }
+  ]
   !set-tester-mode live
   ; set $dep.id deployment-select.value
   ; set GET method-select.value
   ; set '/' path-input.value
   ; to res !run-tester-request
+  [ match
+   { $matched-row.val.test-btn (
+    ; set false matched-row.val.test-btn.disabled
+    ; set 'lane-modal-action cc-dep-test-btn' matched-row.val.test-btn.className
+    ; set Test matched-row.val.test-btn.textContent
+   ) }
+  ]
   ; to passed [ match
    { [ propertyIs true res.ok ] : true }
    { true : false }
@@ -1012,9 +1090,11 @@
   !clear-children $deployments-tbody
   ; set 0 view.deployment-rows.length
   ; to count $view.deployments.length
-  ; set [ ; add '' $count ] deployments-count-badge.textContent
+  ; to show-loading [ and { [ propertyIs true view.is-loading ] } { [ propertyIs false view.is-loaded ] } { [ propertyIs 0 count ] } ]
+  ; set [ ternary $show-loading false true ] deployments-loading-el.hidden
+  ; set [ ternary $show-loading '…' [ ; add '' $count ] ] deployments-count-badge.textContent
   ; to has-deps [ propertyIsGreaterThan 0 count ]
-  ; set $has-deps deployments-empty-el.hidden
+  ; set [ match { $has-deps : true } { $show-loading : true } { true : false } ] deployments-empty-el.hidden
   ; set [ ternary $has-deps false true ] deployments-table-wrap.hidden
   ; each $view.deployments (
    ; to { dep dep-idx } $argv
@@ -1534,13 +1614,6 @@
  ; to view.refresh-servers (
   -- Reloads SSH servers dropdown and initializes deployment fields if needed
   ; to prev-val $srv-select.value
-  !clear-children $srv-select
-  ; set 0 view.server-option-els.length
-  ; to none-opt !document.createElement option
-  ; assign $none-opt { value '' } { textContent 'Select SSH server…' }
-  !srv-select.appendChild $none-opt
-  !view.server-option-els.push $none-opt
-
   ; to servers ; try (
    [ match
     { $loadDeployServers : !loadDeployServers $data }
@@ -1553,6 +1626,12 @@
    ]
    {}
   )
+  !clear-children $srv-select
+  ; set 0 view.server-option-els.length
+  ; to none-opt !document.createElement option
+  ; assign $none-opt { value '' } { textContent 'Select SSH server…' }
+  !srv-select.appendChild $none-opt
+  !view.server-option-els.push $none-opt
   ; set $servers view.servers
   ; each $servers (
    ; to { s } $argv
@@ -1602,43 +1681,61 @@
 
  ; to view.load (
   -- Loads persisted deployment configurations and server list for this lane
-  ; to deps !load-known-deployments
-  ; set $deps view.deployments
-  ; to dep ; try (
-   [ match
-    { $loadLaneDeployment : !loadLaneDeployment $data $lane.id }
-    { [ propertyIsGreaterThan 0 deps.length ] : [ get deps [ ; subtract $deps.length 1 ] ] }
-    { true : null }
-   ]
-  ) (
-   [ match
-    { [ propertyIsGreaterThan 0 deps.length ] : [ get deps [ ; subtract $deps.length 1 ] ] }
-    { true : null }
-   ]
-  )
-  ; set $dep view.deployment
+  ; to lseq ; add $view.load-seq 1
+  ; set $lseq view.load-seq
+  ; set true view.is-loading
   [ match
-   { $dep (
-    ; set $dep.slug slug-input.value
-    ; set [ ; add '' $dep.port ] port-input.value
-    ; set $dep.routeMode rmode-select.value
-    ; set $dep.domain domain-input.value
-    ; set $dep.subpath subpath-input.value
-    ; set [ ternary $dep.enableLetsEncrypt true false ] le-check.checked
-    ; set $dep.letsEncryptEmail le-email-input.value
-    ; set [ ternary $dep.cors true false ] cors-check.checked
-    ; set $dep.civilMemoryUrl kv-url-input.value
-    ; set $dep.dataBasePath kv-base-input.value
-    ; set [ ternary $dep.includeImports true false ] imports-check.checked
-    ; set [ ternary $dep.kvReady true false ] view.kv-ready
-    [ match
-     { $dep.lastSyncedAt : !render-last-synced-meta $dep.lastSyncedAt }
-    ]
+   { [ propertyIs false view.is-loaded ] (
+    ; set false deployments-loading-el.hidden
+    ; set true deployments-empty-el.hidden
+    ; set '…' deployments-count-badge.textContent
    ) }
   ]
-  !view.refresh-servers
-  !sync-route-ui
-  !sync-gate-ui
+  ; to deps {}
+  ; to dep null
+  ; try (
+   ; set [ !load-known-deployments ] deps
+   ; set [ ; try (
+    [ match
+     { $loadLaneDeployment : !loadLaneDeployment $data $lane.id }
+     { [ propertyIsGreaterThan 0 deps.length ] : [ get deps [ ; subtract $deps.length 1 ] ] }
+     { true : null }
+    ]
+   ) (
+    [ match
+     { [ propertyIsGreaterThan 0 deps.length ] : [ get deps [ ; subtract $deps.length 1 ] ] }
+     { true : null }
+    ]
+   ) ] dep
+  ) : null
+  ; condition { propertyIs $lseq view.load-seq } (
+   ; set $deps view.deployments
+   ; set $dep view.deployment
+   [ match
+    { $dep (
+     ; set $dep.slug slug-input.value
+     ; set [ ; add '' $dep.port ] port-input.value
+     ; set $dep.routeMode rmode-select.value
+     ; set $dep.domain domain-input.value
+     ; set $dep.subpath subpath-input.value
+     ; set [ ternary $dep.enableLetsEncrypt true false ] le-check.checked
+     ; set $dep.letsEncryptEmail le-email-input.value
+     ; set [ ternary $dep.cors true false ] cors-check.checked
+     ; set $dep.civilMemoryUrl kv-url-input.value
+     ; set $dep.dataBasePath kv-base-input.value
+     ; set [ ternary $dep.includeImports true false ] imports-check.checked
+     ; set [ ternary $dep.kvReady true false ] view.kv-ready
+     [ match
+      { $dep.lastSyncedAt : !render-last-synced-meta $dep.lastSyncedAt }
+     ]
+    ) }
+   ]
+   ; set false view.is-loading
+   ; set true view.is-loaded
+   !view.refresh-servers
+   !sync-route-ui
+   !sync-gate-ui
+  )
  )
 
  !mock-mode-btn.addEventListener click : !set-tester-mode mock

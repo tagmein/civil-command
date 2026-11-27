@@ -226,6 +226,9 @@
   { pkg-lane-els {} }
   { pkg-lane-items {} }
   { is-open false }
+  { pkg-seq 0 }
+  { creating-pkg false }
+  { opening-pkg false }
   { mode packages }
   { return-to-packages false }
   { unlock-set-active true }
@@ -294,21 +297,36 @@
 
  ; to modal.render-packages-page (
   -- Renders the full-screen Package Page: package pills, active package details, sessions with that package open, and lanes in that package
+  ; to pkseq ; add $modal.pkg-seq 1
+  ; set $pkseq modal.pkg-seq
+  ; condition { propertyIs 0 modal.pkg-session-els.length } (
+   ; to sload !document.createElement div
+   ; assign $sload { className 'cc-loading cc-loading--compact' } { textContent 'Loading sessions…' }
+   !pkg-sessions-list.appendChild $sload
+   !modal.pkg-session-els.push $sload
+  )
+  ; condition { propertyIs 0 modal.pkg-lane-els.length } (
+   ; to lload !document.createElement div
+   ; assign $lload { className 'cc-loading cc-loading--compact' } { textContent 'Loading lanes…' }
+   !pkg-lanes-list.appendChild $lload
+   !modal.pkg-lane-els.push $lload
+  )
   !lane-control.ensure-session
-  ; while { propertyIsGreaterThan 0 modal.pkg-pill-els.length } (
-   ; to old !modal.pkg-pill-els.pop
-   !old.remove
-  )
-  ; while { propertyIsGreaterThan 0 modal.pkg-session-els.length } (
-   ; to old !modal.pkg-session-els.pop
-   !old.remove
-  )
-  ; while { propertyIsGreaterThan 0 modal.pkg-lane-els.length } (
-   ; to old !modal.pkg-lane-els.pop
-   !old.remove
-  )
-  ; set 0 modal.pkg-session-items.length
-  ; set 0 modal.pkg-lane-items.length
+  ; condition { propertyIs $pkseq modal.pkg-seq } (
+   ; while { propertyIsGreaterThan 0 modal.pkg-pill-els.length } (
+    ; to old !modal.pkg-pill-els.pop
+    !old.remove
+   )
+   ; while { propertyIsGreaterThan 0 modal.pkg-session-els.length } (
+    ; to old !modal.pkg-session-els.pop
+    !old.remove
+   )
+   ; while { propertyIsGreaterThan 0 modal.pkg-lane-els.length } (
+    ; to old !modal.pkg-lane-els.pop
+    !old.remove
+   )
+   ; set 0 modal.pkg-session-items.length
+   ; set 0 modal.pkg-lane-items.length
 
   ; to pkgs [ match
    { $lane-control.open-packages : $lane-control.open-packages }
@@ -394,17 +412,31 @@
     ; to is-act [ propertyIs $lane-control.active-package-id cur-pkg.id ]
     ; set $is-act pkg-set-active-btn.hidden
 
+    ; to ls-el !document.createElement div
+    ; assign $ls-el { className 'cc-loading cc-loading--compact' } { textContent 'Loading sessions…' }
+    !pkg-sessions-list.appendChild $ls-el
+    !modal.pkg-session-els.push $ls-el
+    ; to ll-el !document.createElement div
+    ; assign $ll-el { className 'cc-loading cc-loading--compact' } { textContent 'Loading lanes…' }
+    !pkg-lanes-list.appendChild $ll-el
+    !modal.pkg-lane-els.push $ll-el
+
     ; to sess-res !listPackageSessions $data $cur-pkg.id
-    ; to sessions [ match { $sess-res.sessions : $sess-res.sessions } { true : {} } ]
-    [ match
-     { [ propertyIs 0 sessions.length ] (
-      ; to empty-s !document.createElement div
-      ; assign $empty-s { className lane-modal-empty } { textContent 'No sessions have this package open.' }
-      !pkg-sessions-list.appendChild $empty-s
-      !modal.pkg-session-els.push $empty-s
-     ) }
-     { true (
-      ; each $sessions (
+    ; condition { propertyIs $pkseq modal.pkg-seq } (
+     ; while { propertyIsGreaterThan 0 modal.pkg-session-els.length } (
+      ; to old !modal.pkg-session-els.pop
+      !old.remove
+     )
+     ; to sessions [ match { $sess-res.sessions : $sess-res.sessions } { true : {} } ]
+     [ match
+      { [ propertyIs 0 sessions.length ] (
+       ; to empty-s !document.createElement div
+       ; assign $empty-s { className lane-modal-empty } { textContent 'No sessions have this package open.' }
+       !pkg-sessions-list.appendChild $empty-s
+       !modal.pkg-session-els.push $empty-s
+      ) }
+      { true (
+       ; each $sessions (
        ; to { s } $argv
        ; to row !document.createElement div
        ; set lane-modal-item row.className
@@ -462,69 +494,83 @@
       )
      ) }
     ]
+    )
 
     ; to lanes-res !listPackageLanes $data $cur-pkg.id
-    ; to pkg-lanes [ match { $lanes-res.lanes : $lanes-res.lanes } { true : {} } ]
-    [ match
-     { [ propertyIs 0 pkg-lanes.length ] (
-      ; to empty-l !document.createElement div
-      ; assign $empty-l { className lane-modal-empty } { textContent 'No lanes in this package yet.' }
-      !pkg-lanes-list.appendChild $empty-l
-      !modal.pkg-lane-els.push $empty-l
-     ) }
-     { true (
-      ; each $pkg-lanes (
-       ; to { l } $argv
-       ; to row !document.createElement div
-       ; set lane-modal-item row.className
-       ; to info !document.createElement div
-       ; set lane-modal-item-info info.className
-       ; to nm !document.createElement div
-       ; assign $nm { className lane-modal-item-title } { textContent $l.title }
-       ; to sub !document.createElement div
-       ; assign $sub { className lane-modal-item-id } { textContent $l.id }
-       !info.appendChild $nm
-       !info.appendChild $sub
+    ; condition { propertyIs $pkseq modal.pkg-seq } (
+     ; while { propertyIsGreaterThan 0 modal.pkg-lane-els.length } (
+      ; to old !modal.pkg-lane-els.pop
+      !old.remove
+     )
+     ; to pkg-lanes [ match { $lanes-res.lanes : $lanes-res.lanes } { true : {} } ]
+     [ match
+      { [ propertyIs 0 pkg-lanes.length ] (
+       ; to empty-l !document.createElement div
+       ; assign $empty-l { className lane-modal-empty } { textContent 'No lanes in this package yet.' }
+       !pkg-lanes-list.appendChild $empty-l
+       !modal.pkg-lane-els.push $empty-l
+      ) }
+      { true (
+       ; each $pkg-lanes (
+        ; to { l } $argv
+        ; to row !document.createElement div
+        ; set lane-modal-item row.className
+        ; to info !document.createElement div
+        ; set lane-modal-item-info info.className
+        ; to nm !document.createElement div
+        ; assign $nm { className lane-modal-item-title } { textContent $l.title }
+        ; to sub !document.createElement div
+        ; assign $sub { className lane-modal-item-id } { textContent $l.id }
+        !info.appendChild $nm
+        !info.appendChild $sub
 
-       ; to acts !document.createElement div
-       ; set lane-modal-item-actions acts.className
-       ; to is-open-lane [ get lane-control.by-id $l.id ]
-       [ match
-        { $is-open-lane (
-         ; to obadge !document.createElement span
-         ; assign $obadge { className lane-modal-badge } { textContent Open }
-         !acts.appendChild $obadge
-        ) }
-        { true (
-         ; to obtn !document.createElement button
-         ; assign $obtn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent Open }
-         !obtn.addEventListener click (
-          [ match
-           { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Loading…' }
-          ]
-          ; try (
-           !lane-control.open $l.id
-           !lane-control.update-url
-          ) : null
-          [ match
-           { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
-          ]
-          !modal.close
-         )
-         !acts.appendChild $obtn
-        ) }
-       ]
-       !row.appendChild $info
-       !row.appendChild $acts
-       !pkg-lanes-list.appendChild $row
-       !modal.pkg-lane-els.push $row
-       !modal.pkg-lane-items.push ; object { lane $l } { el $row }
-      )
-     ) }
-    ]
+        ; to acts !document.createElement div
+        ; set lane-modal-item-actions acts.className
+        ; to is-open-lane [ get lane-control.by-id $l.id ]
+        [ match
+         { $is-open-lane (
+          ; to obadge !document.createElement span
+          ; assign $obadge { className lane-modal-badge } { textContent Open }
+          !acts.appendChild $obadge
+         ) }
+         { true (
+          ; to obtn !document.createElement button
+          ; assign $obtn { type button } { className 'lane-modal-action lane-modal-action--open' } { textContent Open }
+          !obtn.addEventListener click (
+           ; set true obtn.disabled
+           ; set 'lane-modal-action lane-modal-action--open cc-btn-busy' obtn.className
+           ; set 'Opening…' obtn.textContent
+           [ match
+            { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Loading…' }
+           ]
+           ; try (
+            !lane-control.open $l.id
+            !lane-control.update-url
+           ) : null
+           [ match
+            { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
+           ]
+           ; set false obtn.disabled
+           ; set 'lane-modal-action lane-modal-action--open' obtn.className
+           ; set Open obtn.textContent
+           !modal.close
+          )
+          !acts.appendChild $obtn
+         ) }
+        ]
+        !row.appendChild $info
+        !row.appendChild $acts
+        !pkg-lanes-list.appendChild $row
+        !modal.pkg-lane-els.push $row
+        !modal.pkg-lane-items.push ; object { lane $l } { el $row }
+       )
+      ) }
+     ]
+    )
    ) }
    { true : ; set true pkg-detail.hidden }
   ]
+  )
  )
 
  ; to modal.open-create-package (
@@ -646,18 +692,43 @@
  !create-form.addEventListener submit (
   ; to { ev } $argv
   [ match { $ev.preventDefault : !ev.preventDefault } ]
-  ; to raw-name !create-name-input.value.trim
   [ match
-   { [ propertyIs '' raw-name ] (
-    !set-error 'Please enter a package name'
-    [ match { $create-name-input.focus : !create-name-input.focus } ]
-   ) }
+   { [ propertyIs true modal.creating-pkg ] : null }
    { true (
-    ; to res !lane-control.create-package $raw-name $create-pass-input.value
-    ; to cb $modal.on-created
-    !modal.close
+    ; to raw-name !create-name-input.value.trim
     [ match
-     { $cb : !$cb $res }
+     { [ propertyIs '' raw-name ] (
+      !set-error 'Please enter a package name'
+      [ match { $create-name-input.focus : !create-name-input.focus } ]
+     ) }
+     { true (
+      ; set true modal.creating-pkg
+      ; set true create-submit-btn.disabled
+      ; set 'lane-modal-action lane-config-btn--save cc-btn-busy' create-submit-btn.className
+      ; set 'Creating…' create-submit-btn.textContent
+      ; to res-box ; object { res null }
+      ; try (
+       ; to r !lane-control.create-package $raw-name $create-pass-input.value
+       ; set $r res-box.res
+      ) (
+       ; to { err } $argv
+       !set-error [ match { $err.message : $err.message } { true : 'Failed to create package' } ]
+       null
+      )
+      ; set false modal.creating-pkg
+      ; set false create-submit-btn.disabled
+      ; set 'lane-modal-action lane-config-btn--save' create-submit-btn.className
+      ; set 'Create package' create-submit-btn.textContent
+      [ match
+       { $res-box.res (
+        ; to cb $modal.on-created
+        !modal.close
+        [ match
+         { $cb : !$cb $res-box.res }
+        ]
+       ) }
+      ]
+     ) }
     ]
    ) }
   ]
@@ -666,31 +737,54 @@
  !unlock-form.addEventListener submit (
   ; to { ev } $argv
   [ match { $ev.preventDefault : !ev.preventDefault } ]
-  ; to pkg-id !unlock-id-input.value.trim
   [ match
-   { [ propertyIs '' pkg-id ] (
-    !set-error 'Please enter a package ID'
-    [ match { $unlock-id-input.focus : !unlock-id-input.focus } ]
-   ) }
+   { [ propertyIs true modal.opening-pkg ] : null }
    { true (
-    ; to res !lane-control.open-package $pkg-id $unlock-pass-input.value $modal.unlock-set-active
+    ; to pkg-id !unlock-id-input.value.trim
     [ match
-     { $res.ok (
-      ; to cb $modal.on-opened
-      ; set null modal.on-cancelled
-      !modal.close
-      [ match
-       { $cb : !$cb $res }
-      ]
+     { [ propertyIs '' pkg-id ] (
+      !set-error 'Please enter a package ID'
+      [ match { $unlock-id-input.focus : !unlock-id-input.focus } ]
      ) }
      { true (
-      !set-error $res.error
+      ; set true modal.opening-pkg
+      ; to prev-unlock-lbl $unlock-submit-btn.textContent
+      ; set true unlock-submit-btn.disabled
+      ; set 'lane-modal-action lane-config-btn--save cc-btn-busy' unlock-submit-btn.className
+      ; set [ ternary [ propertyIs 'Unlock package' prev-unlock-lbl ] 'Unlocking…' 'Opening…' ] unlock-submit-btn.textContent
+      ; to res-box ; object { res null }
+      ; try (
+       ; to r !lane-control.open-package $pkg-id $unlock-pass-input.value $modal.unlock-set-active
+       ; set $r res-box.res
+      ) (
+       ; to { err } $argv
+       !set-error [ match { $err.message : $err.message } { true : 'Failed to open package' } ]
+       null
+      )
+      ; set false modal.opening-pkg
+      ; set false unlock-submit-btn.disabled
+      ; set 'lane-modal-action lane-config-btn--save' unlock-submit-btn.className
+      ; set $prev-unlock-lbl unlock-submit-btn.textContent
+      ; to res $res-box.res
       [ match
-       { $res.needsPassphrase (
-        [ match { $unlock-pass-input.focus : !unlock-pass-input.focus } ]
+       { $res.ok (
+        ; to cb $modal.on-opened
+        ; set null modal.on-cancelled
+        !modal.close
+        [ match
+         { $cb : !$cb $res }
+        ]
        ) }
-       { true (
-        [ match { $unlock-id-input.focus : !unlock-id-input.focus } ]
+       { $res (
+        !set-error $res.error
+        [ match
+         { $res.needsPassphrase (
+          [ match { $unlock-pass-input.focus : !unlock-pass-input.focus } ]
+         ) }
+         { true (
+          [ match { $unlock-id-input.focus : !unlock-id-input.focus } ]
+         ) }
+        ]
        ) }
       ]
      ) }

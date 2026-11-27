@@ -122,6 +122,7 @@
   { custom-alias false }
   { on-confirm null }
   { load-seq 0 }
+  { open-seq 0 }
   { lane-items {} }
   { lane-els {} }
  ]
@@ -224,7 +225,7 @@
     ; set $message status-el.textContent
     ; to cls [ match
      { $is-error : 'lane-import-status lane-import-status--error' }
-     { true : 'lane-import-status' }
+     { true : 'lane-import-status cc-loading' }
     ]
     ; set $cls status-el.className
     ; set false status-el.hidden
@@ -262,10 +263,20 @@
   ; set $path-to-use modal.selected-path
   !modal.update-lane-buttons
   !modal.update-summary
-  !modal.set-status 'Waiting for lane to finish running...' false
+  !modal.set-status 'Waiting for lane to finish running…' false
   ; set true scope-wrap.hidden
 
-  ; to result !lane-control.get-lane-final-state $lane-id $modal.current-lane-id
+  ; to res-box ; object { res null }
+  ; try (
+   ; to r !lane-control.get-lane-final-state $lane-id $modal.current-lane-id
+   ; set $r res-box.res
+  ) (
+   ; to { err } $argv
+   ; to emsg [ match { $err.message : $err.message } { true : 'Failed to inspect lane state' } ]
+   ; set [ object { ok false } { error $emsg } ] res-box.res
+   null
+  )
+  ; to result $res-box.res
   ; condition { propertyIs $seq modal.load-seq } (
    [ match
     { $result.ok (
@@ -307,6 +318,10 @@
    !old-el.remove
   )
   ; set 0 modal.lane-items.length
+  ; to lanes-load-el !document.createElement div
+  ; assign $lanes-load-el { className 'cc-loading cc-loading--compact' } { textContent 'Loading lanes…' }
+  !lanes-el.appendChild $lanes-load-el
+  !modal.lane-els.push $lanes-load-el
 
   ; to seen ; object
   ; to candidates {}
@@ -327,7 +342,7 @@
   )
 
   -- Then closed known lanes from persistent catalog
-  ; to known !lane-control.list-known
+  ; to known ; try ( !lane-control.list-known ) ( {} )
   ; each $known (
    ; to { entry } $argv
    ; to is-self [ propertyIs $entry.id modal.current-lane-id ]
@@ -346,6 +361,11 @@
      ) }
     ]
    )
+  )
+
+  ; while { propertyIsGreaterThan 0 modal.lane-els.length } (
+   ; to old-el !modal.lane-els.pop
+   !old-el.remove
   )
 
   [ match
@@ -388,6 +408,9 @@
   ; condition { propertyIs true modal.is-open } (
    ; to prev-lane $modal.lane
    ; set false modal.is-open
+   ; set false modal.lane-loaded
+   ; set [ ; add $modal.open-seq 1 ] modal.open-seq
+   ; set [ ; add $modal.load-seq 1 ] modal.load-seq
    ; set null modal.lane
    ; set null modal.on-confirm
    !backdrop.remove
@@ -475,6 +498,12 @@
   ; set false modal.lane-loaded
   ; set $is-custom modal.custom-alias
   ; set $opts.on-confirm modal.on-confirm
+  ; to oseq ; add $modal.open-seq 1
+  ; set $oseq modal.open-seq
+  ; set [ ; add $modal.load-seq 1 ] modal.load-seq
+  ; set true scope-wrap.hidden
+  !modal.set-status 'Loading lanes…' false
+  !modal.update-summary
 
   ; condition { propertyIs true modal.is-open } (
    [ match
@@ -502,21 +531,23 @@
   ; to candidates !modal.render-lanes
 
   -- Auto-select existing source lane, or the first available lane if none selected yet
-  [ match
-   { [ propertyIsGreaterThan 0 candidates.length ] (
-    ; to target-id [ match
-     { [ propertyIs '' init-lane-id ] : $candidates.0.id }
-     { true : $init-lane-id }
-    ]
-    ; to target-title !lane-control.get-lane-title $target-id
-    !modal.select-lane $target-id $target-title $init-path
-   ) }
-   { true (
-    ; set '' modal.selected-lane-id
-    ; set {} modal.selected-path
-    !modal.update-summary
-   ) }
-  ]
+  ; condition { and { [ propertyIs true modal.is-open ] } { [ propertyIs $oseq modal.open-seq ] } } (
+   [ match
+    { [ propertyIsGreaterThan 0 candidates.length ] (
+     ; to target-id [ match
+      { [ propertyIs '' init-lane-id ] : $candidates.0.id }
+      { true : $init-lane-id }
+     ]
+     ; to target-title !lane-control.get-lane-title $target-id
+     !modal.select-lane $target-id $target-title $init-path
+    ) }
+    { true (
+     ; set '' modal.selected-lane-id
+     ; set {} modal.selected-path
+     !modal.update-summary
+    ) }
+   ]
+  )
 
   $modal
  )
@@ -704,6 +735,7 @@
   { existing-tables {} }
   { on-confirm null }
   { load-seq 0 }
+  { open-seq 0 }
   { lane-items {} }
   { lane-els {} }
   { table-items {} }
@@ -722,7 +754,7 @@
     ; set $message status-el.textContent
     ; to cls [ match
      { $is-error : 'lane-import-status lane-import-status--error' }
-     { true : 'lane-import-status' }
+     { true : 'lane-import-status cc-loading' }
     ]
     ; set $cls status-el.className
     ; set false status-el.hidden
@@ -1067,6 +1099,10 @@
    !old-el.remove
   )
   ; set 0 modal.lane-items.length
+  ; to lanes-load-el !document.createElement div
+  ; assign $lanes-load-el { className 'cc-loading cc-loading--compact' } { textContent 'Loading lanes…' }
+  !lanes-el.appendChild $lanes-load-el
+  !modal.lane-els.push $lanes-load-el
 
   ; to seen ; object
   ; to candidates {}
@@ -1080,7 +1116,7 @@
    )
   )
 
-  ; to known !lane-control.list-known
+  ; to known ; try ( !lane-control.list-known ) ( {} )
   ; each $known (
    ; to { entry } $argv
    ; to is-self [ propertyIs $entry.id modal.current-lane-id ]
@@ -1094,6 +1130,11 @@
      ) }
     ]
    )
+  )
+
+  ; while { propertyIsGreaterThan 0 modal.lane-els.length } (
+   ; to old-el !modal.lane-els.pop
+   !old-el.remove
   )
 
   [ match
@@ -1135,6 +1176,9 @@
   ; condition { propertyIs true modal.is-open } (
    ; to prev-lane $modal.lane
    ; set false modal.is-open
+   ; set false modal.tables-loaded
+   ; set [ ; add $modal.open-seq 1 ] modal.open-seq
+   ; set [ ; add $modal.load-seq 1 ] modal.load-seq
    ; set null modal.lane
    ; set null modal.on-confirm
    !backdrop.remove
@@ -1205,7 +1249,11 @@
   ]
   ; set $start-edited modal.user-edited-alias
   ; set $opts.on-confirm modal.on-confirm
+  ; to oseq ; add $modal.open-seq 1
+  ; set $oseq modal.open-seq
   ; set [ add $modal.load-seq 1 ] modal.load-seq
+  ; set true tables-el.hidden
+  !modal.set-status 'Loading lanes…' false
   !modal.set-mode [ match { $opts.mode : $opts.mode } { true : read-only } ]
 
   ; condition { propertyIs true modal.is-open } (
@@ -1233,22 +1281,24 @@
 
   ; to candidates !modal.render-lanes
 
-  [ match
-   { [ propertyIsGreaterThan 0 candidates.length ] (
-    ; to target-id [ match
-     { [ propertyIs '' init-lane-id ] : $candidates.0.id }
-     { true : $init-lane-id }
-    ]
-    ; to target-title !lane-control.get-lane-title $target-id
-    !modal.select-lane $target-id $target-title $init-table-id
-   ) }
-   { true (
-    ; set '' modal.selected-lane-id
-    ; set '' modal.selected-table-id
-    ; set null modal.selected-table
-    !modal.update-summary
-   ) }
-  ]
+  ; condition { and { [ propertyIs true modal.is-open ] } { [ propertyIs $oseq modal.open-seq ] } } (
+   [ match
+    { [ propertyIsGreaterThan 0 candidates.length ] (
+     ; to target-id [ match
+      { [ propertyIs '' init-lane-id ] : $candidates.0.id }
+      { true : $init-lane-id }
+     ]
+     ; to target-title !lane-control.get-lane-title $target-id
+     !modal.select-lane $target-id $target-title $init-table-id
+    ) }
+    { true (
+     ; set '' modal.selected-lane-id
+     ; set '' modal.selected-table-id
+     ; set null modal.selected-table
+     !modal.update-summary
+    ) }
+   ]
+  )
 
   $modal
  )

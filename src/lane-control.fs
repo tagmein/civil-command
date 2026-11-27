@@ -36,11 +36,18 @@
  { line-num-cache ; object }
  { active-imports ; object }
  { preferences-lane-id null }
+ { preferences-loading false }
  { preferences ; object }
  { preferences-timezones {} }
  { clock-timezone browser }
  { clock-hour-format '12h' }
  { clock-show-seconds true }
+ { sync-seq 0 }
+ { clear-seq 0 }
+ { links-seq 0 }
+ { opening-by-id ; object }
+ { session-init-tracker null }
+ { last-session-init-result null }
  { cron-timers ; object }
  { cron-running ; object }
  { scroll-raf-id null }
@@ -78,6 +85,47 @@
  { is-lane-fullscreen false }
  { fullscreen-was-pinned false }
  { unlocking-export-packages false }
+]
+[ match
+ { $window.localStorage.getItem (
+  ; to ls-tz !window.localStorage.getItem clock-timezone
+  [ match
+   { [ propertyIs null ls-tz ] : null }
+   { [ propertyIs undefined ls-tz ] : null }
+   { [ propertyIs '' ls-tz ] : null }
+   { true : ; set $ls-tz scope.clock-timezone }
+  ]
+  ; to ls-hr !window.localStorage.getItem clock-hour-format
+  [ match
+   { [ propertyIs null ls-hr ] : null }
+   { [ propertyIs undefined ls-hr ] : null }
+   { [ propertyIs '' ls-hr ] : null }
+   { true (
+    ; to norm-hr [ match
+     { $normalizeClockHourFormat : !normalizeClockHourFormat $ls-hr $window.Intl }
+     { [ propertyIs '24h' ls-hr ] : '24h' }
+     { [ propertyIs '24' ls-hr ] : '24h' }
+     { true : '12h' }
+    ]
+    ; set $norm-hr scope.clock-hour-format
+   ) }
+  ]
+  ; to ls-sec !window.localStorage.getItem clock-show-seconds
+  [ match
+   { [ propertyIs null ls-sec ] : null }
+   { [ propertyIs undefined ls-sec ] : null }
+   { [ propertyIs '' ls-sec ] : null }
+   { true (
+    ; to norm-sec [ match
+     { $normalizeClockShowSeconds : !normalizeClockShowSeconds $ls-sec }
+     { [ propertyIs false ls-sec ] : false }
+     { [ propertyIs 'false' ls-sec ] : false }
+     { true : true }
+    ]
+    ; set $norm-sec scope.clock-show-seconds
+   ) }
+  ]
+ ) }
 ]
 ; to lane-fs-enter-svg '<svg class="lane-fullscreen-icon lane-fullscreen-icon--enter" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 6V2.5H6M10 2.5H13.5V6M13.5 10V13.5H10M6 13.5H2.5V10"></path></svg>'
 ; to lane-fs-exit-svg '<svg class="lane-fullscreen-icon lane-fullscreen-icon--exit" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 6H6V2.5M10 2.5V6H13.5M13.5 10H10V13.5M6 13.5V10H2.5"></path></svg>'
@@ -181,6 +229,8 @@
 )
 ; to scope.refresh-session-links (
  -- Resolves availability and live names of Previous and Next linked sessions and syncs the side-rail navigation tabs
+ ; to seq ; add $scope.links-seq 1
+ ; set $seq scope.links-seq
  ; to prev-resolved [ match
   { $resolveSessionLinks : !resolveSessionLinks $data $window $scope.previous-session-ids $scope.session-id }
   { true : {} }
@@ -189,13 +239,15 @@
   { $resolveSessionLinks : !resolveSessionLinks $data $window $scope.next-session-ids $scope.session-id }
   { true : {} }
  ]
- ; set $prev-resolved scope.resolved-previous-sessions
- ; set $next-resolved scope.resolved-next-sessions
- ; set [ !filter-available-sessions $prev-resolved ] scope.available-previous-sessions
- ; set [ !filter-available-sessions $next-resolved ] scope.available-next-sessions
- [ match
-  { $rails.sync-session-nav : !rails.sync-session-nav }
- ]
+ ; condition { propertyIs $seq scope.links-seq } (
+  ; set $prev-resolved scope.resolved-previous-sessions
+  ; set $next-resolved scope.resolved-next-sessions
+  ; set [ !filter-available-sessions $prev-resolved ] scope.available-previous-sessions
+  ; set [ !filter-available-sessions $next-resolved ] scope.available-next-sessions
+  [ match
+   { $rails.sync-session-nav : !rails.sync-session-nav }
+  ]
+ )
  ; object { previous $scope.available-previous-sessions } { next $scope.available-next-sessions }
 )
 ; to sync-session-ui (
@@ -433,11 +485,32 @@
 )
 ; to scope.init-session (
  -- Initializes two-level browser/tab session state, migrates legacy catalog, and loads open packages
- ; to sess !initSessionState $data $window
- !scope.apply-session-state $sess
- !scope.load-catalog
- !sync-session-ui
- $sess
+ [ match
+  { $scope.session-init-tracker (
+   ; to pending-tracker $scope.session-init-tracker
+   !pending-tracker.whenIdle
+   !pending-tracker.whenIdle
+   $scope.last-session-init-result
+  ) }
+  { true (
+   ; to tracker [ match { $createIdleTracker : !createIdleTracker } { true : null } ]
+   ; to finish [ match { $tracker : !tracker.begin } { true : null } ]
+   ; set $tracker scope.session-init-tracker
+   ; to sess null
+   ; try (
+    ; set [ !initSessionState $data $window ] sess
+    ; set $sess scope.last-session-init-result
+    !scope.apply-session-state $sess
+    !scope.load-catalog
+    !sync-session-ui
+   ) : null
+   ; set null scope.session-init-tracker
+   [ match
+    { $finish : !$finish true }
+   ]
+   $sess
+  ) }
+ ]
 )
 ; to scope.ensure-session (
  -- Lazily initializes session state if not yet loaded
@@ -466,6 +539,10 @@
  -- Reloads catalog, optionally navigates URL to session lane routes, re-syncs lanes, recomputes dirty state, and applies preferences
  ; to { navigate-lanes } $argv
  !scope.begin-session-status-pending 'Loading…'
+ ; set true scope.preferences-loading
+ [ match
+  { $rails.sync-preferences-menu : !rails.sync-preferences-menu }
+ ]
  ; try (
   !scope.load-catalog
   [ match
@@ -476,7 +553,9 @@
  !scope.end-session-status-pending
  [ match
   { $scope.load-preferences-lane : !scope.load-preferences-lane }
+  { true : ; set false scope.preferences-loading }
  ]
+ ; set false scope.preferences-loading
  [ match
   { $scope.load-clock-timezone : !scope.load-clock-timezone }
  ]
@@ -703,31 +782,33 @@
 ; to scope.fork-session (
  -- Forks the current working lane routes (including tabs and selected data tables), table display options, and packages into a new session while leaving the original session at its last saved version
  ; to { name tab-only } $argv
- !scope.ensure-session
- !scope.begin-session-status-pending 'Saving…'
  ; to sess null
- ; try (
-  ; to cur-pathname !formatLaneRoutes $scope.lanes
-  ; to cur-disp-opts [ match
-   { $normalizeSessionTableDisplayOptions : !normalizeSessionTableDisplayOptions $scope.table-display-options }
-   { true : $scope.table-display-options }
-  ]
-  ; to opts [ object
-   { name $name }
-   { laneIds !copy-id-list $scope.lane-ids }
-   { pathname $cur-pathname }
-   { openPackageIds !copy-id-list $scope.open-package-ids }
-   { activePackageId $scope.active-package-id }
-   { tableDisplayOptions $cur-disp-opts }
-   { tabOnly [ ternary $tab-only true false ] }
-   { restoreSourcePackageIds !copy-id-list $scope.saved-package-ids }
-   { restoreSourceActivePackageId $scope.saved-active-package-id }
-  ]
-  ; set [ !forkSession $data $window $scope.session-id $opts ] sess
-  !scope.apply-session-state $sess
-  !refresh-after-session-change true
- ) : null
- !scope.end-session-status-pending
+ ; condition { propertyIs false scope.session-status-pending } (
+  !scope.ensure-session
+  !scope.begin-session-status-pending 'Saving…'
+  ; try (
+   ; to cur-pathname !formatLaneRoutes $scope.lanes
+   ; to cur-disp-opts [ match
+    { $normalizeSessionTableDisplayOptions : !normalizeSessionTableDisplayOptions $scope.table-display-options }
+    { true : $scope.table-display-options }
+   ]
+   ; to opts [ object
+    { name $name }
+    { laneIds !copy-id-list $scope.lane-ids }
+    { pathname $cur-pathname }
+    { openPackageIds !copy-id-list $scope.open-package-ids }
+    { activePackageId $scope.active-package-id }
+    { tableDisplayOptions $cur-disp-opts }
+    { tabOnly [ ternary $tab-only true false ] }
+    { restoreSourcePackageIds !copy-id-list $scope.saved-package-ids }
+    { restoreSourceActivePackageId $scope.saved-active-package-id }
+   ]
+   ; set [ !forkSession $data $window $scope.session-id $opts ] sess
+   !scope.apply-session-state $sess
+   !refresh-after-session-change true
+  ) : null
+  !scope.end-session-status-pending
+ )
  $sess
 )
 ; to scope.abandon-session-draft (
@@ -1271,9 +1352,12 @@
    !pkg-hdr.appendChild $pkg-title
    !pkg-hdr.appendChild $pkg-add-btn
 
+   ; to pkg-loading-el !document.createElement div
+   ; assign $pkg-loading-el { className 'cc-loading cc-loading--compact' } { textContent 'Loading packages…' } { hidden true }
    ; to pkg-list !document.createElement div
    ; set workspace-pkg-list pkg-list.className
    !pkg-sec.appendChild $pkg-hdr
+   !pkg-sec.appendChild $pkg-loading-el
    !pkg-sec.appendChild $pkg-list
 
    !panel.appendChild $sess-sec
@@ -1315,6 +1399,7 @@
     { quick-copy-btn $quick-copy-btn }
     { copy-timer null }
     { pkg-add-btn $pkg-add-btn }
+    { pkg-loading-el $pkg-loading-el }
     { pkg-list $pkg-list }
     { pkg-els {} }
     { pkg-items {} }
@@ -1348,23 +1433,28 @@
  [ match
   { $summary (
    ; to sid $scope.session-id
+   ; to has-session [ match { $sid : true } { true : false } ]
+   ; to pending [ propertyIs true scope.session-status-pending ]
+   ; to dirty [ and { propertyIs false pending } { propertyIs true scope.session-dirty } ]
    ; to sname [ match
     { $scope.session-meta.name : $scope.session-meta.name }
     { $sid : $sid }
+    { $pending : 'Loading…' }
     { true : Session }
    ]
    ; to ver [ match
     { $scope.session-meta.version : ; add v $scope.session-meta.version }
+    { $has-session : v1 }
+    { $pending : '' }
     { true : v1 }
    ]
-   ; to pending [ propertyIs true scope.session-status-pending ]
-   ; to dirty [ and { propertyIs false pending } { propertyIs true scope.session-dirty } ]
    ; to pending-lbl [ match
     { [ propertyIs '' scope.session-status-label ] : 'Loading…' }
     { $scope.session-status-label : $scope.session-status-label }
     { true : 'Loading…' }
    ]
    ; to ver-txt [ match
+    { [ and { $pending } { [ propertyIs '' ver ] } ] : '' }
     { $pending : ; add $ver ' …' }
     { $dirty : ; add $ver '*' }
     { true : $ver }
@@ -1396,12 +1486,13 @@
    ; set $dir-label summary.sess-dir-btn.textContent
    ; set $dir-title summary.sess-dir-btn.title
    ; set [ ternary $dir-confirmed workspace-session-dir 'workspace-session-dir workspace-session-dir--unconfirmed' ] summary.sess-dir-btn.className
-   ; set $dirs-disabled summary.sess-dir-btn.hidden
+   ; set [ match { [ and { [ propertyIs false has-session ] } { $pending } ] : true } { true : $dirs-disabled } ] summary.sess-dir-btn.hidden
    ; to show-draft [ match { $pending : true } { $dirty : true } { true : false } ]
    ; set [ ternary $show-draft false true ] summary.draft-box.hidden
    ; set [ ternary $pending 'workspace-session-draft workspace-session-draft--pending' workspace-session-draft ] summary.draft-box.className
    ; set [ ternary $pending $pending-lbl 'Unsaved version' ] summary.draft-lbl.textContent
    ; set $pending summary.draft-acts.hidden
+   ; set $pending summary.quick-fork-btn.disabled
 
    ; while { propertyIsGreaterThan 0 summary.pkg-els.length } (
     ; to old !summary.pkg-els.pop
@@ -1412,6 +1503,9 @@
    ; to pkgs [ match
     { $scope.open-packages : $scope.open-packages }
     { true : {} }
+   ]
+   [ match
+    { $summary.pkg-loading-el : ; set [ ternary [ and { [ propertyIs false has-session ] } { $pending } { [ propertyIs 0 pkgs.length ] } ] false true ] summary.pkg-loading-el.hidden }
    ]
    ; each $pkgs (
     ; to { pkg } $argv
@@ -4400,6 +4494,7 @@
   { is-highlighted false }
   { highlight-timer null }
   { load-task null }
+  { reload-seq 0 }
   { minimized-side null }
   { minimized-header-btn null }
   { minimized-placeholder null }
@@ -4508,169 +4603,200 @@
  ; to lane [ get scope.by-id $id ]
  [ match
   { $lane (
+   ; to prev-seq [ match
+    { [ propertyIs undefined lane.reload-seq ] : 0 }
+    { true : $lane.reload-seq }
+   ]
+   ; to rseq ; add $prev-seq 1
+   ; set $rseq lane.reload-seq
+   [ match
+    { $lane.reload-btn (
+     ; set true lane.reload-btn.disabled
+     ; set 'lane-reload-btn lane-reload-btn--loading' lane.reload-btn.className
+    ) }
+   ]
    !scope.ensure-session
    !scope.begin-session-status-pending 'Loading…'
    ; try (
-    ; to access !checkLaneAccess $data $scope.open-package-ids $id
+    ; to pre-current [ and { [ propertyIs $lane scope.by-id $id ] } { [ propertyIs $rseq lane.reload-seq ] } ]
     [ match
-     { [ propertyIs true lane.is-locked ] (
-      ; condition { propertyIs true access.allowed } : !scope.sync
-     ) }
-     { [ propertyIs false access.allowed ] : !scope.sync }
-     { true (
-      ; to was-fullscreen [ match
-       { $scope.fullscreen-lane : [ propertyIs $id scope.fullscreen-lane.id ] }
-       { true : false }
-      ]
-      ; to was-fs-pinned [ match
-       { $was-fullscreen : [ propertyIs true scope.fullscreen-was-pinned ] }
-       { true : false }
-      ]
+     { $pre-current (
+      ; to access !checkLaneAccess $data $scope.open-package-ids $id
       [ match
-       { $was-fullscreen : !scope.exit-lane-fullscreen true }
-      ]
-      ; to was-pinned [ match
-       { $rails.pinned-lane : [ propertyIs $id rails.pinned-lane.id ] }
-       { true : false }
-      ]
-      [ match
-       { $rails.preview-lane (
-        ; condition { propertyIs $id rails.preview-lane.id } : !rails.hide-preview
-       ) }
-      ]
-      ; set $access.packageId lane.package-id
-      ; to was-minimized $lane.is-minimized
-      ; to raw-tab [ match
-       { $lane.notebook.active-tab : $lane.notebook.active-tab }
-       { true : $lane.tab }
-      ]
-      ; to current-tab !normalizeLaneTab $raw-tab
-      ; set $current-tab lane.tab
-      ; to stored-title !lane.data.get title
-      ; to stored-width !lane.data.get width
-      ; to stored-minimized !lane.data.get minimized
-      ; to stored-path-raw !lane.data.get path
-      ; to stored-path !normalizeLanePath $stored-path-raw
-      ; set $stored-path lane.path
-      ; to stored-features-raw !lane.data.get features
-      ; to next-features [ match
-       { $parseLaneFeatures : !parseLaneFeatures $stored-features-raw }
-       { true : ; object { httpServer false } { runEvery30Minutes false } }
-      ]
-      ; set $next-features lane.features
-      [ match
-       { $scope.sync-lane-cron : !scope.sync-lane-cron $id $next-features }
-      ]
-      ; to current-tab [ match
-       { [ propertyIs server current-tab ] (
+       { [ and { [ propertyIs $lane scope.by-id $id ] } { [ propertyIs $rseq lane.reload-seq ] } ] (
         [ match
-         { $next-features.httpServer : server }
-         { true : source }
-        ]
-       ) }
-       { true : $current-tab }
-      ]
-      ; set $current-tab lane.tab
-      ; to next-min !normalizeLaneMinimizeSide $stored-minimized
-      [ match
-       { $stored-title (
-        ; set $stored-title lane.title
-        ; set $stored-title lane.title-el.textContent
-        !scope.sync-minimized-labels $lane
-        !scope.register $id $stored-title $access.packageId
-        !scope.refresh-import-labels $id
-        !scope.refresh-lane-labels $id
-        [ match
-         { $rails.sync-preferences-menu : !rails.sync-preferences-menu }
-        ]
-       ) }
-      ]
-      ; to old-nb-el $lane.notebook.element
-      ; to old-out-el $lane.notebook.output-view.element
-      [ match
-       { $lane.notebook.dispose : !lane.notebook.dispose }
-      ]
-      ; set null lane.load-task
-      [ match
-       { $next-min (
-        !scope.minimize $id $next-min true
-        !scope.apply-lane-width $lane $stored-width
-       ) }
-       { $was-minimized (
-        !scope.restore $id true
-        !scope.apply-lane-width $lane $stored-width
-       ) }
-       { true : !scope.apply-lane-width $lane $stored-width }
-      ]
-      [ match
-       { $lane.body (
-        [ match
-         { $next-min (
+         { [ propertyIs true lane.is-locked ] (
+          ; condition { propertyIs true access.allowed } : !scope.sync
+         ) }
+         { [ propertyIs false access.allowed ] : !scope.sync }
+         { true (
+          ; to raw-tab [ match
+           { $lane.notebook.active-tab : $lane.notebook.active-tab }
+           { true : $lane.tab }
+          ]
+          ; to current-tab !normalizeLaneTab $raw-tab
+          ; to stored-title !lane.data.get title
+          ; to stored-width !lane.data.get width
+          ; to stored-minimized !lane.data.get minimized
+          ; to stored-path-raw !lane.data.get path
+          ; to stored-path !normalizeLanePath $stored-path-raw
+          ; to stored-features-raw !lane.data.get features
+          ; to next-features [ match
+           { $parseLaneFeatures : !parseLaneFeatures $stored-features-raw }
+           { true : ; object { httpServer false } { runEvery30Minutes false } }
+          ]
+          ; to still-current [ and { [ propertyIs $lane scope.by-id $id ] } { [ propertyIs $rseq lane.reload-seq ] } ]
           [ match
-           { $lane.body.replaceChildren (
+           { $still-current (
+            ; to was-fullscreen [ match
+             { $scope.fullscreen-lane : [ propertyIs $id scope.fullscreen-lane.id ] }
+             { true : false }
+            ]
+            ; to was-fs-pinned [ match
+             { $was-fullscreen : [ propertyIs true scope.fullscreen-was-pinned ] }
+             { true : false }
+            ]
             [ match
-             { [ and { $lane.body-resizer } { $lane.minimized-placeholder } ] : !lane.body.replaceChildren $lane.body-resizer $lane.minimized-placeholder }
-             { $lane.minimized-placeholder : !lane.body.replaceChildren $lane.minimized-placeholder }
-             { $lane.body-resizer : !lane.body.replaceChildren $lane.body-resizer }
-             { true : !lane.body.replaceChildren }
+             { $was-fullscreen : !scope.exit-lane-fullscreen true }
+            ]
+            ; to was-pinned [ match
+             { $rails.pinned-lane : [ propertyIs $id rails.pinned-lane.id ] }
+             { true : false }
+            ]
+            [ match
+             { $rails.preview-lane (
+              ; condition { propertyIs $id rails.preview-lane.id } : !rails.hide-preview
+             ) }
+            ]
+            ; set $access.packageId lane.package-id
+            ; to was-minimized $lane.is-minimized
+            ; set $stored-path lane.path
+            ; set $next-features lane.features
+            [ match
+             { $scope.sync-lane-cron : !scope.sync-lane-cron $id $next-features }
+            ]
+            ; to resolved-tab [ match
+             { [ propertyIs server current-tab ] (
+              [ match
+               { $next-features.httpServer : server }
+               { true : source }
+              ]
+             ) }
+             { true : $current-tab }
+            ]
+            ; set $resolved-tab lane.tab
+            ; to next-min !normalizeLaneMinimizeSide $stored-minimized
+            [ match
+             { $stored-title (
+              ; set $stored-title lane.title
+              ; set $stored-title lane.title-el.textContent
+              !scope.sync-minimized-labels $lane
+              !scope.register $id $stored-title $access.packageId
+              !scope.refresh-import-labels $id
+              !scope.refresh-lane-labels $id
+              [ match
+               { $rails.sync-preferences-menu : !rails.sync-preferences-menu }
+              ]
+             ) }
+            ]
+            ; to old-nb-el $lane.notebook.element
+            ; to old-out-el $lane.notebook.output-view.element
+            [ match
+             { $lane.notebook.dispose : !lane.notebook.dispose }
+            ]
+            ; set null lane.load-task
+            [ match
+             { $next-min (
+              !scope.minimize $id $next-min true
+              !scope.apply-lane-width $lane $stored-width
+             ) }
+             { $was-minimized (
+              !scope.restore $id true
+              !scope.apply-lane-width $lane $stored-width
+             ) }
+             { true : !scope.apply-lane-width $lane $stored-width }
+            ]
+            [ match
+             { $lane.body (
+              [ match
+               { $next-min (
+                [ match
+                 { $lane.body.replaceChildren (
+                  [ match
+                   { [ and { $lane.body-resizer } { $lane.minimized-placeholder } ] : !lane.body.replaceChildren $lane.body-resizer $lane.minimized-placeholder }
+                   { $lane.minimized-placeholder : !lane.body.replaceChildren $lane.minimized-placeholder }
+                   { $lane.body-resizer : !lane.body.replaceChildren $lane.body-resizer }
+                   { true : !lane.body.replaceChildren }
+                  ]
+                 ) }
+                 { true (
+                  [ match { $old-nb-el.remove : !old-nb-el.remove } ]
+                  [ match { $old-out-el.remove : !old-out-el.remove } ]
+                 ) }
+                ]
+                !lane-notebook.mount $lane $lane.body $scope $resolved-tab false
+               ) }
+               { true (
+                [ match
+                 { $lane.body.replaceChildren : !lane.body.replaceChildren }
+                 { true (
+                  ; while { propertyIsGreaterThan 0 lane.body.children.length } (
+                   ; to child !lane.body.children.pop
+                   [ match
+                    { $child.remove : !child.remove }
+                   ]
+                  )
+                 ) }
+                ]
+                !lane-notebook.mount $lane $lane.body $scope $resolved-tab false
+                [ match
+                 { $lane.body-resizer : !lane.body.appendChild $lane.body-resizer }
+                ]
+               ) }
+              ]
+              [ match
+               { [ propertyIs story resolved-tab ] : !scope.notify-lane-idle $id }
+               { [ propertyIs input resolved-tab ] : !scope.notify-lane-idle $id }
+               { [ propertyIs data resolved-tab ] : !scope.notify-lane-idle $id }
+              ]
+             ) }
+            ]
+            [ match
+             { [ and { $next-min } { [ propertyIs true lane.is-minimized ] } { [ propertyIs true was-pinned ] } { [ propertyIs false was-fullscreen ] } ] : !rails.pin $id }
+            ]
+            [ match
+             { $was-fullscreen (
+              !scope.enter-lane-fullscreen $id
+              ; set $was-fs-pinned scope.fullscreen-was-pinned
+             ) }
+            ]
+            [ match
+             { $lane.open-modals (
+              ; to modal-host !scope.get-lane-modal-host $lane
+              ; each $lane.open-modals (
+               ; to { open-m } $argv
+               [ match
+                { [ and { $open-m.backdrop } { $modal-host.appendChild } ] : !modal-host.appendChild $open-m.backdrop }
+               ]
+              )
+             ) }
             ]
            ) }
-           { true (
-            [ match { $old-nb-el.remove : !old-nb-el.remove } ]
-            [ match { $old-out-el.remove : !old-out-el.remove } ]
-           ) }
-          ]
-          !lane-notebook.mount $lane $lane.body $scope $current-tab false
-         ) }
-         { true (
-          [ match
-           { $lane.body.replaceChildren : !lane.body.replaceChildren }
-           { true (
-            ; while { propertyIsGreaterThan 0 lane.body.children.length } (
-             ; to child !lane.body.children.pop
-             [ match
-              { $child.remove : !child.remove }
-             ]
-            )
-           ) }
-          ]
-          !lane-notebook.mount $lane $lane.body $scope $current-tab false
-          [ match
-           { $lane.body-resizer : !lane.body.appendChild $lane.body-resizer }
           ]
          ) }
         ]
-        [ match
-         { [ propertyIs story current-tab ] : !scope.notify-lane-idle $id }
-         { [ propertyIs input current-tab ] : !scope.notify-lane-idle $id }
-         { [ propertyIs data current-tab ] : !scope.notify-lane-idle $id }
-        ]
-       ) }
-      ]
-      [ match
-       { [ and { $next-min } { [ propertyIs true lane.is-minimized ] } { [ propertyIs true was-pinned ] } { [ propertyIs false was-fullscreen ] } ] : !rails.pin $id }
-      ]
-      [ match
-       { $was-fullscreen (
-        !scope.enter-lane-fullscreen $id
-        ; set $was-fs-pinned scope.fullscreen-was-pinned
-       ) }
-      ]
-      [ match
-       { $lane.open-modals (
-        ; to modal-host !scope.get-lane-modal-host $lane
-        ; each $lane.open-modals (
-         ; to { open-m } $argv
-         [ match
-          { [ and { $open-m.backdrop } { $modal-host.appendChild } ] : !modal-host.appendChild $open-m.backdrop }
-         ]
-        )
        ) }
       ]
      ) }
     ]
    ) : null
    !scope.end-session-status-pending
+   [ match
+    { [ and { $lane.reload-btn } { [ propertyIs $rseq lane.reload-seq ] } ] (
+     ; set false lane.reload-btn.disabled
+     ; set lane-reload-btn lane.reload-btn.className
+    ) }
+   ]
   ) }
  ]
  $lane
@@ -5119,12 +5245,21 @@
  !scope.ensure-session
  !scope.begin-session-status-pending 'Loading…'
  ; to opened-lane null
+ ; to open-entry null
  ; try (
+  ; to open-cseq $scope.clear-seq
   ; to is-pref-lane [ match
    { $scope.preferences-lane-id : [ propertyIs $id scope.preferences-lane-id ] }
    { true : false }
   ]
   ; to existing [ get scope.by-id $id ]
+  ; while { and { [ match { $existing : false } { true : true } ] } { [ propertyIs $open-cseq scope.clear-seq ] } { [ get scope.opening-by-id $id ] } } (
+   ; to pending-open [ get scope.opening-by-id $id ]
+   [ match
+    { $pending-open.tracker.whenIdle : !pending-open.tracker.whenIdle }
+   ]
+   ; set [ get scope.by-id $id ] existing
+  )
   [ match
    { $existing (
     [ match
@@ -5175,7 +5310,16 @@
     ]
     ; set $existing opened-lane
    ) }
-   { true (
+   { [ propertyIs $open-cseq scope.clear-seq ] (
+    [ match
+     { $createIdleTracker (
+      ; to tracker-inst !createIdleTracker
+      ; to finish-fn !tracker-inst.begin
+      ; to entry-inst [ object { tracker $tracker-inst } { finish $finish-fn } ]
+      ; set $entry-inst open-entry
+      ; to scope.opening-by-id $id $open-entry
+     ) }
+    ]
     ; to access !checkLaneAccess $data $scope.open-package-ids $id
     ; to insert-index [ match
      { $after-id (
@@ -5195,7 +5339,11 @@
     ]
     [ match
      { [ propertyIs false access.allowed ] (
-      ; set [ !scope.mount-locked $id $access.packageId $tab $subroute $insert-index ] opened-lane
+      ; to still-ok [ and { [ propertyIs $open-cseq scope.clear-seq ] } { [ match { [ get scope.by-id $id ] : false } { true : true } ] } ]
+      [ match
+       { $still-ok : ; set [ !scope.mount-locked $id $access.packageId $tab $subroute $insert-index ] opened-lane }
+       { [ get scope.by-id $id ] : ; set [ get scope.by-id $id ] opened-lane }
+      ]
      ) }
      { true (
       ; to lane-data !data.namespace $id
@@ -5246,22 +5394,43 @@
        { $parsed-stored-path : $parsed-stored-path.subroute }
        { true : '' }
       ]
-      ; to number ; add $scope.lanes.length 1
-      ; to title [ match
-       { $stored-title : $stored-title }
-       { true (
-        ; to default-title ; add 'Lane ' $number
-        !lane-data.set title $default-title
-        $default-title
+      ; to still-ok [ and { [ propertyIs $open-cseq scope.clear-seq ] } { [ match { [ get scope.by-id $id ] : false } { true : true } ] } ]
+      [ match
+       { $still-ok (
+        ; to number ; add $scope.lanes.length 1
+        ; to title [ match
+         { $stored-title : $stored-title }
+         { true (
+          ; to default-title ; add 'Lane ' $number
+          !lane-data.set title $default-title
+          $default-title
+         ) }
+        ]
+        !scope.register $id $title $access.packageId
+        ; set [ !scope.mount $id $title $lane-data $normalized-tab $resolved-subroute $stored-width $stored-minimized $insert-index $stored-path $access.packageId $parsed-features $defer-notebook ] opened-lane
        ) }
+       { [ get scope.by-id $id ] : ; set [ get scope.by-id $id ] opened-lane }
       ]
-      !scope.register $id $title $access.packageId
-      ; set [ !scope.mount $id $title $lane-data $normalized-tab $resolved-subroute $stored-width $stored-minimized $insert-index $stored-path $access.packageId $parsed-features $defer-notebook ] opened-lane
      ) }
     ]
    ) }
   ]
- ) : null
+ ) (
+  ; to { err } $argv
+  [ match
+   { [ and { $open-entry } { [ propertyIs $open-entry scope.opening-by-id $id ] } ] : ; to scope.opening-by-id $id null }
+  ]
+  [ match
+   { $open-entry.finish : !open-entry.finish false }
+  ]
+  null
+ )
+ [ match
+  { [ and { $open-entry } { [ propertyIs $open-entry scope.opening-by-id $id ] } ] : ; to scope.opening-by-id $id null }
+ ]
+ [ match
+  { $open-entry.finish : !open-entry.finish true }
+ ]
  !scope.end-session-status-pending
  $opened-lane
 )
@@ -5303,9 +5472,25 @@
  )
  ; set 0 scope.lane-ids.length
  ; to scope.by-id ; object
+ ; to next-cseq ; add $scope.clear-seq 1
+ ; set $next-cseq scope.clear-seq
+ [ match
+  { $window.Object.values (
+   ; to pending-opens !window.Object.values $scope.opening-by-id
+   ; each $pending-opens (
+    ; to { entry } $argv
+    [ match
+     { $entry.finish : !entry.finish false }
+    ]
+   )
+  ) }
+ ]
+ ; to scope.opening-by-id ; object
 )
 ; to scope.sync (
  -- Synchronizes mounted lanes and their active tabs from the current URL pathname
+ ; to next-sync-seq ; add $scope.sync-seq 1
+ ; set $next-sync-seq scope.sync-seq
  !scope.begin-session-status-pending 'Loading…'
  ; try (
   !scope.clear
@@ -5313,33 +5498,41 @@
   ; to bg-tasks {}
   ; each $routes (
    ; to { route } $argv
-   ; try (
-    ; to opened !scope.open $route.id $route.tab $route.subroute null true
-    [ match
-     { $opened.load-task : !bg-tasks.push $opened.load-task }
-    ]
-   ) (
-    ; to { err } $argv
-    [ match
-     { $console.error : !console.error 'Failed to open lane:' $route.id $err }
-    ]
-    null
-   )
+   [ match
+    { [ propertyIs $next-sync-seq scope.sync-seq ] (
+     ; try (
+      ; to opened !scope.open $route.id $route.tab $route.subroute null true
+      [ match
+       { $opened.load-task : !bg-tasks.push $opened.load-task }
+      ]
+     ) (
+      ; to { err } $argv
+      [ match
+       { $console.error : !console.error 'Failed to open lane:' $route.id $err }
+      ]
+      null
+     )
+    ) }
+   ]
   )
-  ; each $bg-tasks (
-   ; to { bg-task } $argv
-   ; try (
-    [ match
-     { $bg-task.wait : !bg-task.wait }
-    ]
-   ) (
-    ; to { err } $argv
-    [ match
-     { $console.error : !console.error 'Failed to finish background lane load:' $err }
-    ]
-    null
-   )
-  )
+  [ match
+   { [ propertyIs $next-sync-seq scope.sync-seq ] (
+    ; each $bg-tasks (
+     ; to { bg-task } $argv
+     ; try (
+      [ match
+       { $bg-task.wait : !bg-task.wait }
+      ]
+     ) (
+      ; to { err } $argv
+      [ match
+       { $console.error : !console.error 'Failed to finish background lane load:' $err }
+      ]
+      null
+     )
+    )
+   ) }
+  ]
  ) (
   ; to { err } $argv
   [ match
@@ -5368,6 +5561,7 @@
  [ match
   { $resolved : !scope.load-catalog }
  ]
+ ; to scope.preferences-loading false
  [ match
   { $rails.sync-preferences-menu : !rails.sync-preferences-menu }
  ]
@@ -6753,6 +6947,10 @@
 ; to scope.init (
  -- Initializes session & packages, reconciles initial URL lane routes, subscribes to popstate, beforeunload, and agent SSE events, loads global preferences, syncs URL lanes, and applies preferences
  !scope.begin-session-status-pending 'Loading…'
+ ; to scope.preferences-loading true
+ [ match
+  { $rails.sync-preferences-menu : !rails.sync-preferences-menu }
+ ]
  ; try (
   !scope.init-session
   ; to initial-routes !parseLaneRoutes $location.pathname
@@ -6804,6 +7002,7 @@
   null
  )
  !scope.end-session-status-pending
+ ; to scope.preferences-loading false
  [ match
   { $rails.sync-preferences-menu : !rails.sync-preferences-menu }
  ]

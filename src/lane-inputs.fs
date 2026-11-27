@@ -59,6 +59,7 @@
   { container $container }
   { inputs {} }
   { rows {} }
+  { is-loading true }
  ]
  ; to root-el !document.createElement div
  ; set lane-inputs root-el.className
@@ -81,17 +82,21 @@
  !table-el.appendChild $head-el
  !table-el.appendChild $body-el
 
+ ; to loading-el !document.createElement div
+ ; assign $loading-el { className cc-loading } { textContent 'Loading inputs…' } { hidden false }
+
  ; to empty-el !document.createElement div
- ; assign $empty-el { className lane-inputs-empty } { textContent 'No inputs declared.' }
+ ; assign $empty-el { className lane-inputs-empty } { textContent 'No inputs declared.' } { hidden true }
 
  ; to add-btn !document.createElement button
- ; assign $add-btn { type button } { className lane-add-input } { textContent '+ Input' } { title 'Add assumed input variable' }
+ ; assign $add-btn { type button } { className lane-add-input } { textContent '+ Input' } { title 'Add assumed input variable' } { disabled true }
 
  !root-el.appendChild $table-el
+ !root-el.appendChild $loading-el
  !root-el.appendChild $empty-el
  !root-el.appendChild $add-btn
  !container.appendChild $root-el
- ; assign $view { element $root-el } { table-el $table-el } { body-el $body-el } { empty-el $empty-el } { add-btn $add-btn }
+ ; assign $view { element $root-el } { table-el $table-el } { body-el $body-el } { loading-el $loading-el } { empty-el $empty-el } { add-btn $add-btn }
 
  ; to view.save (
   -- Persists the lane's assumed input variables to KV without running Source
@@ -106,7 +111,9 @@
    ; set $idx row.index
   )
   ; to has-rows [ propertyIsGreaterThan 0 view.rows.length ]
-  ; set $has-rows empty-el.hidden
+  ; to show-loading [ and { [ propertyIs true view.is-loading ] } { [ propertyIs false has-rows ] } ]
+  ; set [ ternary $show-loading false true ] loading-el.hidden
+  ; set [ ternary $show-loading true $has-rows ] empty-el.hidden
  )
 
  ; to view.create-row (
@@ -168,6 +175,7 @@
    { remove-btn $remove-btn }
    { entry $entry }
    { index 0 }
+   { saving-secret false }
   ]
 
   ; to row.sync-secret-ui (
@@ -184,25 +192,45 @@
   )
 
   ; to row.commit-secret (
-   ; to raw-secret $secret-input-el.value
-   ; set '' secret-input-el.value
    [ match
+    { [ propertyIs true row.saving-secret ] : null }
     { [ propertyIs true entry.secretSet ] : null }
-    { [ propertyIs '' raw-secret ] : null }
     { true (
-     ; to res [ match
-      { $setLaneSecret : !setLaneSecret $data $view.lane.data $view.lane.id $entry.name $raw-secret $entry.secretId }
-      { true : ; object { ok true } { secretId 'sec-local' } { secretSet true } }
-     ]
+     ; to raw-secret $secret-input-el.value
      [ match
-      { $res.ok (
-       ; set $res.secretId entry.secretId
-       ; set true entry.secretSet
-       !row.sync-secret-ui
-       !view.save
+      { [ propertyIs '' raw-secret ] : null }
+      { true (
+       ; set true row.saving-secret
+       ; set true secret-input-el.disabled
+       ; set true secret-set-btn.disabled
+       ; set true remove-btn.disabled
+       ; set 'lane-input-secret-set cc-btn-busy' secret-set-btn.className
+       ; set 'Saving…' secret-set-btn.textContent
+       ; to res null
+       ; try (
+        ; set [ match
+         { $setLaneSecret : !setLaneSecret $data $view.lane.data $view.lane.id $entry.name $raw-secret $entry.secretId }
+         { true : ; object { ok true } { secretId 'sec-local' } { secretSet true } }
+        ] res
+       ) : null
+       ; set false row.saving-secret
+       ; set false secret-input-el.disabled
+       ; set false secret-set-btn.disabled
+       ; set false remove-btn.disabled
+       ; set lane-input-secret-set secret-set-btn.className
+       ; set Set secret-set-btn.textContent
+       [ match
+        { $res.ok (
+         ; set '' secret-input-el.value
+         ; set $res.secretId entry.secretId
+         ; set true entry.secretSet
+         !row.sync-secret-ui
+         !view.save
+        ) }
+       ]
+       $res
       ) }
      ]
-     $res
     ) }
    ]
   )
@@ -257,28 +285,33 @@
  ; to view.insert-input (
   -- Inserts an assumed input row at the given index, focuses its name field, and saves
   ; to { index name type } $argv
-  ; to clean-name [ match
-   { [ propertyIs undefined name ] : '' }
-   { [ propertyIs null name ] : '' }
-   { true : ; add '' $name }
-  ]
-  ; to clean-type !normalizePrimitiveType $type
-  ; to entry ; object { name $clean-name } { type $clean-type }
-  ; to row !view.create-row $entry
-  !view.inputs.splice $index 0 $entry
-  !view.rows.splice $index 0 $row
-  ; to next-idx ; add $index 1
-  ; to next-row [ get view.rows $next-idx ]
   [ match
-   { $next-row : !body-el.insertBefore $row.el $next-row.el }
-   { true : !body-el.appendChild $row.el }
+   { [ propertyIs true view.is-loading ] : null }
+   { true (
+    ; to clean-name [ match
+     { [ propertyIs undefined name ] : '' }
+     { [ propertyIs null name ] : '' }
+     { true : ; add '' $name }
+    ]
+    ; to clean-type !normalizePrimitiveType $type
+    ; to entry ; object { name $clean-name } { type $clean-type }
+    ; to row !view.create-row $entry
+    !view.inputs.splice $index 0 $entry
+    !view.rows.splice $index 0 $row
+    ; to next-idx ; add $index 1
+    ; to next-row [ get view.rows $next-idx ]
+    [ match
+     { $next-row : !body-el.insertBefore $row.el $next-row.el }
+     { true : !body-el.appendChild $row.el }
+    ]
+    !view.reindex
+    [ match
+     { $row.name-el.focus : !row.name-el.focus }
+    ]
+    !view.save
+    $row
+   ) }
   ]
-  !view.reindex
-  [ match
-   { $row.name-el.focus : !row.name-el.focus }
-  ]
-  !view.save
-  $row
  )
 
  ; to view.add-input (
@@ -347,17 +380,23 @@
   $env
  )
 
- !add-btn.addEventListener click : !view.insert-input $view.inputs.length '' string
-
- ; to stored !lane.data.get inputs
- ; to initial-inputs !scope.parse-stored $stored
- ; each $initial-inputs (
-  ; to { entry } $argv
-  ; to row !view.create-row $entry
-  !view.inputs.push $entry
-  !view.rows.push $row
-  !body-el.appendChild $row.el
+ !add-btn.addEventListener click (
+  ; condition { propertyIs false view.is-loading } : !view.insert-input $view.inputs.length '' string
  )
+
+ ; try (
+  ; to stored !lane.data.get inputs
+  ; to initial-inputs !scope.parse-stored $stored
+  ; each $initial-inputs (
+   ; to { entry } $argv
+   ; to row !view.create-row $entry
+   !view.inputs.push $entry
+   !view.rows.push $row
+   !body-el.appendChild $row.el
+  )
+ ) : null
+ ; set false view.is-loading
+ ; set false add-btn.disabled
  !view.reindex
  $view
 )

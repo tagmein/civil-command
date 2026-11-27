@@ -141,6 +141,9 @@
  ; to pkg-menu-title !document.createElement div
  ; assign $pkg-menu-title { className top-rail-menu-section-title } { textContent 'Included packages' }
 
+ ; to pkg-menu-loading-el !document.createElement div
+ ; assign $pkg-menu-loading-el { className 'cc-loading cc-loading--compact' } { textContent 'Loading packages…' } { hidden true }
+
  ; to pkg-menu-list !document.createElement div
  ; set top-rail-menu-pkgs pkg-menu-list.className
 
@@ -160,6 +163,7 @@
  !pkg-page-btn.setAttribute role menuitem
 
  !packages-menu.appendChild $pkg-menu-title
+ !packages-menu.appendChild $pkg-menu-loading-el
  !packages-menu.appendChild $pkg-menu-list
  !packages-menu.appendChild $pkg-menu-div
  !packages-menu.appendChild $pkg-create-btn
@@ -469,6 +473,7 @@
   { is-session-open false }
   { packages-btn $packages-btn }
   { packages-menu $packages-menu }
+  { pkg-menu-loading-el $pkg-menu-loading-el }
   { pkg-menu-list $pkg-menu-list }
   { pkg-create-btn $pkg-create-btn }
   { pkg-open-btn $pkg-open-btn }
@@ -554,6 +559,13 @@
   { active-chip-el null }
   { active-chip-item null }
   { active-chip-index -1 }
+  { chip-copy-timer null }
+  { syncing-chips ; object }
+  { pref-open-seq 0 }
+  { clock-open-seq 0 }
+  { chip-open-seq 0 }
+  { session-open-seq 0 }
+  { packages-open-seq 0 }
   { clock-btn $clock-btn }
   { clock-menu $clock-menu }
   { clock-full-time-el $clock-full-time-el }
@@ -1666,11 +1678,27 @@
   ]
  )
 
+ ; to resolve-chip-key (
+  ; to { item idx } $argv
+  [ match
+   { $item.id : ; add '' $item.id }
+   { $item.url : ; add '' $item.url }
+   { $item.label : ; add '' $item.label }
+   { $item.row.id : ; add '' $item.row.id }
+   { true : ; add 'idx:' $idx }
+  ]
+ )
+
  ; to rails.sync-chip-menu (
-  -- Syncs the chip popover dropdown title and Last synced timestamp with the currently active chip
+  -- Syncs the chip popover dropdown title, syncing busy button state, and Last synced timestamp with the currently active chip
   ; to item $rails.active-chip-item
   [ match
    { $item (
+    ; to chip-key !resolve-chip-key $item $rails.active-chip-index
+    ; to is-syncing [ propertyIs true rails.syncing-chips $chip-key ]
+    ; set $is-syncing chip-sync-btn.disabled
+    ; set [ ternary $is-syncing 'Syncing…' 'Sync now' ] chip-sync-btn.textContent
+    ; set [ ternary $is-syncing 'top-rail-chip-menu-btn top-rail-chip-menu-btn--sync cc-btn-busy' 'top-rail-chip-menu-btn top-rail-chip-menu-btn--sync' ] chip-sync-btn.className
     ; to lookup-row [ match
      { $lane-control.get-top-rail-chip-row : !lane-control.get-top-rail-chip-row $item }
      { true : null }
@@ -1718,6 +1746,7 @@
     ; to synced-display [ match
      { [ propertyIs true ts-info.known ] : $ts-info.display }
      { $raw-fetched : ; add '' $raw-fetched }
+     { $is-syncing : 'Syncing…' }
      { true : Never }
     ]
     ; to synced-txt ; add 'Last synced: ' $synced-display
@@ -1729,6 +1758,12 @@
 
  ; to rails.close-chip-menu (
   -- Closes the top-rail chip popover dropdown
+  [ match
+   { [ and { $rails.chip-copy-timer } { $window.clearTimeout } ] (
+    !window.clearTimeout $rails.chip-copy-timer
+    ; set null rails.chip-copy-timer
+   ) }
+  ]
   ; set true chip-menu.hidden
   ; set false rails.is-chip-menu-open
   [ match
@@ -1771,6 +1806,12 @@
   !rails.close-preferences-menu
   !rails.close-clock-menu
   [ match
+   { [ and { $rails.chip-copy-timer } { $window.clearTimeout } ] (
+    !window.clearTimeout $rails.chip-copy-timer
+    ; set null rails.chip-copy-timer
+   ) }
+  ]
+  [ match
    { $rails.active-chip-el (
     ; set top-rail-chip rails.active-chip-el.className
     [ match
@@ -1778,6 +1819,8 @@
     ]
    ) }
   ]
+  ; to cseq ; add $rails.chip-open-seq 1
+  ; set $cseq rails.chip-open-seq
   ; set $chip-el rails.active-chip-el
   ; set $chip-item rails.active-chip-item
   ; set $chip-idx rails.active-chip-index
@@ -1792,8 +1835,10 @@
     !position-chip-menu $chip-el
    ) }
   ]
-  !rails.sync-chip-menu
-  ; set false chip-menu.hidden
+  ; condition { propertyIs $cseq rails.chip-open-seq } (
+   !rails.sync-chip-menu
+   ; set false chip-menu.hidden
+  )
  )
 
  ; to rails.toggle-chip-menu (
@@ -2209,30 +2254,36 @@
  ; to rails.sync-session-menu (
   -- Syncs the dedicated Sessions dropdown status, draft Save/Fork/Abandon row, and 1-click recent sessions
   ; to sid $lane-control.session-id
+  ; to has-session [ match { $sid : true } { true : false } ]
+  ; to pending [ propertyIs true lane-control.session-status-pending ]
+  ; to dirty [ and { propertyIs false pending } { propertyIs true lane-control.session-dirty } ]
+  ; to blocked [ match { $pending : true } { $dirty : true } { true : false } ]
   ; to sname [ match
    { $lane-control.session-meta.name : $lane-control.session-meta.name }
    { $sid : $sid }
+   { $pending : 'Loading…' }
    { true : Session }
   ]
   ; to ver [ match
    { $lane-control.session-meta.version : ; add v $lane-control.session-meta.version }
+   { $has-session : v1 }
+   { $pending : '' }
    { true : v1 }
   ]
-  ; to pending [ propertyIs true lane-control.session-status-pending ]
-  ; to dirty [ and { propertyIs false pending } { propertyIs true lane-control.session-dirty } ]
-  ; to blocked [ match { $pending : true } { $dirty : true } { true : false } ]
   ; to pending-lbl [ match
    { [ propertyIs '' lane-control.session-status-label ] : 'Loading…' }
    { $lane-control.session-status-label : $lane-control.session-status-label }
    { true : 'Loading…' }
   ]
   ; to status-txt [ match
+   { [ and { [ propertyIs false has-session ] } { $pending } ] : $pending-lbl }
    { $pending : ; add $sname ; add ' · ' ; add $ver ; add ' (' ; add $pending-lbl ')' }
    { $dirty : ; add $sname ; add ' · ' ; add $ver '* (unsaved)' }
    { true : ; add $sname ; add ' · ' $ver }
   ]
   ; to status-ttl [ match
    { $sid : ; add $sname ; add ' (' ; add $sid ')' }
+   { $pending : $pending-lbl }
    { true : Session }
   ]
   ; set $status-txt session-status-el.textContent
@@ -2256,13 +2307,15 @@
   ; set $dir-label session-dir-el.textContent
   ; set $dir-ttl session-dir-el.title
   ; set [ ternary $dir-confirmed top-rail-menu-dir 'top-rail-menu-dir top-rail-menu-dir--unconfirmed' ] session-dir-el.className
-  ; set $dirs-disabled session-dir-el.hidden
+  ; set [ match { [ and { [ propertyIs false has-session ] } { $pending } ] : true } { true : $dirs-disabled } ] session-dir-el.hidden
   ; set [ ternary $blocked false true ] session-draft-row.hidden
   ; set [ ternary $pending 'workspace-session-draft workspace-session-draft--pending' workspace-session-draft ] session-draft-row.className
   ; set [ ternary $pending $pending-lbl 'Unsaved version' ] session-draft-label.textContent
   ; set $pending session-draft-actions.hidden
   ; set $blocked session-new-btn.disabled
   !session-new-btn.setAttribute aria-disabled [ ternary $blocked 'true' 'false' ]
+  ; set $pending session-fork-btn.disabled
+  !session-fork-btn.setAttribute aria-disabled [ ternary $pending 'true' 'false' ]
   !sync-session-btn-class
 
   ; while { propertyIsGreaterThan 0 rails.session-recent-els.length } (
@@ -2339,14 +2392,13 @@
  )
 
  ; to rails.open-session-menu (
-  -- Opens the Sessions dropdown menu anchored under the session button
+  -- Opens the Sessions dropdown menu anchored under the session button immediately and refreshes async session state
   !rails.close-packages-menu
   !rails.close-preferences-menu
   !rails.close-chip-menu
   !rails.close-clock-menu
-  [ match
-   { $lane-control.ensure-session : !lane-control.ensure-session }
-  ]
+  ; to sseq ; add $rails.session-open-seq 1
+  ; set $sseq rails.session-open-seq
   ; set true rails.is-session-open
   !rails.sync-session-menu
   [ match
@@ -2365,6 +2417,14 @@
   ]
   ; set false session-menu.hidden
   !session-btn.setAttribute aria-expanded 'true'
+  [ match
+   { $lane-control.ensure-session (
+    ; try ( !lane-control.ensure-session ) : null
+    [ match
+     { [ and { [ propertyIs true rails.is-session-open ] } { [ propertyIs $sseq rails.session-open-seq ] } ] : !rails.sync-session-menu }
+    ]
+   ) }
+  ]
  )
 
  ; to rails.toggle-session-menu (
@@ -2387,6 +2447,10 @@
    { $lane-control.open-packages : $lane-control.open-packages }
    { true : {} }
   ]
+  ; to sid [ match { $lane-control.session-id : $lane-control.session-id } { true : null } ]
+  ; to has-session [ match { $sid : true } { true : false } ]
+  ; to pending [ propertyIs true lane-control.session-status-pending ]
+  ; set [ ternary [ and { [ propertyIs false has-session ] } { $pending } { [ propertyIs 0 pkgs.length ] } ] false true ] pkg-menu-loading-el.hidden
   ; each $pkgs (
    ; to { pkg } $argv
    ; to row !document.createElement div
@@ -2435,14 +2499,13 @@
  )
 
  ; to rails.open-packages-menu (
-  -- Opens the Packages dropdown menu anchored under the packages button
+  -- Opens the Packages dropdown menu anchored under the packages button immediately and refreshes async session state
   !rails.close-session-menu
   !rails.close-preferences-menu
   !rails.close-chip-menu
   !rails.close-clock-menu
-  [ match
-   { $lane-control.ensure-session : !lane-control.ensure-session }
-  ]
+  ; to pkseq ; add $rails.packages-open-seq 1
+  ; set $pkseq rails.packages-open-seq
   !rails.sync-packages-menu
   [ match
    { $packages-btn.getBoundingClientRect (
@@ -2462,6 +2525,14 @@
   ; set true rails.is-packages-open
   ; set 'top-rail-icon top-rail-icon--packages top-rail-icon--active' packages-btn.className
   !packages-btn.setAttribute aria-expanded 'true'
+  [ match
+   { $lane-control.ensure-session (
+    ; try ( !lane-control.ensure-session ) : null
+    [ match
+     { [ and { [ propertyIs true rails.is-packages-open ] } { [ propertyIs $pkseq rails.packages-open-seq ] } ] : !rails.sync-packages-menu }
+    ]
+   ) }
+  ]
  )
 
  ; to rails.toggle-packages-menu (
@@ -2475,6 +2546,7 @@
  ; to rails.sync-preferences-menu (
   -- Syncs the preferences dropdown label and Open preferences lane visibility with global active preferences lane
   ; to pref-id $lane-control.preferences-lane-id
+  ; to pref-loading [ and { $lane-control } { [ propertyIs true lane-control.preferences-loading ] } ]
   [ match
    { $pref-id (
     ; to pref-title [ match
@@ -2484,11 +2556,19 @@
     ; to status-txt ; add 'Preferences: ' $pref-title
     ; to status-ttl ; add $pref-title ; add ' (' ; add $pref-id ')'
     ; set $status-txt pref-status-el.textContent
+    ; set top-rail-menu-status pref-status-el.className
     ; set $status-ttl pref-status-el.title
     ; set false pref-open-btn.hidden
    ) }
+   { $pref-loading (
+    ; set 'Loading preferences…' pref-status-el.textContent
+    ; set 'top-rail-menu-status cc-loading cc-loading--compact' pref-status-el.className
+    ; set '' pref-status-el.title
+    ; set true pref-open-btn.hidden
+   ) }
    { true (
     ; set 'No preferences lane set' pref-status-el.textContent
+    ; set top-rail-menu-status pref-status-el.className
     ; set '' pref-status-el.title
     ; set true pref-open-btn.hidden
    ) }
@@ -2504,14 +2584,13 @@
  )
 
  ; to rails.open-preferences-menu (
-  -- Refreshes and opens the preferences dropdown menu anchored under the wrench button
+  -- Opens the preferences dropdown menu anchored under the wrench button immediately and refreshes catalog async
   !rails.close-session-menu
   !rails.close-packages-menu
   !rails.close-chip-menu
   !rails.close-clock-menu
-  [ match
-   { $lane-control.load-catalog : !lane-control.load-catalog }
-  ]
+  ; to pseq ; add $rails.pref-open-seq 1
+  ; set $pseq rails.pref-open-seq
   !rails.sync-preferences-menu
   [ match
    { $preferences-btn.getBoundingClientRect (
@@ -2531,6 +2610,14 @@
   ; set true rails.is-preferences-open
   ; set 'top-rail-icon top-rail-icon--preferences top-rail-icon--active' preferences-btn.className
   !preferences-btn.setAttribute aria-expanded 'true'
+  [ match
+   { $lane-control.load-catalog (
+    ; try ( !lane-control.load-catalog ) : null
+    [ match
+     { [ and { [ propertyIs true rails.is-preferences-open ] } { [ propertyIs $pseq rails.pref-open-seq ] } ] : !rails.sync-preferences-menu }
+    ]
+   ) }
+  ]
  )
 
  ; to rails.toggle-preferences-menu (
@@ -2932,14 +3019,13 @@
  )
 
  ; to rails.open-clock-menu (
-  -- Refreshes preferences timezones and opens the searchable timezone selector popover under clock-btn
+  -- Opens the searchable timezone selector popover immediately under clock-btn and refreshes preferences timezones async
   !rails.close-session-menu
   !rails.close-packages-menu
   !rails.close-preferences-menu
   !rails.close-chip-menu
-  [ match
-   { $lane-control.sync-preferences-timezones : !lane-control.sync-preferences-timezones }
-  ]
+  ; to cseq ; add $rails.clock-open-seq 1
+  ; set $cseq rails.clock-open-seq
   ; set '' rails.clock-search-query
   ; set '' clock-search-input.value
   ; set true rails.is-clock-open
@@ -2951,6 +3037,17 @@
   ; set false clock-menu.hidden
   [ match
    { $clock-search-input.focus : !clock-search-input.focus }
+  ]
+  [ match
+   { $lane-control.sync-preferences-timezones (
+    ; try ( !lane-control.sync-preferences-timezones ) : null
+    [ match
+     { [ and { [ propertyIs true rails.is-clock-open ] } { [ propertyIs $cseq rails.clock-open-seq ] } ] (
+      !rails.sync-clock
+      !rails.render-clock-options
+     ) }
+    ]
+   ) }
   ]
  )
 
@@ -3268,16 +3365,21 @@
   ; to item $rails.active-chip-item
   [ match
    { $item (
-    ; set true chip-sync-btn.disabled
-    ; set 'Syncing…' chip-sync-btn.textContent
-    ; try (
-     [ match
-      { $lane-control.sync-top-rail-chip : !lane-control.sync-top-rail-chip $item }
-     ]
-    ) : null
-    ; set false chip-sync-btn.disabled
-    ; set 'Sync now' chip-sync-btn.textContent
-    !rails.sync-chip-menu
+    ; to chip-key !resolve-chip-key $item $rails.active-chip-index
+    [ match
+     { [ propertyIs true rails.syncing-chips $chip-key ] : null }
+     { true (
+      ; to rails.syncing-chips $chip-key true
+      !rails.sync-chip-menu
+      ; try (
+       [ match
+        { $lane-control.sync-top-rail-chip : !lane-control.sync-top-rail-chip $item }
+       ]
+      ) : null
+      ; to rails.syncing-chips $chip-key false
+      !rails.sync-chip-menu
+     ) }
+    ]
    ) }
   ]
  )
@@ -3289,6 +3391,12 @@
   ; to item $rails.active-chip-item
   [ match
    { $item (
+    [ match
+     { [ and { $rails.chip-copy-timer } { $window.clearTimeout } ] (
+      !window.clearTimeout $rails.chip-copy-timer
+      ; set null rails.chip-copy-timer
+     ) }
+    ]
     ; to row-obj [ match
      { $lane-control.get-top-rail-chip-row : !lane-control.get-top-rail-chip-row $item }
      { $item.row : $item.row }
@@ -3302,6 +3410,18 @@
      { $window.navigator.clipboard.writeText : !window.navigator.clipboard.writeText $json-txt }
     ]
     ; set 'Copied!' chip-copy-btn.textContent
+    [ match
+     { $window.setTimeout (
+      ; to cseq $rails.chip-open-seq
+      ; to t !window.setTimeout (
+       [ match
+        { [ and { [ propertyIs true rails.is-chip-menu-open ] } { [ propertyIs $cseq rails.chip-open-seq ] } ] : ; set Copy chip-copy-btn.textContent }
+       ]
+       ; set null rails.chip-copy-timer
+      ) 1500
+      ; set $t rails.chip-copy-timer
+     ) }
+    ]
    ) }
   ]
  )

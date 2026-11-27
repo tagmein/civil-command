@@ -76,6 +76,8 @@
   { count-el $count-el }
   { close-btn $close-btn }
   { is-open false }
+  { is-loading false }
+  { open-seq 0 }
   { lane null }
   { target-lane null }
   { mode open }
@@ -159,6 +161,8 @@
   ; condition { propertyIs true modal.is-open } (
    ; to prev-lane $modal.lane
    ; set false modal.is-open
+   ; set false modal.is-loading
+   ; set [ ; add $modal.open-seq 1 ] modal.open-seq
    ; set false modal.multiple
    ; set null modal.lane
    ; set null modal.target-lane
@@ -394,6 +398,7 @@
    { true : true }
   ]
   ; to count-label [ match
+   { [ and { [ propertyIs true modal.is-loading ] } { [ propertyIs 0 total ] } ] : 'Loading…' }
    { [ propertyIs false has-filter ] (
     ; to noun [ match
      { [ propertyIs 1 total ] : ' lane' }
@@ -406,6 +411,12 @@
   ; set $count-label count-el.textContent
 
   [ match
+   { [ and { [ propertyIs true modal.is-loading ] } { [ propertyIs 0 total ] } ] (
+    ; to load-el !document.createElement div
+    ; assign $load-el { className cc-loading } { textContent 'Loading lanes…' }
+    !list-el.appendChild $load-el
+    !modal.row-els.push $load-el
+   ) }
    { [ propertyIs 0 shown ] (
     ; to empty-el !document.createElement div
     ; set lane-modal-empty empty-el.className
@@ -595,8 +606,9 @@
   ; set '' modal.query
   ; set '' search-input.value
   ; set '' modal.package-filter
-  ; to known !lane-control.list-known
-  ; set $known modal.known
+  ; to oseq ; add $modal.open-seq 1
+  ; set $oseq modal.open-seq
+  ; set true modal.is-loading
   ; condition { propertyIs true modal.is-open } (
    [ match
     { [ and { $modal.lane } { $lane-control.unmount-lane-modal } ] : !lane-control.unmount-lane-modal $modal.lane $modal }
@@ -623,6 +635,19 @@
   [ match
    { $search-input.focus : !search-input.focus }
   ]
+  ; to loaded-known ; object { list null }
+  ; try (
+   ; to k !lane-control.list-known
+   ; set $k loaded-known.list
+  ) : null
+  ; condition { and { [ propertyIs true modal.is-open ] } { [ propertyIs $oseq modal.open-seq ] } } (
+   ; set false modal.is-loading
+   [ match
+    { $loaded-known.list : ; set $loaded-known.list modal.known }
+   ]
+   !modal.render-packages
+   !modal.render
+  )
   $modal
  )
 

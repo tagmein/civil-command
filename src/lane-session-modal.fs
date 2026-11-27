@@ -344,6 +344,9 @@
   { hist-els {} }
   { hist-items {} }
   { is-open false }
+  { render-seq 0 }
+  { history-seq 0 }
+  { switching false }
   { mode session }
   { recent-els {} }
   { recent-items {} }
@@ -509,99 +512,117 @@
 
  ; to modal.render-session (
   -- Renders streamlined Session Switcher & Manager with collapsible Advanced tab/browser controls
+  ; to rseq ; add $modal.render-seq 1
+  ; set $rseq modal.render-seq
+  ; condition { propertyIs 0 modal.recent-els.length } (
+   ; to sload !document.createElement div
+   ; assign $sload { className 'cc-loading cc-loading--compact' } { textContent 'Loading sessions…' }
+   !recent-list.appendChild $sload
+   !modal.recent-els.push $sload
+  )
   !lane-control.ensure-session
   [ match
    { $lane-control.refresh-session-links : !lane-control.refresh-session-links }
   ]
-  ; to available-sessions [ match
-   { $lane-control.list-available-sessions : !lane-control.list-available-sessions }
-   { true : {} }
-  ]
-  !render-link-group previous $lane-control.resolved-previous-sessions $lane-control.previous-session-ids $available-sessions $prev-links-list $prev-select $prev-add-btn $modal.prev-link-els $modal.prev-link-items $modal.prev-opt-els
-  !render-link-group next $lane-control.resolved-next-sessions $lane-control.next-session-ids $available-sessions $next-links-list $next-select $next-add-btn $modal.next-link-els $modal.next-link-items $modal.next-opt-els
-  ; to cur-id $lane-control.session-id
-  ; to browser-id $lane-control.browser-session-id
-  ; to overridden [ propertyIs true lane-control.session-overridden ]
-  ; to pending [ propertyIs true lane-control.session-status-pending ]
-  ; to dirty [ and { propertyIs false pending } { propertyIs true lane-control.session-dirty } ]
-  ; to blocked [ match { $pending : true } { $dirty : true } { true : false } ]
-  ; to pending-lbl [ match
-   { [ propertyIs '' lane-control.session-status-label ] : 'Loading…' }
-   { $lane-control.session-status-label : $lane-control.session-status-label }
-   { true : 'Loading…' }
-  ]
-  ; to cur-name [ match
-   { $lane-control.session-meta.name : $lane-control.session-meta.name }
-   { true : $cur-id }
-  ]
-  ; to ver [ match
-   { $lane-control.session-meta.version : ; add 'v' $lane-control.session-meta.version }
-   { true : v1 }
-  ]
-  ; to id-txt ; add $cur-id ; add ' · ' $ver
-  ; set [ match { $overridden : ; add $id-txt ' (tab override)' } { true : $id-txt } ] active-id-box.textContent
-  ; to dirs-disabled [ match
-   { $lane-control.is-session-dirs-disabled : !lane-control.is-session-dirs-disabled }
-   { [ propertyIs true lane-control.session-dirs-disabled ] : true }
-   { true : false }
-  ]
-  ; to dir-confirmed [ propertyIs true lane-control.session-data-dir-confirmed ]
-  ; to dir-label [ match
-   { $lane-control.format-data-dir-label : !lane-control.format-data-dir-label $lane-control.session-data-dir $dir-confirmed }
-   { $lane-control.session-data-dir : $lane-control.session-data-dir }
-   { [ propertyIs true dir-confirmed ] : Default }
-   { true : 'Default (unconfirmed)' }
-  ]
-  ; to dir-display [ match
-   { $dir-confirmed : ; add 'Data Directory (permanent): ' $dir-label }
-   { true : ; add 'Data Directory: ' $dir-label }
-  ]
-  ; set $dir-display active-dir-box.textContent
-  ; set $dir-label active-dir-box.title
-  ; set $dirs-disabled active-dir-row.hidden
-  ; set [ match { $dirs-disabled : true } { true : $dir-confirmed } ] active-dir-btn.hidden
-  ; set $cur-name rename-input.value
-  ; set [ ternary $blocked false true ] draft-field.hidden
-  ; set [ ternary $pending 'workspace-session-draft workspace-session-draft--pending lane-session-draft-banner' 'workspace-session-draft lane-session-draft-banner' ] draft-field.className
-  ; set [ ternary $pending $pending-lbl 'Unsaved version' ] draft-text.textContent
-  ; set $pending draft-btns.hidden
-  ; set $blocked switch-input.disabled
-  ; set $blocked switch-go-btn.disabled
-  ; set $blocked new-sess-btn.disabled
-  ; set $blocked return-btn.disabled
-  ; set $blocked switch-tab-btn.disabled
-  ; set $blocked new-tab-btn.disabled
-  ; set $browser-id browser-id-box.textContent
-  ; set [ ternary $overridden false true ] override-actions.hidden
-
-  ; while { propertyIsGreaterThan 0 modal.recent-els.length } (
-   ; to old !modal.recent-els.pop
-   !old.remove
-  )
-  ; set 0 modal.recent-items.length
-
-  ; each $lane-control.recent-sessions (
-   ; to { rec } $argv
-   ; to row !document.createElement div
-   ; set lane-session-item row.className
-   ; to info !document.createElement div
-   ; set lane-modal-item-info info.className
-   ; to nm !document.createElement div
-   ; to rec-name [ match { $rec.name : $rec.name } { true : $rec.id } ]
-   ; assign $nm { className lane-modal-item-title } { textContent $rec-name }
-   ; to id-sub !document.createElement div
-   ; assign $id-sub { className lane-modal-item-id } { textContent $rec.id }
-   ; to rec-dir [ match
-    { $lane-control.format-data-dir-label : !lane-control.format-data-dir-label $rec.dataDir $rec.dataDirConfirmed }
-    { $rec.dataDir : $rec.dataDir }
-    { [ propertyIs true rec.dataDirConfirmed ] : Default }
+  ; condition { propertyIs $rseq modal.render-seq } (
+   ; to available-sessions [ match
+    { $lane-control.list-available-sessions : !lane-control.list-available-sessions }
+    { true : {} }
+   ]
+   !render-link-group previous $lane-control.resolved-previous-sessions $lane-control.previous-session-ids $available-sessions $prev-links-list $prev-select $prev-add-btn $modal.prev-link-els $modal.prev-link-items $modal.prev-opt-els
+   !render-link-group next $lane-control.resolved-next-sessions $lane-control.next-session-ids $available-sessions $next-links-list $next-select $next-add-btn $modal.next-link-els $modal.next-link-items $modal.next-opt-els
+   ; to cur-id $lane-control.session-id
+   ; to has-session [ match { $cur-id : true } { true : false } ]
+   ; to browser-id $lane-control.browser-session-id
+   ; to overridden [ propertyIs true lane-control.session-overridden ]
+   ; to pending [ propertyIs true lane-control.session-status-pending ]
+   ; to dirty [ and { propertyIs false pending } { propertyIs true lane-control.session-dirty } ]
+   ; to blocked [ match { $pending : true } { $dirty : true } { true : false } ]
+   ; to pending-lbl [ match
+    { [ propertyIs '' lane-control.session-status-label ] : 'Loading…' }
+    { $lane-control.session-status-label : $lane-control.session-status-label }
+    { true : 'Loading…' }
+   ]
+   ; to cur-name [ match
+    { $lane-control.session-meta.name : $lane-control.session-meta.name }
+    { $has-session : $cur-id }
+    { $pending : 'Loading…' }
+    { true : $cur-id }
+   ]
+   ; to ver [ match
+    { $lane-control.session-meta.version : ; add 'v' $lane-control.session-meta.version }
+    { $has-session : v1 }
+    { $pending : '' }
+    { true : v1 }
+   ]
+   ; to id-txt [ match
+    { [ and { [ propertyIs false has-session ] } { $pending } ] : $pending-lbl }
+    { true : ; add $cur-id ; add ' · ' $ver }
+   ]
+   ; set [ match { $overridden : ; add $id-txt ' (tab override)' } { true : $id-txt } ] active-id-box.textContent
+   ; to dirs-disabled [ match
+    { $lane-control.is-session-dirs-disabled : !lane-control.is-session-dirs-disabled }
+    { [ propertyIs true lane-control.session-dirs-disabled ] : true }
+    { true : false }
+   ]
+   ; to dir-confirmed [ propertyIs true lane-control.session-data-dir-confirmed ]
+   ; to dir-label [ match
+    { $lane-control.format-data-dir-label : !lane-control.format-data-dir-label $lane-control.session-data-dir $dir-confirmed }
+    { $lane-control.session-data-dir : $lane-control.session-data-dir }
+    { [ propertyIs true dir-confirmed ] : Default }
     { true : 'Default (unconfirmed)' }
    ]
-   ; to dir-sub !document.createElement div
-   ; assign $dir-sub { className lane-session-item-dir } { textContent [ ; add 'Dir: ' $rec-dir ] } { title $rec-dir }
-   !info.appendChild $nm
-   !info.appendChild $id-sub
-   ; condition { propertyIs false dirs-disabled } : !info.appendChild $dir-sub
+   ; to dir-display [ match
+    { $dir-confirmed : ; add 'Data Directory (permanent): ' $dir-label }
+    { true : ; add 'Data Directory: ' $dir-label }
+   ]
+   ; set $dir-display active-dir-box.textContent
+   ; set $dir-label active-dir-box.title
+   ; set [ match { [ and { [ propertyIs false has-session ] } { $pending } ] : true } { true : $dirs-disabled } ] active-dir-row.hidden
+   ; set [ match { $dirs-disabled : true } { [ and { [ propertyIs false has-session ] } { $pending } ] : true } { true : $dir-confirmed } ] active-dir-btn.hidden
+   ; set [ match { [ and { [ propertyIs false has-session ] } { $pending } ] : '' } { true : $cur-name } ] rename-input.value
+   ; set [ ternary $blocked false true ] draft-field.hidden
+   ; set [ ternary $pending 'workspace-session-draft workspace-session-draft--pending lane-session-draft-banner' 'workspace-session-draft lane-session-draft-banner' ] draft-field.className
+   ; set [ ternary $pending $pending-lbl 'Unsaved version' ] draft-text.textContent
+   ; set $pending draft-btns.hidden
+   ; set $blocked switch-input.disabled
+   ; set $blocked switch-go-btn.disabled
+   ; set $blocked new-sess-btn.disabled
+   ; set $pending fork-sess-btn.disabled
+   ; set $blocked return-btn.disabled
+   ; set $blocked switch-tab-btn.disabled
+   ; set $blocked new-tab-btn.disabled
+   ; set $browser-id browser-id-box.textContent
+   ; set [ ternary $overridden false true ] override-actions.hidden
+
+   ; while { propertyIsGreaterThan 0 modal.recent-els.length } (
+    ; to old !modal.recent-els.pop
+    !old.remove
+   )
+   ; set 0 modal.recent-items.length
+
+   ; each $lane-control.recent-sessions (
+    ; to { rec } $argv
+    ; to row !document.createElement div
+    ; set lane-session-item row.className
+    ; to info !document.createElement div
+    ; set lane-modal-item-info info.className
+    ; to nm !document.createElement div
+    ; to rec-name [ match { $rec.name : $rec.name } { true : $rec.id } ]
+    ; assign $nm { className lane-modal-item-title } { textContent $rec-name }
+    ; to id-sub !document.createElement div
+    ; assign $id-sub { className lane-modal-item-id } { textContent $rec.id }
+    ; to rec-dir [ match
+     { $lane-control.format-data-dir-label : !lane-control.format-data-dir-label $rec.dataDir $rec.dataDirConfirmed }
+     { $rec.dataDir : $rec.dataDir }
+     { [ propertyIs true rec.dataDirConfirmed ] : Default }
+     { true : 'Default (unconfirmed)' }
+    ]
+    ; to dir-sub !document.createElement div
+    ; assign $dir-sub { className lane-session-item-dir } { textContent [ ; add 'Dir: ' $rec-dir ] } { title $rec-dir }
+    !info.appendChild $nm
+    !info.appendChild $id-sub
+    ; condition { propertyIs false dirs-disabled } : !info.appendChild $dir-sub
 
    ; to acts !document.createElement div
    ; set lane-modal-item-actions acts.className
@@ -642,69 +663,80 @@
    !row.appendChild $info
    !row.appendChild $acts
    !recent-list.appendChild $row
-   !modal.recent-els.push $row
-   !modal.recent-items.push ; object { rec $rec } { el $row } { switch-btn [ match { $is-cur : null } { true : $sw-btn } ] }
+    !modal.recent-els.push $row
+    !modal.recent-items.push ; object { rec $rec } { el $row } { switch-btn [ match { $is-cur : null } { true : $sw-btn } ] }
+   )
   )
  )
 
  ; to modal.render-history-page (
   -- Renders the full-screen Session History Page with chronological activation times and 1-click switching
-  !lane-control.ensure-session
-  ; to pending [ propertyIs true lane-control.session-status-pending ]
-  ; to dirty [ and { propertyIs false pending } { propertyIs true lane-control.session-dirty } ]
-  ; to blocked [ match { $pending : true } { $dirty : true } { true : false } ]
-  ; to pending-lbl [ match
-   { [ propertyIs '' lane-control.session-status-label ] : 'Loading…' }
-   { $lane-control.session-status-label : $lane-control.session-status-label }
-   { true : 'Loading…' }
-  ]
-  ; set [ ternary $blocked false true ] hist-draft-field.hidden
-  ; set [ ternary $pending 'workspace-session-draft workspace-session-draft--pending' workspace-session-draft ] hist-draft-field.className
-  ; set [ ternary $pending $pending-lbl 'Unsaved version' ] hist-draft-text.textContent
-  ; set $pending hist-draft-btns.hidden
-  ; set $blocked hist-new-btn.disabled
-  ; while { propertyIsGreaterThan 0 modal.hist-els.length } (
-   ; to old !modal.hist-els.pop
-   !old.remove
+  ; to hseq ; add $modal.history-seq 1
+  ; set $hseq modal.history-seq
+  ; condition { propertyIs 0 modal.hist-els.length } (
+   ; to hload !document.createElement div
+   ; assign $hload { className 'cc-loading cc-loading--compact' } { textContent 'Loading history…' }
+   !hist-list.appendChild $hload
+   !modal.hist-els.push $hload
   )
-  ; set 0 modal.hist-items.length
-
-  ; to dirs-disabled [ match
-   { $lane-control.is-session-dirs-disabled : !lane-control.is-session-dirs-disabled }
-   { [ propertyIs true lane-control.session-dirs-disabled ] : true }
-   { true : false }
-  ]
-  ; to entries !readSessionHistory $window
-  ; to q-trimmed !modal.hist-query.trim
-  ; to q !q-trimmed.toLowerCase
-  ; to matches {}
-  ; each $entries (
-   ; to { item } $argv
-   ; to dir-str [ match
-    { $dirs-disabled : '' }
-    { $item.dataDir : $item.dataDir }
-    { true : Default }
+  !lane-control.ensure-session
+  ; condition { propertyIs $hseq modal.history-seq } (
+   ; to pending [ propertyIs true lane-control.session-status-pending ]
+   ; to dirty [ and { propertyIs false pending } { propertyIs true lane-control.session-dirty } ]
+   ; to blocked [ match { $pending : true } { $dirty : true } { true : false } ]
+   ; to pending-lbl [ match
+    { [ propertyIs '' lane-control.session-status-label ] : 'Loading…' }
+    { $lane-control.session-status-label : $lane-control.session-status-label }
+    { true : 'Loading…' }
    ]
-   ; to hay-raw ; add $item.sessionName ; add ' ' ; add $item.sessionId ; add ' ' $dir-str
-   ; to hay !hay-raw.toLowerCase
-   ; to hit [ match
-    { [ propertyIs '' q ] : true }
-    { [ !hay.includes $q ] : true }
+   ; set [ ternary $blocked false true ] hist-draft-field.hidden
+   ; set [ ternary $pending 'workspace-session-draft workspace-session-draft--pending' workspace-session-draft ] hist-draft-field.className
+   ; set [ ternary $pending $pending-lbl 'Unsaved version' ] hist-draft-text.textContent
+   ; set $pending hist-draft-btns.hidden
+   ; set $blocked hist-new-btn.disabled
+   ; set $pending hist-fork-btn.disabled
+   ; while { propertyIsGreaterThan 0 modal.hist-els.length } (
+    ; to old !modal.hist-els.pop
+    !old.remove
+   )
+   ; set 0 modal.hist-items.length
+
+   ; to dirs-disabled [ match
+    { $lane-control.is-session-dirs-disabled : !lane-control.is-session-dirs-disabled }
+    { [ propertyIs true lane-control.session-dirs-disabled ] : true }
     { true : false }
    ]
-   [ match
-    { $hit : !matches.push $item }
-   ]
-  )
+   ; to entries !readSessionHistory $window
+   ; to q-trimmed !modal.hist-query.trim
+   ; to q !q-trimmed.toLowerCase
+   ; to matches {}
+   ; each $entries (
+    ; to { item } $argv
+    ; to dir-str [ match
+     { $dirs-disabled : '' }
+     { $item.dataDir : $item.dataDir }
+     { true : Default }
+    ]
+    ; to hay-raw ; add $item.sessionName ; add ' ' ; add $item.sessionId ; add ' ' $dir-str
+    ; to hay !hay-raw.toLowerCase
+    ; to hit [ match
+     { [ propertyIs '' q ] : true }
+     { [ !hay.includes $q ] : true }
+     { true : false }
+    ]
+    [ match
+     { $hit : !matches.push $item }
+    ]
+   )
 
-  [ match
-   { [ propertyIs 0 matches.length ] (
-    ; to empty-h !document.createElement div
-    ; assign $empty-h { className lane-modal-empty } { textContent 'No session history recorded yet.' }
-    !hist-list.appendChild $empty-h
-    !modal.hist-els.push $empty-h
-   ) }
-   { true (
+   [ match
+    { [ propertyIs 0 matches.length ] (
+     ; to empty-h !document.createElement div
+     ; assign $empty-h { className lane-modal-empty } { textContent 'No session history recorded yet.' }
+     !hist-list.appendChild $empty-h
+     !modal.hist-els.push $empty-h
+    ) }
+    { true (
     ; to ts-opts [ match
      { $lane-control.get-clock-display-options : !lane-control.get-clock-display-options }
      { true (
@@ -778,6 +810,7 @@
     )
    ) }
   ]
+  )
  )
 
  ; to modal.open-switch-session (
@@ -864,15 +897,25 @@
   )
  )
  !switch-go-btn.addEventListener click (
-  ; condition { and { propertyIs false lane-control.session-status-pending } { propertyIs false lane-control.session-dirty } } (
+  ; condition { and { propertyIs false lane-control.session-status-pending } { propertyIs false lane-control.session-dirty } { propertyIs false modal.switching } } (
    ; to target-id !switch-input.value.trim
    [ match
     { [ propertyIs '' target-id ] : !set-error 'Enter a session ID to switch to' }
     { true (
      !set-error ''
-     !lane-control.switch-session $target-id
-     ; set '' switch-input.value
-     !modal.close
+     ; set true modal.switching
+     ; set true switch-go-btn.disabled
+     ; set 'lane-modal-action lane-modal-action--open cc-btn-busy' switch-go-btn.className
+     ; set 'Switching…' switch-go-btn.textContent
+     ; try (
+      !lane-control.switch-session $target-id
+      ; set '' switch-input.value
+      !modal.close
+     ) : null
+     ; set false modal.switching
+     ; set false switch-go-btn.disabled
+     ; set 'lane-modal-action lane-modal-action--open' switch-go-btn.className
+     ; set Switch switch-go-btn.textContent
     ) }
    ]
   )
@@ -888,9 +931,17 @@
   )
  )
  !fork-sess-btn.addEventListener click (
-  !set-error ''
-  !lane-control.fork-session
-  !modal.close
+  ; condition { and { propertyIs false lane-control.session-status-pending } { propertyIs false modal.switching } } (
+   !set-error ''
+   ; set true modal.switching
+   ; set true fork-sess-btn.disabled
+   ; try (
+    !lane-control.fork-session
+    !modal.close
+   ) : null
+   ; set false modal.switching
+   ; set false fork-sess-btn.disabled
+  )
  )
  !open-hist-btn.addEventListener click : !modal.open-history
 

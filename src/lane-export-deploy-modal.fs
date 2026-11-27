@@ -58,6 +58,8 @@
   { close-btn $close-btn }
   { close-footer-btn $close-footer-btn }
   { is-open false }
+  { is-loading false }
+  { open-seq 0 }
   { lane null }
   { is-deploying false }
   { items {} }
@@ -444,6 +446,8 @@
   ; condition { propertyIs true modal.is-open } (
    ; to prev-lane $modal.lane
    ; set false modal.is-open
+   ; set false modal.is-loading
+   ; set [ ; add $modal.open-seq 1 ] modal.open-seq
    ; set false modal.is-deploying
    ; set null modal.lane
    ; set null modal.on-deployed
@@ -463,6 +467,8 @@
   !clear-list
   ; set false modal.is-deploying
   ; set $opts.on-deployed modal.on-deployed
+  ; to oseq ; add $modal.open-seq 1
+  ; set $oseq modal.open-seq
 
   ; to unique-ids {}
   ; to seen ; object
@@ -485,16 +491,6 @@
     )
    ) }
   ]
-
-  ; to servers [ match
-   { $loadDeployServers : !loadDeployServers $data }
-   { true : {} }
-  ]
-  ; to srv-by-id ; object
-  ; each $servers (
-   ; to { s } $argv
-   ; to srv-by-id $s.id $s
-  )
 
   ; condition { propertyIs true modal.is-open } (
    [ match
@@ -527,93 +523,123 @@
     !list-el.appendChild $empty-el
    ) }
    { true (
-    ; each $unique-ids (
-     ; to { lid } $argv
-     ; to status-info !getLaneDeployStatus $data $data $lid
-     ; to title [ match
-      { $lane-control.get-lane-title : !lane-control.get-lane-title $lid }
-      { true : $lid }
-     ]
-     ; to srv [ match
-      { $status-info.deployment.serverId : [ get srv-by-id $status-info.deployment.serverId ] }
-      { true : null }
-     ]
-     ; to card-el !document.createElement div
-     ; set lane-export-deploy-card card-el.className
-     ; to card-hdr !document.createElement div
-     ; set lane-export-deploy-card-hdr card-hdr.className
+    ; set true modal.is-loading
+    ; to load-el !document.createElement div
+    ; assign $load-el { className cc-loading } { textContent 'Loading deployment targets…' }
+    !list-el.appendChild $load-el
+    !sync-deploy-btn
 
-     ; to left-wrap !document.createElement label
-     ; set lane-export-deploy-check-wrap left-wrap.className
-     ; to checkbox !document.createElement input
-     ; assign $checkbox { type checkbox } { className lane-export-deploy-check }
-     ; to can-deploy [ match
-      { [ propertyIs false status-info.deployed ] : false }
-      { [ propertyIs null srv ] : false }
-      { true : true }
-     ]
-     ; set [ ternary $can-deploy false true ] checkbox.disabled
-     ; set [ ternary [ and { propertyIs true can-deploy } { propertyIs true status-info.hasChanges } ] true false ] checkbox.checked
-     !checkbox.addEventListener change $sync-deploy-btn
-
-     ; to name-el !document.createElement span
-     ; assign $name-el { className lane-export-deploy-title } { textContent $title }
-     !left-wrap.appendChild $checkbox
-     !left-wrap.appendChild $name-el
-
-     ; to right-wrap !document.createElement div
-     ; set lane-export-deploy-actions right-wrap.className
-     ; to badge-info !badge-for-status $status-info.status
-     ; to badge-el !document.createElement span
-     ; assign $badge-el { className $badge-info.cls } { textContent $badge-info.text }
-     !right-wrap.appendChild $badge-el
-
-     ; to item [ object
-      { lane-id $lid }
-      { title $title }
-      { status-info $status-info }
-      { server $srv }
-      { card-el $card-el }
-      { checkbox $checkbox }
-      { badge-el $badge-el }
-      { diff-el null }
-      { term-wrap null }
-     ]
-
+    ; to servers ; try (
      [ match
-      { $can-deploy (
-       ; to term-btn !document.createElement button
-       ; assign $term-btn { type button } { className lane-modal-action } { textContent 'Open Terminal' }
-       !term-btn.addEventListener click : !open-item-terminal $item
-       !right-wrap.appendChild $term-btn
+      { $loadDeployServers : !loadDeployServers $data }
+      { true : {} }
+     ]
+    ) ( {} )
+    ; to srv-by-id ; object
+    ; each $servers (
+     ; to { s } $argv
+     ; to srv-by-id $s.id $s
+    )
+
+    ; condition { and { [ propertyIs true modal.is-open ] } { [ propertyIs $oseq modal.open-seq ] } } (
+     ; set false modal.is-loading
+     !load-el.remove
+     [ match
+      { [ and { $list-el.children } { $list-el.children.indexOf } { $list-el.children.splice } ] (
+       ; to lidx !list-el.children.indexOf $load-el
+       ; condition { propertyIsGreaterThanOrEqual 0 lidx } : !list-el.children.splice $lidx 1
       ) }
      ]
+     ; each $unique-ids (
+      ; to { lid } $argv
+      ; condition { and { [ propertyIs true modal.is-open ] } { [ propertyIs $oseq modal.open-seq ] } } (
+       ; to status-info !getLaneDeployStatus $data $data $lid
+       ; to title [ match
+        { $lane-control.get-lane-title : !lane-control.get-lane-title $lid }
+        { true : $lid }
+       ]
+       ; to srv [ match
+        { $status-info.deployment.serverId : [ get srv-by-id $status-info.deployment.serverId ] }
+        { true : null }
+       ]
+       ; to card-el !document.createElement div
+       ; set lane-export-deploy-card card-el.className
+       ; to card-hdr !document.createElement div
+       ; set lane-export-deploy-card-hdr card-hdr.className
 
-     !card-hdr.appendChild $left-wrap
-     !card-hdr.appendChild $right-wrap
-     !card-el.appendChild $card-hdr
+       ; to left-wrap !document.createElement label
+       ; set lane-export-deploy-check-wrap left-wrap.className
+       ; to checkbox !document.createElement input
+       ; assign $checkbox { type checkbox } { className lane-export-deploy-check }
+       ; to can-deploy [ match
+        { [ propertyIs false status-info.deployed ] : false }
+        { [ propertyIs null srv ] : false }
+        { true : true }
+       ]
+       ; set [ ternary $can-deploy false true ] checkbox.disabled
+       ; set [ ternary [ and { propertyIs true can-deploy } { propertyIs true status-info.hasChanges } ] true false ] checkbox.checked
+       !checkbox.addEventListener change $sync-deploy-btn
 
-     [ match
-      { $status-info.deployment.publicUrl (
-       ; to url-el !document.createElement div
-       ; assign $url-el { className cc-muted-meta } { textContent $status-info.deployment.publicUrl }
-       !card-el.appendChild $url-el
-      ) }
-     ]
+       ; to name-el !document.createElement span
+       ; assign $name-el { className lane-export-deploy-title } { textContent $title }
+       !left-wrap.appendChild $checkbox
+       !left-wrap.appendChild $name-el
 
-     ; to diff-el !document.createElement div
-     ; set lane-export-diff-box diff-el.className
-     ; set $diff-el item.diff-el
-     !render-diff-box $diff-el $status-info
-     !card-el.appendChild $diff-el
+       ; to right-wrap !document.createElement div
+       ; set lane-export-deploy-actions right-wrap.className
+       ; to badge-info !badge-for-status $status-info.status
+       ; to badge-el !document.createElement span
+       ; assign $badge-el { className $badge-info.cls } { textContent $badge-info.text }
+       !right-wrap.appendChild $badge-el
 
-     ; to term-wrap !document.createElement div
-     ; assign $term-wrap { className lane-export-deploy-term } { hidden true }
-     ; set $term-wrap item.term-wrap
-     !card-el.appendChild $term-wrap
+       ; to item [ object
+        { lane-id $lid }
+        { title $title }
+        { status-info $status-info }
+        { server $srv }
+        { card-el $card-el }
+        { checkbox $checkbox }
+        { badge-el $badge-el }
+        { diff-el null }
+        { term-wrap null }
+       ]
 
-     !list-el.appendChild $card-el
-     !modal.items.push $item
+       [ match
+        { $can-deploy (
+         ; to term-btn !document.createElement button
+         ; assign $term-btn { type button } { className lane-modal-action } { textContent 'Open Terminal' }
+         !term-btn.addEventListener click : !open-item-terminal $item
+         !right-wrap.appendChild $term-btn
+        ) }
+       ]
+
+       !card-hdr.appendChild $left-wrap
+       !card-hdr.appendChild $right-wrap
+       !card-el.appendChild $card-hdr
+
+       [ match
+        { $status-info.deployment.publicUrl (
+         ; to url-el !document.createElement div
+         ; assign $url-el { className cc-muted-meta } { textContent $status-info.deployment.publicUrl }
+         !card-el.appendChild $url-el
+        ) }
+       ]
+
+       ; to diff-el !document.createElement div
+       ; set lane-export-diff-box diff-el.className
+       ; set $diff-el item.diff-el
+       !render-diff-box $diff-el $status-info
+       !card-el.appendChild $diff-el
+
+       ; to term-wrap !document.createElement div
+       ; assign $term-wrap { className lane-export-deploy-term } { hidden true }
+       ; set $term-wrap item.term-wrap
+       !card-el.appendChild $term-wrap
+
+       !list-el.appendChild $card-el
+       !modal.items.push $item
+      )
+     )
     )
    ) }
   ]

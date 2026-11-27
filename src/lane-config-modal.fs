@@ -148,6 +148,7 @@
   { cancel-btn $cancel-btn }
   { save-btn $save-btn }
   { is-open false }
+  { is-saving false }
   { lane null }
  ]
 
@@ -176,7 +177,11 @@
   -- Saves configured lane changes (Title, Width, Path, Package, and Features) and closes the modal
   ; to lane $modal.lane
   [ match
-   { $lane (
+   { [ and { $lane } { [ propertyIs false modal.is-saving ] } ] (
+    ; set true modal.is-saving
+    ; set true save-btn.disabled
+    ; set 'lane-modal-action lane-config-btn--save cc-btn-busy' save-btn.className
+    ; set 'Saving…' save-btn.textContent
     [ match
      { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Saving…' }
     ]
@@ -258,6 +263,10 @@
     [ match
      { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
     ]
+    ; set false modal.is-saving
+    ; set false save-btn.disabled
+    ; set 'lane-modal-action lane-config-btn--save' save-btn.className
+    ; set 'Save changes' save-btn.textContent
     !modal.close
    ) }
   ]

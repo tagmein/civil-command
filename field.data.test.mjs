@@ -5943,3 +5943,181 @@ test('Agent API import-table action, read-only guards, read-write write-through,
  const ownerStillThere = await agentGetLane(defaultRootKv, { laneId: ownerId })
  assert.equal(ownerStillThere.lane.tables[0].namedRows.length, 2)
 })
+
+test('lane-data mount shows in-flight loading state and disables table actions until KV resolves', async () => {
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  return {
+   tag,
+   nodeType: 1,
+   style: {},
+   attributes: {},
+   children: [],
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   placeholder: '',
+   title: '',
+   className: '',
+   hidden: false,
+   disabled: false,
+   checked: false,
+   focused: false,
+   removed: false,
+   scrollWidth: 0,
+   scrollLeft: 0,
+   setAttribute(name, value) { this.attributes[name] = String(value) },
+   getAttribute(name) { return this.attributes[name] ?? null },
+   removeAttribute(name) { delete this.attributes[name] },
+   appendChild(child) {
+    if (child && typeof child === 'object') {
+     child.parentNode = this
+     this.children.push(child)
+    }
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child && typeof child === 'object') child.parentNode = this
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) this.children.push(child)
+    else this.children.splice(idx, 0, child)
+    return child
+   },
+   replaceChildren(...nodes) {
+    this.children = []
+    for (const node of nodes) this.appendChild(node)
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode && Array.isArray(this.parentNode.children)) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) this.parentNode.children.splice(idx, 1)
+    }
+   },
+   contains(target) {
+    if (target === this) return true
+    for (const child of this.children) {
+     if (child && typeof child.contains === 'function' && child.contains(target)) return true
+    }
+    return false
+   },
+  }
+ }
+
+ let releaseLoad = null
+ const loadGate = new Promise(resolve => { releaseLoad = resolve })
+ const kvMap = new Map()
+ function makeDeferredKv(prefix = '', rootRef = null) {
+  const qualify = key => (prefix ? `${prefix}/${key}` : key)
+  const client = {
+   get root() { return rootRef || client },
+   namespace(name) { return makeDeferredKv(qualify(name), client.root) },
+   async get(key) {
+    if (prefix === 'lane-load-test') {
+     await loadGate
+    }
+    return kvMap.has(qualify(key)) ? kvMap.get(qualify(key)) : null
+   },
+   async set(key, value) { kvMap.set(qualify(key), String(value)) },
+   async delete(key) { kvMap.delete(qualify(key)) },
+  }
+  return client
+ }
+ const rootKv = makeDeferredKv()
+
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  JSON,
+  Math,
+  Number,
+  Object,
+  Reflect,
+  String,
+  crypto: { randomUUID: () => 'data-loading-uuid' },
+  addEventListener() {},
+ }
+ const mockDocument = {
+  body: createMockElement('body'),
+  defaultView: mockWindow,
+  createElement: createMockElement,
+  addEventListener() {},
+ }
+
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-data.fs') return { text: async () => dataSource }
+  if (url === '/src/confirm-modal.fs') return { text: async () => confirmModalSource }
+  if (url === '/src/lane-row-picker-modal.fs') return { text: async () => rowPickerModalSource }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {}, error() {}, warn() {} },
+   data: rootKv,
+   document: mockDocument,
+   window: mockWindow,
+  })
+  const dataMod = await f.run(parse(dataSource, '/src/lane-data.fs'))
+  const containerEl = createMockElement('div')
+  const lane = {
+   id: 'lane-load-test',
+   title: 'Data Loading Lane',
+   subroute: '',
+   data: rootKv.namespace('lane-load-test'),
+  }
+  const mockLaneControl = {
+   'confirm-modal': null,
+   'row-picker-modal': null,
+   'open-package-ids': [],
+  }
+
+  const mountPromise = dataMod.mount(lane, containerEl, mockLaneControl)
+  await new Promise(resolve => setTimeout(resolve, 15))
+
+  const rootEl = containerEl.children[0]
+  assert.equal(rootEl.className, 'lane-data')
+  const barEl = rootEl.children[0]
+  const barActionsEl = barEl.children[1]
+  const addTableBtn = barActionsEl.children[0]
+  const importTableBtn = barActionsEl.children[1]
+  const loadingEl = rootEl.children[1]
+  const emptyEl = rootEl.children[2]
+  const activeEl = rootEl.children[3]
+
+  assert.equal(loadingEl.className, 'cc-loading')
+  assert.equal(loadingEl.textContent, 'Loading tables…')
+  assert.equal(loadingEl.hidden, false)
+  assert.equal(emptyEl.className, 'lane-data-empty')
+  assert.equal(emptyEl.hidden, true)
+  assert.equal(activeEl.hidden, true)
+  assert.equal(addTableBtn.disabled, true)
+  assert.equal(importTableBtn.disabled, true)
+
+  // Clicking disabled action handlers while loading is guarded and must not create a table
+  await addTableBtn.listeners.click()
+  assert.equal(activeEl.hidden, true)
+
+  releaseLoad()
+  const view = await mountPromise
+  assert.equal(view['is-loading'], false)
+  assert.equal(view['loading-el'].hidden, true)
+  assert.equal(view['empty-el'].hidden, false)
+  assert.equal(view['empty-el'].textContent, 'No tables yet. Create a table to define columns and add rows.')
+  assert.equal(view['add-table-btn'].disabled, false)
+  assert.equal(view['import-table-btn'].disabled, false)
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})

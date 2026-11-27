@@ -6446,3 +6446,296 @@ test('Export to Lane enforces atomic package-lock staging, sequential Open/Unloc
   globalThis.fetch = origFetch
  }
 })
+
+test('lane-notebook and tab views show in-flight loading states before script, inputs, and initial run settle', async () => {
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const exportModalSource = await fs.readFile(new URL('./src/lane-export-modal.fs', import.meta.url), 'utf8')
+ const exportDeployModalSource = await fs.readFile(new URL('./src/lane-export-deploy-modal.fs', import.meta.url), 'utf8')
+ const laneServerSourceMod = await fs.readFile(new URL('./src/lane-server.fs', import.meta.url), 'utf8')
+ const laneStorySourceMod = await fs.readFile(new URL('./src/lane-story.fs', import.meta.url), 'utf8')
+ const lineInfoModalSourceMod = await fs.readFile(new URL('./src/lane-line-info-modal.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  return {
+   tag,
+   nodeType: 1,
+   style: {},
+   attributes: {},
+   children: [],
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   placeholder: '',
+   title: '',
+   className: '',
+   hidden: false,
+   disabled: false,
+   checked: false,
+   focused: false,
+   removed: false,
+   scrollWidth: 0,
+   scrollLeft: 0,
+   scrollHeight: 0,
+   scrollTop: 0,
+   clientHeight: 0,
+   setAttribute(name, value) { this.attributes[name] = String(value) },
+   getAttribute(name) { return this.attributes[name] ?? null },
+   removeAttribute(name) { delete this.attributes[name] },
+   appendChild(child) {
+    if (child && typeof child === 'object') {
+     child.parentNode = this
+     this.children.push(child)
+    }
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child && typeof child === 'object') child.parentNode = this
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) this.children.push(child)
+    else this.children.splice(idx, 0, child)
+    return child
+   },
+   replaceChildren(...nodes) {
+    this.children = []
+    for (const node of nodes) this.appendChild(node)
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode && Array.isArray(this.parentNode.children)) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) this.parentNode.children.splice(idx, 1)
+    }
+   },
+   contains(target) {
+    if (target === this) return true
+    for (const child of this.children) {
+     if (child && typeof child.contains === 'function' && child.contains(target)) return true
+    }
+    return false
+   },
+  }
+ }
+
+ let releaseInputs = null
+ const inputsGate = new Promise(resolve => { releaseInputs = resolve })
+ let releaseScript = null
+ const scriptGate = new Promise(resolve => { releaseScript = resolve })
+ let releaseRun = null
+ const runGate = new Promise(resolve => { releaseRun = resolve })
+
+ const kvStore = new Map()
+ function makeKv(prefix = '', rootRef = null) {
+  const qualify = key => (prefix ? `${prefix}/${key}` : key)
+  const client = {
+   get root() { return rootRef || client },
+   namespace(name) { return makeKv(qualify(name), client.root) },
+   async get(key) {
+    if (prefix === 'lane-nb-loading' && key === 'inputs') await inputsGate
+    if (prefix === 'lane-nb-loading' && key === 'script') await scriptGate
+    return kvStore.has(qualify(key)) ? kvStore.get(qualify(key)) : null
+   },
+   async set(key, value) { kvStore.set(qualify(key), String(value)) },
+   async delete(key) { kvStore.delete(qualify(key)) },
+  }
+  return client
+ }
+ const rootKv = makeKv()
+
+ const makeMemStorage = () => {
+  const m = new Map()
+  return {
+   getItem(k) { return m.has(k) ? m.get(k) : null },
+   setItem(k, v) { m.set(k, String(v)) },
+   removeItem(k) { m.delete(k) },
+  }
+ }
+ const localStore = makeMemStorage()
+ const sessionStore = makeMemStorage()
+ let uuid = 0
+
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  Intl,
+  JSON,
+  Math,
+  Number,
+  Object,
+  Reflect,
+  String,
+  decodeURIComponent,
+  encodeURIComponent,
+  localStorage: localStore,
+  sessionStorage: sessionStore,
+  crypto: { randomUUID: () => `nb-loading-uuid-${++uuid}` },
+  location: { pathname: '/', search: '', hash: '', origin: 'http://localhost:8080' },
+  addEventListener() {},
+  removeEventListener() {},
+ }
+ const mockDocument = {
+  body: createMockElement('body'),
+  documentElement: createMockElement('html'),
+  defaultView: mockWindow,
+  createElement: createMockElement,
+  addEventListener() {},
+ }
+
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  const map = {
+   '/src/lane-notebook.fs': notebookSource,
+   '/src/lane-inputs.fs': inputsSource,
+   '/src/lane-scope.fs': scopeSource,
+   '/src/lane-data.fs': dataSource,
+   '/src/confirm-modal.fs': confirmModalSource,
+   '/src/lane-row-picker-modal.fs': rowPickerModalSource,
+   '/src/lane-output.fs': outputSource,
+   '/src/lane-import-modal.fs': importModalSource,
+   '/src/lane-export-modal.fs': exportModalSource,
+   '/src/lane-export-deploy-modal.fs': exportDeployModalSource,
+   '/src/lane-server.fs': laneServerSourceMod,
+   '/src/lane-story.fs': laneStorySourceMod,
+   '/src/lane-line-info-modal.fs': lineInfoModalSourceMod,
+  }
+  if (map[url]) return { text: async () => map[url] }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const deferredRunLines = async (lines, opts) => {
+   await runGate
+   return runLines(lines, opts)
+  }
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {}, error() {}, warn() {} },
+   createIdleTracker,
+   createSourceWorkerRunner: null,
+   data: rootKv,
+   defaultValueForType,
+   document: mockDocument,
+   formatExportLine,
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseExportLine,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines: deferredRunLines,
+   runTransportedScripts,
+   window: mockWindow,
+  })
+  const notebookMod = await f.run(parse(notebookSource, '/src/lane-notebook.fs'))
+  const containerEl = createMockElement('div')
+  const lane = {
+   id: 'lane-nb-loading',
+   title: 'Notebook Loading Lane',
+   subroute: '',
+   data: rootKv.namespace('lane-nb-loading'),
+  }
+  const mockLaneControl = {
+   'open-package-ids': [],
+   preferences: { interface: { scrollbarColor: '#383838' } },
+   'insert-lane-body-node'(_laneArg, targetContainer, el) {
+    targetContainer.appendChild(el)
+   },
+   'sync-export-links'() {},
+  }
+
+  // Stage 1: inputs KV read is paused -> Source, Input, and Scope panels show explicit loading indicators
+  const nb = await notebookMod.mount(lane, containerEl, mockLaneControl, 'source', true)
+  lane.notebook = nb
+  await new Promise(resolve => setTimeout(resolve, 15))
+
+  assert.equal(nb['is-loading-script'], true)
+  assert.equal(nb['source-loading-el'].hidden, false)
+  assert.equal(nb['source-loading-el'].textContent, 'Loading source…')
+  assert.equal(nb['add-btn'].disabled, true)
+  assert.equal(nb['add-import-btn'].disabled, true)
+  assert.equal(nb['add-export-btn'].disabled, true)
+
+  const inputsRootEl = nb['input-panel'].children[0]
+  assert.equal(inputsRootEl.className, 'lane-inputs')
+  assert.equal(inputsRootEl.children[1].className, 'cc-loading')
+  assert.equal(inputsRootEl.children[1].textContent, 'Loading inputs…')
+  assert.equal(inputsRootEl.children[1].hidden, false)
+  assert.equal(inputsRootEl.children[2].hidden, true)
+  assert.equal(inputsRootEl.children[3].disabled, true)
+  assert.equal(nb['scope-panel'].children[0].textContent, 'Loading scope…')
+  assert.equal(nb['scope-panel'].children[0].hidden, false)
+
+  // Stage 2: Release inputs load while script KV read stays paused -> Inputs settles; Source, Scope & View stay loading
+  releaseInputs()
+  await new Promise(resolve => setTimeout(resolve, 15))
+
+  assert.equal(nb['inputs-view']['is-loading'], false)
+  assert.equal(nb['inputs-view']['loading-el'].hidden, true)
+  assert.equal(nb['inputs-view']['empty-el'].hidden, false)
+  assert.equal(nb['inputs-view']['empty-el'].textContent, 'No inputs declared.')
+  assert.equal(nb['inputs-view']['add-btn'].disabled, false)
+
+  assert.equal(nb['is-loading-script'], true)
+  assert.equal(nb['source-loading-el'].hidden, false)
+  assert.equal(nb['scope-view']['is-loading'], true)
+  assert.equal(nb['scope-view']['loading-el'].hidden, false)
+  assert.equal(nb['scope-view']['loading-el'].textContent, 'Loading scope…')
+
+  const switchViewP = nb['set-tab']('view', true)
+  await new Promise(resolve => setTimeout(resolve, 10))
+  assert.equal(nb['output-view']['always-visible'], true)
+  assert.equal(nb['output-view']['is-loading'], true)
+  assert.equal(nb['output-view']['loading-el'].hidden, false)
+  assert.equal(nb['output-view']['loading-el'].textContent, 'Running lane…')
+  assert.equal(nb['output-view']['empty-el'].hidden, true)
+
+  // Stage 3: Release script load while initial run stays paused -> Source settles; Scope & Output remain loading
+  releaseScript()
+  await new Promise(resolve => setTimeout(resolve, 15))
+
+  assert.equal(nb['is-loading-script'], false)
+  assert.equal(nb['source-loading-el'].hidden, true)
+  assert.equal(nb['add-btn'].disabled, false)
+  assert.equal(nb['add-import-btn'].disabled, false)
+  assert.equal(nb['add-export-btn'].disabled, false)
+
+  assert.equal(nb['scope-view']['is-loading'], true)
+  assert.equal(nb['scope-view']['loading-el'].hidden, false)
+  assert.equal(nb['output-view']['is-loading'], true)
+  assert.equal(nb['output-view']['loading-el'].hidden, false)
+  assert.equal(nb['output-view']['empty-el'].hidden, true)
+
+  // Stage 4: Release initial run -> Scope & Output settle cleanly
+  releaseRun()
+  await switchViewP
+  if (nb['load-task'] && typeof nb['load-task'].wait === 'function') {
+   await nb['load-task'].wait()
+  }
+  await nb['when-idle']()
+
+  assert.equal(nb['scope-view']['is-loading'], false)
+  assert.equal(nb['scope-view']['loading-el'].hidden, true)
+  assert.equal(nb['output-view']['is-loading'], false)
+  assert.equal(nb['output-view']['loading-el'].hidden, true)
+  assert.equal(nb['output-view']['empty-el'].hidden, false)
+ }
+ finally {
+  releaseInputs()
+  releaseScript()
+  releaseRun()
+  globalThis.fetch = origFetch
+ }
+})

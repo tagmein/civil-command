@@ -16,6 +16,7 @@
   { render-id 0 }
   { always-visible false }
   { suppressed false }
+  { is-loading false }
   { is-floating false }
   { inline-host null }
   { iframe-el null }
@@ -24,6 +25,7 @@
   { popup-window null }
   { popup-doc null }
   { popup-viewport-el null }
+  { popup-loading-el null }
   { popup-empty-el null }
   { popup-errors-el null }
   { popup-popin-btn null }
@@ -95,6 +97,9 @@
  ; to viewport-el !document.createElement div
  ; set 'lane-output-viewport lane-output-viewport--framed' viewport-el.className
 
+ ; to loading-el !document.createElement div
+ ; assign $loading-el { className 'cc-loading cc-loading--output' } { textContent 'Running lane…' } { hidden true }
+
  ; to empty-el !document.createElement div
  ; assign $empty-el { className lane-output-empty } { textContent 'No browser output yet. Use ; send ( ... ) in Source to render output.' } { hidden true }
 
@@ -105,6 +110,7 @@
  !root-el.appendChild $bar-el
  !root-el.appendChild $floating-el
  !root-el.appendChild $viewport-el
+ !root-el.appendChild $loading-el
  !root-el.appendChild $empty-el
  !root-el.appendChild $errors-el
  [ match
@@ -112,7 +118,7 @@
   { true : !container.appendChild $root-el }
  ]
 
- ; assign $view { element $root-el } { bar-el $bar-el } { address-el $address-el } { count-el $count-el } { reload-btn $reload-btn } { popout-btn $popout-btn } { floating-el $floating-el } { attach-btn $attach-btn } { viewport-el $viewport-el } { empty-el $empty-el } { errors-el $errors-el }
+ ; assign $view { element $root-el } { bar-el $bar-el } { address-el $address-el } { count-el $count-el } { reload-btn $reload-btn } { popout-btn $popout-btn } { floating-el $floating-el } { attach-btn $attach-btn } { viewport-el $viewport-el } { loading-el $loading-el } { empty-el $empty-el } { errors-el $errors-el }
 
  ; to clear-dom-container (
   -- Clears child DOM nodes from a container element
@@ -481,9 +487,10 @@
  )
 
  ; to view.sync-visibility (
-  -- Updates output browser visibility based on packet count, floating popup state, and View-tab always-visible mode
+  -- Updates output browser visibility based on packet count, floating popup state, loading state, and View-tab always-visible mode
   ; to is-floating !view.has-live-popup
   ; to has-packets [ propertyIsGreaterThan 0 view.packets.length ]
+  ; to show-loading [ and { [ propertyIs true view.is-loading ] } { [ propertyIs false has-packets ] } ]
   ; to show [ match
    { $is-floating : true }
    { [ propertyIs true view.suppressed ] : false }
@@ -495,18 +502,30 @@
   ; set [ ternary $is-floating false true ] floating-el.hidden
   ; set [ ternary $is-floating true false ] popout-btn.hidden
   ; set [ ternary $is-floating true [ ternary $has-packets false true ] ] viewport-el.hidden
-  ; set [ ternary $is-floating true [ ternary $has-packets true false ] ] empty-el.hidden
+  ; set [ ternary $is-floating true [ ternary $show-loading false true ] ] loading-el.hidden
+  ; to empty-hide [ match { $has-packets : true } { $show-loading : true } { true : false } ]
+  ; set [ ternary $is-floating true $empty-hide ] empty-el.hidden
   [ match
    { $is-floating (
     [ match
      { $view.popup-viewport-el : ; set [ ternary $has-packets false true ] view.popup-viewport-el.hidden }
     ]
     [ match
-     { $view.popup-empty-el : ; set [ ternary $has-packets true false ] view.popup-empty-el.hidden }
+     { $view.popup-loading-el : ; set [ ternary $show-loading false true ] view.popup-loading-el.hidden }
+    ]
+    [ match
+     { $view.popup-empty-el : ; set $empty-hide view.popup-empty-el.hidden }
     ]
    ) }
   ]
   ; set [ ternary $view.always-visible 'lane-output lane-output--view' lane-output ] root-el.className
+ )
+
+ ; to view.set-loading (
+  -- Toggles in-flight execution loading indicator for View output
+  ; to { loading } $argv
+  ; set [ ternary $loading true false ] view.is-loading
+  !view.sync-visibility
  )
 
  ; to view.set-always-visible (
@@ -563,11 +582,14 @@
   ; set $packets view.packets
   ; to next-render-id ; add $view.render-id 1
   ; set $next-render-id view.render-id
+  ; set false view.is-loading
   ; to cur-title !view.sync-title
   !view.clear-errors
   ; to is-floating !view.has-live-popup
   [ match
    { [ propertyIs 0 packets.length ] (
+    ; set false reload-btn.disabled
+    ; set lane-output-reload reload-btn.className
     !view.clear-viewport
     ; set {} view.results
     ; to view.state ; object
@@ -577,6 +599,8 @@
    ) }
    { true (
     !view.sync-visibility
+    ; set true reload-btn.disabled
+    ; set 'lane-output-reload lane-output-reload--loading' reload-btn.className
     ; to count-unit [ ternary [ propertyIs 1 packets.length ] ' script' ' scripts' ]
     ; to count-label ; add $packets.length $count-unit
     ; set $count-label count-el.textContent
@@ -588,14 +612,23 @@
     [ match
      { $inactive-host.clear : !inactive-host.clear }
     ]
-    ; to outcome [ match
-     { $active-host (
-      ; to render-p !active-host.render $packets [ object { title $cur-title } ]
-      ; set [ match { $view.inline-host : $view.inline-host.iframe } { true : null } ] view.iframe-el
-      ; set [ match { $view.popup-host : $view.popup-host.iframe } { true : null } ] view.popup-iframe-el
-      $render-p
+    ; to outcome [ object { results {} } ]
+    ; try (
+     ; set [ match
+      { $active-host (
+       ; to render-p !active-host.render $packets [ object { title $cur-title } ]
+       ; set [ match { $view.inline-host : $view.inline-host.iframe } { true : null } ] view.iframe-el
+       ; set [ match { $view.popup-host : $view.popup-host.iframe } { true : null } ] view.popup-iframe-el
+       $render-p
+      ) }
+      { true : ; object { results {} } }
+     ] outcome
+    ) : null
+    [ match
+     { [ propertyIs $next-render-id view.render-id ] (
+      ; set false reload-btn.disabled
+      ; set lane-output-reload reload-btn.className
      ) }
-     { true : ; object { results {} } }
     ]
     ; set [ match { $view.inline-host : $view.inline-host.iframe } { true : null } ] view.iframe-el
     ; set [ match { $view.popup-host : $view.popup-host.iframe } { true : null } ] view.popup-iframe-el
@@ -700,6 +733,11 @@
        .lane-output-floating-popin:hover, .lane-output-floating-popin:focus { background: #262626; border-color: #ffffff66; color: #ffffff; }
        .lane-output-viewport { background: #0e0e0e; box-sizing: border-box; color: #f4f4f4; min-height: 100vh; padding: 0; }
        .lane-output-frame { background: #0e0e0e; border: 0; display: block; min-height: 100vh; width: 100%; }
+       @keyframes cc-loading-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+       .cc-loading { align-items: center; color: #ffffff80; display: inline-flex; font-family: "IBM Plex Mono", monospace; font-size: 11px; gap: 6px; padding: 8px 10px; }
+       .cc-loading::before { animation: cc-loading-pulse 1.2s ease-in-out infinite; background: #9ce5ff; border-radius: 50%; content: ""; display: inline-block; flex: 0 0 auto; height: 5px; width: 5px; }
+       .cc-loading--output { display: flex; padding: 0.9em 1em; }
+       @media (prefers-reduced-motion: reduce) { .cc-loading::before { animation: none; opacity: 0.85; } }
        .lane-output-empty { color: #ffffff5c; font-family: "IBM Plex Mono", monospace; font-size: 11px; padding: 0.9em 1em; }
        .lane-output-errors { background: #ff555514; border-top: 1px solid #ff555540; display: flex; flex-direction: column; gap: 0.25em; padding: 0.45em 0.7em; }
        .lane-output-error { color: #ff9c9c; font-family: "IBM Plex Mono", monospace; font-size: 11px; overflow-wrap: anywhere; white-space: pre-wrap; }
@@ -716,6 +754,9 @@
       ; to pop-viewport !popup-doc.createElement div
       ; set 'lane-output-viewport lane-output-viewport--framed' pop-viewport.className
 
+      ; to pop-loading !popup-doc.createElement div
+      ; assign $pop-loading { className 'cc-loading cc-loading--output' } { textContent 'Running lane…' } { hidden true }
+
       ; to pop-empty !popup-doc.createElement div
       ; assign $pop-empty { className lane-output-empty } { textContent 'No browser output yet. Use ; send ( ... ) in Source to render output.' } { hidden true }
 
@@ -724,6 +765,7 @@
 
       !popup-body.appendChild $popin-btn
       !popup-body.appendChild $pop-viewport
+      !popup-body.appendChild $pop-loading
       !popup-body.appendChild $pop-empty
       !popup-body.appendChild $pop-errors
 
@@ -750,7 +792,7 @@
        { true : null }
       ]
 
-      ; assign $view { popup-host $pop-host } { popup-window $popup-win } { popup-doc $popup-doc } { popup-viewport-el $pop-viewport } { popup-empty-el $pop-empty } { popup-errors-el $pop-errors } { popup-popin-btn $popin-btn } { is-floating true }
+      ; assign $view { popup-host $pop-host } { popup-window $popup-win } { popup-doc $popup-doc } { popup-viewport-el $pop-viewport } { popup-loading-el $pop-loading } { popup-empty-el $pop-empty } { popup-errors-el $pop-errors } { popup-popin-btn $popin-btn } { is-floating true }
       !view.sync-preferences
 
       [ match
