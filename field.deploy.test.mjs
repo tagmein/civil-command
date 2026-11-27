@@ -704,6 +704,27 @@ test('deploy-api.mjs: validation, bash -n checked script generation, Nginx/syste
  const unit = generateSystemdUnit({ slug: 'calc-api', title: 'Calc API' })
  assert.match(unit, /WorkingDirectory=\/opt\/civil-command\/calc-api/)
  assert.match(unit, /ExecStart=.*\/opt\/civil-command\/calc-api\/lane-server\.mjs --config \/opt\/civil-command\/calc-api\/config\.json/)
+ assert.match(unit, /^DynamicUser=yes$/m)
+ assert.match(unit, /^NoNewPrivileges=yes$/m)
+ assert.match(unit, /^ProtectSystem=strict$/m)
+ assert.match(unit, /^ProtectHome=yes$/m)
+ assert.match(unit, /^PrivateTmp=yes$/m)
+ assert.match(unit, /^PrivateDevices=yes$/m)
+ assert.match(unit, /^ProtectKernelTunables=yes$/m)
+ assert.match(unit, /^ProtectKernelModules=yes$/m)
+ assert.match(unit, /^ProtectControlGroups=yes$/m)
+ assert.match(unit, /^RestrictSUIDSGID=yes$/m)
+ assert.match(unit, /^CapabilityBoundingSet=$/m)
+ assert.match(unit, /^RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6$/m)
+ assert.match(unit, /^SocketBindAllow=ipv4:tcp$/m)
+ assert.match(unit, /^SocketBindDeny=any$/m)
+ assert.match(unit, /^IPAddressDeny=.*localhost.*link-local.*169\.254\.169\.254\/32.*fd00:ec2::254\/128/m)
+ assert.doesNotMatch(unit, /^IPAddressAllow=/m)
+
+ const portBoundUnit = generateSystemdUnit({ slug: 'calc-api', title: 'Calc API', port: 4100, allowLoopback: true })
+ assert.match(portBoundUnit, /^SocketBindAllow=ipv4:tcp:4100$/m)
+ assert.match(portBoundUnit, /^IPAddressAllow=127\.0\.0\.1\/32$/m)
+ assert.match(portBoundUnit, /^IPAddressDeny=.*localhost.*link-local.*169\.254\.169\.254\/32/m)
 
  const subNginx = generateNginxSubpathConfig({ slug: 'calc-api', port: 4100, subpath: '/calc' })
  assert.match(subNginx, /location = \/calc \{/)
@@ -728,6 +749,8 @@ test('deploy-api.mjs: validation, bash -n checked script generation, Nginx/syste
   'field.mjs': 'export const ok = 1',
   'data.mjs': 'export const ok = 2',
   'storage.mjs': 'export const ok = 3',
+  'sandbox.mjs': 'export const ok = 6',
+  'source-worker.mjs': 'export const ok = 7',
   'lane-http.mjs': 'export const ok = 4',
   'lane-server.mjs': 'export const ok = 5',
  }
@@ -772,6 +795,9 @@ test('deploy-api.mjs: validation, bash -n checked script generation, Nginx/syste
  assert.match(deployScript, /ssl_certificate/)
  assert.match(deployScript, /cc-bak/)
  assert.match(deployScript, /certbot/)
+ assert.match(deployScript, /sandbox\.mjs/)
+ assert.match(deployScript, /source-worker\.mjs/)
+ assert.match(deployScript, /chmod 644/)
  assert.match(deployScript, /__CC_DEPLOY_OK__/)
 
  const deployRootScript = generateDeployScript({
@@ -2312,22 +2338,23 @@ test('lane-server.mjs: concurrent request isolation across objects, Data tables,
  const mainId = 'iso-main'
  const depId = 'iso-dep'
 
- // Two-party async barrier server so Request A and Request B overlap in flight after mutating scope
+ // Two-party async external barrier so Request A and Request B overlap in flight across isolated subprocesses
  let barrierWaiters = []
- const barrierServer = http.createServer((_req, res) => {
-  barrierWaiters.push(res)
-  if (barrierWaiters.length === 2) {
-   const ready = barrierWaiters
-   barrierWaiters = []
-   for (const r of ready) {
-    r.writeHead(200, { 'Content-Type': 'text/plain' })
-    r.end('go')
+ const barrierUrl = 'https://barrier.example.test/barrier'
+ const barrierFetch = async url => {
+  assert.equal(url, barrierUrl)
+  await new Promise(resolve => {
+   barrierWaiters.push(resolve)
+   if (barrierWaiters.length === 2) {
+    const ready = barrierWaiters
+    barrierWaiters = []
+    for (const r of ready) {
+     r()
+    }
    }
-  }
- })
- await new Promise(resolve => barrierServer.listen(0, '127.0.0.1', resolve))
- const barrierPort = barrierServer.address().port
- const barrierUrl = `http://127.0.0.1:${barrierPort}/barrier`
+  })
+  return { ok: true, status: 200, text: async () => 'go' }
+ }
 
  await writeLaneSyncBundleToKv(kv, {
   mainLaneId: mainId,
@@ -2376,7 +2403,7 @@ test('lane-server.mjs: concurrent request isolation across objects, Data tables,
   includeImports: true,
   logRequests: false,
   autoReload: false,
- }, { kv })
+ }, { kv, fetch: barrierFetch })
 
  try {
   const initStatus = await srv.reload()
@@ -2446,8 +2473,6 @@ test('lane-server.mjs: concurrent request isolation across objects, Data tables,
  }
  finally {
   await srv.close()
-  if (typeof barrierServer.closeAllConnections === 'function') { barrierServer.closeAllConnections() }
-  await new Promise(resolve => barrierServer.close(resolve))
  }
 })
 

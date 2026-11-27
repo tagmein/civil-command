@@ -443,7 +443,222 @@ function normalizeLineContext(raw) {
  }
 }
 
-export function validateSourceFetchUrl(rawUrl, hostOrigin = '') {
+function parseIpv4Uint32(raw) {
+ if (typeof raw !== 'string') {
+  return null
+ }
+ const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(raw.trim())
+ if (!match) {
+  return null
+ }
+ const octets = [Number(match[1]), Number(match[2]), Number(match[3]), Number(match[4])]
+ for (let i = 0; i < 4; i++) {
+  if (!Number.isInteger(octets[i]) || octets[i] < 0 || octets[i] > 255) {
+   return null
+  }
+ }
+ return (((octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0)
+}
+
+function isBlockedIpv4Uint32(u32) {
+ const first = u32 >>> 24
+ if (first === 0 || first === 10 || first === 127) {
+  return true
+ }
+ if (((u32 & 0xffc00000) >>> 0) === 0x64400000) {
+  return true
+ }
+ if (((u32 & 0xffff0000) >>> 0) === 0xa9fe0000) {
+  return true
+ }
+ if (((u32 & 0xfff00000) >>> 0) === 0xac100000) {
+  return true
+ }
+ if (((u32 & 0xffffff00) >>> 0) === 0xc0000000) {
+  return true
+ }
+ if (((u32 & 0xffffff00) >>> 0) === 0xc0000200) {
+  return true
+ }
+ if (((u32 & 0xffffff00) >>> 0) === 0xc0586300) {
+  return true
+ }
+ if (((u32 & 0xffff0000) >>> 0) === 0xc0a80000) {
+  return true
+ }
+ if (((u32 & 0xfffe0000) >>> 0) === 0xc6120000) {
+  return true
+ }
+ if (((u32 & 0xffffff00) >>> 0) === 0xc6336400) {
+  return true
+ }
+ if (((u32 & 0xffffff00) >>> 0) === 0xcb007100) {
+  return true
+ }
+ if (((u32 & 0xe0000000) >>> 0) === 0xe0000000) {
+  return true
+ }
+ return false
+}
+
+function parseIpv6Groups(raw) {
+ if (typeof raw !== 'string') {
+  return null
+ }
+ let text = raw.trim()
+ if (text.startsWith('[') && text.endsWith(']')) {
+  text = text.slice(1, -1).trim()
+ }
+ if (!text || !text.includes(':')) {
+  return null
+ }
+ if (text.includes('%')) {
+  return [0xfe80, 0, 0, 0, 0, 0, 0, 1]
+ }
+ const lastColon = text.lastIndexOf(':')
+ if (lastColon !== -1 && text.slice(lastColon + 1).includes('.')) {
+  const v4 = parseIpv4Uint32(text.slice(lastColon + 1))
+  if (v4 === null) {
+   return null
+  }
+  const hi = (v4 >>> 16).toString(16)
+  const lo = (v4 & 0xffff).toString(16)
+  text = `${text.slice(0, lastColon)}:${hi}:${lo}`
+ }
+ const dblParts = text.split('::')
+ if (dblParts.length > 2) {
+  return null
+ }
+ const parseSide = side => {
+  if (!side) {
+   return []
+  }
+  const tokens = side.split(':')
+  const nums = []
+  for (let i = 0; i < tokens.length; i++) {
+   if (!/^[0-9a-fA-F]{1,4}$/.test(tokens[i])) {
+    return null
+   }
+   nums.push(parseInt(tokens[i], 16))
+  }
+  return nums
+ }
+ if (dblParts.length === 1) {
+  const full = parseSide(dblParts[0])
+  return full && full.length === 8 ? full : null
+ }
+ const left = parseSide(dblParts[0])
+ const right = parseSide(dblParts[1])
+ if (!left || !right || left.length + right.length >= 8) {
+  return null
+ }
+ const missing = 8 - (left.length + right.length)
+ return [...left, ...new Array(missing).fill(0), ...right]
+}
+
+function isBlockedIpv6Groups(g) {
+ const allZeroPrefix6 = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0
+ if (allZeroPrefix6 && g[6] === 0 && (g[7] === 0 || g[7] === 1)) {
+  return true
+ }
+ if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0xffff) {
+  return isBlockedIpv4Uint32((((g[6] << 16) | g[7]) >>> 0))
+ }
+ if (allZeroPrefix6) {
+  return true
+ }
+ if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0xffff && g[5] === 0) {
+  return isBlockedIpv4Uint32((((g[6] << 16) | g[7]) >>> 0))
+ }
+ if (g[0] === 0x0064 && g[1] === 0xff9b && (
+  (g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0) ||
+  g[2] === 1
+ )) {
+  return isBlockedIpv4Uint32((((g[6] << 16) | g[7]) >>> 0))
+ }
+ if (g[0] === 0x2002) {
+  return isBlockedIpv4Uint32((((g[1] << 16) | g[2]) >>> 0))
+ }
+ if (g[0] === 0x2001 && g[1] === 0x0000) {
+  return isBlockedIpv4Uint32((((~g[6] & 0xffff) << 16) | (~g[7] & 0xffff)) >>> 0)
+ }
+ if (g[0] === 0x0100 && g[1] === 0 && g[2] === 0 && g[3] === 0) {
+  return true
+ }
+ if (g[0] === 0x2001 && g[1] === 0x0db8) {
+  return true
+ }
+ if ((g[0] & 0xfe00) === 0xfc00) {
+  return true
+ }
+ if ((g[0] & 0xffc0) === 0xfe80 || (g[0] & 0xffc0) === 0xfec0) {
+  return true
+ }
+ if ((g[0] & 0xff00) === 0xff00) {
+  return true
+ }
+ return false
+}
+
+export function isBlockedIpAddress(rawIp) {
+ if (typeof rawIp !== 'string' || rawIp.trim().length === 0) {
+  return true
+ }
+ const trimmed = rawIp.trim()
+ if (trimmed.includes('%')) {
+  return true
+ }
+ const v4 = parseIpv4Uint32(trimmed)
+ if (v4 !== null) {
+  return isBlockedIpv4Uint32(v4)
+ }
+ const v6 = parseIpv6Groups(trimmed)
+ if (v6 !== null) {
+  return isBlockedIpv6Groups(v6)
+ }
+ return false
+}
+
+const BLOCKED_EXACT_HOSTNAMES = new Set([
+ 'localhost',
+ 'local',
+ 'internal',
+ 'instance-data',
+ 'metadata',
+ 'metadata.google.internal',
+ 'metadata.azure.com',
+ 'metadata.tencentyun.com',
+ '169.254.169.254',
+])
+
+const BLOCKED_HOSTNAME_SUFFIXES = [
+ '.localhost',
+ '.local',
+ '.internal',
+ '.home.arpa',
+]
+
+function isBlockedHostname(rawHost) {
+ const clean = String(rawHost || '').trim().toLowerCase().replace(/\.+$/, '')
+ if (!clean) {
+  return true
+ }
+ if (BLOCKED_EXACT_HOSTNAMES.has(clean)) {
+  return true
+ }
+ for (let i = 0; i < BLOCKED_HOSTNAME_SUFFIXES.length; i++) {
+  if (clean.endsWith(BLOCKED_HOSTNAME_SUFFIXES[i])) {
+   return true
+  }
+ }
+ const bare = clean.startsWith('[') && clean.endsWith(']') ? clean.slice(1, -1) : clean
+ if (parseIpv4Uint32(bare) !== null || parseIpv6Groups(bare) !== null) {
+  return isBlockedIpAddress(bare)
+ }
+ return false
+}
+
+export function validateSourceFetchUrl(rawUrl, hostOrigin = '', options = {}) {
  if (typeof rawUrl !== 'string' || rawUrl.trim().length === 0 || rawUrl.length > 8192) {
   return { ok: false, error: 'fetch URL must be a non-empty http:// or https:// URL' }
  }
@@ -461,6 +676,9 @@ export function validateSourceFetchUrl(rawUrl, hostOrigin = '') {
  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
   return { ok: false, error: `Unsupported fetch protocol: ${parsed.protocol}` }
  }
+ if (parsed.username || parsed.password) {
+  return { ok: false, error: 'Source fetch URLs must not include embedded credentials' }
+ }
  const cleanHostOrigin = typeof hostOrigin === 'string' ? hostOrigin.trim() : ''
  if (cleanHostOrigin && cleanHostOrigin !== 'null') {
   try {
@@ -477,6 +695,15 @@ export function validateSourceFetchUrl(rawUrl, hostOrigin = '') {
   const isLoopback = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]'
   if (isLoopback && (parsed.port === '8080' || parsed.port === '3333')) {
    return { ok: false, error: 'Source fetch cannot access internal Civil Command /api/* endpoints' }
+  }
+ }
+ const blockPrivateNetworks = options && options.blockPrivateNetworks !== undefined
+  ? Boolean(options.blockPrivateNetworks)
+  : true
+ if (blockPrivateNetworks && isBlockedHostname(parsed.hostname)) {
+  return {
+   ok: false,
+   error: `Blocked SSRF fetch target (${parsed.hostname}): localhost, private, link-local, and metadata addresses are forbidden`,
   }
  }
  return { ok: true, url: parsed.toString() }
@@ -1207,19 +1434,416 @@ export function decodeWireState(encodedState, baseEnv = {}, options = {}) {
 }
 
 // ============================================================================
-// Dedicated Source Worker Runner (Browser Web Worker + Node worker_threads)
+// Dedicated Source Worker Runner (Browser Web Worker + Node --permission Subprocess)
 // ============================================================================
 
-let nodeWorkerThreadsPromise = null
+const DEFAULT_SUBPROCESS_HEAP_MB = 128
+const DEFAULT_MAX_FETCH_RESPONSE_BYTES = 8 * 1024 * 1024
+const DEFAULT_MAX_FETCH_REDIRECTS = 5
+const WORKER_REQUIRED_MODULE_FILES = Object.freeze([
+ 'source-worker.mjs',
+ 'field.mjs',
+ 'lane-http.mjs',
+ 'sandbox.mjs',
+])
+
+let nodeSubprocessDepsPromise = null
+let nodeNetDepsPromise = null
+let defaultNodeSafeFetchInstance = null
 const MAX_IDLE_NODE_WORKERS = 2
 const idleNodeWorkers = []
+const activeNodeChildren = new Set()
+let exitCleanupRegistered = false
 
-async function getNodeWorkerClass() {
- if (!nodeWorkerThreadsPromise) {
-  const spec = 'node:worker_threads'
-  nodeWorkerThreadsPromise = import(spec).then(m => m.Worker)
+export function buildNodePermissionExecArgs(allowedReadPaths = [], options = {}) {
+ const envFlags = typeof process !== 'undefined' && process && process.allowedNodeEnvironmentFlags
+  ? process.allowedNodeEnvironmentFlags
+  : null
+ const args = []
+ if (!envFlags || envFlags.has('--permission')) {
+  args.push('--permission')
  }
- return nodeWorkerThreadsPromise
+ else if (envFlags.has('--experimental-permission')) {
+  args.push('--experimental-permission')
+ }
+ if (!envFlags || envFlags.has('--disallow-code-generation-from-strings')) {
+  args.push('--disallow-code-generation-from-strings')
+ }
+ const rawHeap = Number(options && options.maxOldSpaceMb)
+ const heapMb = Number.isInteger(rawHeap) && rawHeap >= 32 ? rawHeap : DEFAULT_SUBPROCESS_HEAP_MB
+ args.push(`--max-old-space-size=${heapMb}`)
+ const seen = new Set()
+ for (const rawPath of allowedReadPaths) {
+  const clean = typeof rawPath === 'string' ? rawPath.trim() : ''
+  if (clean && !seen.has(clean)) {
+   seen.add(clean)
+   args.push(`--allow-fs-read=${clean}`)
+  }
+ }
+ return args
+}
+
+async function getNodeSubprocessDeps() {
+ if (!nodeSubprocessDepsPromise) {
+  nodeSubprocessDepsPromise = (async () => {
+   const cpSpec = 'node:child_process'
+   const fsSpec = 'node:fs'
+   const pathSpec = 'node:path'
+   const urlSpec = 'node:url'
+   const [cpMod, fsMod, pathMod, urlMod] = await Promise.all([
+    import(cpSpec),
+    import(fsSpec),
+    import(pathSpec),
+    import(urlSpec),
+   ])
+   const allowedPaths = WORKER_REQUIRED_MODULE_FILES.map(name => {
+    const filePath = urlMod.fileURLToPath(new URL(`./${name}`, import.meta.url))
+    return fsMod.realpathSync(filePath)
+   })
+   return {
+    spawn: cpMod.spawn,
+    dirname: pathMod.dirname,
+    workerScriptPath: allowedPaths[0],
+    allowedPaths,
+   }
+  })()
+ }
+ return nodeSubprocessDepsPromise
+}
+
+async function getNodeNetDeps() {
+ if (!nodeNetDepsPromise) {
+  nodeNetDepsPromise = (async () => {
+   const dnsSpec = 'node:dns/promises'
+   const httpSpec = 'node:http'
+   const httpsSpec = 'node:https'
+   const [dnsMod, httpMod, httpsMod] = await Promise.all([
+    import(dnsSpec),
+    import(httpSpec),
+    import(httpsSpec),
+   ])
+   return {
+    dnsLookup: dnsMod.lookup,
+    httpRequest: httpMod.request,
+    httpsRequest: httpsMod.request,
+   }
+  })()
+ }
+ return nodeNetDepsPromise
+}
+
+export function createSafeExternalFetch(options = {}) {
+ const customDnsLookup = options && typeof options.dnsLookup === 'function' ? options.dnsLookup : null
+ const customHttpRequest = options && typeof options.httpRequest === 'function' ? options.httpRequest : null
+ const customHttpsRequest = options && typeof options.httpsRequest === 'function' ? options.httpsRequest : null
+ const maxRedirects = Number.isInteger(options && options.maxRedirects) && options.maxRedirects >= 0
+  ? options.maxRedirects
+  : DEFAULT_MAX_FETCH_REDIRECTS
+ const maxResponseBytes = Number.isInteger(options && options.maxResponseBytes) && options.maxResponseBytes > 0
+  ? options.maxResponseBytes
+  : DEFAULT_MAX_FETCH_RESPONSE_BYTES
+ const timeoutMs = Number.isFinite(Number(options && options.timeoutMs)) && Number(options.timeoutMs) > 0
+  ? Math.trunc(Number(options.timeoutMs))
+  : DEFAULT_SOURCE_WORKER_TIMEOUT_MS
+ const defaultHostOrigin = typeof (options && options.hostOrigin) === 'string' ? options.hostOrigin : ''
+
+ return async function safeExternalFetch(rawUrl, init = {}) {
+  if (!isNodeRuntime) {
+   const check = validateSourceFetchUrl(String(rawUrl ?? ''), defaultHostOrigin, { blockPrivateNetworks: true })
+   if (!check.ok) {
+    throw new Error(check.error)
+   }
+   if (typeof globalThis.fetch !== 'function') {
+    throw new Error('fetch is not available')
+   }
+   return globalThis.fetch(check.url, { ...(init || {}), credentials: 'omit' })
+  }
+
+  const netDeps = await getNodeNetDeps()
+  const lookupFn = customDnsLookup || netDeps.dnsLookup
+
+  let currentUrl = String(rawUrl ?? '')
+  let currentMethod = init && typeof init.method === 'string' && init.method.trim()
+   ? init.method.trim().toUpperCase()
+   : 'GET'
+  let currentBody = init && init.body !== undefined && init.body !== null ? String(init.body) : undefined
+  const currentHeaders = {}
+  if (init && isPlainRecord(init.headers)) {
+   for (const [hk, hv] of Object.entries(init.headers)) {
+    const low = hk.toLowerCase()
+    if (low === 'host' || low === 'content-length' || low === 'transfer-encoding' || low === 'connection') {
+     continue
+    }
+    if (hv !== undefined && hv !== null) {
+     currentHeaders[hk] = String(hv)
+    }
+   }
+  }
+  currentHeaders['accept-encoding'] = 'identity'
+
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+   const check = validateSourceFetchUrl(currentUrl, defaultHostOrigin, { blockPrivateNetworks: true })
+   if (!check.ok) {
+    throw new Error(check.error)
+   }
+   const parsed = new URL(check.url)
+   const bareHost = parsed.hostname.startsWith('[') && parsed.hostname.endsWith(']')
+    ? parsed.hostname.slice(1, -1)
+    : parsed.hostname
+
+   let pinnedAddress = ''
+   let pinnedFamily = 4
+   if (parseIpv4Uint32(bareHost) !== null) {
+    if (isBlockedIpAddress(bareHost)) {
+     throw new Error(`Blocked SSRF fetch target (${bareHost})`)
+    }
+    pinnedAddress = bareHost
+    pinnedFamily = 4
+   }
+   else if (parseIpv6Groups(bareHost) !== null) {
+    if (isBlockedIpAddress(bareHost)) {
+     throw new Error(`Blocked SSRF fetch target (${bareHost})`)
+    }
+    pinnedAddress = bareHost
+    pinnedFamily = 6
+   }
+   else {
+    const resolved = await lookupFn(bareHost, { all: true, verbatim: true })
+    const records = Array.isArray(resolved)
+     ? resolved
+     : (resolved && typeof resolved === 'object' && resolved.address ? [resolved] : [])
+    if (records.length === 0) {
+     throw new Error(`DNS lookup returned no addresses for ${bareHost}`)
+    }
+    for (let i = 0; i < records.length; i++) {
+     const recAddr = String(records[i] && records[i].address ? records[i].address : '').trim()
+     if (!recAddr || isBlockedIpAddress(recAddr)) {
+      throw new Error(`Blocked SSRF fetch target: ${bareHost} resolved to restricted address ${recAddr || 'unknown'}`)
+     }
+    }
+    pinnedAddress = String(records[0].address).trim()
+    pinnedFamily = records[0].family === 6 || pinnedAddress.includes(':') ? 6 : 4
+   }
+
+   const isHttps = parsed.protocol === 'https:'
+   const requestFn = isHttps
+    ? (customHttpsRequest || netDeps.httpsRequest)
+    : (customHttpRequest || netDeps.httpRequest)
+   const port = parsed.port ? Number(parsed.port) : (isHttps ? 443 : 80)
+   const reqHeaders = {
+    ...currentHeaders,
+    host: parsed.host,
+   }
+   const bodyBuf = currentBody !== undefined && currentMethod !== 'GET' && currentMethod !== 'HEAD'
+    ? new TextEncoder().encode(currentBody)
+    : null
+   if (bodyBuf) {
+    reqHeaders['content-length'] = String(bodyBuf.byteLength)
+   }
+
+   const hopResponse = await new Promise((resolve, reject) => {
+    let settled = false
+    const req = requestFn({
+     protocol: parsed.protocol,
+     hostname: bareHost,
+     port,
+     method: currentMethod,
+     path: `${parsed.pathname}${parsed.search}`,
+     headers: reqHeaders,
+     agent: false,
+     ...(isHttps && parseIpv4Uint32(bareHost) === null && parseIpv6Groups(bareHost) === null
+      ? { servername: bareHost }
+      : {}),
+     lookup: (_host, lookupOpts, cb) => {
+      const optsObj = typeof lookupOpts === 'object' && lookupOpts ? lookupOpts : null
+      const cbFn = typeof lookupOpts === 'function' ? lookupOpts : cb
+      if (optsObj && optsObj.all) {
+       cbFn(null, [{ address: pinnedAddress, family: pinnedFamily }])
+      }
+      else {
+       cbFn(null, pinnedAddress, pinnedFamily)
+      }
+     },
+    }, res => {
+     const status = Number.isInteger(res.statusCode) ? res.statusCode : 200
+     const statusText = typeof res.statusMessage === 'string' ? res.statusMessage : ''
+     const locationHeader = typeof res.headers.location === 'string' ? res.headers.location : ''
+     if ((status === 301 || status === 302 || status === 303 || status === 307 || status === 308) && locationHeader) {
+      res.resume()
+      if (!settled) {
+       settled = true
+       resolve({ redirectLocation: locationHeader, status })
+      }
+      return
+     }
+     const chunks = []
+     let totalBytes = 0
+     res.on('data', chunk => {
+      if (settled) {
+       return
+      }
+      const view = chunk instanceof Uint8Array ? chunk : new TextEncoder().encode(String(chunk))
+      totalBytes += view.byteLength
+      if (totalBytes > maxResponseBytes) {
+       settled = true
+       req.destroy()
+       reject(new Error(`External fetch response exceeded maximum size (${maxResponseBytes} bytes)`))
+       return
+      }
+      chunks.push(view)
+     })
+     res.on('end', () => {
+      if (settled) {
+       return
+      }
+      settled = true
+      const merged = new Uint8Array(totalBytes)
+      let offset = 0
+      for (let i = 0; i < chunks.length; i++) {
+       merged.set(chunks[i], offset)
+       offset += chunks[i].byteLength
+      }
+      const bodyText = new TextDecoder('utf-8').decode(merged)
+      const outHeaders = {}
+      for (const [rk, rv] of Object.entries(res.headers || {})) {
+       if (rv !== undefined && rv !== null) {
+        outHeaders[rk.toLowerCase()] = Array.isArray(rv) ? rv.join(', ') : String(rv)
+       }
+      }
+      resolve({
+       redirectLocation: null,
+       ok: status >= 200 && status < 300,
+       status,
+       statusText,
+       url: parsed.toString(),
+       headers: outHeaders,
+       bodyText,
+      })
+     })
+     res.on('error', err => {
+      if (!settled) {
+       settled = true
+       reject(err)
+      }
+     })
+    })
+
+    req.setTimeout(timeoutMs, () => {
+     if (!settled) {
+      settled = true
+      req.destroy(new Error(`External fetch timed out after ${timeoutMs}ms`))
+     }
+    })
+    req.on('error', err => {
+     if (!settled) {
+      settled = true
+      reject(err)
+     }
+    })
+    if (bodyBuf) {
+     req.write(bodyBuf)
+    }
+    req.end()
+   })
+
+   if (hopResponse.redirectLocation) {
+    if (hop >= maxRedirects) {
+     throw new Error(`Maximum fetch redirects (${maxRedirects}) exceeded`)
+    }
+    let nextParsed
+    try {
+     nextParsed = new URL(hopResponse.redirectLocation, parsed)
+    }
+    catch {
+     throw new Error(`Invalid redirect Location header: ${hopResponse.redirectLocation}`)
+    }
+    if (nextParsed.origin !== parsed.origin) {
+     for (const hk of Object.keys(currentHeaders)) {
+      const low = hk.toLowerCase()
+      if (low === 'authorization' || low === 'cookie' || low === 'proxy-authorization') {
+       delete currentHeaders[hk]
+      }
+     }
+    }
+    if (
+     hopResponse.status === 303 ||
+     ((hopResponse.status === 301 || hopResponse.status === 302) && currentMethod === 'POST')
+    ) {
+     currentMethod = 'GET'
+     currentBody = undefined
+     for (const hk of Object.keys(currentHeaders)) {
+      if (hk.toLowerCase() === 'content-type') {
+       delete currentHeaders[hk]
+      }
+     }
+    }
+    currentUrl = nextParsed.toString()
+    continue
+   }
+
+   return {
+    ok: hopResponse.ok,
+    status: hopResponse.status,
+    statusText: hopResponse.statusText,
+    url: hopResponse.url,
+    headers: {
+     ...hopResponse.headers,
+     get(name) {
+      const k = String(name ?? '').toLowerCase()
+      return Object.hasOwn(hopResponse.headers, k) ? hopResponse.headers[k] : null
+     },
+     forEach(cb) {
+      for (const [hk, hv] of Object.entries(hopResponse.headers)) {
+       cb(hv, hk)
+      }
+     },
+    },
+    async text() {
+     return hopResponse.bodyText
+    },
+    async json() {
+     return JSON.parse(hopResponse.bodyText)
+    },
+   }
+  }
+
+  throw new Error(`Maximum fetch redirects (${maxRedirects}) exceeded`)
+ }
+}
+
+function getDefaultNodeSafeFetch() {
+ if (!defaultNodeSafeFetchInstance) {
+  defaultNodeSafeFetchInstance = createSafeExternalFetch()
+ }
+ return defaultNodeSafeFetchInstance
+}
+
+function ensureNodeExitCleanup() {
+ if (exitCleanupRegistered || !isNodeRuntime || typeof process.once !== 'function') {
+  return
+ }
+ exitCleanupRegistered = true
+ process.once('exit', () => {
+  for (const child of Array.from(activeNodeChildren)) {
+   try {
+    child.kill('SIGKILL')
+   }
+   catch {
+    // Ignore already-exited subprocess
+   }
+  }
+  activeNodeChildren.clear()
+  idleNodeWorkers.length = 0
+ })
+}
+
+export function disposeIdleSourceWorkers() {
+ while (idleNodeWorkers.length > 0) {
+  const handle = idleNodeWorkers.pop()
+  if (handle && typeof handle.terminate === 'function') {
+   handle.terminate()
+  }
+ }
 }
 
 async function createPlatformWorker(workerUrl) {
@@ -1250,47 +1874,150 @@ async function createPlatformWorker(workerUrl) {
  }
 
  if (isNodeRuntime) {
-  if (idleNodeWorkers.length > 0) {
-   return idleNodeWorkers.pop()
+  while (idleNodeWorkers.length > 0) {
+   const candidate = idleNodeWorkers.pop()
+   if (candidate && !candidate.terminated && candidate.isConnected()) {
+    return candidate
+   }
   }
-  const NodeWorker = await getNodeWorkerClass()
-  const scriptUrl = new URL('./source-worker.mjs', import.meta.url)
-  const w = new NodeWorker(scriptUrl, { execArgv: [] })
-  if (typeof w.unref === 'function') {
-   w.unref()
+
+  ensureNodeExitCleanup()
+  const { spawn, dirname, workerScriptPath, allowedPaths } = await getNodeSubprocessDeps()
+  const execArgs = buildNodePermissionExecArgs(allowedPaths)
+  const child = spawn(process.execPath, [...execArgs, workerScriptPath], {
+   cwd: dirname(workerScriptPath),
+   env: {},
+   stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+  })
+  activeNodeChildren.add(child)
+
+  let stderrTail = ''
+  if (child.stderr) {
+   child.stderr.on('data', chunk => {
+    const str = typeof chunk === 'string' ? chunk : new TextDecoder('utf-8').decode(chunk)
+    stderrTail = (stderrTail + str).slice(-4096)
+   })
+   if (typeof child.stderr.unref === 'function') {
+    child.stderr.unref()
+   }
   }
+
+  const refChild = () => {
+   if (typeof child.ref === 'function') {
+    child.ref()
+   }
+   if (child.channel && typeof child.channel.ref === 'function') {
+    child.channel.ref()
+   }
+  }
+
+  const unrefChild = () => {
+   if (typeof child.unref === 'function') {
+    child.unref()
+   }
+   if (child.channel && typeof child.channel.unref === 'function') {
+    child.channel.unref()
+   }
+   if (child.stderr && typeof child.stderr.unref === 'function') {
+    child.stderr.unref()
+   }
+  }
+
+  child.once('exit', () => {
+   activeNodeChildren.delete(child)
+  })
+
+  await new Promise((resolve, reject) => {
+   let bootSettled = false
+   refChild()
+   const bootTimer = setTimeout(() => {
+    if (!bootSettled) {
+     bootSettled = true
+     cleanupBoot()
+     try { child.kill('SIGKILL') } catch {}
+     reject(new Error('Sandboxed Source subprocess timed out during startup'))
+    }
+   }, 10000)
+
+   const onBootMsg = msg => {
+    if (!bootSettled && msg && typeof msg === 'object' && msg.protocol === SOURCE_WORKER_PROTOCOL && msg.type === 'worker-ready') {
+     bootSettled = true
+     cleanupBoot()
+     resolve()
+    }
+   }
+   const onBootErr = err => {
+    if (!bootSettled) {
+     bootSettled = true
+     cleanupBoot()
+     reject(err instanceof Error ? err : new Error(String(err)))
+    }
+   }
+   const onBootExit = (code, signal) => {
+    if (!bootSettled) {
+     bootSettled = true
+     cleanupBoot()
+     const detail = stderrTail.trim() ? `: ${stderrTail.trim().split('\n').slice(-3).join(' | ')}` : ''
+     reject(new Error(`Sandboxed Source subprocess failed to start (${signal || code})${detail}`))
+    }
+   }
+   const cleanupBoot = () => {
+    clearTimeout(bootTimer)
+    child.off('message', onBootMsg)
+    child.off('error', onBootErr)
+    child.off('exit', onBootExit)
+    unrefChild()
+   }
+   child.on('message', onBootMsg)
+   child.on('error', onBootErr)
+   child.on('exit', onBootExit)
+  })
+
   const wrapper = {
    isBrowserWorker: false,
    terminated: false,
+   isConnected() {
+    return Boolean(child.connected && child.exitCode === null && child.signalCode === null)
+   },
    postMessage(msg) {
-    w.postMessage(msg)
+    if (child.connected) {
+     child.send(msg)
+    }
    },
    subscribe(onMessage, onError) {
+    refChild()
     const msgHandler = data => onMessage(data)
     const errHandler = err => onError(err instanceof Error ? err : new Error(String(err)))
-    const exitHandler = code => {
-     if (!wrapper.terminated && code !== 0) {
-      onError(new Error(`Source Worker exited with code ${code}`))
+    const exitHandler = (code, signal) => {
+     if (!wrapper.terminated && (code !== 0 || signal)) {
+      const detail = stderrTail.trim() ? `: ${stderrTail.trim().split('\n').slice(-3).join(' | ')}` : ''
+      const reason = signal ? `signal ${signal}` : `code ${code}`
+      onError(new Error(`Sandboxed Source subprocess exited (${reason})${detail}`))
      }
     }
-    w.on('message', msgHandler)
-    w.on('error', errHandler)
-    w.on('exit', exitHandler)
-    if (typeof w.unref === 'function') {
-     w.unref()
-    }
+    child.on('message', msgHandler)
+    child.on('error', errHandler)
+    child.on('exit', exitHandler)
     return () => {
-     w.off('message', msgHandler)
-     w.off('error', errHandler)
-     w.off('exit', exitHandler)
-     if (typeof w.unref === 'function') {
-      w.unref()
-     }
+     child.off('message', msgHandler)
+     child.off('error', errHandler)
+     child.off('exit', exitHandler)
+     unrefChild()
     }
    },
    terminate() {
+    if (wrapper.terminated) {
+     return
+    }
     wrapper.terminated = true
-    w.terminate()
+    activeNodeChildren.delete(child)
+    unrefChild()
+    try {
+     child.kill('SIGKILL')
+    }
+    catch {
+     // Ignore already-terminated subprocess
+    }
    },
   }
   return wrapper
@@ -1300,7 +2027,10 @@ async function createPlatformWorker(workerUrl) {
 }
 
 function releaseCleanNodeWorker(workerHandle) {
- if (!workerHandle || workerHandle.isBrowserWorker || workerHandle.terminated) {
+ if (!workerHandle || workerHandle.isBrowserWorker || workerHandle.terminated || !workerHandle.isConnected()) {
+  if (workerHandle && !workerHandle.terminated) {
+   workerHandle.terminate()
+  }
   return
  }
  if (idleNodeWorkers.length < MAX_IDLE_NODE_WORKERS) {
@@ -1353,13 +2083,33 @@ const HOST_ENV_BUILTIN_KEYS = new Set([
  '__secretValues',
 ])
 
-function extractInitialWorkerPayload(initialState = {}) {
+function extractInitialWorkerPayload(initialState = {}, runOptions = {}) {
  const inputsEnv = {}
+ const undefinedInputKeys = []
  const tablesScope = {}
  const src = initialState && typeof initialState === 'object' ? initialState : {}
- const secretNames = Array.isArray(src.__secretNames) ? src.__secretNames.map(s => String(s || '').trim()).filter(Boolean) : []
- const secretSetNames = Array.isArray(src.__secretSetNames) ? src.__secretSetNames.map(s => String(s || '').trim()).filter(Boolean) : []
- const secretValues = Array.isArray(src.__secretValues) ? src.__secretValues.filter(v => typeof v === 'string' && v.length > 0) : []
+ const opts = runOptions && typeof runOptions === 'object' ? runOptions : {}
+ const rawNames = Array.isArray(opts.secretNames)
+  ? opts.secretNames
+  : (Array.isArray(src.__secretNames) ? src.__secretNames : [])
+ const rawSetNames = Array.isArray(opts.secretSetNames)
+  ? opts.secretSetNames
+  : (Array.isArray(src.__secretSetNames) ? src.__secretSetNames : [])
+ const rawValues = Array.isArray(opts.secretValues)
+  ? opts.secretValues
+  : (Array.isArray(src.__secretValues) ? src.__secretValues : [])
+
+ const secretNames = rawNames.map(s => String(s || '').trim()).filter(Boolean)
+ const secretSetSet = new Set(rawSetNames.map(s => String(s || '').trim()).filter(Boolean))
+ const secretValues = rawValues.filter(v => typeof v === 'string' && v.length > 0)
+ for (const name of secretNames) {
+  if (typeof src[name] === 'string' && src[name].length > 0) {
+   secretSetSet.add(name)
+   if (!secretValues.includes(src[name])) {
+    secretValues.push(src[name])
+   }
+  }
+ }
 
  for (const key of Object.keys(src)) {
   if (HOST_ENV_BUILTIN_KEYS.has(key)) {
@@ -1369,7 +2119,10 @@ function extractInitialWorkerPayload(initialState = {}) {
   if (typeof val === 'function') {
    continue
   }
-  if (Array.isArray(val)) {
+  if (val === undefined) {
+   undefinedInputKeys.push(key)
+  }
+  else if (Array.isArray(val)) {
    tablesScope[key] = cloneSafeJson(val) ?? []
   }
   else {
@@ -1380,11 +2133,12 @@ function extractInitialWorkerPayload(initialState = {}) {
  const tableChange = isPlainRecord(src.tableChange) ? cloneSafeJson(src.tableChange) : null
  return {
   inputsEnv,
+  undefinedInputKeys,
   tablesScope,
   tableChange,
   secretMeta: {
    secretNames,
-   secretSetNames,
+   secretSetNames: Array.from(secretSetSet),
    secretValues,
   },
  }
@@ -1563,7 +2317,9 @@ async function dispatchSourceWorkerRpc(validated, context) {
     ? hostFetch
     : (initialState && typeof initialState.fetch === 'function'
      ? initialState.fetch
-     : (typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null))
+     : (isNodeRuntime
+      ? getDefaultNodeSafeFetch()
+      : (typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null)))
    if (!fetchImpl) {
     throw new Error('fetch is not available')
    }
@@ -1634,12 +2390,14 @@ export function createSourceWorkerRunner(runnerOptions = {}) {
   return { handle: nodeHandle, isPrimary: false }
  }
 
- function releaseWorker(leased, hardKill = false) {
+ function releaseWorker(leased, hardKill = false, discardSecretWorker = false) {
   if (!leased || !leased.handle) {
    return
   }
-  if (hardKill || disposed) {
-   terminatedCount += hardKill ? 1 : 0
+  if (hardKill || disposed || discardSecretWorker) {
+   if (hardKill) {
+    terminatedCount += 1
+   }
    if (leased.handle === dedicatedWorker) {
     dedicatedWorker = null
     workerBusy = false
@@ -1682,8 +2440,9 @@ export function createSourceWorkerRunner(runnerOptions = {}) {
    : (typeof runnerOptions.laneId === 'string' && runnerOptions.laneId ? runnerOptions.laneId : 'lane')
   const timeoutMs = resolveWorkerTimeoutMs(runOptions, runnerOptions)
   const limits = normalizeFieldLimits(runOptions && runOptions.limits, runOptions)
-  const payload = extractInitialWorkerPayload(initialState)
+  const payload = extractInitialWorkerPayload(initialState, runOptions)
   const secretValues = payload.secretMeta.secretValues
+  const hasSecrets = secretValues.length > 0
   const hostOrigin = runnerOptions.hostOrigin ?? resolveHostOrigin()
 
   const leased = await acquireWorker()
@@ -1725,6 +2484,7 @@ export function createSourceWorkerRunner(runnerOptions = {}) {
      sent: [],
      timedOut: Boolean(flags.timedOut),
      terminated: Boolean(flags.terminated),
+     budget: null,
     }
    }
 
@@ -1746,7 +2506,7 @@ export function createSourceWorkerRunner(runnerOptions = {}) {
      lineContext.lineId = ''
     }
     unsubscribe()
-    releaseWorker(leased, hardKill)
+    releaseWorker(leased, hardKill, hasSecrets && !leased.handle.isBrowserWorker)
     resolve(outcome)
    }
 
@@ -1816,7 +2576,7 @@ export function createSourceWorkerRunner(runnerOptions = {}) {
         initialState,
         lineContext,
         hostOrigin,
-        hostFetch: runnerOptions.fetch,
+        hostFetch: (runOptions && runOptions.fetch) || runnerOptions.fetch,
        }))
        .then(result => {
         if (!settled) {
@@ -1872,6 +2632,7 @@ export function createSourceWorkerRunner(runnerOptions = {}) {
        sent,
        timedOut: false,
        terminated: false,
+       budget: isPlainRecord(rawMsg.budget) ? cloneSafeJson(rawMsg.budget) : null,
       }, false)
       return
      }
@@ -1896,6 +2657,7 @@ export function createSourceWorkerRunner(runnerOptions = {}) {
     includePreviews: runOptions.includePreviews !== false,
     limits,
     inputsEnv: payload.inputsEnv,
+    undefinedInputKeys: payload.undefinedInputKeys,
     tablesScope: payload.tablesScope,
     tableChange: payload.tableChange,
     secretMeta: payload.secretMeta,
@@ -1950,31 +2712,58 @@ export async function simulateLaneRequestInWorker(simOptions = {}) {
  const {
   lines = [],
   inputs = [],
+  inputsEnv: rawInputsEnv = null,
+  undefinedInputKeys: rawUndefinedKeys = null,
+  secretMeta: rawSecretMeta = null,
   tables = [],
+  tablesScope: explicitTablesScope = null,
+  limits: rawLimits = null,
   laneId = 'lane',
   laneData = null,
   importLaneFn = null,
+  console: hostConsole = null,
+  fetch: hostFetch = null,
   req = {},
   cors = true,
   timeoutMs,
+  timeoutStatus = 504,
   workerUrl,
   hostOrigin: explicitOrigin,
  } = simOptions
 
  const cleanLines = Array.from(lines || []).map(l => (l === null || l === undefined ? '' : String(l)))
- const tablesScope = Array.isArray(tables) && tables.length > 0 ? buildTablesScope(tables) : {}
+ const tablesScope = explicitTablesScope && typeof explicitTablesScope === 'object'
+  ? explicitTablesScope
+  : (Array.isArray(tables) && tables.length > 0 ? buildTablesScope(tables) : {})
  const cleanInputs = Array.isArray(inputs)
   ? inputs
    .filter(entry => entry && typeof entry.name === 'string' && entry.name.trim().length > 0)
    .map(entry => ({ name: entry.name.trim(), type: String(entry.type || 'string') }))
   : []
- const resolvedTimeout = resolveWorkerTimeoutMs({ timeoutMs }, {})
+ const limits = rawLimits ? normalizeFieldLimits(rawLimits, simOptions) : null
+ const resolvedTimeout = resolveWorkerTimeoutMs({ timeoutMs, limits }, {})
  const hostOrigin = explicitOrigin ?? resolveHostOrigin()
+ const secretValues = Array.isArray(rawSecretMeta && rawSecretMeta.secretValues)
+  ? rawSecretMeta.secretValues.filter(v => typeof v === 'string' && v.length > 0)
+  : []
+ const hasSecrets = secretValues.length > 0
  const leased = await createPlatformWorker(workerUrl)
  const runId = Math.max(1, Math.trunc(Math.random() * 1000000000))
  const initialState = {
+  console: hostConsole,
   data: laneData,
   importLane: typeof importLaneFn === 'function' ? importLaneFn : () => undefined,
+  fetch: hostFetch,
+ }
+
+ const buildErrorHeaders = () => {
+  const hdrs = { 'content-type': 'application/json; charset=utf-8' }
+  if (cors !== false) {
+   hdrs['access-control-allow-origin'] = '*'
+   hdrs['access-control-allow-methods'] = 'GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS'
+   hdrs['access-control-allow-headers'] = 'Content-Type, Authorization, X-Requested-With'
+  }
+  return hdrs
  }
 
  return new Promise(resolve => {
@@ -1992,7 +2781,7 @@ export async function simulateLaneRequestInWorker(simOptions = {}) {
     timer = null
    }
    unsubscribe()
-   if (hardKill || leased.isBrowserWorker) {
+   if (hardKill || leased.isBrowserWorker || hasSecrets) {
     leased.terminate()
    }
    else {
@@ -2003,11 +2792,12 @@ export async function simulateLaneRequestInWorker(simOptions = {}) {
 
   if (resolvedTimeout > 0) {
    timer = setTimeout(() => {
+    const errText = `Request timed out after ${resolvedTimeout}ms (worker terminated)`
     finish({
      ok: false,
-     status: 504,
-     headers: { 'content-type': 'application/json; charset=utf-8' },
-     bodyText: JSON.stringify({ error: `Request timed out after ${resolvedTimeout}ms (worker terminated)` }),
+     status: timeoutStatus,
+     headers: buildErrorHeaders(),
+     bodyText: JSON.stringify({ error: hasSecrets ? redactSecretText(errText, secretValues) : errText }),
      mode: 'timeout',
      durationMs: resolvedTimeout,
      logs: [],
@@ -2036,7 +2826,7 @@ export async function simulateLaneRequestInWorker(simOptions = {}) {
       return
      }
      Promise.resolve()
-      .then(() => dispatchSourceWorkerRpc(validated, { initialState, lineContext: null, hostOrigin }))
+      .then(() => dispatchSourceWorkerRpc(validated, { initialState, lineContext: null, hostOrigin, hostFetch }))
       .then(result => {
        if (!settled) {
         leased.postMessage({
@@ -2068,11 +2858,12 @@ export async function simulateLaneRequestInWorker(simOptions = {}) {
      return
     }
     if (rawMsg.type === 'run-error') {
+     const rawErr = String(rawMsg.error || 'Simulation error')
      finish({
       ok: false,
       status: 500,
-      headers: { 'content-type': 'application/json; charset=utf-8' },
-      bodyText: JSON.stringify({ error: String(rawMsg.error || 'Simulation error') }),
+      headers: buildErrorHeaders(),
+      bodyText: JSON.stringify({ error: hasSecrets ? redactSecretText(rawErr, secretValues) : rawErr }),
       mode: 'error',
       durationMs: 0,
       logs: [],
@@ -2080,11 +2871,12 @@ export async function simulateLaneRequestInWorker(simOptions = {}) {
     }
    },
    err => {
+    const rawErr = err.message || 'Worker crashed'
     finish({
      ok: false,
      status: 500,
-     headers: { 'content-type': 'application/json; charset=utf-8' },
-     bodyText: JSON.stringify({ error: err.message || 'Worker crashed' }),
+     headers: buildErrorHeaders(),
+     bodyText: JSON.stringify({ error: hasSecrets ? redactSecretText(rawErr, secretValues) : rawErr }),
      mode: 'error',
      durationMs: 0,
      logs: [],
@@ -2099,6 +2891,10 @@ export async function simulateLaneRequestInWorker(simOptions = {}) {
    laneId: String(laneId || 'lane'),
    lines: cleanLines,
    inputs: cleanInputs,
+   inputsEnv: isPlainRecord(rawInputsEnv) ? cloneSafeJson(rawInputsEnv) : null,
+   undefinedInputKeys: Array.isArray(rawUndefinedKeys) ? rawUndefinedKeys.filter(k => typeof k === 'string') : [],
+   secretMeta: isPlainRecord(rawSecretMeta) ? cloneSafeJson(rawSecretMeta) : {},
+   limits,
    tablesScope: cloneSafeJson(tablesScope) ?? {},
    req: cloneSafeJson(req) ?? {},
    cors: Boolean(cors),

@@ -14,7 +14,6 @@ import {
  parseColumnType,
  parseLaneFeatures,
  resolveImportValue,
- runLines,
  syncTableRowsInMemory,
  validateFieldScriptLine,
  validateFieldScriptLines,
@@ -64,8 +63,12 @@ import { executeLaneResync } from './deploy-api.mjs'
 import {
  createResponseHelper,
  detectLaneHandlers,
- simulateLaneRequest,
 } from './lane-http.mjs'
+import {
+ createSafeExternalFetch,
+ runLinesInWorker,
+ simulateLaneRequestInWorker,
+} from './sandbox.mjs'
 import {
  captureStoryEnvInputs,
  createStoryRunRecorder,
@@ -366,6 +369,7 @@ export async function agentEvalLane(rootKv, options = {}) {
  }
 
  const evalCache = new Map()
+ const safeFetch = typeof options.fetch === 'function' ? options.fetch : createSafeExternalFetch()
 
  async function evaluateLaneById(targetId, stack = new Set(), isRoot = false) {
   const cleanId = String(targetId || '').trim()
@@ -429,7 +433,7 @@ export async function agentEvalLane(rootKv, options = {}) {
    JSON,
    Date,
    Array,
-   fetch: (...args) => (typeof globalThis.fetch === 'function' ? globalThis.fetch(...args) : null),
+   fetch: safeFetch,
    respond: createResponseHelper(),
    syncTable: async (tblQuery, records, keyCol) => {
     const res = syncTableRowsInMemory(tables, tblQuery, records, keyCol)
@@ -752,6 +756,20 @@ export async function agentEvalLane(rootKv, options = {}) {
    }
   }
 
+  const simInputsEnv = {}
+  const simUndefinedKeys = []
+  for (const [k, v] of Object.entries(env)) {
+   if (EVAL_EXCLUDED_SCOPE_KEYS.has(k) || k.startsWith('__secret') || typeof v === 'function') {
+    continue
+   }
+   if (v === undefined) {
+    simUndefinedKeys.push(k)
+   }
+   else {
+    simInputsEnv[k] = v
+   }
+  }
+
   Object.assign(env, buildTablesScope(tables))
 
   const secretSetNamesArr = [...secretSetNames]
@@ -762,7 +780,7 @@ export async function agentEvalLane(rootKv, options = {}) {
   }
   const capturedInputs = storyRecorder ? captureStoryEnvInputs(inputs, env) : null
 
-  const outcome = await runLines(lines, {
+  const outcome = await runLinesInWorker(lines, {
    filename: cleanId,
    initialState: env,
    secretNames,
@@ -770,6 +788,9 @@ export async function agentEvalLane(rootKv, options = {}) {
    secretValues,
    lineContext,
    lineRecords: scriptRecords,
+   timeoutMs: options.timeoutMs,
+   limits: options.limits,
+   fetch: safeFetch,
   })
 
   if (storyRecorder) {
@@ -797,6 +818,15 @@ export async function agentEvalLane(rootKv, options = {}) {
    title: title === null || title === undefined ? '' : String(title),
    records: scriptRecords,
    lines,
+   inputs,
+   simInputsEnv,
+   simUndefinedKeys,
+   secretMeta: {
+    secretNames,
+    secretSetNames: secretSetNamesArr,
+    secretValues,
+   },
+   importLaneFn: env.importLane,
    tables,
    outcome,
    state: outcome.state,
@@ -848,18 +878,26 @@ export async function agentEvalLane(rootKv, options = {}) {
  let httpSimulation = null
  if (options.httpRequest && typeof options.httpRequest === 'object') {
   const simReq = options.httpRequest
-  httpSimulation = await simulateLaneRequest({
+  httpSimulation = await simulateLaneRequestInWorker({
    lines: evaluated.lines,
+   inputs: evaluated.inputs,
+   inputsEnv: evaluated.simInputsEnv,
+   undefinedInputKeys: evaluated.simUndefinedKeys,
+   secretMeta: evaluated.secretMeta,
    tables: evaluated.tables,
    laneId: evaluated.laneId,
    laneData: sessionKv.namespace(evaluated.laneId),
-   cachedState: outcome.state,
+   importLaneFn: evaluated.importLaneFn,
+   fetch: safeFetch,
+   timeoutMs: options.timeoutMs,
+   limits: options.limits,
    req: {
     method: simReq.method || 'GET',
     url: simReq.url || simReq.path || '/',
     path: simReq.path || simReq.url || '/',
     headers: simReq.headers || {},
     body: simReq.body,
+    rawBody: simReq.rawBody,
    },
   })
  }

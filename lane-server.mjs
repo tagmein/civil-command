@@ -13,7 +13,6 @@ import {
  normalizeFieldLimits,
  normalizePrimitiveType,
  resolveImportValue,
- runCompiledLines,
 } from './field.mjs'
 import {
  httpKV,
@@ -34,6 +33,11 @@ import {
  normalizeHttpResult,
  resolveRequestIp,
 } from './lane-http.mjs'
+import {
+ createSafeExternalFetch,
+ runLinesInWorker,
+ simulateLaneRequestInWorker,
+} from './sandbox.mjs'
 
 const MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024
 
@@ -381,6 +385,9 @@ export function createLaneHttpServer(config = {}, opts = {}) {
   basePath: config.dataBasePath || null,
   switchable: false,
  })
+ const externalFetch = typeof opts.fetch === 'function'
+  ? opts.fetch
+  : createSafeExternalFetch()
 
  function buildEmptySnapshot(errorMsg = null, loadedAt = null) {
   return Object.freeze({
@@ -586,30 +593,76 @@ export function createLaneHttpServer(config = {}, opts = {}) {
   })
  }
 
- async function evaluateUnit(unit, {
+ function computeBudgetLimits(executionBudget) {
+  if (!executionBudget) {
+   return { unitLimits: limits, timeoutMs: limits.maxExecutionMs }
+  }
+  let remainingSteps = limits.maxSteps
+  if (executionBudget.maxSteps > 0) {
+   if (executionBudget.steps >= executionBudget.maxSteps) {
+    const err = new RangeError(`Maximum FieldScript execution steps (${executionBudget.maxSteps}) exceeded`)
+    err.code = 'FIELD_LIMIT_EXCEEDED'
+    executionBudget.exhausted = true
+    executionBudget.exhaustedKind = 'maxSteps'
+    executionBudget.exhaustedError = err
+    throw err
+   }
+   remainingSteps = Math.max(1, executionBudget.maxSteps - executionBudget.steps)
+  }
+  let remainingMs = limits.maxExecutionMs
+  if (executionBudget.deadlineMs > 0) {
+   const left = executionBudget.deadlineMs - Date.now()
+   if (left <= 0) {
+    const err = new RangeError(`FieldScript execution timed out after ${executionBudget.maxExecutionMs}ms`)
+    err.code = 'FIELD_LIMIT_EXCEEDED'
+    executionBudget.exhausted = true
+    executionBudget.exhaustedKind = 'maxExecutionMs'
+    executionBudget.exhaustedError = err
+    throw err
+   }
+   remainingMs = Math.max(1, left)
+  }
+  return {
+   unitLimits: {
+    ...limits,
+    maxSteps: remainingSteps,
+    maxExecutionMs: remainingMs,
+   },
+   timeoutMs: remainingMs,
+  }
+ }
+
+ function applyWorkerBudget(executionBudget, workerBudget) {
+  if (!executionBudget || !workerBudget || typeof workerBudget !== 'object') {
+   return
+  }
+  if (Number.isFinite(Number(workerBudget.steps)) && Number(workerBudget.steps) > 0) {
+   executionBudget.steps += Math.trunc(Number(workerBudget.steps))
+  }
+  if (workerBudget.exhausted) {
+   executionBudget.exhausted = true
+   executionBudget.exhaustedKind = workerBudget.exhaustedKind || 'limit'
+   if (!executionBudget.exhaustedError) {
+    const err = new RangeError(workerBudget.error || 'Execution limit exceeded')
+    err.code = 'FIELD_LIMIT_EXCEEDED'
+    executionBudget.exhaustedError = err
+   }
+  }
+ }
+
+ function createImportLaneResolver(unit, {
   importedUnits,
   dynamicUnits = null,
-  req = null,
   executionBudget,
   evalCache = new Map(),
   activeStack = new Set(),
   preReadTriggers = null,
+  onTransientError = null,
  } = {}) {
-  if (!unit) {
-   return { exists: false, state: {}, results: [] }
-  }
-  if (unit.compileError) {
-   return {
-    exists: unit.exists,
-    state: {},
-    results: [{ index: 0, lineNumber: 1, error: unit.compileError, isEmpty: false, isComment: false }],
-   }
-  }
-
   const nextStack = new Set(activeStack)
   nextStack.add(unit.id)
 
-  const importLane = async (depId, ...propPath) => {
+  return async (depId, ...propPath) => {
    if (!includeImports) {
     return undefined
    }
@@ -631,7 +684,15 @@ export function createLaneHttpServer(config = {}, opts = {}) {
      if (limits.maxImportedLanes > 0 && distinctCount >= limits.maxImportedLanes) {
       throw createSnapshotError(`Maximum imported lanes (${limits.maxImportedLanes}) exceeded`)
      }
-     depUnit = await loadLaneUnit(cleanDep, { requireExists: true, preReadTriggers })
+     try {
+      depUnit = await loadLaneUnit(cleanDep, { requireExists: true, preReadTriggers })
+     }
+     catch (err) {
+      if (typeof onTransientError === 'function' && !isDeterministicError(err)) {
+       onTransientError(err)
+      }
+      throw err
+     }
      if (dynamicUnits) {
       dynamicUnits.set(cleanDep, depUnit)
      }
@@ -648,6 +709,7 @@ export function createLaneHttpServer(config = {}, opts = {}) {
       evalCache,
       activeStack: nextStack,
       preReadTriggers,
+      onTransientError,
      })
      evalCache.set(cleanDep, { exists: true, state: depOutcome.state })
     }
@@ -660,18 +722,44 @@ export function createLaneHttpServer(config = {}, opts = {}) {
    const resolved = resolveImportValue({ ok: true, state: cached.state, error: null }, propPath)
    return cloneScopeData(resolved)
   }
+ }
+
+ async function evaluateUnit(unit, {
+  importedUnits,
+  dynamicUnits = null,
+  req = null,
+  executionBudget,
+  evalCache = new Map(),
+  activeStack = new Set(),
+  preReadTriggers = null,
+  onTransientError = null,
+ } = {}) {
+  if (!unit) {
+   return { exists: false, state: {}, results: [] }
+  }
+  if (unit.compileError) {
+   return {
+    exists: unit.exists,
+    state: {},
+    results: [{ index: 0, lineNumber: 1, error: unit.compileError, isEmpty: false, isComment: false }],
+   }
+  }
+
+  const importLane = createImportLaneResolver(unit, {
+   importedUnits,
+   dynamicUnits,
+   executionBudget,
+   evalCache,
+   activeStack,
+   preReadTriggers,
+   onTransientError,
+  })
 
   const env = {
    console: logger,
    data: rootKv.namespace(unit.id),
-   Math,
-   Number,
-   JSON,
-   Date,
-   Array,
-   fetch: (...args) => (typeof globalThis.fetch === 'function' ? globalThis.fetch(...args) : null),
+   fetch: externalFetch,
    importLane,
-   respond: createResponseHelper(),
    ...(req ? { req } : {}),
   }
 
@@ -687,13 +775,16 @@ export function createLaneHttpServer(config = {}, opts = {}) {
    Object.assign(env, cloneScopeData(unit.tablesScopeTemplate))
   }
 
-  const outcome = await runCompiledLines(unit.compiledLines, {
+  const { unitLimits, timeoutMs } = computeBudgetLimits(executionBudget)
+  const outcome = await runLinesInWorker(unit.lines, {
    filename: unit.id,
    initialState: env,
    includePreviews: false,
-   limits,
-   executionBudget,
+   limits: unitLimits,
+   timeoutMs,
+   fetch: externalFetch,
   })
+  applyWorkerBudget(executionBudget, outcome.budget)
 
   return {
    exists: unit.exists,
@@ -756,6 +847,7 @@ export function createLaneHttpServer(config = {}, opts = {}) {
 
   if (!startupError) {
    const validationBudget = createExecutionBudget(limits)
+   let transientImportError = null
    try {
     const evaluated = await evaluateUnit(mainUnit, {
      importedUnits,
@@ -765,7 +857,15 @@ export function createLaneHttpServer(config = {}, opts = {}) {
      evalCache: new Map(),
      activeStack: new Set(),
      preReadTriggers: triggerValues,
+     onTransientError: err => {
+      if (!transientImportError) {
+       transientImportError = err
+      }
+     },
     })
+    if (transientImportError) {
+     throw transientImportError
+    }
     const info = detectLaneHandlers(evaluated.state)
     hasHandlers = Boolean(info.hasHandlers)
     methods = info.methods.slice()
@@ -819,18 +919,54 @@ export function createLaneHttpServer(config = {}, opts = {}) {
   return { snap, triggerValues }
  }
 
- async function evaluateSnapshot(snap, reqObj, executionBudget) {
+ async function executeSnapshotHttpRequest(snap, reqObj, executionBudget) {
+  const respondHelper = createResponseHelper()
+  const reqMethod = String(reqObj && reqObj.method ? reqObj.method : 'GET').toUpperCase()
   if (!snap || !snap.mainUnit) {
-   throw new Error(snap && snap.startupError ? snap.startupError : 'Lane snapshot not loaded')
+   return normalizeHttpResult(
+    respondHelper(500, { error: snap && snap.startupError ? snap.startupError : 'Lane snapshot not loaded' }),
+    { cors, method: reqMethod }
+   )
   }
-  return evaluateUnit(snap.mainUnit, {
-   importedUnits: snap.importedUnits,
-   dynamicUnits: new Map(),
-   req: reqObj,
-   executionBudget,
-   evalCache: new Map(),
-   activeStack: new Set(),
-  })
+  if (snap.mainUnit.compileError) {
+   return normalizeHttpResult(
+    respondHelper(500, { error: snap.mainUnit.compileError, lineNumber: 1 }),
+    { cors, method: reqMethod }
+   )
+  }
+  try {
+   const { unitLimits, timeoutMs } = computeBudgetLimits(executionBudget)
+   const importLaneFn = createImportLaneResolver(snap.mainUnit, {
+    importedUnits: snap.importedUnits,
+    dynamicUnits: new Map(),
+    executionBudget,
+    evalCache: new Map(),
+    activeStack: new Set(),
+   })
+   const simRes = await simulateLaneRequestInWorker({
+    laneId: snap.mainUnit.id,
+    lines: snap.mainUnit.lines,
+    inputs: snap.mainUnit.inputs,
+    tablesScope: snap.mainUnit.tablesScopeTemplate,
+    limits: unitLimits,
+    timeoutMs,
+    laneData: rootKv.namespace(snap.mainUnit.id),
+    importLaneFn,
+    console: logger,
+    fetch: externalFetch,
+    req: reqObj,
+    cors,
+   })
+   applyWorkerBudget(executionBudget, simRes && simRes.budget)
+   return simRes
+  }
+  catch (err) {
+   const msg = err instanceof Error ? err.message : String(err)
+   return normalizeHttpResult(
+    respondHelper(500, { error: msg }),
+    { cors, method: reqMethod }
+   )
+  }
  }
 
  async function performReload({ force = false } = {}) {
@@ -1156,40 +1292,18 @@ export function createLaneHttpServer(config = {}, opts = {}) {
     })
    }
    else {
-    const respondHelper = createResponseHelper()
-    try {
-     const outcome = await evaluateSnapshot(snap, reqObj, executionBudget)
-     if (executionBudget.exhausted) {
-      result = normalizeHttpResult(
-       respondHelper(500, { error: executionBudget.exhaustedError || 'Execution limit exceeded' }),
-       { cors, method: reqMethod }
-      )
-     }
-     else {
-      result = await executeLaneHttpRequest({
-       req: reqObj,
-       laneState: outcome.state,
-       runFreshLane: async () => outcome,
-       cors,
-      })
-     }
-    }
-    catch (err) {
-     const msg = err instanceof Error ? err.message : String(err)
-     result = normalizeHttpResult(
-      respondHelper(500, { error: msg }),
-      { cors, method: reqMethod }
-     )
-    }
+    result = await executeSnapshotHttpRequest(snap, reqObj, executionBudget)
    }
   }
-  else {
+  else if (reqMethod === 'OPTIONS' || (reqMethod !== 'GET' && reqMethod !== 'HEAD')) {
    result = await executeLaneHttpRequest({
     req: reqObj,
     laneState: {},
-    runFreshLane: freshReq => evaluateSnapshot(snap, freshReq, executionBudget),
     cors,
    })
+  }
+  else {
+   result = await executeSnapshotHttpRequest(snap, reqObj, executionBudget)
   }
 
   res.writeHead(result.status, buildResponseHeaders(result.headers, snap.revision))

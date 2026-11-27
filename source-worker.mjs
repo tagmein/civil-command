@@ -1,10 +1,13 @@
 import {
+ cloneScopeData,
  compileFieldScriptLines,
+ createExecutionBudget,
  defaultValueForType,
  field,
  formatValue,
  normalizePrimitiveType,
  redactSecretText,
+ redactSecretValue,
  runCompiledLines,
  serializeTransportPacket,
 } from './field.mjs'
@@ -12,6 +15,7 @@ import {
  buildRequestObject,
  createResponseHelper,
  executeLaneHttpRequest,
+ normalizeHttpResult,
 } from './lane-http.mjs'
 import {
  SOURCE_WORKER_PROTOCOL,
@@ -49,20 +53,26 @@ const WORKER_BUILTIN_STATE_KEYS = new Set([
 
 const SCRUBBED_GLOBAL_NAMES = [
  'BroadcastChannel',
+ 'Buffer',
  'CacheStorage',
  'EventSource',
  'Navigator',
  'ServiceWorkerContainer',
+ 'SharedArrayBuffer',
  'SharedWorker',
+ 'WebAssembly',
  'WebSocket',
  'Worker',
  'XMLHttpRequest',
+ '__dirname',
+ '__filename',
  'caches',
  'close',
  'cookieStore',
  'document',
  'fetch',
  'frames',
+ 'global',
  'importScripts',
  'indexedDB',
  'localStorage',
@@ -73,6 +83,7 @@ const SCRUBBED_GLOBAL_NAMES = [
  'parent',
  'postMessage',
  'process',
+ 'require',
  'self',
  'sessionStorage',
  'top',
@@ -161,10 +172,43 @@ async function initWorkerTransport() {
   }
  }
 
+ if (isNodeRuntime && typeof process.send === 'function') {
+  const send = process.send.bind(process)
+  const exit = process.exit.bind(process)
+  const handlers = new Set()
+  process.on('message', payload => {
+   for (const fn of handlers) {
+    fn(payload)
+   }
+  })
+  process.on('disconnect', () => {
+   exit(0)
+  })
+  scrubWorkerGlobals()
+  return {
+   post(msg) {
+    try {
+     if (send.length >= 2) {
+      send(msg)
+     }
+     else {
+      send(msg)
+     }
+    }
+    catch {
+     // Ignore IPC send after parent disconnect
+    }
+   },
+   onMessage(fn) {
+    handlers.add(fn)
+   },
+  }
+ }
+
  const wtSpec = 'node:worker_threads'
  const { parentPort } = await import(wtSpec)
  if (!parentPort) {
-  throw new Error('source-worker.mjs must run inside a Worker')
+  throw new Error('source-worker.mjs must run inside a Worker or IPC subprocess')
  }
  const post = parentPort.postMessage.bind(parentPort)
  const handlers = new Set()
@@ -315,6 +359,7 @@ async function handleRunMessage(msg) {
   includePreviews = true,
   limits = null,
   inputsEnv = {},
+  undefinedInputKeys = [],
   tablesScope = {},
   tableChange = null,
   secretMeta = {},
@@ -324,6 +369,7 @@ async function handleRunMessage(msg) {
  const secretSetNames = Array.isArray(secretMeta.secretSetNames) ? secretMeta.secretSetNames : []
  const secretValues = Array.isArray(secretMeta.secretValues) ? secretMeta.secretValues : []
  const lineContext = { index: null, lineNumber: null, lineId: '' }
+ const executionBudget = limits ? createExecutionBudget(limits) : undefined
 
  const exportFn = (firstArg, secondArg, thirdArg) =>
   callHostRpc(runId, 'exportLaneLine', { firstArg, secondArg, thirdArg }, lineContext)
@@ -363,7 +409,7 @@ async function handleRunMessage(msg) {
     path: path.map(p => String(p ?? '')),
    }, lineContext)
    if (!helperWillScope) {
-    helperWillScope = field({ Math, Number, JSON, Date, Array }, { disallowLoad: true, limits })
+    helperWillScope = field({ Math, Number, JSON, Date, Array }, { disallowLoad: true, limits, executionBudget })
    }
    return decodeWireValue(encoded, {
     compileWill: ast => helperWillScope.will(['@', ...ast]),
@@ -385,6 +431,13 @@ async function handleRunMessage(msg) {
   respond: createResponseHelper(),
  }
 
+ if (Array.isArray(undefinedInputKeys)) {
+  for (const key of undefinedInputKeys) {
+   if (typeof key === 'string' && key && key !== '__proto__') {
+    workerEnv[key] = undefined
+   }
+  }
+ }
  if (inputsEnv && typeof inputsEnv === 'object') {
   for (const [k, v] of Object.entries(inputsEnv)) {
    if (k !== '__proto__') {
@@ -412,6 +465,7 @@ async function handleRunMessage(msg) {
   lineRecords,
   includePreviews,
   limits,
+  executionBudget,
   disallowLoad: true,
   onLineStart: info => {
    transport.post({
@@ -424,6 +478,7 @@ async function handleRunMessage(msg) {
    })
   },
   onLineComplete: res => {
+   const safeVal = secretValues.length > 0 ? redactSecretValue(res.value, secretValues) : res.value
    transport.post({
     protocol: SOURCE_WORKER_PROTOCOL,
     type: 'line-complete',
@@ -433,7 +488,7 @@ async function handleRunMessage(msg) {
      index: res.index,
      lineNumber: res.lineNumber,
      source: res.source,
-     value: encodeWireValue(res.value),
+     value: encodeWireValue(safeVal),
      preview: res.preview,
      error: res.error,
      isEmpty: res.isEmpty,
@@ -443,16 +498,19 @@ async function handleRunMessage(msg) {
   },
  })
 
- const encodedResults = outcome.results.map(res => ({
-  index: res.index,
-  lineNumber: res.lineNumber,
-  source: res.source,
-  value: encodeWireValue(res.value),
-  preview: res.preview,
-  error: res.error,
-  isEmpty: res.isEmpty,
-  isComment: res.isComment,
- }))
+ const encodedResults = outcome.results.map(res => {
+  const safeVal = secretValues.length > 0 ? redactSecretValue(res.value, secretValues) : res.value
+  return {
+   index: res.index,
+   lineNumber: res.lineNumber,
+   source: res.source,
+   value: encodeWireValue(safeVal),
+   preview: res.preview,
+   error: res.error,
+   isEmpty: res.isEmpty,
+   isComment: res.isComment,
+  }
+ })
  const encodedState = encodeWireState(outcome.state, WORKER_BUILTIN_STATE_KEYS)
  const encodedSent = Array.isArray(outcome.sent)
   ? outcome.sent.map(pkt => ({
@@ -467,6 +525,14 @@ async function handleRunMessage(msg) {
   results: encodedResults,
   state: encodedState,
   sent: encodedSent,
+  budget: executionBudget
+   ? {
+    steps: executionBudget.steps,
+    exhausted: Boolean(executionBudget.exhausted),
+    exhaustedKind: executionBudget.exhaustedKind || null,
+    error: executionBudget.exhaustedError ? executionBudget.exhaustedError.message : null,
+   }
+   : null,
  })
 }
 
@@ -476,20 +542,28 @@ async function handleSimulateHttpMessage(msg) {
   laneId = 'lane',
   lines = [],
   inputs = [],
+  inputsEnv = null,
+  undefinedInputKeys = [],
   tablesScope = {},
+  secretMeta = {},
+  limits = null,
   req = {},
   cors = true,
  } = msg
 
+ const secretNames = Array.isArray(secretMeta && secretMeta.secretNames) ? secretMeta.secretNames : []
+ const secretSetNames = Array.isArray(secretMeta && secretMeta.secretSetNames) ? secretMeta.secretSetNames : []
+ const secretValues = Array.isArray(secretMeta && secretMeta.secretValues) ? secretMeta.secretValues : []
  const logs = []
  const startMs = Date.now()
  const requestObj = buildRequestObject(req)
  const lineContext = { index: null, lineNumber: null, lineId: '' }
+ const executionBudget = limits ? createExecutionBudget(limits) : undefined
  let helperWillScope = null
 
  const buildSimState = reqForRun => {
   const env = {
-   console: createWorkerConsoleProxy(runId, lineContext, [], logs),
+   console: createWorkerConsoleProxy(runId, lineContext, secretValues, logs),
    data: createWorkerDataProxy(runId, lineContext),
    Math,
    Number,
@@ -507,7 +581,7 @@ async function handleSimulateHttpMessage(msg) {
      path: path.map(p => String(p ?? '')),
     }, lineContext)
     if (!helperWillScope) {
-     helperWillScope = field({ Math, Number, JSON, Date, Array }, { disallowLoad: true })
+     helperWillScope = field({ Math, Number, JSON, Date, Array }, { disallowLoad: true, limits, executionBudget })
     }
     return decodeWireValue(encoded, {
      compileWill: ast => helperWillScope.will(['@', ...ast]),
@@ -523,15 +597,39 @@ async function handleSimulateHttpMessage(msg) {
     }
    }
   }
+  if (Array.isArray(undefinedInputKeys)) {
+   for (const key of undefinedInputKeys) {
+    if (typeof key === 'string' && key && key !== '__proto__') {
+     env[key] = undefined
+    }
+   }
+  }
+  if (inputsEnv && typeof inputsEnv === 'object') {
+   for (const [k, v] of Object.entries(inputsEnv)) {
+    if (k !== '__proto__') {
+     env[k] = v
+    }
+   }
+  }
   if (tablesScope && typeof tablesScope === 'object') {
-   Object.assign(env, tablesScope)
+   const clonedTables = cloneScopeData(tablesScope)
+   if (clonedTables && typeof clonedTables === 'object') {
+    for (const [k, v] of Object.entries(clonedTables)) {
+     if (k !== '__proto__') {
+      env[k] = v
+     }
+    }
+   }
   }
   return env
  }
 
- const compiled = compileFieldScriptLines(lines, { filename: laneId || 'lane' })
+ const compiled = compileFieldScriptLines(lines, { filename: laneId || 'lane', limits })
  const startupOutcome = await runCompiledLines(compiled, {
   initialState: buildSimState(requestObj),
+  includePreviews: false,
+  limits,
+  executionBudget,
   disallowLoad: true,
  })
 
@@ -541,16 +639,43 @@ async function handleSimulateHttpMessage(msg) {
   }
   return runCompiledLines(compiled, {
    initialState: buildSimState(freshReq),
+   includePreviews: false,
+   limits,
+   executionBudget,
    disallowLoad: true,
   })
  }
 
- const httpResult = await executeLaneHttpRequest({
-  req: requestObj,
-  laneState: startupOutcome.state,
-  runFreshLane,
-  cors,
- })
+ let httpResult
+ if (executionBudget && executionBudget.exhausted) {
+  const respondHelper = createResponseHelper()
+  const errMsg = executionBudget.exhaustedError && executionBudget.exhaustedError.message
+   ? executionBudget.exhaustedError.message
+   : 'Execution limit exceeded'
+  httpResult = {
+   ...normalizeHttpResult(respondHelper(500, { error: errMsg }), { cors, method: requestObj.method }),
+   mode: 'error',
+   handlerName: null,
+   detectedHandlers: [],
+  }
+ }
+ else {
+  httpResult = await executeLaneHttpRequest({
+   req: requestObj,
+   laneState: startupOutcome.state,
+   runFreshLane,
+   cors,
+  })
+ }
+
+ if (secretValues.length > 0 && httpResult && typeof httpResult === 'object') {
+  if (typeof httpResult.bodyText === 'string') {
+   httpResult.bodyText = redactSecretText(httpResult.bodyText, secretValues)
+  }
+  if (httpResult.bodyValue !== undefined) {
+   httpResult.bodyValue = redactSecretValue(httpResult.bodyValue, secretValues)
+  }
+ }
 
  const durationMs = Math.max(0, Date.now() - startMs)
  transport.post({
@@ -561,6 +686,13 @@ async function handleSimulateHttpMessage(msg) {
    ...httpResult,
    durationMs,
    logs,
+   budget: executionBudget
+    ? {
+     steps: executionBudget.steps,
+     exhausted: Boolean(executionBudget.exhausted),
+     exhaustedKind: executionBudget.exhaustedKind || null,
+    }
+    : null,
   },
  })
 }
@@ -604,4 +736,9 @@ transport.onMessage(raw => {
    })
   })
  }
+})
+
+transport.post({
+ protocol: SOURCE_WORKER_PROTOCOL,
+ type: 'worker-ready',
 })

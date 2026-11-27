@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import fsSync from 'node:fs'
 import fs from 'node:fs/promises'
+import path from 'node:path'
 import vm from 'node:vm'
 import {
  DATA_RUNTIME_ENV,
@@ -9,9 +12,16 @@ import {
  PRIMITIVE_TYPES,
  SECRET_MASK,
  SOURCE_WORKER_PROTOCOL,
+ agentCreateLane,
+ agentEvalLane,
+ agentMutateLaneInput,
+ buildNodePermissionExecArgs,
  buildSandboxedOutputSrcdoc,
  createIdleTracker,
+ createLaneHttpServer,
  createMaskedSecretValue,
+ createNewSession,
+ createSafeExternalFetch,
  createSandboxedOutputHost,
  createSourceWorkerRunner,
  createTransport,
@@ -21,6 +31,8 @@ import {
  describeValue,
  detectLaneHandlers,
  dirModalSource,
+ disposeIdleSourceWorkers,
+ encodeKeySegment,
  encodeWireState,
  encodeWireValue,
  exportDeployModalSource,
@@ -28,6 +40,7 @@ import {
  field,
  formatImportLine,
  hasImportCycle,
+ isBlockedIpAddress,
  isMaskedSecretValue,
  laneServerSource,
  laneServersModalSource,
@@ -38,10 +51,13 @@ import {
  packageModalSource,
  parse,
  parseImportLine,
+ queryLaneStories,
  resolveImportValue,
  resolveScopeColumns,
  runLinesInWorker,
+ saveLaneScript,
  sessionModalSource,
+ setLaneSecret,
  simulateLaneRequestInWorker,
  validateOutputFrameMessage,
  validateOutputRpcRequest,
@@ -705,7 +721,7 @@ test('Source Worker isolation: no DOM/storage/ambient globals, scoped KV, extern
  Object.setPrototypeOf(browserWorkerGlobal.globalThis, workerScopeProto)
 
  const bootFn = vm.runInContext(
-  `(async (__deps) => {\nconst { compileFieldScriptLines, defaultValueForType, field, formatValue, normalizePrimitiveType, redactSecretText, runCompiledLines, serializeTransportPacket, buildRequestObject, createResponseHelper, executeLaneHttpRequest, SOURCE_WORKER_PROTOCOL, decodeWireValue, encodeWireState, encodeWireValue } = __deps;\n${strippedWorkerBody}\n})`,
+  `(async (__deps) => {\nconst { cloneScopeData, compileFieldScriptLines, createExecutionBudget, defaultValueForType, field, formatValue, normalizePrimitiveType, redactSecretText, redactSecretValue, runCompiledLines, serializeTransportPacket, buildRequestObject, createResponseHelper, executeLaneHttpRequest, normalizeHttpResult, SOURCE_WORKER_PROTOCOL, decodeWireValue, encodeWireState, encodeWireValue } = __deps;\n${strippedWorkerBody}\n})`,
   workerVmCtx,
   { filename: 'browser-source-worker-sim.js' }
  )
@@ -1043,5 +1059,368 @@ test('Cross-realm wire graph codec, cross-lane will imports, simulateLaneRequest
  }
  finally {
   globalThis.fetch = origFetch
+ }
+})
+
+test('Backend Node --permission subprocess & SSRF network boundary (isBlockedIpAddress, validateSourceFetchUrl, createSafeExternalFetch)', async () => {
+ const repoDir = fsSync.realpathSync(process.cwd())
+ const fieldPath = path.join(repoDir, 'field.mjs')
+ const execArgs = buildNodePermissionExecArgs([fieldPath, fieldPath], { maxOldSpaceMb: 96 })
+
+ assert.ok(
+  execArgs.includes('--permission') || execArgs.includes('--experimental-permission'),
+  'Subprocess execArgs must enable Node --permission'
+ )
+ assert.ok(execArgs.includes('--disallow-code-generation-from-strings'))
+ assert.ok(execArgs.includes('--max-old-space-size=96'))
+ assert.deepEqual(
+  execArgs.filter(a => a.startsWith('--allow-')),
+  [`--allow-fs-read=${fieldPath}`],
+  'Subprocess must grant zero write, network, child_process, worker, addon, or broad directory read permissions'
+ )
+
+ // Verify OS/C++ Node permission enforcement inside a real spawned child process
+ process.env.CC_PARENT_SECRET_TOKEN = 'DO_NOT_INHERIT_ME'
+ try {
+  const probeReport = await new Promise((resolve, reject) => {
+   const childCode = [
+    'import fs from "node:fs"',
+    'import cp from "node:child_process"',
+    'import wt from "node:worker_threads"',
+    'const out = { envKeys: Object.keys(process.env) }',
+    'try { fs.readFileSync("./start") } catch (e) { out.fsReadStart = e.code }',
+    'try { fs.writeFileSync("/tmp/cc-perm-probe", "x") } catch (e) { out.fsWriteTmp = e.code }',
+    'try { cp.spawnSync("id") } catch (e) { out.childProc = e.code }',
+    'try { new wt.Worker("1+1", { eval: true }) } catch (e) { out.workerThread = e.code }',
+    'try { eval("1+1") } catch (e) { out.evalErr = e.name }',
+    'try { new Function("return 1")() } catch (e) { out.fnCtorErr = e.name }',
+    'try { await fetch("http://127.0.0.1:80") } catch (e) { out.netFetch = e.cause?.code || e.code || e.name }',
+    'process.send(out)',
+    'process.disconnect()',
+   ].join('; ')
+   const child = spawn(process.execPath, [...execArgs, '--input-type=module', '-e', childCode], {
+    cwd: repoDir,
+    env: {},
+    stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+   })
+   child.once('error', reject)
+   child.once('message', msg => resolve(msg))
+  })
+  assert.deepEqual(probeReport.envKeys, [])
+  assert.equal(probeReport.fsReadStart, 'ERR_ACCESS_DENIED')
+  assert.equal(probeReport.fsWriteTmp, 'ERR_ACCESS_DENIED')
+  assert.equal(probeReport.childProc, 'ERR_ACCESS_DENIED')
+  assert.equal(probeReport.workerThread, 'ERR_ACCESS_DENIED')
+  assert.equal(probeReport.evalErr, 'EvalError')
+  assert.equal(probeReport.fnCtorErr, 'EvalError')
+  assert.equal(probeReport.netFetch, 'ERR_ACCESS_DENIED')
+ }
+ finally {
+  delete process.env.CC_PARENT_SECRET_TOKEN
+ }
+
+ // Exhaustive IPv4, IPv6, metadata, RFC1918, CGNAT, NAT64, 6to4, and IPv4-mapped IPv6 checks
+ for (const blockedIp of [
+  '0.0.0.0',
+  '127.0.0.1',
+  '127.0.0.53',
+  '127.255.255.254',
+  '10.0.0.1',
+  '100.64.0.1',
+  '100.100.100.200',
+  '169.254.169.254',
+  '169.254.170.2',
+  '172.16.0.1',
+  '172.31.255.254',
+  '192.168.1.1',
+  '224.0.0.1',
+  '255.255.255.255',
+  '::',
+  '::1',
+  '0:0:0:0:0:0:0:1',
+  '::ffff:127.0.0.1',
+  '::ffff:169.254.169.254',
+  '::ffff:7f00:1',
+  '64:ff9b::a9fe:a9fe',
+  '64:ff9b::7f00:1',
+  '2002:7f00:0001::1',
+  'fc00::1',
+  'fd00:ec2::254',
+  'fe80::1',
+  'fe80::1%eth0',
+  'ff02::1',
+ ]) {
+  assert.equal(isBlockedIpAddress(blockedIp), true, `Expected IP to be blocked: ${blockedIp}`)
+ }
+ for (const publicIp of ['1.1.1.1', '8.8.8.8', '93.184.216.34', '2606:4700:4700::1111']) {
+  assert.equal(isBlockedIpAddress(publicIp), false, `Expected public IP to be allowed: ${publicIp}`)
+ }
+
+ // URL-level SSRF checks including hex/octal/decimal IPv4, metadata hostnames, and credentials
+ for (const blockedUrl of [
+  'http://localhost:8080/api/fs/roots',
+  'http://sub.localhost/secret',
+  'http://127.0.0.1:3333/?mode=disk&key=x',
+  'http://0x7f000001:3333/',
+  'http://2130706433/',
+  'http://0177.0.0.1/',
+  'http://127.1/',
+  'http://0.0.0.0:8080/',
+  'http://169.254.169.254/latest/meta-data/',
+  'http://100.100.100.200/latest/meta-data/',
+  'http://[fd00:ec2::254]/latest/user-data',
+  'http://[::1]:8080/',
+  'http://[::ffff:127.0.0.1]:3333/',
+  'http://metadata.google.internal/computeMetadata/v1/',
+  'http://instance-data/latest/meta-data/',
+  'http://service.internal/admin',
+  'https://user:pass@example.com/data',
+ ]) {
+  assert.equal(validateSourceFetchUrl(blockedUrl).ok, false, `Expected URL to be blocked: ${blockedUrl}`)
+ }
+
+ // DNS-rebinding & multi-record resolution guards in createSafeExternalFetch
+ const rebindFetch = createSafeExternalFetch({
+  dnsLookup: async host => {
+   if (host === 'rebind-loopback.example.test') {
+    return [{ address: '127.0.0.1', family: 4 }]
+   }
+   if (host === 'rebind-imds.example.test') {
+    return [{ address: '169.254.169.254', family: 4 }]
+   }
+   if (host === 'mixed-records.example.test') {
+    return [
+     { address: '93.184.216.34', family: 4 },
+     { address: '10.0.0.9', family: 4 },
+    ]
+   }
+   if (host === 'ipv6-imds.example.test') {
+    return [{ address: 'fd00:ec2::254', family: 6 }]
+   }
+   throw new Error(`Unexpected host: ${host}`)
+  },
+ })
+
+ await assert.rejects(() => rebindFetch('https://rebind-loopback.example.test/pwn'), /Blocked SSRF fetch target/)
+ await assert.rejects(() => rebindFetch('https://rebind-imds.example.test/latest/meta-data/'), /Blocked SSRF fetch target/)
+ await assert.rejects(() => rebindFetch('https://mixed-records.example.test/api'), /Blocked SSRF fetch target/)
+ await assert.rejects(() => rebindFetch('https://ipv6-imds.example.test/latest'), /Blocked SSRF fetch target/)
+
+ // Verify pinned-IP lookup callback & HTTP 302 open-redirect SSRF protection
+ const socketRequests = []
+ const redirectFetch = createSafeExternalFetch({
+  dnsLookup: async host => {
+   if (host === 'public.example.test') {
+    return [{ address: '93.184.216.34', family: 4 }]
+   }
+   if (host === 'internal-hop.example.test') {
+    return [{ address: '127.0.0.1', family: 4 }]
+   }
+   throw new Error(`Unexpected DNS lookup: ${host}`)
+  },
+  httpsRequest(reqOpts, onRes) {
+   socketRequests.push(reqOpts)
+   let pinnedResult = null
+   reqOpts.lookup(reqOpts.hostname, { all: true }, (_err, res) => { pinnedResult = res })
+   assert.deepEqual(pinnedResult, [{ address: '93.184.216.34', family: 4 }], 'Socket lookup must be pinned to validated public IP')
+   queueMicrotask(() => {
+    const loc = reqOpts.path === '/to-imds'
+     ? 'http://169.254.169.254/latest/meta-data/iam/'
+     : 'https://internal-hop.example.test/admin'
+    onRes({
+     statusCode: 302,
+     statusMessage: 'Found',
+     headers: { location: loc },
+     resume() {},
+     on() {},
+    })
+   })
+   return {
+    setTimeout() {},
+    on() {},
+    write() {},
+    end() {},
+    destroy() {},
+   }
+  },
+  httpRequest() {
+   throw new Error('SSRF redirect target must never reach httpRequest')
+  },
+ })
+
+ await assert.rejects(() => redirectFetch('https://public.example.test/to-imds'), /Blocked SSRF fetch target/)
+ await assert.rejects(() => redirectFetch('https://public.example.test/to-rebind'), /Blocked SSRF fetch target/)
+ assert.equal(socketRequests.length, 2, 'Only the initial public hop should open a request; both SSRF redirect hops must be blocked pre-connect')
+})
+
+test('Server-side isolation in lane-server.mjs & agentEvalLane: host isolate immunity, codegen escape block, SSRF block, secret hygiene, and CPU hang SIGKILL recovery', async () => {
+ globalThis.__CC_HOST_CANARY_SECRET = 'TOP_SECRET_HOST_ISOLATE_CANARY'
+ process.env.CC_HOST_ENV_CANARY = 'TOP_SECRET_HOST_ENV_CANARY'
+
+ const mem = new Map()
+ const makeKv = (ns = '') => {
+  const isHash = ns.includes('#')
+  const qual = k => (isHash ? (ns.endsWith('#') ? `${ns}${k}` : `${ns}/${k}`) : (ns ? `${ns}.${k}` : k))
+  return {
+   namespace: name => makeKv(isHash ? qual(encodeKeySegment(name)) : qual(name)),
+   hashNamespace: name => makeKv(`${encodeKeySegment(name)}#`),
+   withBasePath: () => rootKv,
+   async get(k) { const q = qual(k); return mem.has(q) ? mem.get(q) : null },
+   async set(k, v) { mem.set(qual(k), String(v)) },
+   async delete(k) { mem.delete(qual(k)) },
+  }
+ }
+ const rootKv = makeKv()
+ rootKv.defaultRoot = rootKv
+
+ let laneSrv = null
+ try {
+  // 1. lane-server.mjs: verify untrusted HTTP handler runs in --permission subprocess, cannot touch host globals/env/FS/codegen/SSRF, and SIGKILLs infinite CPU loops without starving /_cc/health
+  const srvLaneId = 'sec-srv-lane'
+  await saveLaneScript(rootKv, rootKv.namespace(srvLaneId), srvLaneId, [
+   `; to get (
+    ; to { req } $argv
+    [ match
+     { [ propertyIs '/hang' req.path ] (
+      ; while { true } ( ; to spin 1 )
+     ) }
+     { true (
+      ; to fnEscape [ ; try ( !Array.constructor 'return process' ) : 'codegen-blocked' ]
+      ; to localSsrf [ ; try ( !fetch 'http://127.0.0.1:3333/?key=secret' ) : 'loopback-ssrf-blocked' ]
+      ; to metaSsrf [ ; try ( !fetch 'http://169.254.169.254/latest/meta-data/' ) : 'imds-ssrf-blocked' ]
+      [ object
+       { hostCanary $__CC_HOST_CANARY_SECRET }
+       { proc $process }
+       { buf $Buffer }
+       { fnEscape $fnEscape }
+       { localSsrf $localSsrf }
+       { metaSsrf $metaSsrf }
+      ]
+     ) }
+    ]
+   )`,
+  ], null)
+
+  laneSrv = createLaneHttpServer({
+   slug: 'sec-srv-lane',
+   laneId: srvLaneId,
+   logRequests: false,
+   autoReload: false,
+   limits: {
+    maxLoopIterations: 0,
+    maxSteps: 0,
+    maxExecutionMs: 80,
+   },
+  }, { kv: rootKv })
+
+  await laneSrv.reload()
+  const addr = await laneSrv.listen(0, '127.0.0.1')
+  const base = `http://127.0.0.1:${addr.port}`
+
+  const secCheck = await fetch(`${base}/probe`).then(r => r.json())
+  assert.equal(secCheck.hostCanary, undefined)
+  assert.equal(secCheck.proc, undefined)
+  assert.equal(secCheck.buf, undefined)
+  assert.equal(secCheck.fnEscape, 'codegen-blocked')
+  assert.equal(secCheck.localSsrf, 'loopback-ssrf-blocked')
+  assert.equal(secCheck.metaSsrf, 'imds-ssrf-blocked')
+
+  // Trigger 100% CPU synchronous infinite loop in /hang while concurrently polling /_cc/health on the host server
+  const hangPromise = fetch(`${base}/hang`)
+  await new Promise(r => setTimeout(r, 15))
+  const healthStart = Date.now()
+  const liveHealth = await fetch(`${base}/_cc/health`).then(r => r.json())
+  const healthElapsed = Date.now() - healthStart
+  assert.equal(liveHealth.ok, true, 'Host /_cc/health must remain responsive while child subprocess spins on CPU')
+  assert.ok(healthElapsed < 200)
+
+  const hangResp = await hangPromise
+  assert.equal(hangResp.status, 504)
+  const hangBody = await hangResp.json()
+  assert.match(hangBody.error, /timed out/i)
+
+  // Immediate recovery on next request using a fresh subprocess
+  const afterHang = await fetch(`${base}/probe`)
+  assert.equal(afterHang.status, 200)
+
+  // 2. agentEvalLane: isolated subprocess evaluation, secret redaction + worker teardown, SSRF block, httpSimulation isolation, and timeout recovery
+  await createNewSession(rootKv, null, { name: 'Sec Eval Session', laneIds: [], dataDir: null, dataDirConfirmed: true })
+  const secretPlain = 'sk_live_SUPER_SECRET_VALUE_98765'
+  const created = await agentCreateLane(rootKv, {
+   title: 'Untrusted Agent Lane',
+   lines: [
+    '; to canary $__CC_HOST_CANARY_SECRET',
+    '; to codegen [ ; try ( !Array.constructor \'return 1\' ) : \'blocked-eval\' ]',
+    '; to ssrf [ ; try ( !fetch \'http://169.254.169.254/latest/meta-data/\' ) : \'blocked-imds\' ]',
+    '; to leakedHeader [ ; add \'Bearer \' $apiSecret ]',
+    '!console.log \'Using token:\' $apiSecret',
+    '; to post ( ; to { req } $argv , ; object { echoed $req.body.v } { secretLen $apiSecret.length } )',
+   ],
+  })
+  assert.equal(created.ok, true)
+
+  const secSetRes = await agentMutateLaneInput(rootKv, {
+   laneId: created.laneId,
+   action: 'set-input',
+   name: 'apiSecret',
+   type: 'secret',
+   value: secretPlain,
+  })
+  assert.equal(secSetRes.ok, true)
+
+  const evalRes = await agentEvalLane(rootKv, {
+   laneId: created.laneId,
+   httpRequest: {
+    method: 'POST',
+    path: '/test',
+    headers: { 'content-type': 'application/json' },
+    body: { v: 77 },
+   },
+  })
+  assert.equal(evalRes.ok, true)
+  assert.equal(evalRes.errorCount, 0)
+
+  const scopeMap = Object.fromEntries(evalRes.scope.map(e => [e.key, e]))
+  assert.equal(scopeMap.canary.value, undefined)
+  assert.equal(scopeMap.codegen.value, 'blocked-eval')
+  assert.equal(scopeMap.ssrf.value, 'blocked-imds')
+  assert.ok(!JSON.stringify(evalRes).includes(secretPlain), 'Plaintext secret must never appear anywhere in agentEvalLane output')
+  assert.ok(scopeMap.leakedHeader.value.includes(SECRET_MASK))
+  assert.ok(evalRes.logs[0].message.includes(SECRET_MASK))
+
+  // Story snapshot recorded by agentEvalLane must also redact plaintext secrets
+  const stories = await queryLaneStories(rootKv, rootKv.namespace(created.laneId), created.laneId, { limit: 5 })
+  assert.equal(stories.entries.length, 1)
+  assert.ok(!JSON.stringify(stories).includes(secretPlain), 'Plaintext secret must never be persisted to Story records')
+
+  assert.ok(evalRes.httpSimulation)
+  assert.equal(evalRes.httpSimulation.status, 200)
+  assert.deepEqual(JSON.parse(evalRes.httpSimulation.bodyText), { echoed: 77, secretLen: secretPlain.length })
+
+  // Hung inline lines override in agentEvalLane is hard-killed via SIGKILL on timeout and recovers cleanly
+  const hungEval = await agentEvalLane(rootKv, {
+   laneId: created.laneId,
+   lines: ['; while { true } ( ; to spin 1 )'],
+   limits: { maxLoopIterations: 0, maxSteps: 0 },
+   timeoutMs: 60,
+  })
+  assert.equal(hungEval.ok, true)
+  assert.equal(hungEval.errorCount, 1)
+  assert.match(hungEval.lines[0].error, /timed out after 60ms \(worker terminated\)/)
+
+  const recoveredEval = await agentEvalLane(rootKv, {
+   laneId: created.laneId,
+   lines: ['; add 20 22'],
+  })
+  assert.equal(recoveredEval.errorCount, 0)
+  assert.equal(recoveredEval.lines[0].preview, '42')
+ }
+ finally {
+  delete globalThis.__CC_HOST_CANARY_SECRET
+  delete process.env.CC_HOST_ENV_CANARY
+  if (laneSrv) {
+   await laneSrv.close()
+  }
+  disposeIdleSourceWorkers()
  }
 })

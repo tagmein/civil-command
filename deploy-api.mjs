@@ -784,15 +784,39 @@ export function generateCivilMemorySystemdUnit({
  ].join('\n')
 }
 
+export const SYSTEMD_SSRF_DENY_NETWORKS = Object.freeze([
+ 'localhost',
+ 'link-local',
+ 'multicast',
+ '0.0.0.0/8',
+ '10.0.0.0/8',
+ '100.64.0.0/10',
+ '100.100.100.200/32',
+ '169.254.0.0/16',
+ '169.254.169.254/32',
+ '172.16.0.0/12',
+ '192.168.0.0/16',
+ '::/128',
+ '::1/128',
+ 'fc00::/7',
+ 'fe80::/10',
+ 'fd00:ec2::254/128',
+])
+
 export function generateSystemdUnit({
  slug,
  title = '',
  installRoot = '/opt/civil-command',
+ port = null,
+ allowLoopback = false,
 } = {}) {
  const cleanSlug = normalizeServiceSlug(slug)
  const cleanRoot = normalizeRemoteDirPath(installRoot, '/opt/civil-command')
  const serviceDir = `${cleanRoot}/${cleanSlug}`
  const descLabel = String(title || cleanSlug).replace(/[\r\n]+/g, ' ').trim()
+ const numPort = Number(port)
+ const cleanPort = Number.isInteger(numPort) && numPort >= 1 && numPort <= 65535 ? numPort : null
+ const socketBindAllow = cleanPort ? `ipv4:tcp:${cleanPort}` : 'ipv4:tcp'
  return [
   '[Unit]',
   `Description=Civil Command Lane Service (${descLabel} - ${cleanSlug})`,
@@ -802,6 +826,25 @@ export function generateSystemdUnit({
   'Type=simple',
   `WorkingDirectory=${serviceDir}`,
   'Environment=NODE_ENV=production',
+  'DynamicUser=yes',
+  'NoNewPrivileges=yes',
+  'ProtectSystem=strict',
+  'ProtectHome=yes',
+  'PrivateTmp=yes',
+  'PrivateDevices=yes',
+  'ProtectKernelTunables=yes',
+  'ProtectKernelModules=yes',
+  'ProtectKernelLogs=yes',
+  'ProtectControlGroups=yes',
+  'RestrictSUIDSGID=yes',
+  'LockPersonality=yes',
+  'CapabilityBoundingSet=',
+  'AmbientCapabilities=',
+  'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6',
+  `SocketBindAllow=${socketBindAllow}`,
+  'SocketBindDeny=any',
+  ...(allowLoopback ? ['IPAddressAllow=127.0.0.1/32'] : []),
+  `IPAddressDeny=${SYSTEMD_SSRF_DENY_NETWORKS.join(' ')}`,
   `ExecStart=/usr/bin/env node ${serviceDir}/lane-server.mjs --config ${serviceDir}/config.json`,
   'Restart=always',
   'RestartSec=2',
@@ -1360,6 +1403,8 @@ export function generateDeployScript({
   slug: cleanSlug,
   title: title || cleanSlug,
   installRoot: cleanRoot,
+  port: cleanPort,
+  allowLoopback: true,
  })
 
  const lines = [
@@ -1376,6 +1421,7 @@ export function generateDeployScript({
   'echo "Preparing $SERVICE_DIR..."',
   'sudo mkdir -p "$INSTALL_ROOT" "$SERVICE_DIR"',
   'sudo chown -R "$(id -un):$(id -gn)" "$INSTALL_ROOT"',
+  'sudo chmod 755 "$INSTALL_ROOT" "$SERVICE_DIR"',
  ]
 
  if (dataBasePath && String(dataBasePath).trim().startsWith('/') && /127\.0\.0\.1|localhost/i.test(cleanCmUrl)) {
@@ -1388,10 +1434,13 @@ export function generateDeployScript({
  for (const name of required) {
   lines.push(`printf '%s' ${shellQuote(encodeBase64(runtimeFiles[name]))} | base64 -d > "$SERVICE_DIR/${name}"`)
  }
- if (typeof runtimeFiles['kv-config.mjs'] === 'string' && runtimeFiles['kv-config.mjs'].length > 0) {
-  lines.push(`printf '%s' ${shellQuote(encodeBase64(runtimeFiles['kv-config.mjs']))} | base64 -d > "$SERVICE_DIR/kv-config.mjs"`)
+ for (const optName of ['kv-config.mjs', 'sandbox.mjs', 'source-worker.mjs']) {
+  if (typeof runtimeFiles[optName] === 'string' && runtimeFiles[optName].length > 0) {
+   lines.push(`printf '%s' ${shellQuote(encodeBase64(runtimeFiles[optName]))} | base64 -d > "$SERVICE_DIR/${optName}"`)
+  }
  }
  lines.push(`printf '%s' ${shellQuote(encodeBase64(configJson))} | base64 -d > "$SERVICE_DIR/config.json"`)
+ lines.push('chmod 644 "$SERVICE_DIR"/*.mjs "$SERVICE_DIR/package.json" "$SERVICE_DIR/config.json"')
 
  if (syncBundle && Array.isArray(syncBundle.lanes) && syncBundle.lanes.length > 0) {
   lines.push('echo "Syncing lane bundle to connected civil-memory KV store..."')
@@ -1600,11 +1649,12 @@ export function generateFastResyncScript(options = {}) {
   `PORT=${shellQuote(String(cleanPort))}`,
   'if [ -d "$SERVICE_DIR" ] && [ -f "$SERVICE_DIR/config.json" ] && sudo systemctl is-active --quiet "civil-lane-${SLUG}.service"; then',
  ]
- for (const name of ['field.mjs', 'data.mjs', 'kv-config.mjs', 'storage.mjs', 'lane-http.mjs', 'lane-server.mjs']) {
+ for (const name of ['field.mjs', 'data.mjs', 'kv-config.mjs', 'storage.mjs', 'sandbox.mjs', 'source-worker.mjs', 'lane-http.mjs', 'lane-server.mjs']) {
   if (typeof runtimeFiles[name] === 'string' && runtimeFiles[name].length > 0) {
    fastLines.push(` printf '%s' ${shellQuote(encodeBase64(runtimeFiles[name]))} | base64 -d > "$SERVICE_DIR/${name}"`)
   }
  }
+ fastLines.push(' chmod 644 "$SERVICE_DIR"/*.mjs "$SERVICE_DIR/config.json" 2>/dev/null || true')
  fastLines.push(
   ' SYNC_BUNDLE_TMP="$(mktemp "$SERVICE_DIR/.sync-bundle.XXXXXX.json")"',
   ` printf '%s' ${shellQuote(encodeBase64(JSON.stringify(syncBundle)))} | base64 -d > "$SYNC_BUNDLE_TMP"`,
@@ -1946,9 +1996,16 @@ export function generateServiceActionScript({
   requiredRuntime.every(name => typeof runtimeFiles[name] === 'string' && runtimeFiles[name].length > 0)
  )
  if (hasRuntimeFiles && (cleanAction === 'logs' || cleanAction === 'restart' || cleanAction === 'start')) {
-  const copyRuntime = typeof runtimeFiles['kv-config.mjs'] === 'string' && runtimeFiles['kv-config.mjs'].length > 0
-   ? ['field.mjs', 'data.mjs', 'kv-config.mjs', 'storage.mjs', 'lane-http.mjs', 'lane-server.mjs']
-   : requiredRuntime
+  const copyRuntime = [
+   'field.mjs',
+   'data.mjs',
+   ...(['kv-config.mjs', 'sandbox.mjs', 'source-worker.mjs'].filter(
+    optName => typeof runtimeFiles[optName] === 'string' && runtimeFiles[optName].length > 0
+   )),
+   'storage.mjs',
+   'lane-http.mjs',
+   'lane-server.mjs',
+  ]
   const cleanRoot = normalizeRemoteDirPath(installRoot, '/opt/civil-command')
   const serviceDir = `${cleanRoot}/${cleanSlug}`
   lines.push(`SERVICE_DIR=${shellQuote(serviceDir)}`)
@@ -1957,6 +2014,7 @@ export function generateServiceActionScript({
   for (const name of copyRuntime) {
    lines.push(' CC_TMP_FILE="$(mktemp)"')
    lines.push(` printf '%s' ${shellQuote(encodeBase64(runtimeFiles[name]))} | base64 -d > "$CC_TMP_FILE"`)
+   lines.push(' chmod 644 "$CC_TMP_FILE"')
    lines.push(` if [ ! -f "$SERVICE_DIR/${name}" ] || ! cmp -s "$CC_TMP_FILE" "$SERVICE_DIR/${name}"; then`)
    lines.push(`  mv "$CC_TMP_FILE" "$SERVICE_DIR/${name}"`)
    lines.push('  CC_RUNTIME_UPDATED=1')
@@ -2112,7 +2170,16 @@ function readJsonBody(req) {
 }
 
 async function readRuntimeFiles(rootDir) {
- const names = ['field.mjs', 'data.mjs', 'kv-config.mjs', 'storage.mjs', 'lane-http.mjs', 'lane-server.mjs']
+ const names = [
+  'field.mjs',
+  'data.mjs',
+  'kv-config.mjs',
+  'storage.mjs',
+  'sandbox.mjs',
+  'source-worker.mjs',
+  'lane-http.mjs',
+  'lane-server.mjs',
+ ]
  const entries = await Promise.all(
   names.map(async name => {
    const text = await fs.readFile(path.join(rootDir, name), 'utf8')
