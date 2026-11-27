@@ -6,6 +6,57 @@ const path = require('path')
 const rootDir = path.resolve('.')
 const indexPath = path.join(rootDir, 'index.html')
 
+// Machine-local settings live in .env.local beside the app. Explicit process
+// environment (systemd Environment=, shell exports, CLI flags) always wins.
+function loadEnvLocal(filePath) {
+ let text
+ try {
+  text = fs.readFileSync(filePath, 'utf8')
+ }
+ catch (err) {
+  if (err && err.code !== 'ENOENT') {
+   console.warn(`Could not read ${filePath}: ${err && err.message ? err.message : err}`)
+  }
+  return
+ }
+ for (const rawLine of text.split(/\r?\n/)) {
+  const line = rawLine.trim()
+  if (!line || line.startsWith('#')) continue
+  const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line)
+  if (!match) continue
+  const key = match[1]
+  if (Object.hasOwn(process.env, key)) continue
+  let value = match[2].trim()
+  if (value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) ||
+       (value.startsWith("'") && value.endsWith("'")))) {
+   value = value.slice(1, -1)
+  }
+  process.env[key] = value
+ }
+}
+loadEnvLocal(path.join(rootDir, '.env.local'))
+
+function resolveEnvNumber(raw, fallback, label, options = {}) {
+ if (raw === undefined || raw === null || String(raw).trim() === '') return fallback
+ const value = Number(raw)
+ const integer = Boolean(options.integer)
+ const min = options.min === undefined ? 1 : options.min
+ const max = options.max === undefined ? Infinity : options.max
+ if (!Number.isFinite(value) || (integer && !Number.isInteger(value)) || value < min || value > max) {
+  console.warn(`Ignoring invalid ${label}=${raw}; using ${fallback}`)
+  return fallback
+ }
+ return value
+}
+
+const configuredHost = String(process.env.HOST || process.env.CC_HOST || '').trim()
+const port = resolveEnvNumber(process.env.PORT || process.env.CC_PORT, 8080, 'PORT', { integer: true, max: 65535 })
+const dataBackendUrl = String(process.env.CC_DATA_BACKEND_URL || 'http://localhost:3333/?mode=disk').trim()
+const keepAliveTimeoutMs = resolveEnvNumber(process.env.CC_KEEP_ALIVE_TIMEOUT_MS, 0, 'CC_KEEP_ALIVE_TIMEOUT_MS')
+const headersTimeoutMs = resolveEnvNumber(process.env.CC_HEADERS_TIMEOUT_MS, 0, 'CC_HEADERS_TIMEOUT_MS')
+const listenBacklog = resolveEnvNumber(process.env.CC_LISTEN_BACKLOG, 0, 'CC_LISTEN_BACKLOG', { integer: true })
+
 // Optional startup flag; CC_KV_CHUNK_BYTES (or browser global) works too.
 const kvChunkArg = process.argv.find(arg => arg.startsWith('--kv-chunk-bytes='))
 if (kvChunkArg) process.env.CC_KV_CHUNK_BYTES = kvChunkArg.slice('--kv-chunk-bytes='.length)
@@ -44,7 +95,7 @@ const dataProxyPromise = import('./data-proxy.mjs').then(({
 }) => {
  const secretStore = createFileBackedServerSecretStore()
  return createDataProxyHandler({
-  backendBaseUrl: 'http://localhost:3333/?mode=disk',
+  backendBaseUrl: dataBackendUrl,
   secretStore,
  })
 })
@@ -219,6 +270,19 @@ server.on('upgrade', (req, socket, head) => {
  socket.destroy()
 })
 
-server.listen(8080, () => {
- console.log('Serving on http://localhost:8080')
+if (keepAliveTimeoutMs > 0) {
+ server.keepAliveTimeout = keepAliveTimeoutMs
+}
+if (headersTimeoutMs > 0) {
+ if (keepAliveTimeoutMs > 0 && headersTimeoutMs <= keepAliveTimeoutMs) {
+  console.warn('Ignoring CC_HEADERS_TIMEOUT_MS; it must be greater than CC_KEEP_ALIVE_TIMEOUT_MS')
+ }
+ else {
+  server.headersTimeout = headersTimeoutMs
+ }
+}
+
+const backlog = listenBacklog > 0 ? listenBacklog : 511
+server.listen(port, configuredHost || undefined, backlog, () => {
+ console.log(`Serving on http://${configuredHost || 'localhost'}:${port}`)
 })

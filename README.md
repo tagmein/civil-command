@@ -36,6 +36,32 @@ node start
 
 Open [http://localhost:8080](http://localhost:8080) in your browser.
 
+### Local Configuration (`.env.local`)
+
+Machine-specific server settings can be placed in a `.env.local` file next to `start` (one `KEY=value` per line, `#` comments and optional `export ` prefixes supported). Values already present in the process environment take precedence, so systemd `Environment=` entries and shell exports win over the file.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `HOST` / `CC_HOST` | all interfaces | Address for `server.listen`; use `127.0.0.1` to expose the app only on loopback. |
+| `PORT` / `CC_PORT` | `8080` | HTTP listen port. |
+| `CC_ALLOWED_HOSTS` | loopback hosts | Extra `Host`/`Origin` hosts accepted by the security boundary (comma-separated), e.g. a public reverse-proxy hostname. |
+| `CC_DATA_BACKEND_URL` | `http://localhost:3333/?mode=disk` | KV backend URL used by the `/api/data` proxy. |
+| `CC_KEEP_ALIVE_TIMEOUT_MS` | Node default | HTTP keep-alive timeout; useful for long-lived SSE/WebSocket sessions. |
+| `CC_HEADERS_TIMEOUT_MS` | Node default | Request header timeout; must exceed `CC_KEEP_ALIVE_TIMEOUT_MS`. |
+| `CC_LISTEN_BACKLOG` | `511` | Listen backlog. |
+
+A typical production `.env.local`:
+
+```dotenv
+HOST=127.0.0.1
+PORT=8000
+CC_ALLOWED_HOSTS=app.example.com
+CC_DATA_BACKEND_URL=http://127.0.0.1:3333/?mode=disk
+CC_KEEP_ALIVE_TIMEOUT_MS=130000
+CC_HEADERS_TIMEOUT_MS=135000
+CC_LISTEN_BACKLOG=2048
+```
+
 ### Use `./cc` Against a Remote Host
 
 The agent CLI works with the same KV and agent APIs as the browser app, so it can target a remote Civil Command origin with HTTP Basic or Bearer auth:
@@ -66,7 +92,7 @@ export CC_USER='agent@example.com' CC_PASSWORD='secret'
 | Path | Role |
 | --- | --- |
 | [index.html](index.html) | App entry point, dark workspace, tab, scope browser & modal CSS, initializes `field({ console, data, document, runLines, resolveScopeColumns, primitiveTypes, defaultValueForType, normalizePrimitiveType })` and loads `/src/main.fs`. |
-| [start](start) | Zero-dependency Node.js HTTP server on `:8080`; serves static files, proxies `/api/data` to `http://localhost:3333/`, and falls back to `index.html` for SPA lane routes. |
+| [start](start) | Zero-dependency Node.js HTTP server (`:8080` by default, configurable via `.env.local`); serves static files, proxies `/api/data` to the configured KV backend, and falls back to `index.html` for SPA lane routes. |
 | [field.mjs](field.mjs) | FieldScript parser (`parse`), lexically-scoped async runtime (`field`), line-by-line notebook runner (`runLines`, `formatValue`), primitive input type helpers (`PRIMITIVE_TYPES`, `defaultValueForType`, `normalizePrimitiveType`), and scope browser introspection (`describeValue`, `listScopeEntries`, `resolveScopeColumns`). |
 | [data.mjs](data.mjs) | Namespaced HTTP key-value client (`httpKV`) backed by `/api/data?mode=disk`. |
 | [src/main.fs](src/main.fs) | Application bootstrap, base DOM table skeleton, `+ Lane` / `Open` controls, and module wiring. |
