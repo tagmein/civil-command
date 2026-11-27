@@ -572,7 +572,7 @@
          ]
          !modal.close
          [ match
-          { $lane-control.scroll-lane-into-view : !lane-control.scroll-lane-into-view $opened }
+          { [ and { $opened } { [ propertyIs false opened.is-minimized ] } { $lane-control.scroll-lane-into-view } ] : !lane-control.scroll-lane-into-view $opened }
          ]
         )
         !actions-el.appendChild $item-open-btn

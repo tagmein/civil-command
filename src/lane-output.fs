@@ -107,7 +107,10 @@
  !root-el.appendChild $viewport-el
  !root-el.appendChild $empty-el
  !root-el.appendChild $errors-el
- !container.appendChild $root-el
+ [ match
+  { $lane-control.insert-lane-body-node : !lane-control.insert-lane-body-node $lane $container $root-el }
+  { true : !container.appendChild $root-el }
+ ]
 
  ; assign $view { element $root-el } { bar-el $bar-el } { address-el $address-el } { count-el $count-el } { reload-btn $reload-btn } { popout-btn $popout-btn } { floating-el $floating-el } { attach-btn $attach-btn } { viewport-el $viewport-el } { empty-el $empty-el } { errors-el $errors-el }
 

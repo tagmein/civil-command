@@ -1536,6 +1536,40 @@
   ) }
  ]
 )
+; to scope.insert-lane-body-node (
+ -- Inserts a lane body child (notebook or output) into the active fullscreen/rail-preview container if open, or into lane.body before resizer/placeholder
+ ; to { lane fallback-container node } $argv
+ [ match
+  { [ and { $lane } { $scope.fullscreen-lane } { [ propertyIs $lane.id scope.fullscreen-lane.id ] } { $scope.fullscreen-body } ] (
+   !scope.fullscreen-body.appendChild $node
+  ) }
+  { [ and { $lane } { $rails.preview-lane } { [ propertyIs $lane.id rails.preview-lane.id ] } { $rails.preview-body } ] (
+   !rails.preview-body.appendChild $node
+  ) }
+  { true (
+   ; to host [ match
+    { $lane.body : $lane.body }
+    { true : $fallback-container }
+   ]
+   ; to has-resizer [ match
+    { [ and { $lane.body-resizer } { [ propertyIs $host lane.body-resizer.parentNode ] } ] : true }
+    { [ and { $lane.body-resizer } { $host.children.includes } ] : !host.children.includes $lane.body-resizer }
+    { true : false }
+   ]
+   ; to has-ph [ match
+    { [ and { $lane.minimized-placeholder } { [ propertyIs $host lane.minimized-placeholder.parentNode ] } ] : true }
+    { [ and { $lane.minimized-placeholder } { $host.children.includes } ] : !host.children.includes $lane.minimized-placeholder }
+    { true : false }
+   ]
+   ; to ref [ match
+    { $has-resizer : $lane.body-resizer }
+    { $has-ph : $lane.minimized-placeholder }
+    { true : null }
+   ]
+   !restore-lane-node $host $node $ref
+  ) }
+ ]
+)
 ; to sync-lane-fullscreen-btn (
  -- Syncs a lane's fullscreen button class, icon SVG, title, and ARIA attributes with lane.is-fullscreen
  ; to { lane } $argv
@@ -2564,6 +2598,9 @@
      ; try (
       ; condition { propertyIs true existing.is-minimized } : !scope.restore $clean-lane false true
       [ match
+       { $existing.load-task.wait : !existing.load-task.wait }
+      ]
+      [ match
        { $existing.notebook.set-tab (
         ; to is-source [ propertyIs source existing.notebook.active-tab ]
         ; condition { propertyIs false is-source } : !existing.notebook.set-tab source
@@ -2624,6 +2661,9 @@
      !scope.begin-session-status-pending 'Loading…'
      ; try (
       ; condition { propertyIs true existing.is-minimized } : !scope.restore $clean-lane false true
+      [ match
+       { $existing.load-task.wait : !existing.load-task.wait }
+      ]
       ; to dv $existing.notebook.data-view
       [ match
        { $dv (
@@ -2787,6 +2827,10 @@
       { $caller-lane-id : [ object { laneId $caller-lane-id } { lineId $resolved-caller-line } ] }
       { true : null }
      ]
+     ; to open-target [ get scope.by-id $clean-lane ]
+     [ match
+      { $open-target.load-task.wait : !open-target.load-task.wait }
+     ]
      ; to write-res [ match
       { $setTargetLaneLine : !setTargetLaneLine $data $clean-lane $clean-line $next-str $window $set-by-spec }
       { true : ; object { ok false } { changed false } { error 'setTargetLaneLine helper is not available' } }
@@ -2794,7 +2838,6 @@
      [ match
       { [ propertyIsGreaterThan 0 write-res.lineNumber ] : !scope.cache-line-number $clean-lane $clean-line $write-res.lineNumber }
      ]
-     ; to open-target [ get scope.by-id $clean-lane ]
      [ match
       { [ and { propertyIs false write-res.ok } { propertyIs true write-res.syntaxError } { $write-res.draft } { $open-target.notebook.apply-external-rejected-draft } ] (
        !open-target.notebook.apply-external-rejected-draft $clean-line $write-res.draft
@@ -2923,6 +2966,9 @@
     { true (
      ; to target-data !data.namespace $clean-target
      ; to open-target [ get scope.by-id $clean-target ]
+     [ match
+      { [ and { $open-target.load-task.wait } { [ propertyIs false [ propertyIs $clean-target caller-lane-id ] ] } ] : !open-target.load-task.wait }
+     ]
      ; to tables [ match
       { $open-target.notebook.data-view.tables : $open-target.notebook.data-view.tables }
       { true : !loadLaneTables $data $target-data $clean-target [ object { openPackageIds $scope.open-package-ids } ] }
@@ -3852,7 +3898,7 @@
 ; to default-lane-features : ; object { httpServer false } { runEvery30Minutes false }
 ; to scope.mount (
  -- Mounts a lane DOM header, gear config button, minimize buttons, reload button, close button, resize handles, notebook body, and registers it on scope
- ; to { id title lane-data initial-tab initial-subroute initial-width initial-minimized insert-index initial-path package-id initial-features } $argv
+ ; to { id title lane-data initial-tab initial-subroute initial-width initial-minimized insert-index initial-path package-id initial-features defer-notebook } $argv
  ; to resolved-pkg [ match
   { $package-id : $package-id }
   { true : default }
@@ -3877,6 +3923,7 @@
   { true : '' }
  ]
  ; to path !normalizeLanePath $initial-path
+ ; to norm-min !normalizeLaneMinimizeSide $initial-minimized
  ; to has-insert-index [ match
   { [ propertyIs null insert-index ] : false }
   { [ propertyIs undefined insert-index ] : false }
@@ -3889,7 +3936,8 @@
   { true : null }
  ]
  ; to created [ match
-  { $before-lane : !scope.create-lane $before-lane }
+  { $before-lane : !scope.create-lane $before-lane $norm-min }
+  { $norm-min : !scope.create-lane null $norm-min }
   { true : !scope.create-lane }
  ]
  ; to element [ match
@@ -3901,7 +3949,9 @@
   { true : null }
  ]
  !element.setAttribute data-lane-id $id
- ; assign element.style { textAlign left } { verticalAlign top } { padding '0.25em 0.75em' }
+ [ match
+  { [ propertyIs null norm-min ] : ; assign element.style { textAlign left } { verticalAlign top } { padding '0.25em 0.75em' } }
+ ]
  ; to header-top !document.createElement div
  ; set lane-header-top header-top.className
  ; to config-btn !document.createElement button
@@ -3974,6 +4024,7 @@
   { is-minimized false }
   { is-highlighted false }
   { highlight-timer null }
+  { load-task null }
   { minimized-side null }
   { minimized-header-btn null }
   { minimized-placeholder null }
@@ -4032,17 +4083,29 @@
  [ match
   { $body-el (
    !body-el.setAttribute data-lane-id $id
-   !lane-notebook.mount $lane $body-el $scope $tab
    ; to body-resizer !document.createElement div
    ; set $body-resizer lane.body-resizer
    !scope.attach-lane-resizer $lane $body-resizer
-   !body-el.appendChild $body-resizer
+   [ match
+    { $norm-min (
+     !body-el.appendChild $body-resizer
+     !scope.minimize $id $norm-min true
+     !scope.apply-lane-width $lane $initial-width
+     !lane-notebook.mount $lane $body-el $scope $tab [ ternary $defer-notebook true false ]
+    ) }
+    { true (
+     !scope.apply-lane-width $lane $initial-width
+     !lane-notebook.mount $lane $body-el $scope $tab false
+     !body-el.appendChild $body-resizer
+    ) }
+   ]
   ) }
- ]
- !scope.apply-lane-width $lane $initial-width
- ; to norm-min !normalizeLaneMinimizeSide $initial-minimized
- [ match
-  { $norm-min : !scope.minimize $id $norm-min true }
+  { true (
+   [ match
+    { $norm-min : !scope.minimize $id $norm-min true }
+   ]
+   !scope.apply-lane-width $lane $initial-width
+  ) }
  ]
  $lane
 )
@@ -4147,28 +4210,60 @@
         ]
        ) }
       ]
-      !scope.apply-lane-width $lane $stored-width
+      ; to old-nb-el $lane.notebook.element
+      ; to old-out-el $lane.notebook.output-view.element
       [ match
        { $lane.notebook.dispose : !lane.notebook.dispose }
+      ]
+      ; set null lane.load-task
+      [ match
+       { $next-min (
+        !scope.minimize $id $next-min true
+        !scope.apply-lane-width $lane $stored-width
+       ) }
+       { $was-minimized (
+        !scope.restore $id true
+        !scope.apply-lane-width $lane $stored-width
+       ) }
+       { true : !scope.apply-lane-width $lane $stored-width }
       ]
       [ match
        { $lane.body (
         [ match
-         { $lane.body.replaceChildren : !lane.body.replaceChildren }
-         { true (
-          ; while { propertyIsGreaterThan 0 lane.body.children.length } (
-           ; to child !lane.body.children.pop
-           [ match
-            { $child.remove : !child.remove }
-           ]
-          )
+         { $next-min (
+          [ match
+           { $lane.body.replaceChildren (
+            [ match
+             { [ and { $lane.body-resizer } { $lane.minimized-placeholder } ] : !lane.body.replaceChildren $lane.body-resizer $lane.minimized-placeholder }
+             { $lane.minimized-placeholder : !lane.body.replaceChildren $lane.minimized-placeholder }
+             { $lane.body-resizer : !lane.body.replaceChildren $lane.body-resizer }
+             { true : !lane.body.replaceChildren }
+            ]
+           ) }
+           { true (
+            [ match { $old-nb-el.remove : !old-nb-el.remove } ]
+            [ match { $old-out-el.remove : !old-out-el.remove } ]
+           ) }
+          ]
+          !lane-notebook.mount $lane $lane.body $scope $current-tab false
          ) }
-        ]
-        ; set null lane.minimized-placeholder
-        ; set null lane.minimized-title-el
-        !lane-notebook.mount $lane $lane.body $scope $current-tab
-        [ match
-         { $lane.body-resizer : !lane.body.appendChild $lane.body-resizer }
+         { true (
+          [ match
+           { $lane.body.replaceChildren : !lane.body.replaceChildren }
+           { true (
+            ; while { propertyIsGreaterThan 0 lane.body.children.length } (
+             ; to child !lane.body.children.pop
+             [ match
+              { $child.remove : !child.remove }
+             ]
+            )
+           ) }
+          ]
+          !lane-notebook.mount $lane $lane.body $scope $current-tab false
+          [ match
+           { $lane.body-resizer : !lane.body.appendChild $lane.body-resizer }
+          ]
+         ) }
         ]
         [ match
          { [ propertyIs story current-tab ] : !scope.notify-lane-idle $id }
@@ -4178,13 +4273,7 @@
        ) }
       ]
       [ match
-       { $next-min (
-        !scope.minimize $id $next-min true
-        ; condition { propertyIs true was-pinned } (
-         ; condition { propertyIs false was-fullscreen } : !rails.pin $id
-        )
-       ) }
-       { $was-minimized : !scope.restore $id true }
+       { [ and { $next-min } { [ propertyIs true lane.is-minimized ] } { [ propertyIs true was-pinned ] } { [ propertyIs false was-fullscreen ] } ] : !rails.pin $id }
       ]
       [ match
        { $was-fullscreen (
@@ -4226,6 +4315,7 @@
     ]
     !scope.clear-lane-highlight $lane
     !scope.close-lane-modals $lane
+    ; set null lane.load-task
     [ match
      { $lane.notebook.dispose : !lane.notebook.dispose }
     ]
@@ -4650,7 +4740,7 @@
 )
 ; to scope.open (
  -- Loads or initializes a lane by ID on an optional tab and subroute (or mounts locked card if package access is denied), seeding missing default scrollbar preference when opening the active preferences lane
- ; to { id tab subroute after-id } $argv
+ ; to { id tab subroute after-id defer-notebook } $argv
  !scope.ensure-session
  !scope.begin-session-status-pending 'Loading…'
  ; to opened-lane null
@@ -4665,6 +4755,9 @@
     [ match
      { [ propertyIs true existing.is-locked ] : null }
      { true (
+      [ match
+       { $existing.load-task.wait : !existing.load-task.wait }
+      ]
       [ match
        { $is-pref-lane [ match
         { $existing.notebook.sync-records [ match
@@ -4788,7 +4881,7 @@
        ) }
       ]
       !scope.register $id $title $access.packageId
-      ; set [ !scope.mount $id $title $lane-data $normalized-tab $resolved-subroute $stored-width $stored-minimized $insert-index $stored-path $access.packageId $parsed-features ] opened-lane
+      ; set [ !scope.mount $id $title $lane-data $normalized-tab $resolved-subroute $stored-width $stored-minimized $insert-index $stored-path $access.packageId $parsed-features $defer-notebook ] opened-lane
      ) }
     ]
    ) }
@@ -4824,6 +4917,7 @@
  ; while { propertyIsGreaterThan 0 scope.lanes.length } (
   ; to removing !scope.lanes.pop
   !scope.close-lane-modals $removing
+  ; set null removing.load-task
   [ match
    { $removing.notebook.dispose : !removing.notebook.dispose }
   ]
@@ -4841,14 +4935,32 @@
  ; try (
   !scope.clear
   ; to routes !parseLaneRoutes $location.pathname
+  ; to bg-tasks {}
   ; each $routes (
    ; to { route } $argv
    ; try (
-    !scope.open $route.id $route.tab $route.subroute
+    ; to opened !scope.open $route.id $route.tab $route.subroute null true
+    [ match
+     { $opened.load-task : !bg-tasks.push $opened.load-task }
+    ]
    ) (
     ; to { err } $argv
     [ match
      { $console.error : !console.error 'Failed to open lane:' $route.id $err }
+    ]
+    null
+   )
+  )
+  ; each $bg-tasks (
+   ; to { bg-task } $argv
+   ; try (
+    [ match
+     { $bg-task.wait : !bg-task.wait }
+    ]
+   ) (
+    ; to { err } $argv
+    [ match
+     { $console.error : !console.error 'Failed to finish background lane load:' $err }
     ]
     null
    )

@@ -89,7 +89,7 @@
 )
 ; to scope.mount (
  -- Mounts a persistent, live-evaluated FieldScript notebook inside a lane container
- ; to { lane container lane-control initial-tab } $argv
+ ; to { lane container lane-control initial-tab defer-load } $argv
  ; to features [ match
   { $normalizeLaneFeatures : !normalizeLaneFeatures $lane.features }
   { $lane.features : $lane.features }
@@ -125,8 +125,19 @@
   { highlight-timer null }
   { script-initialized false }
   { has-completed-initial-run false }
+  { disposed false }
+  { load-task null }
+  { pre-load-finish null }
   { idle-tracker $idle-tracker }
  ]
+ ; to init-is-story [ propertyIs story starting-tab ]
+ ; to init-is-source [ propertyIs source starting-tab ]
+ ; to init-is-input [ propertyIs input starting-tab ]
+ ; to init-is-scope [ propertyIs scope starting-tab ]
+ ; to init-is-data [ propertyIs data starting-tab ]
+ ; to init-is-view [ propertyIs view starting-tab ]
+ ; to init-is-server [ propertyIs server starting-tab ]
+
  ; to root-el !document.createElement div
  ; set lane-notebook root-el.className
 
@@ -135,46 +146,46 @@
  !tabs-el.setAttribute role tablist
 
  ; to story-tab !document.createElement button
- ; assign $story-tab { type button } { className lane-tab } { textContent Story }
+ ; assign $story-tab { type button } { className [ ternary $init-is-story 'lane-tab lane-tab--active' lane-tab ] } { textContent Story }
  !story-tab.setAttribute role tab
  !story-tab.setAttribute data-tab story
- !story-tab.setAttribute aria-selected 'false'
+ !story-tab.setAttribute aria-selected [ ternary $init-is-story 'true' 'false' ]
 
  ; to source-tab !document.createElement button
- ; assign $source-tab { type button } { className 'lane-tab lane-tab--active' } { textContent Source }
+ ; assign $source-tab { type button } { className [ ternary $init-is-source 'lane-tab lane-tab--active' lane-tab ] } { textContent Source }
  !source-tab.setAttribute role tab
  !source-tab.setAttribute data-tab source
- !source-tab.setAttribute aria-selected 'true'
+ !source-tab.setAttribute aria-selected [ ternary $init-is-source 'true' 'false' ]
 
  ; to input-tab !document.createElement button
- ; assign $input-tab { type button } { className lane-tab } { textContent Input }
+ ; assign $input-tab { type button } { className [ ternary $init-is-input 'lane-tab lane-tab--active' lane-tab ] } { textContent Input }
  !input-tab.setAttribute role tab
  !input-tab.setAttribute data-tab input
- !input-tab.setAttribute aria-selected 'false'
+ !input-tab.setAttribute aria-selected [ ternary $init-is-input 'true' 'false' ]
 
  ; to scope-tab !document.createElement button
- ; assign $scope-tab { type button } { className lane-tab } { textContent Scope }
+ ; assign $scope-tab { type button } { className [ ternary $init-is-scope 'lane-tab lane-tab--active' lane-tab ] } { textContent Scope }
  !scope-tab.setAttribute role tab
  !scope-tab.setAttribute data-tab scope
- !scope-tab.setAttribute aria-selected 'false'
+ !scope-tab.setAttribute aria-selected [ ternary $init-is-scope 'true' 'false' ]
 
  ; to data-tab !document.createElement button
- ; assign $data-tab { type button } { className lane-tab } { textContent Data }
+ ; assign $data-tab { type button } { className [ ternary $init-is-data 'lane-tab lane-tab--active' lane-tab ] } { textContent Data }
  !data-tab.setAttribute role tab
  !data-tab.setAttribute data-tab data
- !data-tab.setAttribute aria-selected 'false'
+ !data-tab.setAttribute aria-selected [ ternary $init-is-data 'true' 'false' ]
 
  ; to view-tab !document.createElement button
- ; assign $view-tab { type button } { className lane-tab } { textContent View }
+ ; assign $view-tab { type button } { className [ ternary $init-is-view 'lane-tab lane-tab--active' lane-tab ] } { textContent View }
  !view-tab.setAttribute role tab
  !view-tab.setAttribute data-tab view
- !view-tab.setAttribute aria-selected 'false'
+ !view-tab.setAttribute aria-selected [ ternary $init-is-view 'true' 'false' ]
 
  ; to server-tab !document.createElement button
- ; assign $server-tab { type button } { className lane-tab } { textContent Server } { hidden [ ternary $features.httpServer false true ] }
+ ; assign $server-tab { type button } { className [ ternary $init-is-server 'lane-tab lane-tab--active' lane-tab ] } { textContent Server } { hidden [ ternary $features.httpServer false true ] }
  !server-tab.setAttribute role tab
  !server-tab.setAttribute data-tab server
- !server-tab.setAttribute aria-selected 'false'
+ !server-tab.setAttribute aria-selected [ ternary $init-is-server 'true' 'false' ]
 
  !tabs-el.appendChild $story-tab
  !tabs-el.appendChild $source-tab
@@ -188,37 +199,37 @@
  ; set lane-tab-panel story-panel.className
  !story-panel.setAttribute role tabpanel
  !story-panel.setAttribute data-panel story
- ; set true story-panel.hidden
+ ; set [ ternary $init-is-story false true ] story-panel.hidden
 
  ; to source-panel !document.createElement div
  ; set lane-tab-panel source-panel.className
  !source-panel.setAttribute role tabpanel
  !source-panel.setAttribute data-panel source
- ; set false source-panel.hidden
+ ; set [ ternary $init-is-source false true ] source-panel.hidden
 
  ; to input-panel !document.createElement div
  ; set lane-tab-panel input-panel.className
  !input-panel.setAttribute role tabpanel
  !input-panel.setAttribute data-panel input
- ; set true input-panel.hidden
+ ; set [ ternary $init-is-input false true ] input-panel.hidden
 
  ; to scope-panel !document.createElement div
  ; set lane-tab-panel scope-panel.className
  !scope-panel.setAttribute role tabpanel
  !scope-panel.setAttribute data-panel scope
- ; set true scope-panel.hidden
+ ; set [ ternary $init-is-scope false true ] scope-panel.hidden
 
  ; to data-panel !document.createElement div
  ; set lane-tab-panel data-panel.className
  !data-panel.setAttribute role tabpanel
  !data-panel.setAttribute data-panel data
- ; set true data-panel.hidden
+ ; set [ ternary $init-is-data false true ] data-panel.hidden
 
  ; to server-panel !document.createElement div
  ; set lane-tab-panel server-panel.className
  !server-panel.setAttribute role tabpanel
  !server-panel.setAttribute data-panel server
- ; set true server-panel.hidden
+ ; set [ ternary $init-is-server false true ] server-panel.hidden
 
  ; to lines-el !document.createElement div
  ; set lane-lines lines-el.className
@@ -243,42 +254,17 @@
  !root-el.appendChild $data-panel
  !root-el.appendChild $server-panel
  !root-el.appendChild $story-panel
- !container.appendChild $root-el
+ [ match
+  { $lane-control.insert-lane-body-node : !lane-control.insert-lane-body-node $lane $container $root-el }
+  { true : !container.appendChild $root-el }
+ ]
 
  ; to tabs ; object { story $story-tab } { source $source-tab } { input $input-tab } { scope $scope-tab } { data $data-tab } { view $view-tab } { server $server-tab }
- ; to story-view !lane-story.mount $lane $story-panel $lane-control $nb
- ; to inputs-view !lane-inputs.mount $lane $input-panel
- ; to scope-view !lane-scope.mount $lane $scope-panel
- ; to data-view !lane-data.mount $lane $data-panel $lane-control
- ; to data-view.on-record-change (
-  ; to { change-info } $argv
-  [ match
-   { [ and $lane-control.preferences-lane-id [ propertyIs $lane.id lane-control.preferences-lane-id ] ] (
-    [ match
-     { $lane-control.refresh-preferences-from-storage : !lane-control.refresh-preferences-from-storage }
-     { $lane-control.sync-preferences-timezones : !lane-control.sync-preferences-timezones }
-    ]
-   ) }
-  ]
-  !nb.run-on-table-change $change-info
- )
- ; to server-view !lane-server.mount $lane $server-panel $lane-control $nb
- ; to output-view !lane-output.mount $lane $container $nb $lane-control
- ; to source-runner [ match
-  { $createSourceWorkerRunner : !createSourceWorkerRunner [ object
-   { laneId $lane.id }
-   { hostOrigin [ match { $window.location.origin : $window.location.origin } { true : '' } ] }
-  ] }
-  { true : null }
- ]
- ; to info-modal [ match
-  { $lane-control.line-info-modal : $lane-control.line-info-modal }
-  { true : !lane-line-info-mod.create $container $lane-control }
- ]
- ; assign $nb { element $root-el } { tabs-el $tabs-el } { tabs $tabs } { story-panel $story-panel } { story-view $story-view } { source-panel $source-panel } { input-panel $input-panel } { scope-panel $scope-panel } { data-panel $data-panel } { server-panel $server-panel } { lines-el $lines-el } { actions-el $actions-el } { add-btn $add-btn } { add-import-btn $add-import-btn } { add-export-btn $add-export-btn } { inputs-view $inputs-view } { inputs $inputs-view.inputs } { scope-view $scope-view } { data-view $data-view } { tables $data-view.tables } { server-view $server-view } { output-view $output-view } { source-runner $source-runner } { info-modal $info-modal }
+ ; assign $nb { element $root-el } { tabs-el $tabs-el } { tabs $tabs } { story-panel $story-panel } { source-panel $source-panel } { input-panel $input-panel } { scope-panel $scope-panel } { data-panel $data-panel } { server-panel $server-panel } { lines-el $lines-el } { actions-el $actions-el } { add-btn $add-btn } { add-import-btn $add-import-btn } { add-export-btn $add-export-btn }
 
  ; to nb.dispose (
   -- Terminates the dedicated Source Web Worker and disposes any active sandboxed Lane Output iframes
+  ; set true nb.disposed
   [ match
    { $nb.source-runner.dispose : !nb.source-runner.dispose }
   ]
@@ -314,6 +300,52 @@
   )
   $found.hit
  )
+
+ ; to nb.auto-size-rows (
+  -- Auto-sizes all multiline row textareas and any active individual line editor
+  ; each $nb.rows (
+   ; to { row } $argv
+   [ match
+    { $row.auto-size : !row.auto-size }
+   ]
+  )
+ )
+
+ ; set $nb lane.notebook
+
+ ; to load-notebook-body (
+  ; to { pre-finish } $argv
+  ; set $pre-finish nb.pre-load-finish
+  ; to story-view !lane-story.mount $lane $story-panel $lane-control $nb
+  ; to inputs-view !lane-inputs.mount $lane $input-panel
+  ; to scope-view !lane-scope.mount $lane $scope-panel
+  ; to data-view !lane-data.mount $lane $data-panel $lane-control
+  ; to data-view.on-record-change (
+   ; to { change-info } $argv
+   [ match
+    { [ and $lane-control.preferences-lane-id [ propertyIs $lane.id lane-control.preferences-lane-id ] ] (
+     [ match
+      { $lane-control.refresh-preferences-from-storage : !lane-control.refresh-preferences-from-storage }
+      { $lane-control.sync-preferences-timezones : !lane-control.sync-preferences-timezones }
+     ]
+    ) }
+   ]
+   !nb.run-on-table-change $change-info
+  )
+  ; to server-view !lane-server.mount $lane $server-panel $lane-control $nb
+  ; to output-view !lane-output.mount $lane $container $nb $lane-control
+  ; to source-runner [ match
+   { $createSourceWorkerRunner : !createSourceWorkerRunner [ object
+    { laneId $lane.id }
+    { hostOrigin [ match { $window.location.origin : $window.location.origin } { true : '' } ] }
+   ] }
+   { true : null }
+  ]
+  ; to info-modal [ match
+   { $lane-control.line-info-modal : $lane-control.line-info-modal }
+   { true : !lane-line-info-mod.create $container $lane-control }
+  ]
+  ; assign $nb { story-view $story-view } { inputs-view $inputs-view } { inputs $inputs-view.inputs } { scope-view $scope-view } { data-view $data-view } { tables $data-view.tables } { server-view $server-view } { output-view $output-view } { source-runner $source-runner } { info-modal $info-modal }
 
  ; to nb.refresh-import-labels (
   -- Updates display labels on all import rows (e.g. after another lane is renamed)
@@ -490,16 +522,6 @@
     ]
     ; condition { propertyIs true match-hit.hit } : !row.refresh-deploy-status
    )
-  )
- )
-
- ; to nb.auto-size-rows (
-  -- Auto-sizes all multiline row textareas and any active individual line editor
-  ; each $nb.rows (
-   ; to { row } $argv
-   [ match
-    { $row.auto-size : !row.auto-size }
-   ]
   )
  )
 
@@ -826,6 +848,12 @@
     ; to next-run-id ; add $nb.run-id 1
     ; set $next-run-id nb.run-id
     ; to finish !idle-tracker.begin
+    [ match
+     { $nb.pre-load-finish (
+      !nb.pre-load-finish false
+      ; set null nb.pre-load-finish
+     ) }
+    ]
     ; to trigger [ match
      { $run-meta.trigger : $run-meta.trigger }
      { $table-change : 'table-change' }
@@ -2628,24 +2656,53 @@
  !add-import-btn.addEventListener click $nb.add-import
  !add-export-btn.addEventListener click $nb.add-export
 
- ; to loaded !loadLaneScript $data $lane.data $lane.id $window
- ; set $loaded.initialized nb.script-initialized
- ; each $loaded.records (
-  ; to { rec } $argv
-  ; to row !nb.create-row $rec.text $rec
-  !nb.lines.push $rec.text
-  !nb.line-records.push $rec
-  !nb.rows.push $row
-  !lines-el.appendChild $row.el
- )
- !nb.renumber
- !restore-stored-drafts $loaded.initialized
- ; set $nb lane.notebook
  [ match
-  { $lane-control.sync-export-links : !lane-control.sync-export-links }
+  { [ propertyIs true nb.disposed ] : !nb.dispose }
+  { true (
+   ; to loaded !loadLaneScript $data $lane.data $lane.id $window
+   [ match
+    { [ propertyIs true nb.disposed ] : !nb.dispose }
+    { true (
+     ; set $loaded.initialized nb.script-initialized
+     ; each $loaded.records (
+      ; to { rec } $argv
+      ; to row !nb.create-row $rec.text $rec
+      !nb.lines.push $rec.text
+      !nb.line-records.push $rec
+      !nb.rows.push $row
+      !lines-el.appendChild $row.el
+     )
+     !nb.renumber
+     !restore-stored-drafts $loaded.initialized
+     [ match
+      { $lane-control.sync-export-links : !lane-control.sync-export-links }
+     ]
+     !nb.apply-tab-ui
+     !nb.run
+    ) }
+   ]
+  ) }
  ]
- !nb.apply-tab-ui
- !nb.run
- $nb
+ ; set null nb.load-task
+ ; condition { propertyIs $nb lane.notebook } : ; set null lane.load-task
+ )
+
+ [ match
+  { [ and { [ propertyIs true defer-load ] } { $idle-tracker.spawn } ] (
+   ; to bg-task !idle-tracker.spawn $load-notebook-body
+   ; set $bg-task nb.load-task
+   ; set $bg-task lane.load-task
+   $nb
+  ) }
+  { $idle-tracker.spawn (
+   ; to fg-task !idle-tracker.spawn $load-notebook-body
+   !fg-task.wait
+   $nb
+  ) }
+  { true (
+   !$load-notebook-body
+   $nb
+  ) }
+ ]
 )
 $scope

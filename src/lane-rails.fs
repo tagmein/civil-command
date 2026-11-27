@@ -1153,6 +1153,9 @@
       ) }
      ]
      ; set false preview-el.hidden
+     [ match
+      { $lane.notebook.auto-size-rows : !lane.notebook.auto-size-rows }
+     ]
      ; to desired-top [ match
       { $icon-el.getBoundingClientRect (
        ; to rect !icon-el.getBoundingClientRect

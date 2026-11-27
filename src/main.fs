@@ -143,10 +143,14 @@
 =
 ; to lane-control ; load /src/lane-control.fs
 ; to lane-control.create-lane (
- -- Creates header and notebook body cells for a lane column, optionally inserting before an existing lane
- ; to { before-lane } $argv
+ -- Creates header and notebook body cells for a lane column, optionally inserting before an existing lane and pre-applying minimized classes
+ ; to { before-lane minimized-side } $argv
+ ; to is-min [ match
+  { $minimized-side : true }
+  { true : false }
+ ]
  ; to header !document.createElement th
- ; set lane-header header.className
+ ; set [ ternary $is-min 'lane-header lane-header--minimized' lane-header ] header.className
  [ match
   { $before-lane.element (
    [ match
@@ -157,7 +161,7 @@
   { true : !tableHeadRow.appendChild $header }
  ]
  ; to body !document.createElement td
- ; set lane-body body.className
+ ; set [ ternary $is-min 'lane-body lane-body--minimized' lane-body ] body.className
  [ match
   { $before-lane.body (
    [ match

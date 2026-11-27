@@ -6648,6 +6648,32 @@ export function createIdleTracker() {
     waiters.push(resolve)
    })
   },
+  spawn(fn) {
+   if (typeof fn !== 'function') {
+    return {
+     done: true,
+     wait() { return Promise.resolve(undefined) },
+    }
+   }
+   const finish = this.begin()
+   let settled = false
+   let promise
+   try {
+    promise = Promise.resolve(fn(finish))
+   }
+   catch (err) {
+    promise = Promise.reject(err)
+   }
+   promise = promise.finally(() => {
+    settled = true
+    finish(false)
+   })
+   promise.catch(() => {})
+   return {
+    get done() { return settled },
+    wait() { return promise },
+   }
+  },
  }
 }
 

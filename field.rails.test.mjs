@@ -3487,3 +3487,489 @@ test('Floating rail panels: resizable from the edge furthest from each rail (lef
   globalThis.fetch = origFetch
  }
 })
+
+test('Minimized lanes mount minimized from first moment, load in background without blocking restored lanes, keep contents hidden during and after load, and reveal on rail hover or any restore method', async () => {
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createDeferred() {
+  let resolve
+  const promise = new Promise(res => { resolve = res })
+  return { promise, resolve, waiting: false }
+ }
+
+ async function flushTicks(count = 20) {
+  for (let i = 0; i < count; i++) {
+   await new Promise(resolve => setTimeout(resolve, 0))
+  }
+ }
+
+ async function waitFor(predicate, label = 'condition') {
+  for (let i = 0; i < 200; i++) {
+   if (predicate()) { return }
+   await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  throw new Error(`Timed out waiting for ${label}`)
+ }
+
+ function createMockElement(tag) {
+  const styleProps = {}
+  const style = {
+   setProperty(name, value) { styleProps[name] = value; this[name] = value },
+   removeProperty(name) { delete styleProps[name]; delete this[name] },
+   getPropertyValue(name) { return styleProps[name] || '' },
+  }
+  const el = {
+   tag,
+   nodeType: 1,
+   style,
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   removed: false,
+   scrollHeight: 0,
+   offsetHeight: 0,
+   clientHeight: 0,
+   clientWidth: 0,
+   rect: { top: 48, left: 38, right: 358, width: 320, height: 300 },
+   getBoundingClientRect() { return this.rect },
+   setAttribute(name, value) { this.attributes[name] = String(value) },
+   getAttribute(name) { return this.attributes[name] ?? null },
+   removeAttribute(name) { delete this.attributes[name] },
+   contains(target) {
+    if (target === this) { return true }
+    return this.children.some(c => c && typeof c.contains === 'function' && c.contains(target))
+   },
+   appendChild(child) {
+    if (this.tag === 'tr' && (child.tag === 'th' || child.tag === 'td')) {
+     child.insertionSnapshots.push({
+      className: child.className,
+      width: child.style.width,
+     })
+    }
+    if (child.parentNode && child.parentNode.children) {
+     const idx = child.parentNode.children.indexOf(child)
+     if (idx !== -1) { child.parentNode.children.splice(idx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    this.children.push(child)
+    return child
+   },
+   insertBefore(child, ref) {
+    if (this.tag === 'tr' && (child.tag === 'th' || child.tag === 'td')) {
+     child.insertionSnapshots.push({
+      className: child.className,
+      width: child.style.width,
+     })
+    }
+    if (child.parentNode && child.parentNode.children) {
+     const idx = child.parentNode.children.indexOf(child)
+     if (idx !== -1) { child.parentNode.children.splice(idx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    const refIdx = this.children.indexOf(ref)
+    if (refIdx === -1) { this.children.push(child) }
+    else { this.children.splice(refIdx, 0, child) }
+    return child
+   },
+   replaceChildren(...nodes) {
+    for (const c of this.children.slice()) {
+     c.parentNode = null
+     c.removed = true
+    }
+    this.children = []
+    for (const n of nodes) { this.appendChild(n) }
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() {},
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode && this.parentNode.children) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) { this.parentNode.children.splice(idx, 1) }
+     this.parentNode = null
+    }
+   },
+  }
+  if (tag === 'th' || tag === 'td') {
+   let cls = ''
+   el.classHistory = []
+   Object.defineProperty(el, 'className', {
+    enumerable: true,
+    get() { return cls },
+    set(val) {
+     cls = String(val)
+     el.classHistory.push(cls)
+    },
+   })
+   let widthVal = ''
+   el.widthHistory = []
+   Object.defineProperty(el.style, 'width', {
+    enumerable: true,
+    get() { return widthVal },
+    set(val) {
+     widthVal = String(val)
+     el.widthHistory.push(widthVal)
+    },
+   })
+   el.insertionSnapshots = []
+  }
+  else {
+   el.className = ''
+  }
+  return el
+ }
+
+ const kv = new Map()
+ const kvGetGates = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) {
+    const full = qualify(key)
+    if (kvGetGates.has(full)) {
+     const gate = kvGetGates.get(full)
+     kvGetGates.delete(full)
+     gate.waiting = true
+     await gate.promise
+    }
+    return kv.has(full) ? kv.get(full) : null
+   },
+   async set(key, value) { kv.set(qualify(key), String(value)) },
+   async delete(key) { kv.delete(qualify(key)) },
+  }
+ }
+
+ let uuid = 0
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-story.fs') { return { text: async () => laneStorySource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ function createRuntime(initialPathname = '/') {
+  let nextTimerId = 0
+  const timers = new Map()
+  const location = { pathname: initialPathname, search: '', hash: '' }
+  const mockWindow = {
+   Array,
+   Boolean,
+   Date,
+   JSON,
+   Math,
+   Number,
+   Object,
+   Reflect,
+   innerWidth: 1440,
+   innerHeight: 900,
+   decodeURIComponent,
+   crypto: { randomUUID: () => `ml-uuid-${++uuid}` },
+   history: {
+    pushState(_s, _t, url) { location.pathname = url },
+    replaceState(_s, _t, url) { location.pathname = url },
+   },
+   location,
+   addEventListener() {},
+   removeEventListener() {},
+   setTimeout(fn, delay) {
+    const id = ++nextTimerId
+    timers.set(id, { id, fn, delay })
+    return id
+   },
+   clearTimeout(id) { timers.delete(id) },
+  }
+  const mockBody = createMockElement('body')
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {}, warn() {}, error() {} },
+   createIdleTracker,
+   data: createMockKV(),
+   defaultValueForType,
+   document: {
+    body: mockBody,
+    documentElement: createMockElement('html'),
+    defaultView: mockWindow,
+    createElement: createMockElement,
+   },
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  return { f, mockBody, mockWindow, location }
+ }
+
+ try {
+  // 1. Seed 3 lanes: Alpha (left-minimized, 420px, multiline + View output), Beta (restored), Gamma (right-minimized, 360px)
+  const seed = createRuntime('/')
+  await seed.f.run(parse(mainSource, '/src/main.fs'))
+  await seed.f.state.tableHeadRowAddButton.listeners.click()
+  await seed.f.state.tableHeadRowAddButton.listeners.click()
+  await seed.f.state.tableHeadRowAddButton.listeners.click()
+  const [sAlpha, sBeta, sGamma] = seed.f.state.lanes
+  const seedLc = seed.f.state['lane-control']
+  await seedLc.rename(sAlpha.id, 'Alpha')
+  await seedLc.rename(sBeta.id, 'Beta')
+  await seedLc.rename(sGamma.id, 'Gamma')
+  await seedLc['set-width'](sAlpha.id, 420)
+  await seedLc['set-width'](sGamma.id, 360)
+
+  await sAlpha.notebook['sync-records']([
+   { id: sAlpha.notebook['line-records'][0].id, text: '; to multi (\n ; add 10 20\n)' },
+   { id: 'alpha-ln-2', text: "; send ( ; to p !document.createElement p, ; set 'Alpha Output' p.textContent, $p )" },
+  ])
+  kv.set(`${sAlpha.id}.tables`, JSON.stringify([
+   {
+    id: 'tbl-alpha',
+    name: 'items',
+    columns: [{ id: 'col-lbl', name: 'label', type: 'text', multiple: false }],
+    rows: [{ id: 'row-1', values: { 'col-lbl': 'Hidden Item' } }],
+   },
+  ]))
+  sBeta.notebook.rows[0]['input-el'].value = '; add 10 32'
+  await sBeta.notebook.rows[0]['input-el'].listeners.input()
+  sGamma.notebook.rows[0]['input-el'].value = '; add 5 6'
+  await sGamma.notebook.rows[0]['input-el'].listeners.input()
+
+  await sAlpha['min-left-btn'].listeners.click()
+  await sGamma['min-right-btn'].listeners.click()
+  const savedPathname = seed.location.pathname
+
+  // 2. Reload app with background gates blocking Alpha and Gamma's notebook loads (Beta stays unblocked)
+  const alphaGate = createDeferred()
+  const gammaGate = createDeferred()
+  kvGetGates.set(`${sAlpha.id}.inputs`, alphaGate)
+  kvGetGates.set(`${sGamma.id}.inputs`, gammaGate)
+
+  const reloaded = createRuntime(savedPathname)
+  const bootPromise = reloaded.f.run(parse(mainSource, '/src/main.fs'))
+
+  // Wait until all 3 lanes are mounted and restored Beta has ALREADY completed loading & running
+  await waitFor(() => {
+   const ls = reloaded.f.state.lanes
+   return (
+    alphaGate.waiting &&
+    gammaGate.waiting &&
+    ls &&
+    ls.length === 3 &&
+    ls[1].notebook &&
+    ls[1].notebook['has-run']()
+   )
+  }, 'Alpha/Gamma paused in background and Beta finished')
+
+  const [rAlpha, rBeta, rGamma] = reloaded.f.state.lanes
+  const rLc = reloaded.f.state['lane-control']
+  const rRails = rLc.rails
+
+  // Alpha and Gamma were minimized from the VERY FIRST moment they entered the DOM and never showed restored classes or widths
+  assert.deepEqual(rAlpha.element.insertionSnapshots, [{ className: 'lane-header lane-header--minimized', width: '' }])
+  assert.deepEqual(rAlpha.body.insertionSnapshots, [{ className: 'lane-body lane-body--minimized', width: '' }])
+  assert.ok(rAlpha.element.classHistory.length >= 1 && rAlpha.element.classHistory.every(c => c === 'lane-header lane-header--minimized'))
+  assert.ok(rAlpha.body.classHistory.length >= 1 && rAlpha.body.classHistory.every(c => c === 'lane-body lane-body--minimized'))
+  assert.ok(rAlpha.element.widthHistory.every(w => w === ''))
+  assert.ok(rAlpha.body.widthHistory.every(w => w === ''))
+
+  assert.deepEqual(rGamma.element.insertionSnapshots, [{ className: 'lane-header lane-header--minimized', width: '' }])
+  assert.deepEqual(rGamma.body.insertionSnapshots, [{ className: 'lane-body lane-body--minimized', width: '' }])
+  assert.ok(rGamma.element.classHistory.length >= 1 && rGamma.element.classHistory.every(c => c === 'lane-header lane-header--minimized'))
+  assert.ok(rGamma.body.classHistory.length >= 1 && rGamma.body.classHistory.every(c => c === 'lane-body lane-body--minimized'))
+  assert.ok(rGamma.element.widthHistory.every(w => w === ''))
+  assert.ok(rGamma.body.widthHistory.every(w => w === ''))
+
+  // During background loading: Alpha & Gamma have placeholders + rail buttons, preview is hidden, Beta already ran!
+  assert.equal(rAlpha['is-minimized'], true)
+  assert.equal(rAlpha['minimized-side'], 'left')
+  assert.ok(rAlpha.body.children.includes(rAlpha['minimized-placeholder']))
+  assert.ok(rAlpha.element.children.includes(rAlpha['minimized-header-btn']))
+  assert.equal(rRails['left-items'].length, 1)
+  assert.equal(rRails['left-items'][0]['icon-el'].textContent, 'A')
+
+  assert.equal(rGamma['is-minimized'], true)
+  assert.equal(rGamma['minimized-side'], 'right')
+  assert.ok(rGamma.body.children.includes(rGamma['minimized-placeholder']))
+  assert.equal(rRails['right-items'].length, 1)
+  assert.equal(rRails['right-items'][0]['icon-el'].textContent, 'G')
+
+  assert.equal(rRails['preview-el'].hidden, true)
+  assert.equal(rRails['preview-lane'], null)
+  assert.equal(rAlpha['load-task'].done, false)
+  assert.equal(rGamma['load-task'].done, false)
+
+  assert.equal(rBeta['is-minimized'], false)
+  assert.equal(rBeta.notebook['has-run'](), true)
+  assert.equal(rBeta.notebook.rows[0]['preview-el'].textContent, '42')
+
+  // 3. Hovering Alpha's rail button during load reveals live preview; mouseleave hides it again
+  const alphaIcon = rRails['left-items'][0]['icon-el']
+  alphaIcon.rect = { top: 64, height: 26, width: 26 }
+  rRails['preview-el'].rect = { top: 0, height: 300, width: 420 }
+  await alphaIcon.listeners.mouseenter()
+  assert.equal(rRails['preview-el'].hidden, false)
+  assert.equal(rRails['preview-lane'], rAlpha)
+  assert.ok(rRails['preview-header'].children.includes(rAlpha['header-top']))
+  assert.ok(rRails['preview-body'].children.includes(rAlpha.notebook.element))
+  await alphaIcon.listeners.mouseleave({})
+  assert.equal(rRails['preview-el'].hidden, true)
+  assert.equal(rRails['preview-lane'], null)
+  assert.ok(rAlpha.element.children.includes(rAlpha['header-top']))
+  assert.ok(rAlpha.body.children.includes(rAlpha.notebook.element))
+  assert.equal(rAlpha['is-minimized'], true)
+
+  // 4. Resolve Alpha's gate so Alpha finishes loading + executing + creating View output in the background
+  alphaGate.resolve()
+  await rAlpha['load-task'].wait()
+  await flushTicks()
+  assert.equal(rAlpha.notebook['has-run'](), true)
+  assert.equal(rAlpha.notebook['data-view'].tables[0].name, 'items')
+  assert.equal(rAlpha.notebook['output-view']['inline-host'].debugOutputEl.children[0].textContent, 'Alpha Output')
+  // Contents stay hidden and Alpha remains strictly minimized after background load completes!
+  assert.equal(rAlpha['is-minimized'], true)
+  assert.equal(rRails['preview-el'].hidden, true)
+  assert.equal(rRails['preview-lane'], null)
+  assert.ok(rAlpha.element.classHistory.length >= 1 && rAlpha.element.classHistory.every(c => c === 'lane-header lane-header--minimized'))
+  assert.ok(rAlpha.body.classHistory.length >= 1 && rAlpha.body.classHistory.every(c => c === 'lane-body lane-body--minimized'))
+
+  // Configure Alpha's multiline textarea scrollHeight to simulate hidden vs visible layout, then hover after load
+  const alphaMultiInput = rAlpha.notebook.rows[0]['input-el']
+  Object.defineProperty(alphaMultiInput, 'scrollHeight', {
+   configurable: true,
+   get() {
+    return !rRails['preview-el'].hidden || !rAlpha['is-minimized'] ? 64 : 0
+   },
+  })
+  alphaMultiInput.offsetHeight = 20
+  alphaMultiInput.clientHeight = 20
+  assert.equal(alphaMultiInput.style.height || '', '')
+
+  await alphaIcon.listeners.mouseenter()
+  assert.equal(rRails['preview-el'].hidden, false)
+  assert.equal(rRails['preview-lane'], rAlpha)
+  assert.ok(rRails['preview-body'].children.includes(rAlpha.notebook.element))
+  assert.ok(rRails['preview-body'].children.includes(rAlpha.notebook['output-view'].element))
+  assert.equal(alphaMultiInput.style.height, '64px')
+  await alphaIcon.listeners.mouseleave({})
+  assert.equal(rRails['preview-el'].hidden, true)
+
+  // 5. Restoring Gamma WHILE still loading via clicking its vertical placeholder restores immediately and stays restored after load completes
+  assert.equal(rGamma['is-minimized'], true)
+  assert.equal(rGamma['load-task'].done, false)
+  await rGamma['minimized-placeholder'].listeners.click()
+  assert.equal(rGamma['is-minimized'], false)
+  assert.equal(rGamma.element.className, 'lane-header lane-header--sized')
+  assert.equal(rGamma.element.style.width, '360px')
+  assert.equal(rGamma.body.className, 'lane-body lane-body--sized')
+  assert.equal(rGamma.body.style.width, '360px')
+  assert.equal(rRails['right-items'].length, 0)
+
+  gammaGate.resolve()
+  await bootPromise
+  assert.equal(rGamma['is-minimized'], false)
+  assert.equal(rGamma.element.className, 'lane-header lane-header--sized')
+  assert.equal(rGamma.element.style.width, '360px')
+  assert.equal(rGamma.notebook['has-run'](), true)
+  assert.equal(rGamma.notebook.rows[0]['preview-el'].textContent, '11')
+
+  // 6. Verify other restore methods on Alpha after load (floating restore arrow button, header chevron, and navigate-to-lane-line)
+  await alphaIcon.listeners.mouseenter()
+  assert.equal(rRails['restore-btn'].hidden, false)
+  await rRails['restore-btn'].listeners.click({ stopPropagation() {} })
+  assert.equal(rAlpha['is-minimized'], false)
+  assert.equal(rAlpha.element.className, 'lane-header lane-header--sized')
+  assert.equal(rAlpha.element.style.width, '420px')
+
+  await rAlpha['min-left-btn'].listeners.click()
+  assert.equal(rAlpha['is-minimized'], true)
+  await rAlpha['minimized-header-btn'].listeners.click()
+  assert.equal(rAlpha['is-minimized'], false)
+  assert.equal(rAlpha.element.style.width, '420px')
+
+  await rAlpha['min-left-btn'].listeners.click()
+  assert.equal(rAlpha['is-minimized'], true)
+  await rLc['navigate-to-lane-line'](rAlpha.id, rAlpha.notebook['line-records'][0].id)
+  assert.equal(rAlpha['is-minimized'], false)
+  assert.equal(rAlpha.element.style.width, '420px')
+
+  await rAlpha['min-left-btn'].listeners.click()
+  assert.equal(rAlpha['is-minimized'], true)
+  await rLc['open-after'](rAlpha.id, rBeta.id)
+  assert.equal(rAlpha['is-minimized'], false)
+  assert.equal(rAlpha.element.style.width, '420px')
+
+  // 7. Reloading a minimized lane keeps it minimized in DOM & rail throughout reload and after
+  await rAlpha['min-left-btn'].listeners.click()
+  assert.equal(rAlpha['is-minimized'], true)
+  const alphaClassLenBeforeReload = rAlpha.element.classHistory.length
+  const reloadGate = createDeferred()
+  kvGetGates.set(`${rAlpha.id}.inputs`, reloadGate)
+  const reloadPromise = rLc.reload(rAlpha.id)
+  await waitFor(() => reloadGate.waiting, 'reload gate hit')
+
+  assert.equal(rAlpha['is-minimized'], true)
+  assert.equal(rAlpha.element.className, 'lane-header lane-header--minimized')
+  assert.equal(rAlpha.body.className, 'lane-body lane-body--minimized')
+  assert.ok(rAlpha.body.children.includes(rAlpha['minimized-placeholder']))
+  assert.equal(rRails['left-items'].length, 1)
+  assert.equal(rRails['preview-el'].hidden, true)
+
+  reloadGate.resolve()
+  await reloadPromise
+  assert.equal(rAlpha['is-minimized'], true)
+  assert.equal(rAlpha.element.className, 'lane-header lane-header--minimized')
+  assert.equal(rAlpha.body.className, 'lane-body lane-body--minimized')
+  assert.ok(rAlpha.element.classHistory.slice(alphaClassLenBeforeReload).every(c => c === 'lane-header lane-header--minimized'))
+  assert.ok(rAlpha.body.classHistory.slice(alphaClassLenBeforeReload).every(c => c === 'lane-body lane-body--minimized'))
+  assert.equal(rRails['preview-el'].hidden, true)
+  assert.equal(rAlpha.notebook['has-run'](), true)
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
