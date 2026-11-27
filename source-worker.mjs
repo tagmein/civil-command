@@ -149,6 +149,44 @@ function scrubWorkerGlobals() {
    }
   }
  }
+
+ const intrinsicPrototypes = [
+  Object.prototype,
+  Function.prototype,
+  Array.prototype,
+  String.prototype,
+  Number.prototype,
+  Boolean.prototype,
+  Date.prototype,
+  RegExp.prototype,
+  Map.prototype,
+  Set.prototype,
+  Promise.prototype,
+  Error.prototype,
+  typeof Uint8Array === 'function' ? Uint8Array.prototype : null,
+  typeof Uint8Array === 'function' ? Object.getPrototypeOf(Uint8Array.prototype) : null,
+ ]
+ for (let i = 0; i < intrinsicPrototypes.length; i++) {
+  const protoObj = intrinsicPrototypes[i]
+  if (protoObj) {
+   try {
+    Object.preventExtensions(protoObj)
+   }
+   catch {
+    // Ignore already non-extensible prototypes
+   }
+  }
+ }
+ for (const ns of [Math, JSON]) {
+  if (ns) {
+   try {
+    Object.freeze(ns)
+   }
+   catch {
+    // Ignore already frozen namespaces
+   }
+  }
+ }
 }
 
 async function initWorkerTransport() {

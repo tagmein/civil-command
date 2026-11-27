@@ -5476,8 +5476,8 @@
    ; each $rkeys (
     ; to { k } $argv
     ; to v [ get item.row $k ]
-    ; to is-fn [ match { $v.call : true } { true : false } ]
-    ; condition { propertyIs false is-fn } : ; to out $k $v
+    ; to v-json [ match { $window.JSON.stringify : ; try ( !window.JSON.stringify $v ) : undefined } { true : ok } ]
+    ; condition { [ propertyIs false [ propertyIs undefined v-json ] ] } : ; to out $k $v
    )
    [ match
     { $item.title : ; set $item.title out.title }
@@ -5498,9 +5498,9 @@
    ; each $ikeys (
     ; to { k } $argv
     ; to v [ get item $k ]
-    ; to is-fn [ match { $v.call : true } { true : false } ]
+    ; to v-json [ match { $window.JSON.stringify : ; try ( !window.JSON.stringify $v ) : undefined } { true : ok } ]
     ; to is-row-prop [ propertyIs row k ]
-    ; condition { and { propertyIs false is-fn } { propertyIs false is-row-prop } } : ; to out $k $v
+    ; condition { and { [ propertyIs false [ propertyIs undefined v-json ] ] } { propertyIs false is-row-prop } } : ; to out $k $v
    )
    $out
   ) }
@@ -5558,7 +5558,7 @@
   { [ propertyIs undefined item ] : ; object { ok false } }
   { true (
    [ match
-    { [ and { $item.onSync.call } { [ propertyIs false [ propertyIs true item.onSync.__ccSandboxedStub ] ] } ] : ; try ( !item.onSync $item ) : null }
+    { [ and { $item.onSync } { [ propertyIs false [ propertyIs true item.onSync.__ccSandboxedStub ] ] } ] : ; try ( !item.onSync $item ) : null }
    ]
    ; to target-url [ match
     { $item.url.trim : !item.url.trim }

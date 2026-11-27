@@ -1402,10 +1402,10 @@ export function encodeWireState(state, excludedKeys = new Set()) {
 }
 
 export function decodeWireState(encodedState, baseEnv = {}, options = {}) {
- const merged = {}
+ const merged = Object.create(null)
  if (baseEnv && typeof baseEnv === 'object') {
   for (const key of Object.keys(baseEnv)) {
-   if (!key.startsWith('__secret') && key !== '__proto__') {
+   if (!key.startsWith('__secret') && !FORBIDDEN_OBJECT_KEYS.has(key)) {
     Object.defineProperty(merged, key, {
      value: baseEnv[key],
      enumerable: true,
@@ -1418,7 +1418,7 @@ export function decodeWireState(encodedState, baseEnv = {}, options = {}) {
  const decoded = decodeWireValue(encodedState, options)
  if (decoded && typeof decoded === 'object') {
   for (const key of Object.getOwnPropertyNames(decoded)) {
-   if (key === '__proto__') {
+   if (FORBIDDEN_OBJECT_KEYS.has(key)) {
     continue
    }
    const desc = Object.getOwnPropertyDescriptor(decoded, key)

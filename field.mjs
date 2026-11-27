@@ -350,8 +350,509 @@ function isCommentNode(node) {
  return Array.isArray(node) && node[0] === '@' && node[1] === 'comment'
 }
 
-function isThenable(value) {
- return value != null && (typeof value === 'object' || typeof value === 'function') && typeof value.then === 'function'
+export const FORBIDDEN_PROPERTY_KEYS = Object.freeze([
+ '__proto__',
+ 'constructor',
+ 'prototype',
+ '__defineGetter__',
+ '__defineSetter__',
+ '__lookupGetter__',
+ '__lookupSetter__',
+])
+
+const FORBIDDEN_PROPERTY_KEY_SET = new Set(FORBIDDEN_PROPERTY_KEYS)
+const FORBIDDEN_FUNCTION_KEY_SET = new Set(['arguments', 'caller', 'callee'])
+const SCOPE_FRAMES = new WeakSet()
+
+const SAFE_ARRAY_METHODS = new Set([
+ 'at',
+ 'concat',
+ 'entries',
+ 'every',
+ 'fill',
+ 'filter',
+ 'find',
+ 'findIndex',
+ 'findLast',
+ 'findLastIndex',
+ 'flat',
+ 'flatMap',
+ 'forEach',
+ 'includes',
+ 'indexOf',
+ 'join',
+ 'keys',
+ 'lastIndexOf',
+ 'map',
+ 'pop',
+ 'push',
+ 'reduce',
+ 'reduceRight',
+ 'reverse',
+ 'shift',
+ 'slice',
+ 'some',
+ 'sort',
+ 'splice',
+ 'toReversed',
+ 'toSorted',
+ 'toSpliced',
+ 'unshift',
+ 'values',
+ 'with',
+])
+
+const SAFE_STRING_METHODS = new Set([
+ 'at',
+ 'charAt',
+ 'charCodeAt',
+ 'codePointAt',
+ 'concat',
+ 'endsWith',
+ 'includes',
+ 'indexOf',
+ 'isWellFormed',
+ 'lastIndexOf',
+ 'localeCompare',
+ 'match',
+ 'matchAll',
+ 'normalize',
+ 'padEnd',
+ 'padStart',
+ 'repeat',
+ 'replace',
+ 'replaceAll',
+ 'search',
+ 'slice',
+ 'split',
+ 'startsWith',
+ 'substr',
+ 'substring',
+ 'toLocaleLowerCase',
+ 'toLocaleUpperCase',
+ 'toLowerCase',
+ 'toUpperCase',
+ 'toWellFormed',
+ 'trim',
+ 'trimEnd',
+ 'trimLeft',
+ 'trimRight',
+ 'trimStart',
+])
+
+const SAFE_NUMBER_METHODS = new Set([
+ 'toExponential',
+ 'toFixed',
+ 'toLocaleString',
+ 'toPrecision',
+ 'toString',
+])
+
+const SAFE_BOOLEAN_METHODS = new Set([
+ 'toString',
+])
+
+const SAFE_DATE_METHODS = new Set([
+ 'getDate',
+ 'getDay',
+ 'getFullYear',
+ 'getHours',
+ 'getMilliseconds',
+ 'getMinutes',
+ 'getMonth',
+ 'getSeconds',
+ 'getTime',
+ 'getTimezoneOffset',
+ 'getUTCDate',
+ 'getUTCDay',
+ 'getUTCFullYear',
+ 'getUTCHours',
+ 'getUTCMilliseconds',
+ 'getUTCMinutes',
+ 'getUTCMonth',
+ 'getUTCSeconds',
+ 'setDate',
+ 'setFullYear',
+ 'setHours',
+ 'setMilliseconds',
+ 'setMinutes',
+ 'setMonth',
+ 'setSeconds',
+ 'setTime',
+ 'setUTCDate',
+ 'setUTCFullYear',
+ 'setUTCHours',
+ 'setUTCMilliseconds',
+ 'setUTCMinutes',
+ 'setUTCMonth',
+ 'setUTCSeconds',
+ 'toDateString',
+ 'toISOString',
+ 'toJSON',
+ 'toLocaleDateString',
+ 'toLocaleString',
+ 'toLocaleTimeString',
+ 'toString',
+ 'toTimeString',
+ 'toUTCString',
+ 'valueOf',
+])
+
+const SAFE_REGEXP_MEMBERS = new Set([
+ 'dotAll',
+ 'exec',
+ 'flags',
+ 'global',
+ 'hasIndices',
+ 'ignoreCase',
+ 'multiline',
+ 'source',
+ 'sticky',
+ 'test',
+ 'unicode',
+ 'unicodeSets',
+])
+
+const SAFE_MAP_MEMBERS = new Set([
+ 'clear',
+ 'delete',
+ 'entries',
+ 'forEach',
+ 'get',
+ 'has',
+ 'keys',
+ 'set',
+ 'size',
+ 'values',
+])
+
+const SAFE_SET_MEMBERS = new Set([
+ 'add',
+ 'clear',
+ 'delete',
+ 'entries',
+ 'forEach',
+ 'has',
+ 'keys',
+ 'size',
+ 'values',
+])
+
+const SAFE_PROMISE_METHODS = new Set([
+ 'catch',
+ 'finally',
+ 'then',
+])
+
+const SAFE_ERROR_MEMBERS = new Set([
+ 'cause',
+ 'message',
+ 'name',
+])
+
+const SAFE_BINARY_MEMBERS = new Set([
+ 'at',
+ 'buffer',
+ 'byteLength',
+ 'byteOffset',
+ 'entries',
+ 'every',
+ 'fill',
+ 'filter',
+ 'find',
+ 'findIndex',
+ 'forEach',
+ 'getFloat32',
+ 'getFloat64',
+ 'getInt8',
+ 'getInt16',
+ 'getInt32',
+ 'getUint8',
+ 'getUint16',
+ 'getUint32',
+ 'includes',
+ 'indexOf',
+ 'join',
+ 'keys',
+ 'lastIndexOf',
+ 'length',
+ 'map',
+ 'reduce',
+ 'reduceRight',
+ 'reverse',
+ 'set',
+ 'setFloat32',
+ 'setFloat64',
+ 'setInt8',
+ 'setInt16',
+ 'setInt32',
+ 'setUint8',
+ 'setUint16',
+ 'setUint32',
+ 'slice',
+ 'some',
+ 'sort',
+ 'subarray',
+ 'values',
+])
+
+function isObjectPrototype(proto) {
+ if (!proto || typeof proto !== 'object' || SCOPE_FRAMES.has(proto)) {
+  return false
+ }
+ if (proto === Object.prototype) {
+  return true
+ }
+ return (
+  Object.getPrototypeOf(proto) === null &&
+  Object.hasOwn(proto, 'hasOwnProperty') &&
+  Object.hasOwn(proto, 'isPrototypeOf')
+ )
+}
+
+function isFunctionPrototype(proto) {
+ if (typeof proto !== 'function') {
+  return false
+ }
+ if (proto === Function.prototype) {
+  return true
+ }
+ return (
+  Object.hasOwn(proto, 'call') &&
+  Object.hasOwn(proto, 'apply') &&
+  Object.hasOwn(proto, 'bind')
+ )
+}
+
+function isIntrinsicPrototypeObject(target) {
+ return (
+  isObjectPrototype(target) ||
+  isFunctionPrototype(target) ||
+  target === Array.prototype ||
+  target === String.prototype ||
+  target === Number.prototype ||
+  target === Boolean.prototype ||
+  target === Date.prototype ||
+  target === RegExp.prototype ||
+  target === Map.prototype ||
+  target === Set.prototype ||
+  target === Promise.prototype ||
+  target === Error.prototype
+ )
+}
+
+function isForbiddenPropertyKey(key) {
+ return typeof key === 'string' && FORBIDDEN_PROPERTY_KEY_SET.has(key)
+}
+
+function assertSafePropertyKey(key, context) {
+ if (typeof key === 'symbol') {
+  return
+ }
+ const normalized = (typeof key === 'string' || typeof key === 'number' || typeof key === 'boolean' || typeof key === 'bigint')
+  ? String(key)
+  : null
+ if (normalized !== null && FORBIDDEN_PROPERTY_KEY_SET.has(normalized)) {
+  throw new TypeError(`${context}: access to forbidden property ${JSON.stringify(normalized)} is not allowed`)
+ }
+}
+
+function createNullProtoState(initialState) {
+ const root = Object.create(null)
+ SCOPE_FRAMES.add(root)
+ if (!initialState || typeof initialState !== 'object') {
+  return root
+ }
+ for (const key of Reflect.ownKeys(initialState)) {
+  if (typeof key === 'string' && FORBIDDEN_PROPERTY_KEY_SET.has(key)) {
+   continue
+  }
+  const desc = Object.getOwnPropertyDescriptor(initialState, key)
+  if (desc) {
+   Object.defineProperty(root, key, desc)
+  }
+ }
+ return root
+}
+
+function severObjectPrototype(obj) {
+ if (!obj || typeof obj !== 'object') {
+  return createNullProtoState(null)
+ }
+ let cur = obj
+ const visited = new Set()
+ while (cur && !visited.has(cur)) {
+  visited.add(cur)
+  SCOPE_FRAMES.add(cur)
+  for (const key of FORBIDDEN_PROPERTY_KEYS) {
+   if (Object.hasOwn(cur, key)) {
+    try {
+     delete cur[key]
+    }
+    catch {
+     // Ignore non-configurable own keys
+    }
+   }
+  }
+  const proto = Object.getPrototypeOf(cur)
+  if (proto === null) {
+   return obj
+  }
+  if (isObjectPrototype(proto)) {
+   if (!Object.isExtensible(cur)) {
+    return createNullProtoState(obj)
+   }
+   Object.setPrototypeOf(cur, null)
+   return obj
+  }
+  cur = proto
+ }
+ return obj
+}
+
+function createChildScopeState(parentState) {
+ const child = Object.create(parentState)
+ SCOPE_FRAMES.add(child)
+ return child
+}
+
+function hasScopeBinding(stateObj, key) {
+ if (!stateObj || typeof stateObj !== 'object' || isForbiddenPropertyKey(key)) {
+  return false
+ }
+ let cur = stateObj
+ while (cur && !isObjectPrototype(cur) && !isFunctionPrototype(cur)) {
+  if (Object.hasOwn(cur, key)) {
+   return true
+  }
+  cur = Object.getPrototypeOf(cur)
+ }
+ return false
+}
+
+function hasAllowedProperty(receiver, rawKey) {
+ if (receiver === null || receiver === undefined) {
+  return false
+ }
+ if (typeof rawKey === 'symbol') {
+  return false
+ }
+ const prop = String(rawKey)
+ if (FORBIDDEN_PROPERTY_KEY_SET.has(prop)) {
+  return false
+ }
+ if (typeof receiver === 'string') {
+  if (prop === 'length' || SAFE_STRING_METHODS.has(prop)) {
+   return true
+  }
+  return /^(0|[1-9]\d*)$/.test(prop) && Number(prop) < receiver.length
+ }
+ if (typeof receiver === 'number') {
+  return SAFE_NUMBER_METHODS.has(prop)
+ }
+ if (typeof receiver === 'boolean') {
+  return SAFE_BOOLEAN_METHODS.has(prop)
+ }
+ if (typeof receiver === 'bigint') {
+  return prop === 'toString'
+ }
+ if (typeof receiver === 'symbol') {
+  return prop === 'toString' || prop === 'description'
+ }
+ if (typeof receiver === 'function') {
+  if (FORBIDDEN_FUNCTION_KEY_SET.has(prop)) {
+   return false
+  }
+  return Object.hasOwn(receiver, prop)
+ }
+ if (typeof receiver !== 'object') {
+  return false
+ }
+ if (Array.isArray(receiver)) {
+  return Object.hasOwn(receiver, prop) || SAFE_ARRAY_METHODS.has(prop)
+ }
+ if (ArrayBuffer.isView(receiver) || receiver instanceof ArrayBuffer) {
+  return Object.hasOwn(receiver, prop) || SAFE_BINARY_MEMBERS.has(prop)
+ }
+ if (receiver instanceof Date) {
+  return Object.hasOwn(receiver, prop) || SAFE_DATE_METHODS.has(prop)
+ }
+ if (receiver instanceof RegExp) {
+  return Object.hasOwn(receiver, prop) || SAFE_REGEXP_MEMBERS.has(prop)
+ }
+ if (receiver instanceof Map) {
+  return Object.hasOwn(receiver, prop) || SAFE_MAP_MEMBERS.has(prop)
+ }
+ if (receiver instanceof Set) {
+  return Object.hasOwn(receiver, prop) || SAFE_SET_MEMBERS.has(prop)
+ }
+ if (receiver instanceof Promise) {
+  return Object.hasOwn(receiver, prop) || SAFE_PROMISE_METHODS.has(prop)
+ }
+ if (receiver instanceof Error) {
+  return Object.hasOwn(receiver, prop) || SAFE_ERROR_MEMBERS.has(prop)
+ }
+ if (receiver instanceof String) {
+  return Object.hasOwn(receiver, prop) || SAFE_STRING_METHODS.has(prop)
+ }
+ if (receiver instanceof Number) {
+  return Object.hasOwn(receiver, prop) || SAFE_NUMBER_METHODS.has(prop)
+ }
+ if (receiver instanceof Boolean) {
+  return Object.hasOwn(receiver, prop) || SAFE_BOOLEAN_METHODS.has(prop)
+ }
+ if (Object.hasOwn(receiver, prop)) {
+  return true
+ }
+ let proto = Object.getPrototypeOf(receiver)
+ while (proto !== null) {
+  if (isObjectPrototype(proto) || isFunctionPrototype(proto)) {
+   return false
+  }
+  if (Object.hasOwn(proto, prop)) {
+   return true
+  }
+  proto = Object.getPrototypeOf(proto)
+ }
+ return false
+}
+
+export function isThenable(value) {
+ if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+  return false
+ }
+ if (value instanceof Promise) {
+  return typeof value.then === 'function'
+ }
+ if (Object.hasOwn(value, 'then')) {
+  return typeof value.then === 'function'
+ }
+ if (typeof value === 'function') {
+  return false
+ }
+ let proto = Object.getPrototypeOf(value)
+ while (proto !== null) {
+  if (isObjectPrototype(proto) || isFunctionPrototype(proto)) {
+   return false
+  }
+  if (Object.hasOwn(proto, 'then')) {
+   return typeof value.then === 'function'
+  }
+  proto = Object.getPrototypeOf(proto)
+ }
+ return false
+}
+
+function shieldNonThenable(obj) {
+ if (obj && typeof obj === 'object' && !Object.hasOwn(obj, 'then')) {
+  Object.defineProperty(obj, 'then', {
+   value: undefined,
+   enumerable: false,
+   writable: true,
+   configurable: true,
+  })
+ }
+ return obj
 }
 
 function then(value, onFulfilled) {
@@ -525,12 +1026,36 @@ function decodeTransportValue(value) {
    return value.value === 'Invalid Date' ? new Date(NaN) : new Date(value.value)
   }
   if (tag === 'object' && Array.isArray(value.entries)) {
-   return Object.fromEntries(value.entries.map(([k, v]) => [k, decodeTransportValue(v)]))
+   const decodedEntries = {}
+   for (const pair of value.entries) {
+    if (!Array.isArray(pair) || pair.length < 2) {
+     continue
+    }
+    const k = String(pair[0])
+    if (FORBIDDEN_PROPERTY_KEY_SET.has(k)) {
+     continue
+    }
+    Object.defineProperty(decodedEntries, k, {
+     value: decodeTransportValue(pair[1]),
+     enumerable: true,
+     writable: true,
+     configurable: true,
+    })
+   }
+   return decodedEntries
   }
  }
  const out = {}
  for (const [k, v] of Object.entries(value)) {
-  out[k] = decodeTransportValue(v)
+  if (FORBIDDEN_PROPERTY_KEY_SET.has(k)) {
+   continue
+  }
+  Object.defineProperty(out, k, {
+   value: decodeTransportValue(v),
+   enumerable: true,
+   writable: true,
+   configurable: true,
+  })
  }
  return out
 }
@@ -739,10 +1264,16 @@ export function field(initialState={}, options={}) {
 
   function get(a, ...p) {
    const [root, ...path] = splitRootPath(a, p)
-   let v = root === 'argv' ? argv : state[root]
+   assertSafePropertyKey(root, 'get')
+   let v = root === 'argv'
+    ? argv
+    : ((typeof root === 'string' || typeof root === 'number') && hasScopeBinding(state, String(root))
+     ? state[root]
+     : undefined)
    for (const s of path) {
+    assertSafePropertyKey(s, 'get')
     if (v != null) {
-     v = v[s]
+     v = hasAllowedProperty(v, s) ? v[s] : undefined
     }
    }
    return v
@@ -771,7 +1302,14 @@ export function field(initialState={}, options={}) {
    )
   }
   function assignBinding(target, key, value) {
+   if (target === null || target === undefined || (typeof target !== 'object' && typeof target !== 'function')) {
+    throw new TypeError(`Cannot set property on non-object target: ${target}`)
+   }
+   if (isIntrinsicPrototypeObject(target)) {
+    throw new TypeError('Cannot mutate intrinsic prototype object')
+   }
    if (!Array.isArray(key)) {
+    assertSafePropertyKey(key, 'set')
     target[key] = value
     return
    }
@@ -792,7 +1330,9 @@ export function field(initialState={}, options={}) {
      if (i !== key.length - 1) {
       throw new Error('Rest element must be last in destructuring pattern')
      }
-     target[k.slice(3)] = list.slice(i)
+     const restKey = k.slice(3)
+     assertSafePropertyKey(restKey, 'set')
+     target[restKey] = list.slice(i)
      return
     }
     assignBinding(target, k, list[i])
@@ -803,6 +1343,9 @@ export function field(initialState={}, options={}) {
    if (!obj || typeof obj !== 'object') {
     throw new TypeError(`assign target is not an object: ${JSON.stringify(target)}`)
    }
+   if (isIntrinsicPrototypeObject(obj)) {
+    throw new TypeError('Cannot mutate intrinsic prototype object')
+   }
    for (const source of sources) {
     if (source === null || source === undefined) {
      continue
@@ -811,10 +1354,17 @@ export function field(initialState={}, options={}) {
      if (source.length !== 2) {
       throw new TypeError(`assign expects { key value } pairs or objects, got: ${JSON.stringify(source)}`)
      }
-     obj[source[0]] = source[1]
+     const propKey = String(source[0])
+     assertSafePropertyKey(propKey, 'assign')
+     obj[propKey] = source[1]
     }
     else if (typeof source === 'object') {
-     Object.assign(obj, source)
+     for (const propKey of Object.keys(source)) {
+      assertSafePropertyKey(propKey, 'assign')
+      if (Object.hasOwn(source, propKey)) {
+       obj[propKey] = source[propKey]
+      }
+     }
     }
     else {
      throw new TypeError(`assign expects { key value } pairs or objects, got: ${JSON.stringify(source)}`)
@@ -832,10 +1382,17 @@ export function field(initialState={}, options={}) {
     assignBinding(state, root, b)
     return b
    }
-   let v = state[root]
+   assertSafePropertyKey(root, 'set')
+   let v = (typeof root === 'string' || typeof root === 'number') && hasScopeBinding(state, String(root))
+    ? state[root]
+    : undefined
    const f = path.pop()
    for (const d of path) {
-    v = v[d]
+    assertSafePropertyKey(d, 'set')
+    if (v === null || v === undefined) {
+     throw new TypeError(`Cannot read properties of ${v} (reading ${JSON.stringify(String(d))})`)
+    }
+    v = hasAllowedProperty(v, d) ? v[d] : undefined
    }
    assignBinding(v, f, b)
    return b
@@ -843,24 +1400,43 @@ export function field(initialState={}, options={}) {
   function invoke(b, a, ...c) {
    const [root, ...path] = splitRootPath(a, c)
    if (path.length === 0) {
-    const fn = typeof root === 'function' ? root : state[root]
+    if (typeof root !== 'function') {
+     assertSafePropertyKey(root, 'invoke')
+    }
+    const fn = typeof root === 'function'
+     ? root
+     : ((typeof root === 'string' || typeof root === 'number') && hasScopeBinding(state, String(root))
+      ? state[root]
+      : undefined)
     if (typeof fn !== 'function') {
      throw new Error(`invoke: ${JSON.stringify(root)} is not a function`)
     }
     return fn(...b)
    }
-   let v = typeof root === 'string' ? state[root] : root
+   let v
+   if (typeof root === 'string') {
+    assertSafePropertyKey(root, 'invoke')
+    v = root === 'argv' ? argv : (hasScopeBinding(state, root) ? state[root] : undefined)
+   }
+   else {
+    v = root
+   }
    if (v == null) {
     throw new Error(`invokeProperty: ${JSON.stringify(root)} not found`)
    }
    const f = path.pop()
    for (const d of path) {
-    v = v[d]
+    assertSafePropertyKey(d, 'invoke')
+    v = hasAllowedProperty(v, d) ? v[d] : undefined
     if (v == null) {
      throw new Error(`invokeProperty: ${JSON.stringify(d)} not found in ${[root, ...path].join('.')}`)
     }
    }
-   return v[f](...b)
+   assertSafePropertyKey(f, 'invoke')
+   if (!hasAllowedProperty(v, f) || typeof v[f] !== 'function') {
+    throw new TypeError(`invokeProperty: ${JSON.stringify(String(f))} is not an allowed method`)
+   }
+   return Reflect.apply(v[f], v, b)
   }
   function tap(a, ...c) {
    return invoke([], a, ...c)
@@ -1024,7 +1600,7 @@ export function field(initialState={}, options={}) {
     if (hasPositiveLimit(limits.maxCallDepth) && nextDepth > limits.maxCallDepth) {
      throw makeLimitExceededError(`Maximum FieldScript call stack depth (${limits.maxCallDepth}) exceeded`, 'maxCallDepth')
     }
-    const child = createScope(Object.create(state), a, { depth: nextDepth, loadStack })
+    const child = createScope(createChildScopeState(state), a, { depth: nextDepth, loadStack })
     return runAtDepth(nextDepth, () => {
      for (const [c, ...d] of b) {
       child[c](...d)
@@ -1040,12 +1616,14 @@ export function field(initialState={}, options={}) {
   function ternary(a, b, c) { return a ? b : c }
   function modulus(a, b) { return a % b }
 
-  function seriesAll(source, fn) {
+  function seriesAll(source, fn, shieldAsyncResult = false) {
    const out = []
+   let wentAsync = false
    const step = i => {
     while (i < source.length) {
      const res = fn(source[i])
      if (isThenable(res)) {
+      wentAsync = true
       return scopeThen(res, v => {
        out.push(v)
        return step(i + 1)
@@ -1054,7 +1632,7 @@ export function field(initialState={}, options={}) {
      out.push(res)
      i++
     }
-    return out
+    return wentAsync && shieldAsyncResult ? shieldNonThenable(out) : out
    }
    return step(0)
   }
@@ -1066,7 +1644,7 @@ export function field(initialState={}, options={}) {
     typeof condAst[0] === 'string' &&
     typeof me[condAst[0]] === 'function'
    ) {
-    return scopeThen(seriesAll(condAst.slice(1), compile), args => me[condAst[0]](...args))
+    return scopeThen(seriesAll(condAst.slice(1), compile, true), args => me[condAst[0]](...args))
    }
    if (Array.isArray(condAst) && condAst[0] === '@' && condAst[1] === 'will') {
     return scopeThen(compile(condAst), fn => invokeBranch(fn))
@@ -1197,7 +1775,7 @@ export function field(initialState={}, options={}) {
         return wrapErrorCatch(evalWhile(x[2], x[3]), x)
        }
        const res = scopeThen(
-        seriesAll(x.slice(2), compile),
+        seriesAll(x.slice(2), compile, true),
         args => me[x[1]](...args)
        )
        return wrapErrorCatch(res, x)
@@ -1300,7 +1878,7 @@ export function field(initialState={}, options={}) {
    if (hasPositiveLimit(limits.maxCallDepth) && nextDepth > limits.maxCallDepth) {
     throw makeLimitExceededError(`Maximum FieldScript call stack depth (${limits.maxCallDepth}) exceeded`, 'maxCallDepth')
    }
-   const child = createScope(Object.create(state), [], { depth: nextDepth, loadStack: nextLoadStack })
+   const child = createScope(createChildScopeState(state), [], { depth: nextDepth, loadStack: nextLoadStack })
    return child.run(program, vars)
   }
 
@@ -1308,10 +1886,13 @@ export function field(initialState={}, options={}) {
    const result = {}
    for (const entry of entries) {
     if (typeof entry === 'string') {
+     assertSafePropertyKey(entry, 'object')
      result[entry] = get(entry)
     }
     else if (Array.isArray(entry) && entry.length === 2) {
-     result[entry[0]] = entry[1]
+     const key = String(entry[0])
+     assertSafePropertyKey(key, 'object')
+     result[key] = entry[1]
     }
     else {
      throw new TypeError('object expects { key value } pairs or shorthand keys')
@@ -1334,7 +1915,7 @@ export function field(initialState={}, options={}) {
      throw makeLimitExceededError(`Maximum FieldScript call stack depth (${limits.maxCallDepth}) exceeded`, 'maxCallDepth')
     }
     tickExecutionBudget(executionBudget)
-    const child = createScope(Object.create(state), a, { depth: nextDepth, loadStack })
+    const child = createScope(createChildScopeState(state), a, { depth: nextDepth, loadStack })
     return runAtDepth(nextDepth, () => child.evalBlock(stmts))
    }
    fn.ast = stmts
@@ -1385,7 +1966,9 @@ export function field(initialState={}, options={}) {
   return me
  }
 
- const rootState = options.preservePrototype ? initialState : { ...initialState }
+ const rootState = options.preservePrototype
+  ? severObjectPrototype(initialState)
+  : createNullProtoState(initialState)
  const rootArgv = Array.isArray(options.argv) ? options.argv : []
  return createScope(rootState, rootArgv, { depth: 0, loadStack: [] })
 }
@@ -5207,10 +5790,10 @@ export function listScopeEntries(target, options = {}) {
  }
 
  if (isRoot) {
-  const seen = new Set(['__proto__', 'argv'])
+  const seen = new Set([...FORBIDDEN_PROPERTY_KEYS, 'argv'])
   const keys = []
   let cur = target
-  while (cur && cur !== Object.prototype) {
+  while (cur && !isObjectPrototype(cur) && !isFunctionPrototype(cur)) {
    for (const key of Object.getOwnPropertyNames(cur)) {
     if (!seen.has(key)) {
      seen.add(key)
@@ -5229,7 +5812,7 @@ export function listScopeEntries(target, options = {}) {
  }
 
  const isArr = Array.isArray(target)
- const seen = new Set(['__proto__'])
+ const seen = new Set(FORBIDDEN_PROPERTY_KEYS)
  if (typeof target === 'function') {
   seen.add('caller')
   seen.add('callee')
@@ -5817,10 +6400,11 @@ export function resolveScopePath(state, path = [], options = {}) {
  const root = segments[0]
  let cur
  try {
+  assertSafePropertyKey(root, 'resolveScopePath')
   if (root === 'argv') {
    cur = options.argv ?? []
   }
-  else if (state && typeof state === 'object' && root in state) {
+  else if (hasScopeBinding(state, root)) {
    cur = state[root]
   }
   else {
@@ -5828,6 +6412,7 @@ export function resolveScopePath(state, path = [], options = {}) {
   }
   for (let i = 1; i < segments.length; i++) {
    const seg = segments[i]
+   assertSafePropertyKey(seg, 'resolveScopePath')
    if (cur === null || cur === undefined) {
     return {
      found: false,
@@ -5835,8 +6420,7 @@ export function resolveScopePath(state, path = [], options = {}) {
      error: `Property "$${segments.join('.')}" not found in target lane`,
     }
    }
-   const container = typeof cur === 'object' || typeof cur === 'function' ? cur : Object(cur)
-   if (!(seg in container)) {
+   if (!hasAllowedProperty(cur, seg)) {
     return {
      found: false,
      value: undefined,
@@ -6040,8 +6624,8 @@ export async function runTransportedScripts(packets, options = {}) {
   Intl: win && win.Intl ? win.Intl : globalThis.Intl,
   output,
  }
- const browserState = { ...browserGlobals }
- const browserGlobalKeys = new Set(Object.keys(browserGlobals))
+ const browserState = createNullProtoState(browserGlobals)
+ const browserGlobalKeys = new Set(Object.keys(browserState))
  const results = []
  const list = Array.isArray(packets) ? packets : []
 
@@ -6058,9 +6642,9 @@ export async function runTransportedScripts(packets, options = {}) {
      ? deserializeTransportPacket(raw.wire)
      : deserializeTransportPacket(serializeTransportPacket(raw))
    const bindingKeys = new Set(Object.keys(decoded.bindings || {}))
-   const scriptState = Object.create(browserState)
+   const scriptState = createChildScopeState(browserState)
    for (const [k, v] of Object.entries(decoded.bindings || {})) {
-    if (!browserGlobalKeys.has(k)) {
+    if (!browserGlobalKeys.has(k) && !FORBIDDEN_PROPERTY_KEY_SET.has(k)) {
      scriptState[k] = v
     }
    }
@@ -6069,12 +6653,13 @@ export async function runTransportedScripts(packets, options = {}) {
     argv: decoded.args || [],
     disallowLoad: options.disallowLoad !== false,
    })
-   const value = await runner.evalBlock(decoded.ast || [])
+   const rawValue = runner.evalBlock(decoded.ast || [])
+   const value = isThenable(rawValue) ? await rawValue : rawValue
    if (typeof isCancelled === 'function' && isCancelled()) {
     break
    }
    for (const k of Object.keys(runner.state)) {
-    if (!browserGlobalKeys.has(k) && !bindingKeys.has(k)) {
+    if (!browserGlobalKeys.has(k) && !bindingKeys.has(k) && !FORBIDDEN_PROPERTY_KEY_SET.has(k)) {
      browserState[k] = runner.state[k]
     }
    }
@@ -6109,7 +6694,7 @@ export async function runTransportedScripts(packets, options = {}) {
   }
  }
 
- return { results, state: browserState }
+ return shieldNonThenable({ results, state: browserState })
 }
 
 export function compileFieldScriptLines(linesOrRecords, options = {}) {
@@ -6351,12 +6936,14 @@ export async function runCompiledLines(compiledLines, options = {}) {
   try {
    let value
    if (stmts.length === 1) {
-    value = await runner.compile(stmts[0])
+    const raw = runner.compile(stmts[0])
+    value = isThenable(raw) ? await raw : raw
    }
    else {
     value = []
     for (const stmt of stmts) {
-     value.push(await runner.compile(stmt))
+     const raw = runner.compile(stmt)
+     value.push(isThenable(raw) ? await raw : raw)
     }
    }
    const safeValue = secretValues.length > 0 ? redactSecretValue(value, secretValues) : value
@@ -6433,7 +7020,7 @@ export async function runCompiledLines(compiledLines, options = {}) {
    }
   }
  }
- return { results, state: runner.state, sent, executionBudget }
+ return shieldNonThenable({ results, state: runner.state, sent, executionBudget })
 }
 
 export async function runLines(lines, options = {}) {

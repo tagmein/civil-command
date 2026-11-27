@@ -7,6 +7,7 @@ import path from 'node:path'
 import vm from 'node:vm'
 import {
  DATA_RUNTIME_ENV,
+ FORBIDDEN_PROPERTY_KEYS,
  OUTPUT_PROTOCOL,
  OUTPUT_RPC_METHODS,
  PRIMITIVE_TYPES,
@@ -42,6 +43,8 @@ import {
  hasImportCycle,
  isBlockedIpAddress,
  isMaskedSecretValue,
+ isThenable,
+ listScopeEntries,
  laneServerSource,
  laneServersModalSource,
  laneStorySource,
@@ -54,7 +57,10 @@ import {
  queryLaneStories,
  resolveImportValue,
  resolveScopeColumns,
+ resolveScopePath,
+ runLines,
  runLinesInWorker,
+ runTransportedScripts,
  saveLaneScript,
  sessionModalSource,
  setLaneSecret,
@@ -1421,6 +1427,272 @@ test('Server-side isolation in lane-server.mjs & agentEvalLane: host isolate imm
   if (laneSrv) {
    await laneSrv.close()
   }
+  disposeIdleSourceWorkers()
+ }
+})
+
+test('field.mjs language runtime & prototype hardening: null-prototype scopes, forbidden property keys, Object.hasOwn + safe-method allowlists, and pollution-safe isThenable', async () => {
+ assert.ok(FORBIDDEN_PROPERTY_KEYS.includes('__proto__'))
+ assert.ok(FORBIDDEN_PROPERTY_KEYS.includes('constructor'))
+ assert.ok(FORBIDDEN_PROPERTY_KEYS.includes('prototype'))
+
+ // 1. Root state and nested child scopes (will, willSeries, preservePrototype, runLines, runLinesInWorker, runTransportedScripts) end at null, never Object.prototype
+ const fDefault = field({ x: 10 })
+ assert.equal(Object.getPrototypeOf(fDefault.state), null)
+
+ const liveInitial = { y: 20 }
+ const fPreserved = field(liveInitial, { preservePrototype: true })
+ assert.equal(fPreserved.state, liveInitial, 'preservePrototype keeps exact object identity')
+ assert.equal(Object.getPrototypeOf(liveInitial), null, 'preservePrototype severs Object.prototype to null')
+
+ const capturedChildStates = []
+ const probeTransport = {
+  send(_block, _args, meta) {
+   capturedChildStates.push(meta.state)
+   return null
+  },
+ }
+ const fClosure = field({ outerVal: 99 }, { transport: probeTransport })
+ await fClosure.run(parse(`
+  ; to outerFn (
+   ; to midVal 5
+   ; to innerFn (
+    ; send ( 1 )
+    ; add $outerVal $midVal
+   )
+   !innerFn
+  )
+  ; to closureSum !outerFn
+  ; to inheritedToString $toString
+  ; to inheritedValueOf $valueOf
+  ; to inheritedHasOwn $hasOwnProperty
+ `))
+ assert.equal(fClosure.state.closureSum, 104)
+ assert.equal(fClosure.state.inheritedToString, undefined)
+ assert.equal(fClosure.state.inheritedValueOf, undefined)
+ assert.equal(fClosure.state.inheritedHasOwn, undefined)
+ assert.equal(capturedChildStates.length, 1)
+ const innerState = capturedChildStates[0]
+ const outerState = Object.getPrototypeOf(innerState)
+ const rootState = Object.getPrototypeOf(outerState)
+ assert.equal(rootState, fClosure.state)
+ assert.equal(Object.getPrototypeOf(rootState), null, 'Nested child scope chain must terminate at null')
+
+ const transport = createTransport()
+ const fSend = field({ count: 3, Array, JSON, Math }, { transport })
+ await fSend.run(parse('; send ( ; to doubled [ multiply $count 2 ] , $doubled )'))
+ const transportOut = await runTransportedScripts(transport.wires())
+ assert.equal(Object.getPrototypeOf(transportOut.state), null)
+ assert.equal(transportOut.state.doubled, 6)
+
+ // 2. Forbidden keys (__proto__, constructor, prototype, __defineGetter__, etc.) are explicitly rejected across get, set, to, assign, object, invoke, and resolveScopePath
+ const forbiddenCases = [
+  ['get __proto__', '; to v $obj.__proto__'],
+  ['get constructor on Array', '; to v $Array.constructor'],
+  ['get dynamic constructor', '; to k [ add con structor ] , ; to v [ get Array $k ]'],
+  ['get prototype on function', '; to fn ( 1 ) , ; to v $fn.prototype'],
+  ['get constructor via safe array method', '; to m $items.map , ; to v $m.constructor'],
+  ['get __lookupGetter__', '; to v $obj.__lookupGetter__'],
+  ['to __proto__ root', '; to __proto__ 1'],
+  ['to destructuring constructor', '; to { constructor } { 1 }'],
+  ['to rest prototype', '; to { ...prototype } { 1 2 }'],
+  ['set nested __proto__.polluted', '; set true obj.__proto__.polluted'],
+  ['set nested constructor', '; set 1 obj.constructor'],
+  ['assign pair __proto__', '; assign $obj { __proto__ $other }'],
+  ['assign pair constructor', '; assign $obj { constructor 1 }'],
+  ['assign JSON __proto__ object', '; to evil !JSON.parse \'{"__proto__":{"polluted":true}}\' , ; assign $obj $evil'],
+  ['object literal __proto__', '; object { __proto__ 1 }'],
+  ['object literal prototype', '; object { prototype 1 }'],
+  ['invoke Array.constructor', "!Array.constructor 'return 1'"],
+  ['invoke will.constructor', "; to fn ( 1 ) , !fn.constructor 'return 1'"],
+  ['invoke method.constructor', "!items.slice.constructor 'return 1'"],
+  ['invoke __defineGetter__', '!obj.__defineGetter__ x ( 1 )'],
+ ]
+
+ for (const [label, line] of forbiddenCases) {
+  const out = await runLines([line], {
+   initialState: {
+    Array,
+    JSON,
+    Math,
+    items: ['a', 'b'],
+    obj: { ok: 1 },
+    other: { z: 2 },
+   },
+  })
+  assert.ok(out.results[0].error, `Expected forbidden key rejection for: ${label}`)
+  assert.match(out.results[0].error, /forbidden property/, `Expected forbidden property message for: ${label}`)
+ }
+ assert.equal(({}).polluted, undefined, 'Object.prototype must remain completely unpolluted')
+
+ // 3. Object.hasOwn + explicit safe-method allowlists block inherited Object.prototype & Function.prototype access while allowing safe built-ins
+ Object.prototype.__ccProtoLeak = 'leaked-from-object-proto'
+ Array.prototype.__ccArrayLeak = () => 'leaked-from-array-proto'
+ String.prototype.__ccStringLeak = () => 'leaked-from-string-proto'
+ try {
+  const safeCheck = await runLines(
+   [
+    '; to rec ; object { name Ada } { score 41 }',
+    '; to protoToString $rec.toString',
+    '; to protoHasOwn $rec.hasOwnProperty',
+    '; to protoLeak $rec.__ccProtoLeak',
+    '; to invokeObjToString [ ; try ( !rec.toString ) : blocked-obj-tostring ]',
+    '; to invokeObjHasOwn [ ; try ( !rec.hasOwnProperty name ) : blocked-obj-hasown ]',
+    '; to fn ( ; to { n } $argv , ; add $n 1 )',
+    '; to fnAstLen $fn.ast.length',
+    '; to fnCallProp $fn.call',
+    '; to fnBindProp $fn.bind',
+    '; to fnApplyCall [ ; try ( !fn.apply null { 5 } ) : blocked-fn-apply ]',
+    '; to arrLeakRead $nums.__ccArrayLeak',
+    '; to arrLeakCall [ ; try ( !nums.__ccArrayLeak ) : blocked-arr-leak ]',
+    '; to strLeakRead $greeting.__ccStringLeak',
+    '; to strLeakCall [ ; try ( !greeting.__ccStringLeak ) : blocked-str-leak ]',
+    '; to mapped !nums.map ( ; to { n } $argv , ; multiply $n 2 )',
+    '; to trimmed !greeting.trim',
+    '; to fixedPi !pi.toFixed 2',
+    '; to maxVal !Math.max 4 19 7',
+    '; to parsedJson !JSON.parse \'{"valid":true}\'',
+   ],
+   {
+    initialState: {
+     JSON,
+     Math,
+     greeting: '  hello world  ',
+     nums: [1, 2, 3],
+     pi: 3.14159,
+    },
+   }
+  )
+  assert.equal(Object.getPrototypeOf(safeCheck.state), null)
+  assert.equal(safeCheck.results.every(r => !r.error), true)
+  assert.equal(safeCheck.state.protoToString, undefined)
+  assert.equal(safeCheck.state.protoHasOwn, undefined)
+  assert.equal(safeCheck.state.protoLeak, undefined)
+  assert.equal(safeCheck.state.invokeObjToString, 'blocked-obj-tostring')
+  assert.equal(safeCheck.state.invokeObjHasOwn, 'blocked-obj-hasown')
+  assert.equal(safeCheck.state.fnAstLen, 2)
+  assert.equal(safeCheck.state.fnCallProp, undefined)
+  assert.equal(safeCheck.state.fnBindProp, undefined)
+  assert.equal(safeCheck.state.fnApplyCall, 'blocked-fn-apply')
+  assert.equal(safeCheck.state.arrLeakRead, undefined)
+  assert.equal(safeCheck.state.arrLeakCall, 'blocked-arr-leak')
+  assert.equal(safeCheck.state.strLeakRead, undefined)
+  assert.equal(safeCheck.state.strLeakCall, 'blocked-str-leak')
+  assert.deepEqual(safeCheck.state.mapped, [2, 4, 6])
+  assert.equal(safeCheck.state.trimmed, 'hello world')
+  assert.equal(safeCheck.state.fixedPi, '3.14')
+  assert.equal(safeCheck.state.maxVal, 19)
+  assert.deepEqual(safeCheck.state.parsedJson, { valid: true })
+
+  // 4. resolveScopePath, resolveImportValue, and listScopeEntries block dangerous & Object.prototype/Function.prototype paths
+  const sampleScope = {
+   user: { handle: 'ada' },
+   items: ['x', 'y'],
+   fn: safeCheck.state.fn,
+  }
+  assert.equal(resolveScopePath(sampleScope, ['__proto__']).found, false)
+  assert.match(resolveScopePath(sampleScope, ['__proto__']).error, /forbidden property/)
+  assert.equal(resolveScopePath(sampleScope, ['user', 'constructor']).found, false)
+  assert.match(resolveScopePath(sampleScope, ['user', 'constructor']).error, /forbidden property/)
+  assert.equal(resolveScopePath(sampleScope, ['fn', 'prototype']).found, false)
+  assert.equal(resolveScopePath(sampleScope, ['toString']).found, false)
+  assert.equal(resolveScopePath(sampleScope, ['user', 'toString']).found, false)
+  assert.equal(resolveScopePath(sampleScope, ['user', '__ccProtoLeak']).found, false)
+  assert.equal(resolveScopePath(sampleScope, ['fn', 'call']).found, false)
+  assert.deepEqual(resolveScopePath(sampleScope, ['user', 'handle']), { found: true, value: 'ada', error: null })
+  assert.deepEqual(resolveScopePath(sampleScope, ['items', 'length']), { found: true, value: 2, error: null })
+  assert.throws(() => resolveImportValue({ ok: true, state: sampleScope }, ['user', 'constructor']), /forbidden property/)
+  assert.throws(() => resolveImportValue({ ok: true, state: sampleScope }, ['user', 'toString']), /not found/)
+
+  const scopeKeys = listScopeEntries(sampleScope.items).map(e => e.key)
+  assert.ok(!scopeKeys.includes('constructor'))
+  assert.ok(!scopeKeys.includes('__proto__'))
+ }
+ finally {
+  delete Object.prototype.__ccProtoLeak
+  delete Array.prototype.__ccArrayLeak
+  delete String.prototype.__ccStringLeak
+ }
+
+ // 5. isThenable ignores Object.prototype & Function.prototype pollution (both functions and throwing getters)
+ let protoThenCalls = 0
+ Object.defineProperty(Object.prototype, 'then', {
+  configurable: true,
+  writable: true,
+  value(resolve) {
+   protoThenCalls += 1
+   resolve('hijacked-by-object-proto')
+  },
+ })
+ Object.defineProperty(Function.prototype, 'then', {
+  configurable: true,
+  writable: true,
+  value(resolve) {
+   protoThenCalls += 1
+   resolve('hijacked-by-function-proto')
+  },
+ })
+ try {
+  assert.equal(isThenable({}), false)
+  assert.equal(isThenable({ a: 1 }), false)
+  assert.equal(isThenable(Object.create(null)), false)
+  assert.equal(isThenable(() => 1), false)
+  assert.equal(isThenable(Promise.resolve(1)), true)
+  assert.equal(isThenable({ then(r) { r(1) } }), true)
+  class CustomDeferred {
+   then(resolve) {
+    resolve(77)
+   }
+  }
+  assert.equal(isThenable(new CustomDeferred()), true)
+
+  const pollutedRun = await runLines(
+   [
+    '; to data ; object { a 10 } { b 20 }',
+    '; to fn ( ; add $data.a $data.b )',
+    '; to picked [ match { true : !fn } ]',
+    '; to asyncVal !asyncFetch',
+    '; add $picked $asyncVal',
+   ],
+   {
+    initialState: {
+     asyncFetch: () => Promise.resolve(12),
+    },
+   }
+  )
+  assert.equal(protoThenCalls, 0, 'Polluted Object.prototype.then / Function.prototype.then must never be called')
+  assert.equal(pollutedRun.results[4].value, 42)
+
+  // Throwing getter on Object.prototype.then must not even be invoked by isThenable
+  Object.defineProperty(Object.prototype, 'then', {
+   configurable: true,
+   get() {
+    throw new Error('poisoned Object.prototype.then getter triggered')
+   },
+  })
+  assert.equal(isThenable({}), false)
+  const getterSafeRun = await runLines(['; to box ; object { ok true }', '$box.ok'])
+  assert.equal(getterSafeRun.results[0].error, null)
+  assert.equal(getterSafeRun.results[1].value, true)
+ }
+ finally {
+  delete Object.prototype.then
+  delete Function.prototype.then
+ }
+
+ // 6. Worker realm seals intrinsic prototypes against extension & freezes Math/JSON while returning null-prototype state
+ try {
+  const workerOut = await runLinesInWorker([
+   "; to blockedCtor [ ; try ( !Array.constructor 'return 1' ) : 'no-ctor' ]",
+   "; to blockedMathWrite [ ; try ( ; set 0 Math.PI ) : 'frozen-math' ]",
+   '; to mathPi $Math.PI',
+  ])
+  assert.equal(Object.getPrototypeOf(workerOut.state), null)
+  assert.equal(workerOut.state.blockedCtor, 'no-ctor')
+  assert.equal(workerOut.state.blockedMathWrite, 'frozen-math')
+  assert.equal(workerOut.state.mathPi, Math.PI)
+ }
+ finally {
   disposeIdleSourceWorkers()
  }
 })
