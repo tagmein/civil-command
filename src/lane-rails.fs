@@ -418,6 +418,12 @@
  !preview-frame.appendChild $preview-body
  !preview-el.appendChild $preview-frame
 
+ ; to preview-resizer !document.createElement div
+ ; assign $preview-resizer { className side-rail-preview-resizer } { hidden true } { title 'Drag to resize floating panel (double-click to reset)' }
+ !preview-resizer.setAttribute role separator
+ !preview-resizer.setAttribute aria-orientation vertical
+ !preview-resizer.setAttribute aria-label 'Resize floating panel'
+
  ; to restore-btn !document.createElement button
  ; assign $restore-btn { type button } { className side-rail-restore } { hidden true } { title 'Restore lane' } { innerHTML $restore-right-svg }
  !restore-btn.setAttribute aria-label 'Restore lane'
@@ -433,6 +439,7 @@
    !document.body.appendChild $left-rail
    !document.body.appendChild $right-rail
    !document.body.appendChild $preview-el
+   !document.body.appendChild $preview-resizer
    !document.body.appendChild $restore-btn
   ) }
  ]
@@ -514,13 +521,18 @@
   { preview-frame $preview-frame }
   { preview-header $preview-header }
   { preview-body $preview-body }
+  { preview-resizer $preview-resizer }
   { restore-btn $restore-btn }
   { left-items {} }
   { right-items {} }
   { by-id ; object }
   { preview-lane null }
   { pinned-lane null }
+  { preview-side null }
   { is-preview-pinned false }
+  { is-preview-resizing false }
+  { is-resizer-hover false }
+  { active-resize-cleanup null }
   { restore-fade-delay 25000 }
   { restore-hide-delay 30000 }
   { restore-fade-timer null }
@@ -678,6 +690,187 @@
   [ match
    { $preview-body.style : ; set $modal-min-h-str preview-body.style.minHeight }
   ]
+  [ match
+   { $rails.sync-preview-resizer : !rails.sync-preview-resizer }
+  ]
+ )
+
+ ; to resolve-num (
+  -- Returns a finite numeric value unchanged or null for non-numeric inputs
+  ; to { v } $argv
+  [ match
+   { [ propertyIs null v ] : null }
+   { [ propertyIs undefined v ] : null }
+   { [ propertyIs '' v ] : null }
+   { [ propertyIs true v ] : null }
+   { [ propertyIs false v ] : null }
+   { [ propertyIsGreaterThanOrEqual 0 v ] : $v }
+   { [ propertyIsLessThan 0 v ] : $v }
+   { true : null }
+  ]
+ )
+
+ ; to resolve-active-preview-side (
+  -- Resolves left or right rail side for the active floating preview lane
+  ; to { lane } $argv
+  ; to item [ match
+   { $lane : [ get rails.by-id $lane.id ] }
+   { true : null }
+  ]
+  [ match
+   { $item.side : $item.side }
+   { $rails.preview-side : $rails.preview-side }
+   { $lane.minimized-side : $lane.minimized-side }
+   { true : left }
+  ]
+ )
+
+ ; to sync-preview-classes (
+  -- Syncs side, pinned, and resizing classes on preview-el
+  ; to { side is-pinned } $argv
+  ; to base-side-cls ; add 'side-rail-preview side-rail-preview--' $side
+  ; to pin-cls [ ternary $is-pinned [ ; add $base-side-cls ' side-rail-preview--pinned' ] $base-side-cls ]
+  ; to full-cls [ ternary $rails.is-preview-resizing [ ; add $pin-cls ' side-rail-preview--resizing' ] $pin-cls ]
+  ; set $full-cls preview-el.className
+ )
+
+ ; to sync-resizer-class (
+  -- Syncs side, hover, and active classes on preview-resizer
+  ; to { side } $argv
+  ; to active-side [ match
+   { $side : $side }
+   { $rails.preview-lane : !resolve-active-preview-side $rails.preview-lane }
+   { true : '' }
+  ]
+  ; to base-cls [ match
+   { $active-side : ; add 'side-rail-preview-resizer side-rail-preview-resizer--' $active-side }
+   { true : side-rail-preview-resizer }
+  ]
+  ; to next-cls [ match
+   { [ propertyIs true rails.is-preview-resizing ] : ; add $base-cls ' side-rail-preview-resizer--active' }
+   { [ propertyIs true rails.is-resizer-hover ] : ; add $base-cls ' side-rail-preview-resizer--hover' }
+   { true : $base-cls }
+  ]
+  ; set $next-cls preview-resizer.className
+ )
+
+ ; to finish-preview-resize (
+  -- Ends any active floating panel drag resize session and restores listeners and cursor
+  ; to { should-save } $argv
+  ; to cleanup $rails.active-resize-cleanup
+  [ match
+   { $cleanup (
+    ; set null rails.active-resize-cleanup
+    !cleanup $should-save
+   ) }
+  ]
+ )
+
+ ; to rails.sync-preview-resizer (
+  -- Positions and shows preview-resizer along the floating panel edge furthest from the rail it resides on
+  ; to active-lane $rails.preview-lane
+  ; to is-visible [ match
+   { [ and { $active-lane } { propertyIs true rails.is-preview-pinned } { propertyIs false preview-el.hidden } ] : true }
+   { true : false }
+  ]
+  [ match
+   { [ propertyIs false is-visible ] (
+    ; set true preview-resizer.hidden
+    ; set side-rail-preview-resizer preview-resizer.className
+    !remove-elem-attr $preview-resizer data-lane-id
+    !remove-elem-attr $preview-resizer data-rail-side
+    !remove-elem-attr $preview-resizer data-resize-edge
+    !preview-resizer.setAttribute aria-label 'Resize floating panel'
+   ) }
+   { true (
+    ; to side !resolve-active-preview-side $active-lane
+    ; to resize-edge [ ternary [ propertyIs left side ] right left ]
+    ; set false preview-resizer.hidden
+    !sync-resizer-class $side
+    !preview-resizer.setAttribute data-lane-id $active-lane.id
+    !preview-resizer.setAttribute data-rail-side $side
+    !preview-resizer.setAttribute data-resize-edge $resize-edge
+    ; to lane-lbl [ match { $active-lane.title : $active-lane.title } { true : 'floating panel' } ]
+    !preview-resizer.setAttribute aria-label [ ; add 'Resize ' $lane-lbl ]
+    ; to prect [ match
+     { $preview-el.getBoundingClientRect : !preview-el.getBoundingClientRect }
+     { true : null }
+    ]
+    ; to raw-top !resolve-num $prect.top
+    ; to top-val [ match
+     { [ propertyIs null raw-top ] : 24 }
+     { [ propertyIsGreaterThanOrEqual 0 raw-top ] : $raw-top }
+     { true : 24 }
+    ]
+    ; to rect-h !resolve-num $prect.height
+    ; to h-str [ match
+     { [ propertyIs null rect-h ] : '' }
+     { [ propertyIsGreaterThan 0 rect-h ] : ; add [ !window.Math.round $rect-h ] px }
+     { true : '' }
+    ]
+    ; to rect-left !resolve-num $prect.left
+    ; to rect-right !resolve-num $prect.right
+    ; to rect-w !resolve-num $prect.width
+    ; to has-left [ match { [ propertyIs null rect-left ] : false } { true : true } ]
+    ; to has-right [ match { [ propertyIs null rect-right ] : false } { true : true } ]
+    ; to has-rect-w [ match
+     { [ propertyIs null rect-w ] : false }
+     { [ propertyIsGreaterThan 0 rect-w ] : true }
+     { true : false }
+    ]
+    ; to fallback-w [ match
+     { $has-rect-w : $rect-w }
+     { [ propertyIsGreaterThan 0 active-lane.effective-width ] : $active-lane.effective-width }
+     { [ propertyIsGreaterThan 0 active-lane.rendered-width ] : $active-lane.rendered-width }
+     { true : 320 }
+    ]
+    ; to vw [ match
+     { [ propertyIsGreaterThan 0 window.innerWidth ] : $window.innerWidth }
+     { true : null }
+    ]
+    [ match
+     { $preview-resizer.style (
+      ; set [ ; add [ !window.Math.round $top-val ] px ] preview-resizer.style.top
+      ; set $h-str preview-resizer.style.height
+      [ match
+       { [ propertyIs right side ] (
+        ; to has-real-rect [ match
+         { [ and { $has-left } { $has-right } { propertyIsGreaterThan $rect-left rect-right } ] : true }
+         { true : false }
+        ]
+        [ match
+         { $has-real-rect (
+          ; to edge-x ; subtract $rect-left 4
+          ; set [ ; add [ !window.Math.round $edge-x ] px ] preview-resizer.style.left
+          ; set auto preview-resizer.style.right
+         ) }
+         { $vw (
+          ; to edge-x ; subtract [ ; subtract [ ; subtract $vw 38 ] $fallback-w ] 4
+          ; set [ ; add [ !window.Math.round $edge-x ] px ] preview-resizer.style.left
+          ; set auto preview-resizer.style.right
+         ) }
+         { true (
+          ; to edge-r ; subtract [ ; add 38 $fallback-w ] 4
+          ; set auto preview-resizer.style.left
+          ; set [ ; add [ !window.Math.round $edge-r ] px ] preview-resizer.style.right
+         ) }
+        ]
+       ) }
+       { true (
+        ; to edge-x [ match
+         { [ and { $has-right } { propertyIsGreaterThan 0 rect-right } ] : $rect-right }
+         { [ and { $has-left } { propertyIsGreaterThan 0 rect-left } ] : ; add $rect-left $fallback-w }
+         { true : ; add 38 $fallback-w }
+        ]
+        ; to left-pos ; subtract $edge-x 4
+        ; set [ ; add [ !window.Math.round $left-pos ] px ] preview-resizer.style.left
+        ; set auto preview-resizer.style.right
+       ) }
+      ]
+     ) }
+    ]
+   ) }
+  ]
  )
 
  ; to restore-node (
@@ -827,10 +1020,14 @@
  ; to rails.hide-preview (
   -- Hides the floating hover/pinned preview and restore arrow button and returns live lane DOM nodes to their owning lane cells
   !clear-restore-timers
+  !finish-preview-resize false
   ; to pinned $rails.pinned-lane
   ; to lane $rails.preview-lane
   ; set null rails.pinned-lane
+  ; set null rails.preview-side
   ; set false rails.is-preview-pinned
+  ; set false rails.is-preview-resizing
+  ; set false rails.is-resizer-hover
   ; set false rails.is-restore-fading
   ; set false rails.is-restore-expired
   [ match
@@ -882,6 +1079,7 @@
     !preview-el.setAttribute aria-hidden 'true'
    ) }
   ]
+  !rails.sync-preview-resizer
  )
 
  ; to apply-pin-state (
@@ -890,16 +1088,17 @@
   ; to lane $item.lane
   ; to side $item.side
   ; set [ ternary $is-pinned $lane null ] rails.pinned-lane
+  ; set $side rails.preview-side
   ; set $is-pinned rails.is-preview-pinned
   ; set $is-pinned item.pinned
   ; set [ ternary $is-pinned 'side-rail-icon side-rail-icon--pinned' side-rail-icon ] item.icon-el.className
   !item.icon-el.setAttribute aria-pressed [ ternary $is-pinned 'true' 'false' ]
   !item.icon-el.setAttribute aria-expanded 'true'
   !item.icon-el.setAttribute aria-label [ ; add [ ternary $is-pinned 'Unpin ' 'Pin ' ] $lane.title ]
-  ; to base-side-cls ; add 'side-rail-preview side-rail-preview--' $side
-  ; set [ ternary $is-pinned [ ; add $base-side-cls ' side-rail-preview--pinned' ] $base-side-cls ] preview-el.className
+  !sync-preview-classes $side $is-pinned
   !preview-el.setAttribute aria-hidden [ ternary $is-pinned 'false' 'true' ]
   !sync-restore-btn-class
+  !rails.sync-preview-resizer
  )
 
  ; to rails.show-preview (
@@ -915,6 +1114,7 @@
     ; condition { and { propertyIs true lane.is-minimized } { propertyIs false has-lane-fs } } (
      !rails.hide-preview
      ; set $lane rails.preview-lane
+     ; set $side rails.preview-side
      !sync-preview-width $lane.rendered-width $lane
      [ match
       { $lane.header-top : !preview-header.appendChild $lane.header-top }
@@ -946,9 +1146,9 @@
       { $item : !apply-pin-state $item $is-pinned }
       { true (
        ; set [ ternary $is-pinned $lane null ] rails.pinned-lane
+       ; set $side rails.preview-side
        ; set $is-pinned rails.is-preview-pinned
-       ; to base-side-cls ; add 'side-rail-preview side-rail-preview--' $side
-       ; set [ ternary $is-pinned [ ; add $base-side-cls ' side-rail-preview--pinned' ] $base-side-cls ] preview-el.className
+       !sync-preview-classes $side $is-pinned
        !preview-el.setAttribute aria-hidden [ ternary $is-pinned 'false' 'true' ]
       ) }
      ]
@@ -985,6 +1185,7 @@
       { $preview-el.style : ; set [ ; add [ !window.Math.round $clamped-top ] px ] preview-el.style.top }
      ]
      !rails.activate-restore-btn $icon-el
+     !rails.sync-preview-resizer
     )
    ) }
   ]
@@ -1067,6 +1268,167 @@
   [ match
    { $target-lane : !lane-control.restore $target-lane.id }
   ]
+ )
+
+ !preview-resizer.addEventListener mouseenter (
+  ; set true rails.is-resizer-hover
+  ; condition { propertyIs false rails.is-preview-resizing } : !sync-resizer-class
+ )
+ !preview-resizer.addEventListener mouseleave (
+  ; set false rails.is-resizer-hover
+  ; condition { propertyIs false rails.is-preview-resizing } : !sync-resizer-class
+ )
+ !preview-resizer.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+ )
+ !preview-resizer.addEventListener mousedown (
+  ; to { ev } $argv
+  ; to active-lane $rails.preview-lane
+  ; condition { and { $active-lane } { propertyIs true rails.is-preview-pinned } } (
+   [ match
+    { $ev.preventDefault : !ev.preventDefault }
+   ]
+   [ match
+    { $ev.stopPropagation : !ev.stopPropagation }
+   ]
+   !finish-preview-resize false
+   ; to side !resolve-active-preview-side $active-lane
+   ; to raw-cx !resolve-num $ev.clientX
+   ; to start-x [ match
+    { [ propertyIs null raw-cx ] : 0 }
+    { true : $raw-cx }
+   ]
+   ; to cw [ match
+    { [ propertyIsGreaterThan 0 preview-el.clientWidth ] : !window.Math.round $preview-el.clientWidth }
+    { true : null }
+   ]
+   ; to rect-w [ match
+    { $preview-el.getBoundingClientRect (
+     ; to rect !preview-el.getBoundingClientRect
+     ; to rw !resolve-num $rect.width
+     [ match
+      { [ propertyIs null rw ] : null }
+      { [ propertyIsGreaterThan 0 rw ] : !window.Math.round $rw }
+      { true : null }
+     ]
+    ) }
+    { true : null }
+   ]
+   ; to start-w [ match
+    { $cw : $cw }
+    { $rect-w : $rect-w }
+    { [ propertyIsGreaterThan 0 active-lane.effective-width ] : $active-lane.effective-width }
+    { [ propertyIsGreaterThan 0 active-lane.rendered-width ] : $active-lane.rendered-width }
+    { true : 320 }
+   ]
+   ; to max-w [ match
+    { [ propertyIsGreaterThanOrEqual 178 window.innerWidth ] : ; subtract $window.innerWidth 78 }
+    { true : null }
+   ]
+   ; to has-modal [ propertyIs true active-lane.has-open-modal ]
+   ; to has-modal-mw [ match
+    { [ and { $has-modal } { propertyIsGreaterThan 0 active-lane.modal-min-width } ] : true }
+    { true : false }
+   ]
+   ; to modal-min-w [ match
+    { $has-modal-mw : $active-lane.modal-min-width }
+    { $has-modal : $min-lane-modal-width }
+    { true : 100 }
+   ]
+   ; to raw-min-w !window.Math.max 100 $modal-min-w
+   ; to min-w [ match
+    { $max-w : !window.Math.min $raw-min-w $max-w }
+    { true : $raw-min-w }
+   ]
+   ; to prev-cursor [ match
+    { $document.body.style.cursor : $document.body.style.cursor }
+    { true : '' }
+   ]
+   ; set true rails.is-preview-resizing
+   ; set true active-lane.is-resizing
+   !sync-preview-classes $side true
+   !sync-resizer-class $side
+   [ match
+    { $document.body.style : ; set ew-resize document.body.style.cursor }
+   ]
+   ; to drag ; object { start-x $start-x } { start-w $start-w } { side $side } { min-w $min-w } { max-w $max-w } { moved false } { next-w $start-w }
+   ; to on-move (
+    ; to { mev } $argv
+    ; to raw-mx !resolve-num $mev.clientX
+    ; to cur-x [ match
+     { [ propertyIs null raw-mx ] : $drag.start-x }
+     { true : $raw-mx }
+    ]
+    ; to delta [ match
+     { [ propertyIs right drag.side ] : ; subtract $drag.start-x $cur-x }
+     { true : ; subtract $cur-x $drag.start-x }
+    ]
+    ; to raw-next !window.Math.round ; add $drag.start-w $delta
+    ; to floored !window.Math.max $drag.min-w $raw-next
+    ; to clamped [ match
+     { $drag.max-w : !window.Math.min $drag.max-w $floored }
+     { true : $floored }
+    ]
+    ; set true drag.moved
+    ; set $clamped drag.next-w
+    [ match
+     { $lane-control.apply-lane-width : !lane-control.apply-lane-width $active-lane $clamped }
+     { true : !sync-preview-width $clamped $active-lane }
+    ]
+   )
+   ; to teardown (
+    ; to { save-flag } $argv
+    ; set false rails.is-preview-resizing
+    ; set false active-lane.is-resizing
+    [ match
+     { [ propertyIs $active-lane rails.preview-lane ] : !sync-preview-classes $drag.side $rails.is-preview-pinned }
+    ]
+    !sync-resizer-class $drag.side
+    [ match
+     { $document.body.style : ; set $prev-cursor document.body.style.cursor }
+    ]
+    [ match
+     { $window.removeEventListener (
+      !window.removeEventListener mousemove $on-move
+      !window.removeEventListener mouseup $on-up
+      !window.removeEventListener blur $on-blur
+     ) }
+    ]
+    [ match
+     { [ and { propertyIs true save-flag } { propertyIs true drag.moved } { $active-lane.data.set } ] : !active-lane.data.set width [ ; add '' $drag.next-w ] }
+    ]
+    !rails.sync-preview-resizer
+   )
+   ; to on-up : !finish-preview-resize true
+   ; to on-blur : !finish-preview-resize true
+   ; set $teardown rails.active-resize-cleanup
+   [ match
+    { $window.addEventListener (
+     !window.addEventListener mousemove $on-move
+     !window.addEventListener mouseup $on-up
+     !window.addEventListener blur $on-blur
+    ) }
+   ]
+  )
+ )
+ !preview-resizer.addEventListener dblclick (
+  ; to { ev } $argv
+  [ match
+   { $ev.preventDefault : !ev.preventDefault }
+  ]
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  ; to active-lane $rails.preview-lane
+  ; condition { and { $active-lane } { propertyIs true rails.is-preview-pinned } } (
+   [ match
+    { $lane-control.set-width : !lane-control.set-width $active-lane.id null }
+    { true : !sync-preview-width null $active-lane }
+   ]
+  )
  )
 
  ; to rails.update (
@@ -3089,6 +3451,20 @@
      ; condition { propertyIs true rails.is-next-nav-open } : !rails.close-next-nav
     )
    )
+   !window.addEventListener resize (
+    ; condition { and { $rails.preview-lane } { propertyIs true rails.is-preview-pinned } } : !rails.sync-preview-resizer
+   )
+  ) }
+ ]
+ [ match
+  { $window.ResizeObserver (
+   ; try (
+    ; to preview-ro !window.Reflect.construct $window.ResizeObserver { (
+     ; condition { and { $rails.preview-lane } { propertyIs true rails.is-preview-pinned } } : !rails.sync-preview-resizer
+    ) }
+    !preview-ro.observe $preview-el
+    !preview-ro.observe $preview-frame
+   ) : null
   ) }
  ]
  [ match

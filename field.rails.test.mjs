@@ -3064,3 +3064,426 @@ test('resolveTopRailLayout & resolveTopRailElementId: canonical IDs, custom orde
  const indexHtml = await fs.readFile(new URL('./index.html', import.meta.url), 'utf8')
  assert.match(indexHtml, /\.top-rail-menu\[hidden\],\s*\.top-rail-icon\[hidden\],\s*\.top-rail-chip\[hidden\]\s*\{\s*display:\s*none;\s*\}/s)
 })
+
+test('Floating rail panels: resizable from the edge furthest from each rail (left rail right-edge, right rail left-edge), clamping, modal min-width, double-click reset, and persistence', async () => {
+ const indexHtml = await fs.readFile(new URL('./index.html', import.meta.url), 'utf8')
+ assert.match(indexHtml, /\.side-rail-preview\s*\{[^}]*max-width:\s*calc\(100vw - 76px\);/s)
+ assert.match(indexHtml, /\.side-rail-preview--resizing\s*\*\s*\{[^}]*pointer-events:\s*none;/s)
+ assert.match(indexHtml, /\.side-rail-preview-resizer\s*\{[^}]*cursor:\s*ew-resize;[^}]*position:\s*fixed;[^}]*width:\s*8px;[^}]*z-index:\s*2110;/s)
+ assert.match(indexHtml, /\.side-rail-preview-resizer--active::after\s*\{[^}]*background:\s*#9ce5ffaa;/s)
+
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  const styleProps = {}
+  return {
+   tag,
+   nodeType: 1,
+   style: {
+    setProperty(name, value) { styleProps[name] = value; this[name] = value },
+    removeProperty(name) { delete styleProps[name]; delete this[name] },
+    getPropertyValue(name) { return styleProps[name] || '' },
+   },
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   removed: false,
+   clientWidth: 0,
+   rect: { top: 24, left: 38, right: 358, width: 320, height: 300 },
+   getBoundingClientRect() { return this.rect },
+   setAttribute(name, value) { this.attributes[name] = String(value) },
+   getAttribute(name) { return this.attributes[name] ?? null },
+   removeAttribute(name) { delete this.attributes[name] },
+   contains(target) {
+    if (target === this) return true
+    return this.children.some(c => c && typeof c.contains === 'function' && c.contains(target))
+   },
+   appendChild(child) {
+    if (child.parentNode && child.parentNode.children) {
+     const idx = child.parentNode.children.indexOf(child)
+     if (idx !== -1) child.parentNode.children.splice(idx, 1)
+    }
+    child.parentNode = this
+    child.removed = false
+    this.children.push(child)
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child.parentNode && child.parentNode.children) {
+     const idx = child.parentNode.children.indexOf(child)
+     if (idx !== -1) child.parentNode.children.splice(idx, 1)
+    }
+    child.parentNode = this
+    child.removed = false
+    const refIdx = this.children.indexOf(ref)
+    if (refIdx === -1) this.children.push(child)
+    else this.children.splice(refIdx, 0, child)
+    return child
+   },
+   replaceChildren(...nodes) {
+    for (const c of this.children.slice()) {
+     c.parentNode = null
+     c.removed = true
+    }
+    this.children = []
+    for (const n of nodes) this.appendChild(n)
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() {},
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode && this.parentNode.children) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) this.parentNode.children.splice(idx, 1)
+     this.parentNode = null
+    }
+   },
+  }
+ }
+
+ const kv = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { kv.set(qualify(key), String(value)) },
+   async delete(key) { kv.delete(qualify(key)) },
+  }
+ }
+
+ let uuid = 0
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') return { text: async () => laneSource }
+  if (url === '/src/lane-notebook.fs') return { text: async () => notebookSource }
+  if (url === '/src/lane-inputs.fs') return { text: async () => inputsSource }
+  if (url === '/src/lane-scope.fs') return { text: async () => scopeSource }
+  if (url === '/src/lane-data.fs') return { text: async () => dataSource }
+  if (url === '/src/confirm-modal.fs') return { text: async () => confirmModalSource }
+  if (url === '/src/lane-row-picker-modal.fs') return { text: async () => rowPickerModalSource }
+  if (url === '/src/lane-output.fs') return { text: async () => outputSource }
+  if (url === '/src/lane-modal.fs') return { text: async () => modalSource }
+  if (url === '/src/lane-config-modal.fs') return { text: async () => configModalSource }
+  if (url === '/src/lane-import-modal.fs') return { text: async () => importModalSource }
+  if (url === '/src/lane-rails.fs') return { text: async () => railsSource }
+  if (url === '/src/lane-line-info-modal.fs') return { text: async () => lineInfoModalSource }
+  if (url === '/src/lane-export-modal.fs') return { text: async () => exportModalSource }
+  if (url === '/src/lane-export-deploy-modal.fs') return { text: async () => exportDeployModalSource }
+  if (url === '/src/lane-server.fs') return { text: async () => laneServerSource }
+  if (url === '/src/lane-story.fs') return { text: async () => laneStorySource }
+  if (url === '/src/lane-servers-modal.fs') return { text: async () => laneServersModalSource }
+  if (url === '/src/lane-terminal-modal.fs') return { text: async () => laneTerminalModalSource }
+  if (url === '/src/lane-session-modal.fs') return { text: async () => sessionModalSource }
+  if (url === '/src/lane-package-modal.fs') return { text: async () => packageModalSource }
+  if (url === '/src/lane-dir-modal.fs') return { text: async () => dirModalSource }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ function createRuntime(initialPathname = '/') {
+  const winListeners = {}
+  const location = { pathname: initialPathname, search: '', hash: '' }
+  const mockWindow = {
+   Array,
+   Boolean,
+   Date,
+   JSON,
+   Math,
+   Number,
+   Object,
+   Reflect,
+   innerWidth: 1440,
+   innerHeight: 900,
+   decodeURIComponent,
+   crypto: { randomUUID: () => `fp-uuid-${++uuid}` },
+   history: {
+    pushState(_s, _t, url) { location.pathname = url },
+    replaceState(_s, _t, url) { location.pathname = url },
+   },
+   location,
+   addEventListener(event, handler) {
+    winListeners[event] ||= []
+    winListeners[event].push(handler)
+   },
+   removeEventListener(event, handler) {
+    const list = winListeners[event]
+    if (!list) return
+    const idx = list.indexOf(handler)
+    if (idx !== -1) list.splice(idx, 1)
+   },
+  }
+  const mockBody = createMockElement('body')
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {}, warn() {}, error() {} },
+   createIdleTracker,
+   data: createMockKV(),
+   defaultValueForType,
+   document: {
+    body: mockBody,
+    documentElement: createMockElement('html'),
+    defaultView: mockWindow,
+    createElement: createMockElement,
+   },
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  return {
+   f,
+   mockBody,
+   mockWindow,
+   winListeners,
+   async dispatchWindow(event, ev) {
+    for (const h of (winListeners[event] || []).slice()) {
+     await h(ev)
+    }
+   },
+  }
+ }
+
+ try {
+  const r1 = createRuntime('/')
+  await r1.f.run(parse(mainSource, '/src/main.fs'))
+  const lc = r1.f.state['lane-control']
+  const rails = lc.rails
+  const resizer = rails['preview-resizer']
+
+  assert.ok(resizer)
+  assert.ok(r1.mockBody.children.includes(resizer))
+  assert.equal(resizer.hidden, true)
+  assert.equal(resizer.className, 'side-rail-preview-resizer')
+  assert.equal(resizer.attributes.role, 'separator')
+  assert.equal(resizer.attributes['aria-orientation'], 'vertical')
+
+  // Create 3 lanes: LeftLane (320px), RightLane (auto), NarrowModalLane (140px)
+  await r1.f.state.tableHeadRowAddButton.listeners.click()
+  await r1.f.state.tableHeadRowAddButton.listeners.click()
+  await r1.f.state.tableHeadRowAddButton.listeners.click()
+  const [leftLane, rightLane, modalLane] = r1.f.state.lanes
+  await lc.rename(leftLane.id, 'Left Panel')
+  await lc.rename(rightLane.id, 'Right Panel')
+  await lc.rename(modalLane.id, 'Modal Panel')
+  await lc['set-width'](leftLane.id, 320)
+  await lc['set-width'](modalLane.id, 140)
+
+  // Minimize LeftLane to LEFT rail
+  await leftLane['min-left-btn'].listeners.click()
+  const leftIcon = rails['left-items'][0]['icon-el']
+  leftIcon.rect = { top: 64, height: 26, width: 26 }
+  rails['preview-el'].clientWidth = 320
+  rails['preview-el'].rect = { top: 64, left: 38, right: 360, width: 322, height: 300 }
+
+  // Unpinned hover preview keeps preview-resizer hidden
+  await leftIcon.listeners.mouseenter()
+  assert.equal(rails['preview-el'].hidden, false)
+  assert.equal(rails['is-preview-pinned'], false)
+  assert.equal(resizer.hidden, true)
+
+  // Pin LeftLane -> preview-resizer appears on the RIGHT edge (furthest from left rail)
+  await leftIcon.listeners.click({ stopPropagation() {} })
+  assert.equal(rails['is-preview-pinned'], true)
+  assert.equal(resizer.hidden, false)
+  assert.equal(resizer.className, 'side-rail-preview-resizer side-rail-preview-resizer--left')
+  assert.equal(resizer.attributes['data-rail-side'], 'left')
+  assert.equal(resizer.attributes['data-resize-edge'], 'right')
+  assert.equal(resizer.attributes['data-lane-id'], leftLane.id)
+  assert.equal(resizer.style.top, '64px')
+  assert.equal(resizer.style.height, '300px')
+  assert.equal(resizer.style.left, '356px')
+  assert.equal(resizer.style.right, 'auto')
+
+  // Hover highlight on resizer handle
+  await resizer.listeners.mouseenter()
+  assert.equal(resizer.className, 'side-rail-preview-resizer side-rail-preview-resizer--left side-rail-preview-resizer--hover')
+  await resizer.listeners.mouseleave()
+  assert.equal(resizer.className, 'side-rail-preview-resizer side-rail-preview-resizer--left')
+
+  // Drag right edge of LEFT-rail floating panel past 680px -> grows smoothly with no 680px cap
+  await resizer.listeners.mousedown({ clientX: 360, preventDefault() {}, stopPropagation() {} })
+  assert.equal(rails['is-preview-resizing'], true)
+  assert.equal(leftLane['is-resizing'], true)
+  assert.match(rails['preview-el'].className, /side-rail-preview--resizing/)
+  assert.equal(resizer.className, 'side-rail-preview-resizer side-rail-preview-resizer--left side-rail-preview-resizer--active')
+  assert.equal(r1.mockBody.style.cursor, 'ew-resize')
+
+  await r1.dispatchWindow('mousemove', { clientX: 860 })
+  assert.equal(leftLane.width, 820)
+  assert.equal(leftLane['rendered-width'], 820)
+  assert.equal(rails['preview-header'].style.width, '820px')
+  assert.equal(rails['preview-body'].style.width, '820px')
+
+  // Drag past opposite rail -> clamps to innerWidth - 78 (1440 - 78 = 1362)
+  await r1.dispatchWindow('mousemove', { clientX: 1600 })
+  assert.equal(leftLane.width, 1362)
+  assert.equal(rails['preview-header'].style.width, '1362px')
+
+  // Drag far left -> clamps to 100px minimum
+  await r1.dispatchWindow('mousemove', { clientX: 10 })
+  assert.equal(leftLane.width, 100)
+  assert.equal(rails['preview-header'].style.width, '100px')
+
+  // Set final width to 560px and release
+  rails['preview-el'].clientWidth = 560
+  rails['preview-el'].rect = { top: 64, left: 38, right: 600, width: 562, height: 300 }
+  await r1.dispatchWindow('mousemove', { clientX: 600 })
+  assert.equal(leftLane.width, 560)
+  assert.equal(resizer.style.left, '596px')
+
+  await r1.dispatchWindow('mouseup', {})
+  assert.equal(rails['is-preview-resizing'], false)
+  assert.equal(leftLane['is-resizing'], false)
+  assert.equal(rails['preview-el'].className, 'side-rail-preview side-rail-preview--left side-rail-preview--pinned')
+  assert.equal(resizer.className, 'side-rail-preview-resizer side-rail-preview-resizer--left')
+  assert.equal(r1.mockBody.style.cursor, '')
+  assert.equal(kv.get(`${leftLane.id}.width`), '560')
+  assert.equal((r1.winListeners.mousemove || []).length, 0)
+  assert.equal((r1.winListeners.mouseup || []).length, 0)
+  assert.equal((r1.winListeners.blur || []).length, 0)
+
+  // Restoring LeftLane brings the resized 560px width back into the main workspace and hides preview-resizer
+  await rails['restore-btn'].listeners.click({ stopPropagation() {} })
+  assert.equal(resizer.hidden, true)
+  assert.equal(leftLane['is-minimized'], false)
+  assert.equal(leftLane.width, 560)
+  assert.equal(leftLane.element.style.width, '560px')
+  assert.equal(leftLane.body.style.width, '560px')
+
+  // Minimize RightLane (auto width initially) to RIGHT rail and pin
+  await rightLane['min-right-btn'].listeners.click()
+  const rightIcon = rails['right-items'][0]['icon-el']
+  rightIcon.rect = { top: 120, height: 26, width: 26 }
+  rails['preview-el'].clientWidth = 380
+  rails['preview-el'].rect = { top: 120, left: 1020, right: 1402, width: 382, height: 280 }
+
+  await rightIcon.listeners.click({ stopPropagation() {} })
+  assert.equal(rails['is-preview-pinned'], true)
+  assert.equal(resizer.hidden, false)
+  assert.equal(resizer.className, 'side-rail-preview-resizer side-rail-preview-resizer--right')
+  assert.equal(resizer.attributes['data-rail-side'], 'right')
+  assert.equal(resizer.attributes['data-resize-edge'], 'left')
+  assert.equal(resizer.style.top, '120px')
+  assert.equal(resizer.style.height, '280px')
+  assert.equal(resizer.style.left, '1016px')
+  assert.equal(resizer.style.right, 'auto')
+
+  // Drag LEFT edge of RIGHT-rail floating panel leftward (away from right rail) -> widens panel
+  await resizer.listeners.mousedown({ clientX: 1020, preventDefault() {}, stopPropagation() {} })
+  await r1.dispatchWindow('mousemove', { clientX: 620 })
+  assert.equal(rightLane.width, 780)
+  assert.equal(rightLane['rendered-width'], 780)
+  assert.equal(rails['preview-header'].style.width, '780px')
+  assert.equal(rails['preview-body'].style.width, '780px')
+
+  // Drag rightward toward right rail -> shrinks and clamps to 100px minimum
+  await r1.dispatchWindow('mousemove', { clientX: 1380 })
+  assert.equal(rightLane.width, 100)
+  assert.equal(rails['preview-header'].style.width, '100px')
+
+  // Drag leftward past left rail -> clamps to 1362px
+  await r1.dispatchWindow('mousemove', { clientX: 10 })
+  assert.equal(rightLane.width, 1362)
+
+  // Set final width to 580px and release
+  rails['preview-el'].clientWidth = 580
+  rails['preview-el'].rect = { top: 120, left: 820, right: 1402, width: 582, height: 280 }
+  await r1.dispatchWindow('mousemove', { clientX: 820 })
+  assert.equal(rightLane.width, 580)
+  assert.equal(resizer.style.left, '816px')
+  await r1.dispatchWindow('mouseup', {})
+  assert.equal(kv.get(`${rightLane.id}.width`), '580')
+
+  // Double-click resizer resets RightLane back to auto width
+  await resizer.listeners.dblclick({ preventDefault() {}, stopPropagation() {} })
+  assert.equal(rightLane.width, null)
+  assert.equal(rightLane['rendered-width'], null)
+  assert.equal(rails['preview-header'].style.width, '')
+  assert.equal(rails['preview-body'].style.width, '')
+  assert.equal(kv.get(`${rightLane.id}.width`), '')
+
+  // Hiding preview mid-drag cleanly tears down listeners, cursor, and flags
+  await resizer.listeners.mousedown({ clientX: 1020, preventDefault() {}, stopPropagation() {} })
+  await r1.dispatchWindow('mousemove', { clientX: 900 })
+  assert.equal(rails['is-preview-resizing'], true)
+  await rails['hide-preview']()
+  assert.equal(rails['is-preview-resizing'], false)
+  assert.equal(rightLane['is-resizing'], false)
+  assert.equal(r1.mockBody.style.cursor, '')
+  assert.equal(resizer.hidden, true)
+  assert.equal((r1.winListeners.mousemove || []).length, 0)
+  assert.equal((r1.winListeners.mouseup || []).length, 0)
+  assert.equal((r1.winListeners.blur || []).length, 0)
+
+  // Modal open inside floating panel enforces modal min-width (480px) during drag and permits widening
+  await modalLane['min-left-btn'].listeners.click()
+  const modalIcon = rails['left-items'][0]['icon-el']
+  modalIcon.rect = { top: 48, height: 26, width: 26 }
+  rails['preview-el'].clientWidth = 140
+  rails['preview-el'].rect = { top: 48, left: 38, right: 180, width: 142, height: 300 }
+  await modalIcon.listeners.click({ stopPropagation() {} })
+  assert.equal(rails['preview-header'].style.width, '140px')
+
+  await modalLane['config-btn'].listeners.click()
+  assert.equal(lc['config-modal']['is-open'], true)
+  assert.equal(rails['preview-header'].style.width, '480px')
+  rails['preview-el'].clientWidth = 480
+  rails['preview-el'].rect = { top: 48, left: 38, right: 520, width: 482, height: 420 }
+  await rails['sync-preview-resizer']()
+  assert.equal(resizer.style.left, '516px')
+
+  await resizer.listeners.mousedown({ clientX: 520, preventDefault() {}, stopPropagation() {} })
+  await r1.dispatchWindow('mousemove', { clientX: 250 })
+  assert.equal(modalLane.width, 480)
+  await r1.dispatchWindow('mousemove', { clientX: 660 })
+  assert.equal(modalLane.width, 620)
+  assert.equal(rails['preview-header'].style.width, '620px')
+  await r1.dispatchWindow('mouseup', {})
+  assert.equal(kv.get(`${modalLane.id}.width`), '620')
+  await lc['config-modal'].close()
+  assert.equal(rails['preview-header'].style.width, '620px')
+
+  // Full app reload preserves resized floating panel width
+  const r2 = createRuntime(r1.mockWindow.location.pathname)
+  await r2.f.run(parse(mainSource, '/src/main.fs'))
+  const r2ModalLane = r2.f.state.lanes[2]
+  const r2Rails = r2.f.state['lane-control'].rails
+  assert.equal(r2ModalLane.width, 620)
+  assert.equal(r2ModalLane['is-minimized'], true)
+  const r2Icon = r2Rails['left-items'][0]['icon-el']
+  await r2Icon.listeners.click({ stopPropagation() {} })
+  assert.equal(r2Rails['preview-header'].style.width, '620px')
+  assert.equal(r2Rails['preview-body'].style.width, '620px')
+  assert.equal(r2Rails['preview-resizer'].hidden, false)
+  assert.equal(r2Rails['preview-resizer'].attributes['data-resize-edge'], 'right')
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
