@@ -5,6 +5,7 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { EventEmitter } from 'node:events'
+import { spawn } from 'node:child_process'
 import {
  DATA_RUNTIME_ENV,
  DEFAULT_KV_CHUNK_BYTES,
@@ -24,11 +25,16 @@ import {
  agentGetLane,
  agentMutateLaneScript,
  agentMutateLaneTable,
+ bindSecretStoreToKv,
  buildBreadcrumbs,
  buildDataUrl,
+ checkExportTargetsAccess,
+ closePackageInSession,
  createAgentEventHub,
  createCapabilityToken,
+ createDataProxyHandler,
  createDirectory,
+ createFileBackedServerSecretStore,
  createIdleTracker,
  createNewSession,
  createPackage,
@@ -52,6 +58,8 @@ import {
  httpKV,
  initSessionState,
  inspectSessionForAgent,
+ isAllowedLocalHost,
+ isAllowedLocalOrigin,
  kvDeleteChunked,
  kvGetChunked,
  kvSetChunked,
@@ -68,9 +76,11 @@ import {
  loadLaneSecretRecord,
  loadLaneTables,
  normalizeDataDir,
+ normalizeExportTargetsAndValue,
  normalizeKvChunkBytes,
  normalizePrimitiveType,
  normalizeSessionLinkIds,
+ openPackageInSession,
  packageLaneKey,
  packageModalSource,
  parse,
@@ -93,11 +103,13 @@ import {
  setLaneSecret,
  setSessionDataDir,
  setSessionLinks,
+ spawnPty,
  splitUtf8Chunks,
  switchBrowserSession,
  tableRowKey,
  tableSchemaKey,
  unescapeMountPath,
+ unlockPackagesForExport,
  utf8ByteLength,
  writePagedIds,
 } from './field.fixtures.mjs'
@@ -3596,5 +3608,633 @@ test('Intermediate pending session status (Loading… / Saving…) prevents Unsa
  }
  finally {
   globalThis.fetch = origFetch
+ }
+})
+
+function createSwitchableBackendKvForAgentTests() {
+ const storesByDir = new Map()
+ const accesses = []
+ const getStore = dir => {
+  const slot = dir === null || dir === undefined ? '__default__' : String(dir)
+  if (!storesByDir.has(slot)) {
+   storesByDir.set(slot, new Map())
+  }
+  return storesByDir.get(slot)
+ }
+ const makeClient = (namespace = '', basePath = null, rootRef = null, defaultRootRef = null) => {
+  const isHash = namespace.includes('#')
+  const qualify = k => (
+   isHash
+    ? (namespace.endsWith('#') ? `${namespace}${k}` : `${namespace}/${k}`)
+    : (namespace ? `${namespace}.${k}` : String(k))
+  )
+  const store = getStore(basePath)
+  const client = {
+   prefix: namespace,
+   basePath,
+   root: rootRef || null,
+   defaultRoot: defaultRootRef || null,
+   withBasePath(nextPath) {
+    const clean = nextPath === null || nextPath === undefined || String(nextPath).trim() === ''
+     ? null
+     : String(nextPath).trim()
+    return makeClient('', clean, null, defaultClient)
+   },
+   namespace(name) {
+    const nextNs = isHash ? qualify(encodeKeySegment(name)) : qualify(name)
+    return makeClient(nextNs, basePath, client.root, client.defaultRoot)
+   },
+   hashNamespace(name) {
+    return makeClient(`${encodeKeySegment(name)}#`, basePath, client.root, client.defaultRoot)
+   },
+   async get(key) {
+    const full = qualify(key)
+    accesses.push({ op: 'get', basePath, key: full })
+    return store.has(full) ? store.get(full) : null
+   },
+   async set(key, value) {
+    const full = qualify(key)
+    accesses.push({ op: 'set', basePath, key: full })
+    store.set(full, String(value))
+   },
+   async delete(key) {
+    const full = qualify(key)
+    accesses.push({ op: 'delete', basePath, key: full })
+    store.delete(full)
+   },
+  }
+  if (!client.root) client.root = client
+  if (!client.defaultRoot) client.defaultRoot = basePath === null ? client : defaultClient
+  return client
+ }
+ const defaultClient = makeClient('', null, null, null)
+ return Object.assign(defaultClient, { storesByDir, accesses })
+}
+
+function runCliSubprocess(args, { stdinText = '', env = {} } = {}) {
+ return new Promise((resolve, reject) => {
+  const cliPath = new URL('./cc', import.meta.url).pathname
+  const child = spawn(process.execPath, [cliPath, ...args], {
+   env: { ...process.env, ...env },
+   stdio: ['pipe', 'pipe', 'pipe'],
+  })
+  const outChunks = []
+  const errChunks = []
+  child.stdout.on('data', c => outChunks.push(c))
+  child.stderr.on('data', c => errChunks.push(c))
+  child.on('error', reject)
+  child.on('close', code => {
+   resolve({
+    code,
+    stdout: Buffer.concat(outChunks).toString('utf8'),
+    stderr: Buffer.concat(errChunks).toString('utf8'),
+   })
+  })
+  if (stdinText) {
+   child.stdin.write(stdinText)
+  }
+  child.stdin.end()
+ })
+}
+
+test('exportLaneLine enforces atomic package-lock gating, HTTP 403 / MCP isError, unlockPackagesForExport, and table trigger propagation', async () => {
+ const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-export-lock-api-'))
+ const vaultFile = path.join(tmpDir, 'secrets', 'vault-secrets.json')
+ const backendKv = createSwitchableBackendKvForAgentTests()
+ const secretStore = createFileBackedServerSecretStore({ filePath: vaultFile, useEnv: false })
+ const proxy = createDataProxyHandler({ backendKv, secretStore, setAsDefaultStore: false })
+ const eventHub = createAgentEventHub()
+ const emittedEvents = []
+ const unsub = eventHub.subscribe(ev => emittedEvents.push(ev))
+
+ const server = http.createServer((req, res) => {
+  if (!isAllowedLocalHost(req, { requireHost: true })) {
+   res.writeHead(403)
+   res.end('Forbidden')
+   return
+  }
+  const pathname = (req.url || '/').split('?')[0]
+  if (pathname === '/api/mcp' || pathname === '/api/agent' || pathname.startsWith('/api/agent/')) {
+   return handleAgentApiRequest(req, res, {
+    secretStore,
+    createAuthorizedRootKv: proxy.createAuthorizedRootKv,
+    eventHub,
+   })
+  }
+  if (pathname === '/api/vault' || pathname.startsWith('/api/vault/')) {
+   return proxy.handleVaultApiRequest(req, res)
+  }
+  if (pathname === '/api/data' || pathname.startsWith('/api/data/')) {
+   return proxy.handleDataProxyRequest(req, res)
+  }
+  res.writeHead(404)
+  res.end('Not found')
+ })
+
+ try {
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const port = server.address().port
+  const origin = `http://127.0.0.1:${port}`
+  const dataUrl = `${origin}/api/data?mode=disk`
+
+  const client = httpKV({ baseUrl: dataUrl, switchable: true, proxyCapabilities: true })
+  const win = {}
+  const sess = await initSessionState(client, win)
+  const dirPath = path.join(tmpDir, 'workspace')
+  await fs.mkdir(dirPath, { recursive: true })
+  const dirRes = await setSessionDataDir(client, win, sess.sessionId, { dataDir: dirPath })
+  assert.equal(dirRes.ok, true)
+  const workClient = client.setBasePath(dirPath)
+
+  const pkgConfirmRes = await createPackage(workClient, sess.sessionId, { name: 'ConfirmOnly', passphrase: '' }, win)
+  assert.equal(pkgConfirmRes.ok, true)
+  const pkgConfirmId = pkgConfirmRes.pkg.id
+
+  const pkgVaultRes = await createPackage(workClient, sess.sessionId, { name: 'VaultBox', passphrase: 'vault-secret-99' }, win)
+  assert.equal(pkgVaultRes.ok, true)
+  const pkgVaultId = pkgVaultRes.pkg.id
+
+  const openTargetId = 'lane-exp-open'
+  const closedTargetId = 'lane-exp-closed'
+  const vaultTargetId = 'lane-exp-vault'
+  const sourceId = 'lane-exp-source'
+
+  await registerLaneInPackage(workClient, openTargetId, 'Open Target', DEFAULT_PACKAGE_ID)
+  await workClient.namespace(openTargetId).set('title', 'Open Target')
+  await saveLaneScript(workClient, workClient.namespace(openTargetId), openTargetId, [
+   { id: 'ln-open-1', text: '; to x "init"' },
+  ])
+
+  await registerLaneInPackage(workClient, closedTargetId, 'Closed Target', pkgConfirmId)
+  await workClient.namespace(closedTargetId).set('title', 'Closed Target')
+  await saveLaneScript(workClient, workClient.namespace(closedTargetId), closedTargetId, [
+   { id: 'ln-closed-1', text: '; to x "init"' },
+  ])
+
+  await registerLaneInPackage(workClient, vaultTargetId, 'Vault Target', pkgVaultId)
+  await workClient.namespace(vaultTargetId).set('title', 'Vault Target')
+  await saveLaneScript(workClient, workClient.namespace(vaultTargetId), vaultTargetId, [
+   { id: 'ln-vault-1', text: '; to x "init"' },
+  ])
+
+  await registerLaneInPackage(workClient, sourceId, 'Source Lane', DEFAULT_PACKAGE_ID)
+  await workClient.namespace(sourceId).set('title', 'Source Lane')
+  await addLaneTable(workClient, workClient.namespace(sourceId), sourceId, {
+   id: 'tbl-trigger',
+   name: 'items',
+   columns: [{ id: 'col-k', name: 'k', type: 'text' }],
+   rows: [],
+  }, ['tbl-trigger'])
+  await saveLaneScript(workClient, workClient.namespace(sourceId), sourceId, [
+   {
+    id: 'ln-src-1',
+    text: `!exportLaneLine { [ ; object { laneId '${openTargetId}' } { lineId 'ln-open-1' } ] [ ; object { laneId '${closedTargetId}' } { lineId 'ln-closed-1' } ] [ ; object { laneId '${vaultTargetId}' } { lineId 'ln-vault-1' } ] } '; to x "updated-multi"'`,
+   },
+   {
+    id: 'ln-src-2',
+    text: `!setLaneLine '${vaultTargetId}' 'ln-vault-1' '; to x "updated-3arg"'`,
+   },
+  ])
+
+  // Verify helper normalization directly
+  const normMulti = normalizeExportTargetsAndValue(
+   [{ laneId: openTargetId, lineId: 'ln-open-1' }, { laneId: closedTargetId, lineNumber: 1 }],
+   '; to v 1'
+  )
+  assert.equal(normMulti.targets.length, 2)
+  assert.equal(normMulti.text, '; to v 1')
+  const norm3Arg = normalizeExportTargetsAndValue(vaultTargetId, 1, '; to v 2')
+  assert.deepEqual(norm3Arg, { targets: [{ laneId: vaultTargetId, lineId: '1' }], text: '; to v 2' })
+
+  // Close both packages so ConfirmOnly (no passphrase) and VaultBox (passphrase) require user unlock
+  await closePackageInSession(workClient, sess.sessionId, pkgConfirmId, win)
+  await closePackageInSession(workClient, sess.sessionId, pkgVaultId, win)
+
+  const preAccess = await checkExportTargetsAccess(
+   workClient,
+   [DEFAULT_PACKAGE_ID],
+   [
+    { laneId: openTargetId, lineId: 'ln-open-1' },
+    { laneId: closedTargetId, lineId: 'ln-closed-1' },
+    { laneId: vaultTargetId, lineId: 'ln-vault-1' },
+   ],
+   sourceId
+  )
+  assert.equal(preAccess.allowed, false)
+  assert.equal(preAccess.requiresPackageUnlock, true)
+  assert.deepEqual(preAccess.lockedPackages.map(p => [p.packageId, p.hasPassphrase]), [
+   [pkgConfirmId, false],
+   [pkgVaultId, true],
+  ])
+
+  // Track raw backend reads/writes during locked export eval
+  const accessStart = backendKv.accesses.length
+
+  // 1. Read-only agentEvalLane succeeds without modifying targets
+  const readOnlyOut = await agentEvalLane(workClient, {
+   sessionId: sess.sessionId,
+   dataDir: dirPath,
+   laneId: sourceId,
+   applyExports: false,
+  })
+  assert.equal(readOnlyOut.ok, true)
+  assert.equal(Boolean(readOnlyOut.requiresPackageUnlock), false)
+  assert.equal(readOnlyOut.errorCount, 0, JSON.stringify(readOnlyOut.lines))
+  assert.equal(JSON.parse(readOnlyOut.lines[0].preview).requiresPackageUnlock, true)
+  assert.equal(JSON.parse(readOnlyOut.lines[1].preview).requiresPackageUnlock, true)
+
+  // 2. applyExports: true via agentEvalLane holds ALL exports atomically (including Open Target!)
+  const lockedEval = await agentEvalLane(workClient, {
+   sessionId: sess.sessionId,
+   dataDir: dirPath,
+   laneId: sourceId,
+   applyExports: true,
+   eventHub,
+  })
+  const evalAccessEnd = backendKv.accesses.length
+  assert.equal(lockedEval.ok, false)
+  assert.equal(lockedEval.accessDenied, true)
+  assert.equal(lockedEval.requiresPackageUnlock, true)
+  assert.equal(lockedEval.changedExportLaneIds.length, 0)
+  assert.equal(lockedEval.lockedPackages.length, 2)
+  assert.equal(lockedEval.pendingExports.length, 2)
+
+  // Assert Open Target in Default package was NOT modified (atomic per-export-call staging)
+  const rawWorkKv = backendKv.withBasePath(dirPath)
+  const openAfterHold = await loadLaneScript(rawWorkKv, rawWorkKv.namespace(openTargetId), openTargetId)
+  assert.equal(openAfterHold.records[0].text, '; to x "init"')
+  const closedAfterHold = await loadLaneScript(rawWorkKv, rawWorkKv.namespace(closedTargetId), closedTargetId)
+  assert.equal(closedAfterHold.records[0].text, '; to x "init"')
+  const vaultAfterHold = await loadLaneScript(rawWorkKv, rawWorkKv.namespace(vaultTargetId), vaultTargetId)
+  assert.equal(vaultAfterHold.records[0].text, '; to x "init"')
+
+  // Assert zero reads or writes touched closedTarget / vaultTarget script keys during evals while locked
+  const lockedTouchedKeys = backendKv.accesses.slice(accessStart, evalAccessEnd).filter(
+   a => a.key.includes(`lanes#${closedTargetId}/script`) || a.key.includes(`lanes#${vaultTargetId}/script`)
+  )
+  assert.deepEqual(lockedTouchedKeys, [])
+
+  // Assert SSE event was emitted
+  assert.ok(emittedEvents.some(ev => ev.type === 'export-unlock-required' && ev.lockedPackages.length === 2))
+
+  // 3. Explicit empty openPackageIds = [] must enforce locks (even on Default package targets)
+  const emptyAccessCheck = await checkExportTargetsAccess(
+   workClient,
+   [],
+   [{ laneId: openTargetId, lineId: 'ln-open-1' }],
+   sourceId
+  )
+  assert.equal(emptyAccessCheck.allowed, false)
+  assert.ok(emptyAccessCheck.lockedPackages.some(p => p.packageId === DEFAULT_PACKAGE_ID))
+  const emptyPkgEval = await agentEvalLane(workClient, {
+   sessionId: sess.sessionId,
+   dataDir: dirPath,
+   laneId: sourceId,
+   applyExports: true,
+   openPackageIds: [],
+  })
+  assert.equal(emptyPkgEval.ok, false)
+  assert.equal(emptyPkgEval.requiresPackageUnlock, true, JSON.stringify(emptyPkgEval))
+
+  // 4. HTTP POST /api/agent/lane/eval returns 403 + structured lockedPackages
+  const httpEvalResp = await fetch(`${origin}/api/agent/lane/eval`, {
+   method: 'POST',
+   headers: {
+    'Content-Type': 'application/json',
+    [SESSION_TOKEN_HEADER]: client.getSessionToken(),
+   },
+   body: JSON.stringify({
+    sessionId: sess.sessionId,
+    dataDir: dirPath,
+    laneId: sourceId,
+    applyExports: true,
+   }),
+  })
+  assert.equal(httpEvalResp.status, 403)
+  const httpEvalJson = await httpEvalResp.json()
+  assert.equal(httpEvalJson.ok, false)
+  assert.equal(httpEvalJson.accessDenied, true)
+  assert.equal(httpEvalJson.requiresPackageUnlock, true)
+  assert.equal(httpEvalJson.lockedPackages.length, 2)
+
+  // 5. MCP cc_eval_lane returns isError: true + structuredContent
+  const mcpResp = await fetch(`${origin}/api/mcp`, {
+   method: 'POST',
+   headers: {
+    'Content-Type': 'application/json',
+    [SESSION_TOKEN_HEADER]: client.getSessionToken(),
+   },
+   body: JSON.stringify({
+    jsonrpc: '2.0',
+    id: 77,
+    method: 'tools/call',
+    params: {
+     name: 'cc_eval_lane',
+     arguments: {
+      sessionId: sess.sessionId,
+      dataDir: dirPath,
+      laneId: sourceId,
+      applyExports: true,
+     },
+    },
+   }),
+  })
+  assert.equal(mcpResp.status, 200)
+  const mcpJson = await mcpResp.json()
+  assert.equal(mcpJson.result.isError, true)
+  assert.equal(mcpJson.result.structuredContent.requiresPackageUnlock, true)
+  assert.equal(mcpJson.result.structuredContent.lockedPackages.length, 2)
+
+  // 6. agentMutateLaneTable surfaces triggeredEval.requiresPackageUnlock and still holds exports
+  const tableAddRes = await agentMutateLaneTable(workClient, {
+   sessionId: sess.sessionId,
+   dataDir: dirPath,
+   laneId: sourceId,
+   tableName: 'items',
+   action: 'add-row',
+   values: { k: 'row-1' },
+  })
+  assert.equal(tableAddRes.ok, true, JSON.stringify(tableAddRes))
+  assert.equal(tableAddRes.triggeredEval.requiresPackageUnlock, true)
+  assert.equal((await loadLaneScript(rawWorkKv, rawWorkKv.namespace(openTargetId), openTargetId)).records[0].text, '; to x "init"')
+
+  const tableDelRes = await agentMutateLaneTable(workClient, {
+   sessionId: sess.sessionId,
+   dataDir: dirPath,
+   laneId: sourceId,
+   tableName: 'items',
+   action: 'delete-row',
+   rowId: tableAddRes.row.id,
+  })
+  assert.equal(tableDelRes.ok, true)
+  assert.equal(tableDelRes.triggeredEval.requiresPackageUnlock, true)
+
+  const tableClearRes = await agentMutateLaneTable(workClient, {
+   sessionId: sess.sessionId,
+   dataDir: dirPath,
+   laneId: sourceId,
+   tableName: 'items',
+   action: 'clear-rows',
+  })
+  assert.equal(tableClearRes.ok, true)
+  assert.equal(tableClearRes.triggeredEval.requiresPackageUnlock, true)
+
+  // 7. unlockPackagesForExport: mid-queue cancel leaves VaultBox closed and exports held
+  const cancelRes = await unlockPackagesForExport(workClient, {
+   sessionId: sess.sessionId,
+   lockedPackages: lockedEval.lockedPackages,
+   promptConfirmOpen: async () => true,
+   promptPassphrase: async () => '',
+  })
+  assert.equal(cancelRes.ok, false)
+  assert.equal(cancelRes.cancelled, true)
+  assert.deepEqual(cancelRes.openedPackageIds, [pkgConfirmId])
+
+  // Even with ConfirmOnly open, VaultBox is still closed -> Open Target STILL held during re-eval!
+  const partialHoldEval = await agentEvalLane(workClient, {
+   sessionId: sess.sessionId,
+   dataDir: dirPath,
+   laneId: sourceId,
+   applyExports: true,
+  })
+  assert.equal(partialHoldEval.ok, false)
+  assert.equal(partialHoldEval.requiresPackageUnlock, true)
+  assert.deepEqual(partialHoldEval.lockedPackages.map(p => p.packageId), [pkgVaultId])
+  assert.equal((await loadLaneScript(rawWorkKv, rawWorkKv.namespace(closedTargetId), closedTargetId)).records[0].text, '; to x "init"')
+  assert.equal((await loadLaneScript(rawWorkKv, rawWorkKv.namespace(openTargetId), openTargetId)).records[0].text, '; to x "init"')
+
+  // Wrong passphrase exhausts maxPassphraseAttempts
+  let wrongCount = 0
+  const maxFailRes = await unlockPackagesForExport(workClient, {
+   sessionId: sess.sessionId,
+   lockedPackages: partialHoldEval.lockedPackages,
+   maxPassphraseAttempts: 2,
+   promptPassphrase: async () => {
+    wrongCount += 1
+    return 'wrong-pass'
+   },
+  })
+  assert.equal(maxFailRes.ok, false)
+  assert.equal(wrongCount, 2)
+
+  // Wrong once then right passphrase succeeds, allowing applyExports run to write all targets
+  const passSequence = ['wrong-first', 'vault-secret-99']
+  const openedNotifs = []
+  const unlockOk = await unlockPackagesForExport(workClient, {
+   sessionId: sess.sessionId,
+   lockedPackages: partialHoldEval.lockedPackages,
+   maxPassphraseAttempts: 3,
+   promptPassphrase: async () => passSequence.shift() || '',
+   onPackageOpened: async pkg => { openedNotifs.push(pkg.packageId) },
+  })
+  assert.equal(unlockOk.ok, true)
+  assert.deepEqual(unlockOk.openedPackageIds, [pkgVaultId])
+  assert.deepEqual(openedNotifs, [pkgVaultId])
+
+  const appliedEval = await agentEvalLane(workClient, {
+   sessionId: sess.sessionId,
+   dataDir: dirPath,
+   laneId: sourceId,
+   applyExports: true,
+  })
+  assert.equal(appliedEval.ok, true)
+  assert.equal(Boolean(appliedEval.requiresPackageUnlock), false)
+
+  const openAfterApply = await loadLaneScript(rawWorkKv, rawWorkKv.namespace(openTargetId), openTargetId)
+  const closedAfterApply = await loadLaneScript(rawWorkKv, rawWorkKv.namespace(closedTargetId), closedTargetId)
+  const vaultAfterApply = await loadLaneScript(rawWorkKv, rawWorkKv.namespace(vaultTargetId), vaultTargetId)
+  assert.equal(openAfterApply.records[0].text, '; to x "updated-multi"')
+  assert.equal(closedAfterApply.records[0].text, '; to x "updated-multi"')
+  assert.equal(vaultAfterApply.records[0].text, '; to x "updated-3arg"')
+  assert.equal(closedAfterApply.records[0].setBy.laneId, sourceId)
+  assert.equal(vaultAfterApply.records[0].setBy.laneId, sourceId)
+ }
+ finally {
+  unsub()
+  if (typeof server.closeAllConnections === 'function') server.closeAllConnections()
+  await new Promise(resolve => server.close(resolve))
+  await fs.rm(tmpDir, { recursive: true, force: true })
+ }
+})
+
+test('./cc CLI eval --apply-exports --no-prompt and ./cc open-package enforce export locks via loopback proxy server', async () => {
+ const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-cli-export-lock-'))
+ const vaultFile = path.join(tmpDir, 'secrets', 'vault-secrets.json')
+ const backendKv = createSwitchableBackendKvForAgentTests()
+ const secretStore = createFileBackedServerSecretStore({ filePath: vaultFile, useEnv: false })
+ const proxy = createDataProxyHandler({ backendKv, secretStore, setAsDefaultStore: false })
+ const eventHub = createAgentEventHub()
+ const emittedEvents = []
+ const unsub = eventHub.subscribe(ev => emittedEvents.push(ev))
+
+ const server = http.createServer((req, res) => {
+  if (!isAllowedLocalHost(req, { requireHost: true })) {
+   res.writeHead(403)
+   res.end('Forbidden')
+   return
+  }
+  const pathname = (req.url || '/').split('?')[0]
+  if (pathname === '/api/mcp' || pathname === '/api/agent' || pathname.startsWith('/api/agent/')) {
+   return handleAgentApiRequest(req, res, {
+    secretStore,
+    createAuthorizedRootKv: proxy.createAuthorizedRootKv,
+    eventHub,
+   })
+  }
+  if (pathname === '/api/vault' || pathname.startsWith('/api/vault/')) {
+   return proxy.handleVaultApiRequest(req, res)
+  }
+  if (pathname === '/api/data' || pathname.startsWith('/api/data/')) {
+   return proxy.handleDataProxyRequest(req, res)
+  }
+  res.writeHead(404)
+  res.end('Not found')
+ })
+
+ try {
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const port = server.address().port
+  const origin = `http://127.0.0.1:${port}`
+  const client = httpKV({ baseUrl: `${origin}/api/data?mode=disk`, switchable: true, proxyCapabilities: true })
+  const win = {}
+  const sess = await initSessionState(client, win)
+  const dirPath = path.join(tmpDir, 'workspace')
+  await fs.mkdir(dirPath, { recursive: true })
+  const dirRes = await setSessionDataDir(client, win, sess.sessionId, { dataDir: dirPath })
+  assert.equal(dirRes.ok, true)
+  const workClient = client.setBasePath(dirPath)
+
+  const pkgConfirmRes = await createPackage(workClient, sess.sessionId, { name: 'CliConfirm', passphrase: '' }, win)
+  const pkgVaultRes = await createPackage(workClient, sess.sessionId, { name: 'CliVault', passphrase: 'cli-pass-42' }, win)
+
+  await registerLaneInPackage(workClient, 'cli-open-tgt', 'CliOpen', DEFAULT_PACKAGE_ID)
+  await saveLaneScript(workClient, workClient.namespace('cli-open-tgt'), 'cli-open-tgt', [{ id: 'o1', text: '; to v 0' }])
+
+  await registerLaneInPackage(workClient, 'cli-confirm-tgt', 'CliConfirmTgt', pkgConfirmRes.pkg.id)
+  await saveLaneScript(workClient, workClient.namespace('cli-confirm-tgt'), 'cli-confirm-tgt', [{ id: 'c1', text: '; to v 0' }])
+
+  await registerLaneInPackage(workClient, 'cli-vault-tgt', 'CliVaultTgt', pkgVaultRes.pkg.id)
+  await saveLaneScript(workClient, workClient.namespace('cli-vault-tgt'), 'cli-vault-tgt', [{ id: 'v1', text: '; to v 0' }])
+
+  await registerLaneInPackage(workClient, 'cli-src', 'CliSource', DEFAULT_PACKAGE_ID)
+  await saveLaneScript(workClient, workClient.namespace('cli-src'), 'cli-src', [
+   { id: 's1', text: "!exportLaneLine { [ ; object { laneId 'cli-open-tgt' } { lineId 'o1' } ] [ ; object { laneId 'cli-confirm-tgt' } { lineId 'c1' } ] } '; to v 11'" },
+   { id: 's2', text: "!setLaneLine 'cli-vault-tgt' 'v1' '; to v 22'" },
+  ])
+
+  await closePackageInSession(workClient, sess.sessionId, pkgConfirmRes.pkg.id, win)
+  await closePackageInSession(workClient, sess.sessionId, pkgVaultRes.pkg.id, win)
+
+  // 1. ./cc eval --apply-exports --no-prompt exits 1, emits export-unlock-required, and holds all writes
+  const lockedCli = await runCliSubprocess([
+   'eval', 'cli-src',
+   '--session', sess.sessionId,
+   '--dir', dirPath,
+   '--apply-exports',
+   '--no-prompt',
+   '--host', origin,
+  ])
+  assert.equal(lockedCli.code, 1, `stderr: ${lockedCli.stderr}\nstdout: ${lockedCli.stdout}`)
+  const lockedJson = JSON.parse(lockedCli.stdout)
+  assert.equal(lockedJson.ok, false)
+  assert.equal(lockedJson.requiresPackageUnlock, true)
+  assert.equal(lockedJson.lockedPackages.length, 2, `lockedJson=${JSON.stringify(lockedJson)}`)
+  assert.ok(emittedEvents.some(ev => ev.type === 'export-unlock-required' && ev.laneId === 'cli-src'))
+
+  const rawWorkKv = backendKv.withBasePath(dirPath)
+  assert.equal((await loadLaneScript(rawWorkKv, rawWorkKv.namespace('cli-open-tgt'), 'cli-open-tgt')).records[0].text, '; to v 0')
+
+  // 2. Wrong passphrase fails ./cc open-package cleanly
+  const wrongVaultCli = await runCliSubprocess([
+   'open-package', pkgVaultRes.pkg.id,
+   '--passphrase', 'wrong-pw',
+   '--session', sess.sessionId,
+   '--dir', dirPath,
+   '--host', origin,
+  ])
+  assert.equal(wrongVaultCli.code, 1)
+  assert.equal(JSON.parse(wrongVaultCli.stdout).ok, false)
+
+  // 3. ./cc open-package unlocks non-passphrase package across processes and emits package-opened
+  const openConfirmCli = await runCliSubprocess([
+   'open-package', pkgConfirmRes.pkg.id,
+   '--session', sess.sessionId,
+   '--dir', dirPath,
+   '--host', origin,
+  ])
+  assert.equal(openConfirmCli.code, 0, openConfirmCli.stderr || openConfirmCli.stdout)
+  assert.equal(JSON.parse(openConfirmCli.stdout).ok, true)
+  assert.ok(emittedEvents.some(ev => ev.type === 'package-opened' && ev.packageId === pkgConfirmRes.pkg.id))
+
+  // Subsequent --no-prompt eval sees CliConfirm open (s1 writes) while CliVault stays locked (capability-isolated)
+  const partialCli = await runCliSubprocess([
+   'eval', 'cli-src',
+   '--session', sess.sessionId,
+   '--dir', dirPath,
+   '--apply-exports',
+   '--no-prompt',
+   '--host', origin,
+  ])
+  assert.equal(partialCli.code, 1)
+  const partialJson = JSON.parse(partialCli.stdout)
+  assert.equal(partialJson.requiresPackageUnlock, true)
+  assert.deepEqual(partialJson.lockedPackages.map(p => p.packageId), [pkgVaultRes.pkg.id])
+  assert.equal((await loadLaneScript(rawWorkKv, rawWorkKv.namespace('cli-vault-tgt'), 'cli-vault-tgt')).records[0].text, '; to v 0')
+
+  // ./cc open-package unlocks passphrase package too and emits package-opened
+  const openVaultCli = await runCliSubprocess([
+   'open-package', pkgVaultRes.pkg.id,
+   '--passphrase', 'cli-pass-42',
+   '--session', sess.sessionId,
+   '--dir', dirPath,
+   '--host', origin,
+  ])
+  assert.equal(openVaultCli.code, 0, openVaultCli.stderr || openVaultCli.stdout)
+  assert.equal(JSON.parse(openVaultCli.stdout).ok, true)
+  assert.ok(emittedEvents.some(ev => ev.type === 'package-opened' && ev.packageId === pkgVaultRes.pkg.id))
+
+  // Reset targets via raw backend KV & close both packages before testing single-process interactive PTY unlock + retry
+  await saveLaneScript(rawWorkKv, rawWorkKv.namespace('cli-open-tgt'), 'cli-open-tgt', [{ id: 'o1', text: '; to v 0' }])
+  await saveLaneScript(rawWorkKv, rawWorkKv.namespace('cli-confirm-tgt'), 'cli-confirm-tgt', [{ id: 'c1', text: '; to v 0' }])
+  await saveLaneScript(rawWorkKv, rawWorkKv.namespace('cli-vault-tgt'), 'cli-vault-tgt', [{ id: 'v1', text: '; to v 0' }])
+  await closePackageInSession(workClient, sess.sessionId, pkgConfirmRes.pkg.id, win)
+  await closePackageInSession(workClient, sess.sessionId, pkgVaultRes.pkg.id, win)
+
+  // 4. Interactive TTY ./cc eval --apply-exports prompts to confirm & enter passphrase (muted), retries, and writes all targets
+  const cliPath = new URL('./cc', import.meta.url).pathname
+  const pty = spawnPty({
+   command: process.execPath,
+   args: [cliPath, 'eval', 'cli-src', '--session', sess.sessionId, '--dir', dirPath, '--apply-exports', '--host', origin],
+  })
+  let ptyBuf = ''
+  let sentConfirm = false
+  let sentPass = false
+  pty.onData(chunk => {
+   ptyBuf += chunk
+   if (!sentConfirm && ptyBuf.includes('[y/N]:')) {
+    sentConfirm = true
+    pty.write('y\n')
+   }
+   if (sentConfirm && !sentPass && ptyBuf.includes('Enter passphrase to unlock package')) {
+    sentPass = true
+    pty.write('cli-pass-42\n')
+   }
+  })
+  const ptyExitCode = await new Promise(resolve => {
+   pty.onExit(resolve)
+  })
+  assert.equal(ptyExitCode, 0, ptyBuf)
+  assert.equal(sentConfirm, true)
+  assert.equal(sentPass, true)
+  assert.ok(!ptyBuf.includes('cli-pass-42'), 'Muted secret prompt must not echo passphrase')
+  assert.equal((await loadLaneScript(rawWorkKv, rawWorkKv.namespace('cli-open-tgt'), 'cli-open-tgt')).records[0].text, '; to v 11', ptyBuf)
+  assert.equal((await loadLaneScript(rawWorkKv, rawWorkKv.namespace('cli-confirm-tgt'), 'cli-confirm-tgt')).records[0].text, '; to v 11', ptyBuf)
+  assert.equal((await loadLaneScript(rawWorkKv, rawWorkKv.namespace('cli-vault-tgt'), 'cli-vault-tgt')).records[0].text, '; to v 22', ptyBuf)
+ }
+ finally {
+  unsub()
+  if (typeof server.closeAllConnections === 'function') server.closeAllConnections()
+  await new Promise(resolve => server.close(resolve))
+  await fs.rm(tmpDir, { recursive: true, force: true })
  }
 })

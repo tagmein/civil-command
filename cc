@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises'
+import readline from 'node:readline'
+import { Writable } from 'node:stream'
 import {
  DEFAULT_AGENT_DATA_URL,
  agentConfigureLane,
@@ -13,10 +15,12 @@ import {
  agentMutateLaneScript,
  agentMutateLaneTable,
  resolveAgentRootKv,
+ unlockPackagesForExport,
 } from './agent-api.mjs'
 import { resolveAgentRemoteOptions } from './agent-remote.mjs'
 import { SESSION_TOKEN_HEADER } from './data.mjs'
 import { startMcpStdioServer } from './mcp.mjs'
+import { openPackageInSession } from './storage.mjs'
 
 function isCliFlagToken(token) {
  return typeof token === 'string' && token.startsWith('--') && token.length > 2 && !/^\s/.test(token.slice(2))
@@ -82,6 +86,230 @@ async function notifyRunningServer(serverOrigin, rootKv, eventPayload, headers =
  }
 }
 
+function promptLineStderr(question) {
+ return new Promise(resolve => {
+  const rl = readline.createInterface({
+   input: process.stdin,
+   output: process.stderr,
+   terminal: Boolean(process.stdin.isTTY),
+  })
+  let settled = false
+  rl.once('close', () => {
+   if (!settled) {
+    settled = true
+    resolve('')
+   }
+  })
+  rl.question(question, answer => {
+   if (!settled) {
+    settled = true
+    rl.close()
+    resolve(answer)
+   }
+  })
+ })
+}
+
+function promptSecretStderr(question) {
+ return new Promise(resolve => {
+  let muted = false
+  const mutedOut = new Writable({
+   write(chunk, encoding, callback) {
+    if (!muted) {
+     process.stderr.write(chunk, encoding)
+    }
+    callback()
+   },
+  })
+  const rl = readline.createInterface({
+   input: process.stdin,
+   output: mutedOut,
+   terminal: Boolean(process.stdin.isTTY),
+  })
+  let settled = false
+  rl.once('close', () => {
+   if (!settled) {
+    settled = true
+    process.stderr.write('\n')
+    resolve('')
+   }
+  })
+  process.stderr.write(question)
+  muted = true
+  rl.question('', answer => {
+   muted = false
+   if (!settled) {
+    settled = true
+    process.stderr.write('\n')
+    rl.close()
+    resolve(answer)
+   }
+  })
+ })
+}
+
+async function handleLockedExportFallback({
+ rootKv,
+ notify,
+ isInteractive,
+ targetSessionId,
+ dataDir,
+ laneId,
+ laneTitle,
+ lockedPackages,
+ pendingExports,
+ retryEval,
+}) {
+ if (isInteractive && targetSessionId) {
+  process.stderr.write('\nExport writes require opening target package(s) in this session:\n')
+  for (const pkg of lockedPackages) {
+   const label = pkg.packageName && pkg.packageName !== pkg.packageId
+    ? `${pkg.packageName} (${pkg.packageId})`
+    : pkg.packageId
+   const kind = pkg.hasPassphrase ? 'passphrase-protected' : 'closed (no passphrase)'
+   process.stderr.write(`  - ${label} [${kind}]\n`)
+  }
+  const unlockRes = await unlockPackagesForExport(rootKv, {
+   sessionId: targetSessionId,
+   lockedPackages,
+   promptConfirmOpen: async pkg => {
+    const label = pkg.packageName && pkg.packageName !== pkg.packageId
+     ? `${pkg.packageName} (${pkg.packageId})`
+     : pkg.packageId
+    const stepPrefix = pkg.stepTotal > 1 ? `[${pkg.stepIndex}/${pkg.stepTotal}] ` : ''
+    const ans = await promptLineStderr(`${stepPrefix}Open package "${label}" for writing? [y/N]: `)
+    return /^(?:y|yes)$/i.test(String(ans || '').trim())
+   },
+   promptPassphrase: async (pkg, attempt, lastError) => {
+    if (lastError) {
+     process.stderr.write(`${lastError}\n`)
+    }
+    const label = pkg.packageName && pkg.packageName !== pkg.packageId
+     ? `${pkg.packageName} (${pkg.packageId})`
+     : pkg.packageId
+    const stepPrefix = pkg.stepTotal > 1 ? `[${pkg.stepIndex}/${pkg.stepTotal}] ` : ''
+    return promptSecretStderr(`${stepPrefix}Enter passphrase to unlock package "${label}" (empty to cancel): `)
+   },
+   onPackageOpened: async pkg => {
+    await notify({
+     type: 'package-opened',
+     sessionId: targetSessionId,
+     dataDir: dataDir || null,
+     packageId: pkg.packageId,
+    })
+   },
+  })
+  if (unlockRes && unlockRes.ok) {
+   const retried = await retryEval()
+   return { handled: true, unlocked: true, retried }
+  }
+  return { handled: true, unlocked: false, unlockRes }
+ }
+ await notify({
+  type: 'export-unlock-required',
+  sessionId: targetSessionId || null,
+  dataDir: dataDir || null,
+  laneId: laneId || null,
+  laneTitle: laneTitle || '',
+  lockedPackages,
+  pendingExports,
+ })
+ return { handled: false, unlocked: false }
+}
+
+async function handleTableRowWithTrigger({
+ rootKv,
+ notify,
+ isInteractive,
+ sessionId,
+ dataDir,
+ laneQuery,
+ action,
+ tableQuery,
+ rowId,
+ values,
+ rowFlag,
+}) {
+ const out = await agentMutateLaneTable(rootKv, {
+  sessionId,
+  dataDir,
+  laneId: laneQuery,
+  action,
+  table: tableQuery,
+  rowId: rowId || rowFlag,
+  values,
+ })
+ if (out.ok && out.triggeredEval && out.triggeredEval.requiresPackageUnlock && Array.isArray(out.triggeredEval.lockedPackages) && out.triggeredEval.lockedPackages.length > 0) {
+  const sess = await agentGetSession(rootKv, { sessionId, dataDir }).catch(() => null)
+  const targetSessionId = (sess && sess.activeSession && sess.activeSession.id) || sessionId
+  const effectiveDir = (sess && sess.dataDir) || dataDir
+  const unlockAttempt = await handleLockedExportFallback({
+   rootKv,
+   notify,
+   isInteractive,
+   targetSessionId,
+   dataDir: effectiveDir,
+   laneId: out.laneId,
+   laneTitle: out.laneId,
+   lockedPackages: out.triggeredEval.lockedPackages,
+   pendingExports: out.triggeredEval.pendingExports,
+   retryEval: () => agentEvalLane(rootKv, {
+    sessionId: targetSessionId,
+    dataDir: effectiveDir,
+    laneId: out.laneId,
+    applyExports: true,
+    tableChange: {
+     tableId: out.tableId,
+     tableName: out.tableName || tableQuery,
+     rowId: (out.row && out.row.id) || out.deletedRowId || rowId || '',
+     action,
+    },
+   }),
+  })
+  if (unlockAttempt.unlocked && unlockAttempt.retried) {
+   const retried = unlockAttempt.retried
+   out.triggeredEval = {
+    ok: retried.ok,
+    errorCount: retried.errorCount,
+    requiresPackageUnlock: Boolean(retried.requiresPackageUnlock),
+    lockedPackages: Array.isArray(retried.lockedPackages) ? retried.lockedPackages : [],
+    pendingExports: Array.isArray(retried.pendingExports) ? retried.pendingExports : [],
+    error: retried.error || null,
+   }
+   if (retried.ok && Array.isArray(retried.changedExportLaneIds)) {
+    for (const tgtId of retried.changedExportLaneIds) {
+     await notify({
+      type: 'lane-updated',
+      sessionId: targetSessionId || null,
+      dataDir: effectiveDir || null,
+      laneId: tgtId,
+      action: 'export-line',
+     })
+    }
+   }
+  }
+  else if (unlockAttempt.unlockRes && unlockAttempt.unlockRes.error) {
+   out.triggeredEval = { ...out.triggeredEval, unlockError: unlockAttempt.unlockRes.error }
+  }
+ }
+ if (out.ok) {
+  await notify({
+   type: 'lane-updated',
+   laneId: out.laneId,
+   action,
+  })
+  if (out.ownerLaneId) {
+   await notify({
+    type: 'lane-updated',
+    laneId: out.ownerLaneId,
+    action,
+   })
+  }
+ }
+ console.log(JSON.stringify(out, null, 2))
+ if (!out.ok || (out.triggeredEval && out.triggeredEval.requiresPackageUnlock)) process.exitCode = 1
+}
+
 function printHelp() {
  console.log(`Civil Command Agent & Operator CLI (./cc)
 
@@ -90,7 +318,8 @@ Usage:
   ./cc session [sessionIdOrName]
   ./cc lanes [--session <idOrName>]
   ./cc lane <laneIdOrTitle> [--session <idOrName>]
-  ./cc eval <laneIdOrTitle> [--session <idOrName>] [--apply-exports] [--http-get <path>]
+  ./cc eval <laneIdOrTitle> [--session <idOrName>] [--apply-exports] [--no-prompt] [--http-get <path>]
+  ./cc open-package <packageId> [--passphrase <pass>] [--set-active] [--session <idOrName>]
   ./cc create-lane <title> [line1] [line2...] [--session <idOrName>] [--package <pkgId>]
   ./cc set-line <laneIdOrTitle> <lineNumberOrLineId> <text> [--session <idOrName>]
   ./cc append-line <laneIdOrTitle> <text> [--session <idOrName>]
@@ -120,6 +349,7 @@ Remote Host Flags:
 Global Flags:
   --session <idOrName>   Target session by ID or name (defaults to most recently updated session)
   --dir <basePath>       Explicit data directory basePath override
+  --no-prompt            Disable interactive TTY prompts and return structured JSON only
 `)
 }
 
@@ -145,6 +375,7 @@ async function main() {
  const notify = eventPayload => notifyRunningServer(serverOrigin, rootKv, eventPayload, headers)
  const sessionId = typeof flags.session === 'string' ? flags.session : ''
  const dataDir = typeof flags.dir === 'string' ? flags.dir : undefined
+ const isInteractive = Boolean(process.stdin.isTTY && process.stdout.isTTY && !flags['no-prompt'] && !flags.nonInteractive)
 
  if (cmd === 'sessions') {
   const out = await agentListSessions(rootKv)
@@ -193,22 +424,109 @@ async function main() {
    }
    httpRequest = { method: 'POST', url: flags['http-post'], body }
   }
-  const out = await agentEvalLane(rootKv, {
+  let out = await agentEvalLane(rootKv, {
    sessionId,
    dataDir,
    laneId: laneQuery,
    applyExports,
    httpRequest,
   })
+  if (!out.ok && out.requiresPackageUnlock && Array.isArray(out.lockedPackages) && out.lockedPackages.length > 0) {
+   const targetSessionId = (out.activeSession && out.activeSession.id) || sessionId
+   const effectiveDir = out.dataDir || dataDir
+   const unlockAttempt = await handleLockedExportFallback({
+    rootKv,
+    notify,
+    isInteractive,
+    targetSessionId,
+    dataDir: effectiveDir,
+    laneId: out.laneId,
+    laneTitle: out.title,
+    lockedPackages: out.lockedPackages,
+    pendingExports: out.pendingExports,
+    retryEval: () => agentEvalLane(rootKv, {
+     sessionId: targetSessionId,
+     dataDir: effectiveDir,
+     laneId: laneQuery,
+     applyExports: true,
+     httpRequest,
+    }),
+   })
+   if (unlockAttempt.unlocked && unlockAttempt.retried) {
+    out = unlockAttempt.retried
+   }
+   else if (unlockAttempt.unlockRes && unlockAttempt.unlockRes.error) {
+    out = { ...out, unlockError: unlockAttempt.unlockRes.error }
+   }
+  }
   if (out.ok) {
+   const targetSessionId = (out.activeSession && out.activeSession.id) || sessionId || null
+   const effectiveDir = out.dataDir || dataDir || null
    await notify({
     type: 'lane-updated',
+    sessionId: targetSessionId,
+    dataDir: effectiveDir,
     laneId: out.laneId,
     action: 'eval',
    })
+   if (Array.isArray(out.changedExportLaneIds)) {
+    for (const tgtId of out.changedExportLaneIds) {
+     await notify({
+      type: 'lane-updated',
+      sessionId: targetSessionId,
+      dataDir: effectiveDir,
+      laneId: tgtId,
+      action: 'export-line',
+     })
+    }
+   }
   }
   console.log(JSON.stringify(out, null, 2))
   if (!out.ok) process.exitCode = 1
+  return
+ }
+
+ if (cmd === 'open-package') {
+  const packageId = positional[1] || flags.package || flags.id || ''
+  if (!packageId) {
+   console.log(JSON.stringify({ ok: false, error: 'packageId is required' }, null, 2))
+   process.exitCode = 1
+   return
+  }
+  const sess = await agentGetSession(rootKv, { sessionId, dataDir })
+  const targetSessionId = sess && sess.activeSession && sess.activeSession.id ? sess.activeSession.id : sessionId
+  if (!targetSessionId) {
+   console.log(JSON.stringify({ ok: false, error: 'No active session found' }, null, 2))
+   process.exitCode = 1
+   return
+  }
+  let passphrase = typeof flags.passphrase === 'string' ? flags.passphrase : ''
+  const setActive = Boolean(flags['set-active'] || flags.setActive)
+  let res = await openPackageInSession(rootKv, targetSessionId, {
+   packageId,
+   passphrase,
+   setActive,
+  })
+  if (!res.ok && res.needsPassphrase && !passphrase && isInteractive) {
+   passphrase = await promptSecretStderr(`Enter passphrase to unlock package "${res.packageName || packageId}": `)
+   if (passphrase) {
+    res = await openPackageInSession(rootKv, targetSessionId, {
+     packageId,
+     passphrase,
+     setActive,
+    })
+   }
+  }
+  if (res.ok) {
+   await notify({
+    type: 'package-opened',
+    sessionId: targetSessionId,
+    dataDir: (sess && sess.dataDir) || dataDir || null,
+    packageId: res.pkg && res.pkg.id ? res.pkg.id : packageId,
+   })
+  }
+  console.log(JSON.stringify(res, null, 2))
+  if (!res.ok) process.exitCode = 1
   return
  }
 
@@ -409,31 +727,18 @@ async function main() {
   const tableQuery = positional[2] || ''
   const rawJson = positional.slice(3).join(' ') || '{}'
   const values = JSON.parse(rawJson)
-  const out = await agentMutateLaneTable(rootKv, {
+  await handleTableRowWithTrigger({
+   rootKv,
+   notify,
+   isInteractive,
    sessionId,
    dataDir,
-   laneId: laneQuery,
+   laneQuery,
    action: 'add-row',
-   table: tableQuery,
-   rowId: typeof flags.row === 'string' ? flags.row : undefined,
+   tableQuery,
+   rowFlag: typeof flags.row === 'string' ? flags.row : undefined,
    values,
   })
-  if (out.ok) {
-   await notify({
-    type: 'lane-updated',
-    laneId: out.laneId,
-    action: 'add-row',
-   })
-   if (out.ownerLaneId) {
-    await notify({
-     type: 'lane-updated',
-     laneId: out.ownerLaneId,
-     action: 'add-row',
-    })
-   }
-  }
-  console.log(JSON.stringify(out, null, 2))
-  if (!out.ok) process.exitCode = 1
   return
  }
 
@@ -443,31 +748,18 @@ async function main() {
   const rowId = positional[3] || ''
   const rawJson = positional.slice(4).join(' ') || '{}'
   const values = JSON.parse(rawJson)
-  const out = await agentMutateLaneTable(rootKv, {
+  await handleTableRowWithTrigger({
+   rootKv,
+   notify,
+   isInteractive,
    sessionId,
    dataDir,
-   laneId: laneQuery,
+   laneQuery,
    action: 'update-row',
-   table: tableQuery,
+   tableQuery,
    rowId,
    values,
   })
-  if (out.ok) {
-   await notify({
-    type: 'lane-updated',
-    laneId: out.laneId,
-    action: 'update-row',
-   })
-   if (out.ownerLaneId) {
-    await notify({
-     type: 'lane-updated',
-     laneId: out.ownerLaneId,
-     action: 'update-row',
-    })
-   }
-  }
-  console.log(JSON.stringify(out, null, 2))
-  if (!out.ok) process.exitCode = 1
   return
  }
 
@@ -579,30 +871,17 @@ async function main() {
   const laneQuery = positional[1] || ''
   const tableQuery = positional[2] || ''
   const rowId = positional[3] || ''
-  const out = await agentMutateLaneTable(rootKv, {
+  await handleTableRowWithTrigger({
+   rootKv,
+   notify,
+   isInteractive,
    sessionId,
    dataDir,
-   laneId: laneQuery,
+   laneQuery,
    action: 'delete-row',
-   table: tableQuery,
+   tableQuery,
    rowId,
   })
-  if (out.ok) {
-   await notify({
-    type: 'lane-updated',
-    laneId: out.laneId,
-    action: 'delete-row',
-   })
-   if (out.ownerLaneId) {
-    await notify({
-     type: 'lane-updated',
-     laneId: out.ownerLaneId,
-     action: 'delete-row',
-    })
-   }
-  }
-  console.log(JSON.stringify(out, null, 2))
-  if (!out.ok) process.exitCode = 1
   return
  }
 

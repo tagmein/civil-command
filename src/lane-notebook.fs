@@ -900,11 +900,39 @@
       ) }
      ]
     )
+    ; to run-locked-map ; object
+    ; to run-locked-pkgs {}
+    ; to non-export-locked ; object { hit false }
     ; to export-lane-line-fn (
      ; to { first-arg second-arg third-arg } $argv
      ; to exp-res [ match
       { $lane-control.export-lane-line : !lane-control.export-lane-line $nb.lane.id $first-arg $second-arg $third-arg $visited $line-ctx.lineId }
       { true : ; object { ok false } { targets {} } { laneStatuses {} } { changedCount 0 } { needsDeployCount 0 } { error 'Lane control is not available' } }
+     ]
+     [ match
+      { [ and { [ propertyIs true exp-res.requiresPackageUnlock ] } { $exp-res.lockedPackages } ] (
+       ; each $exp-res.lockedPackages (
+        ; to { lp } $argv
+        ; to already-lp [ get run-locked-map $lp.packageId ]
+        [ match
+         { $already-lp : null }
+         { true (
+          ; to run-locked-map $lp.packageId true
+          !run-locked-pkgs.push $lp
+         ) }
+        ]
+       )
+       ; to has-row-idx [ and { [ propertyIs false [ propertyIs null line-ctx.index ] ] } { [ propertyIs false [ propertyIs undefined line-ctx.index ] ] } { [ propertyIsGreaterThanOrEqual 0 line-ctx.index ] } ]
+       ; to cur-row [ match
+        { $has-row-idx : [ get nb.rows $line-ctx.index ] }
+        { true : null }
+       ]
+       ; to is-exp-row [ match
+        { $cur-row : [ propertyIs export cur-row.kind ] }
+        { true : false }
+       ]
+       ; condition { propertyIs false is-exp-row } : ; set true non-export-locked.hit
+      ) }
      ]
      [ match
       { [ and { $trackStoryExportLineCall } { $story-rec } ] (
@@ -998,6 +1026,7 @@
          ; set $res.preview row.preview-el.title
          ; to cls [ match
           { $res.error : 'lane-line-preview lane-line-preview--error' }
+          { [ propertyIs true res.value.requiresPackageUnlock ] : 'lane-line-preview lane-line-preview--error' }
           { $res.isComment : 'lane-line-preview lane-line-preview--comment' }
           { true : 'lane-line-preview' }
          ]
@@ -1015,6 +1044,28 @@
       [ match
        { $server-view.refresh-handlers : !server-view.refresh-handlers $outcome }
       ]
+      ; to modal-already-open [ match
+       { $lane-control.package-modal.is-open : [ propertyIs true lane-control.package-modal.is-open ] }
+       { true : false }
+      ]
+      ; to should-prompt-unlock [ match
+       { [ propertyIs 0 run-locked-pkgs.length ] : false }
+       { $modal-already-open : false }
+       { [ propertyIs true non-export-locked.hit ] : true }
+       { [ propertyIs export trigger ] : true }
+       { [ propertyIs 'table-change' trigger ] : true }
+       { true : false }
+      ]
+      ; condition { and { [ propertyIs true should-prompt-unlock ] } { $lane-control.prompt-unlock-packages-for-export } } (
+       !lane-control.prompt-unlock-packages-for-export [ object
+        { locked-packages $run-locked-pkgs }
+        { source-lane-id $nb.lane.id }
+        { source-lane-title $nb.lane.title }
+        { on-unlocked (
+         !nb.run null false null [ object { trigger export-unlock } ]
+        ) }
+       ]
+      )
       ; to all-blank-box ; object { val true }
       ; each $nb.lines (
        ; to { ln-txt } $argv
@@ -1613,8 +1664,11 @@
   ; set lane-export-deploy-pills pills-el.className
   ; to deploy-btn !document.createElement button
   ; assign $deploy-btn { type button } { className lane-export-deploy-btn } { textContent Deploy } { hidden true }
+  ; to unlock-btn !document.createElement button
+  ; assign $unlock-btn { type button } { className lane-export-unlock-btn } { textContent 'Unlock Package' } { hidden true }
   !deploy-bar-el.appendChild $pills-el
   !deploy-bar-el.appendChild $deploy-btn
+  !deploy-bar-el.appendChild $unlock-btn
 
   !el.appendChild $num-el
   !el.appendChild $control-el
@@ -1637,6 +1691,9 @@
    { deploy-bar-el $deploy-bar-el }
    { pills-el $pills-el }
    { deploy-btn $deploy-btn }
+   { unlock-btn $unlock-btn }
+   { locked-packages {} }
+   { pending-unlock false }
    { last-statuses {} }
    { index 0 }
   ]
@@ -1714,24 +1771,102 @@
    ]
   )
 
+  ; to row.prompt-unlock (
+   -- Prompts user to open or unlock exported-to packages not currently open in this session, then re-runs this lane
+   [ match
+    { [ and { $lane-control.prompt-unlock-packages-for-export } { [ propertyIsGreaterThan 0 row.locked-packages.length ] } ] (
+     !lane-control.prompt-unlock-packages-for-export [ object
+      { locked-packages $row.locked-packages }
+      { source-lane-id $nb.lane.id }
+      { source-lane-title $nb.lane.title }
+      { on-unlocked (
+       !nb.run null false null [ object { trigger export-unlock } ]
+      ) }
+     ]
+    ) }
+   ]
+  )
+
   ; to render-statuses-list (
-   ; to { statuses } $argv
+   ; to { statuses locked-pkgs } $argv
    !clear-pills
    ; set $statuses row.last-statuses
    [ match
     { [ propertyIs 0 statuses.length ] (
+     ; set false row.pending-unlock
+     ; set {} row.locked-packages
      ; set true deploy-bar-el.hidden
      ; set true deploy-btn.hidden
+     ; set true unlock-btn.hidden
     ) }
     { true (
      ; set false deploy-bar-el.hidden
+     ; to eff-locked {}
+     ; to seen-lpkg ; object
+     ; to has-lpkg [ match { $locked-pkgs : [ propertyIsGreaterThan 0 locked-pkgs.length ] } { true : false } ]
+     [ match
+      { $has-lpkg (
+       ; each $locked-pkgs (
+        ; to { lp } $argv
+        [ match
+         { $lp.packageId (
+          ; to already [ get seen-lpkg $lp.packageId ]
+          ; condition { propertyIs undefined already } (
+           ; to seen-lpkg $lp.packageId true
+           !eff-locked.push $lp
+          )
+         ) }
+        ]
+       )
+      ) }
+      { true (
+       ; each $statuses (
+        ; to { st } $argv
+        ; condition { propertyIs package-locked st.status } (
+         [ match
+          { $st.packageId (
+           ; to already [ get seen-lpkg $st.packageId ]
+           ; condition { propertyIs undefined already } (
+            ; to seen-lpkg $st.packageId true
+            !eff-locked.push [ object
+             { packageId $st.packageId }
+             { packageName [ match { $st.packageName : $st.packageName } { true : $st.packageId } ] }
+             { hasPassphrase [ propertyIs true st.hasPassphrase ] }
+            ]
+           )
+          ) }
+         ]
+        )
+       )
+      ) }
+     ]
+     ; set $eff-locked row.locked-packages
+     ; to has-locked [ propertyIsGreaterThan 0 eff-locked.length ]
+     ; set $has-locked row.pending-unlock
      ; to need-n ; object { n 0 }
      ; each $statuses (
       ; to { st } $argv
       ; to pill !document.createElement span
-      ; to lbl [ match { $st.laneTitle : $st.laneTitle } { true : $st.laneId } ]
       ; to ds-status [ match { $st.status : $st.status } { true : 'not-deployed' } ]
+      ; to raw-lbl [ match { $st.laneTitle : $st.laneTitle } { true : $st.laneId } ]
+      ; to lbl [ match
+       { [ and { [ propertyIs package-locked ds-status ] } { [ propertyIs 'Locked Lane' raw-lbl ] } ] : $st.laneId }
+       { true : $raw-lbl }
+      ]
+      ; to pkg-name [ match
+       { $st.packageName : $st.packageName }
+       { $st.packageId : $st.packageId }
+       { true : target }
+      ]
       ; to pill-info [ match
+       { [ propertyIs package-locked ds-status ] (
+        ; to lck-sfx [ match
+         { [ propertyIs true st.hasPassphrase ] : ; add 'Package "' ; add $pkg-name '" locked' }
+         { true : ; add 'Package "' ; add $pkg-name '" not open' }
+        ]
+        ; object { suffix $lck-sfx } { cls 'lane-export-status-pill lane-export-status-pill--locked lane-export-status-pill--nav' }
+       ) }
+       { [ propertyIs staged-pending-unlock ds-status ] : [ object { suffix 'Staged (unlock packages first)' } { cls 'lane-export-status-pill lane-export-status-pill--warn' } ] }
        { [ propertyIs up-to-date ds-status ] : [ object { suffix 'Up to date' } { cls 'lane-export-status-pill lane-export-status-pill--ok lane-export-status-pill--nav' } ] }
        { [ propertyIs needs-deploy ds-status ] (
         ; set [ ; add $need-n.n 1 ] need-n.n
@@ -1751,16 +1886,22 @@
        )
       )
       ; to pill-line-lbl [ match
+       { [ propertyIs package-locked ds-status ] : '' }
        { $target-line.id : !resolve-lane-line-label $st.laneId $target-line.id null }
        { true : '' }
       ]
       ; to pill-ttl [ match
+       { [ propertyIs package-locked ds-status ] : [ match
+        { [ propertyIs true st.hasPassphrase ] : ; add 'Click to unlock package "' ; add $pkg-name '"' }
+        { true : ; add 'Click to open package "' ; add $pkg-name '"' }
+       ] }
        { [ propertyIs '' pill-line-lbl ] : ; add 'Navigate to ' $lbl }
        { true : ; add 'Navigate to ' ; add $lbl ; add ' · ' $pill-line-lbl }
       ]
       ; assign $pill { className $pill-info.cls } { textContent [ ; add $lbl ; add ': ' $pill-info.suffix ] } { title $pill-ttl }
       !pill.addEventListener click (
        [ match
+        { [ propertyIs package-locked ds-status ] : !row.prompt-unlock }
         { $lane-control.navigate-to-lane-line (
          !lane-control.navigate-to-lane-line $st.laneId $target-line.id $nb.lane.id
         ) }
@@ -1769,58 +1910,137 @@
       !pills-el.appendChild $pill
      )
      [ match
-      { [ propertyIsGreaterThan 0 need-n.n ] (
-       ; set false deploy-btn.hidden
-       ; to btn-lbl [ match
-        { [ propertyIs 1 need-n.n ] : Deploy }
-        { true : [ ; add 'Deploy (' ; add $need-n.n ')' ] }
+      { $has-locked (
+       ; set true deploy-btn.hidden
+       ; set false unlock-btn.hidden
+       ; to any-pass ; object { val false }
+       ; each $eff-locked (
+        ; to { lp } $argv
+        ; condition { propertyIs true lp.hasPassphrase } : ; set true any-pass.val
+       )
+       ; to u-verb [ ternary $any-pass.val Unlock Open ]
+       ; to u-lbl [ match
+        { [ propertyIs 1 eff-locked.length ] : ; add $u-verb ' Package' }
+        { true : ; add $u-verb ; add ' Packages (' ; add $eff-locked.length ')' }
        ]
-       ; set $btn-lbl deploy-btn.textContent
+       ; set $u-lbl unlock-btn.textContent
       ) }
-      { true : ; set true deploy-btn.hidden }
+      { true (
+       ; set true unlock-btn.hidden
+       [ match
+        { [ propertyIsGreaterThan 0 need-n.n ] (
+         ; set false deploy-btn.hidden
+         ; to btn-lbl [ match
+          { [ propertyIs 1 need-n.n ] : Deploy }
+          { true : [ ; add 'Deploy (' ; add $need-n.n ')' ] }
+         ]
+         ; set $btn-lbl deploy-btn.textContent
+        ) }
+        { true : ; set true deploy-btn.hidden }
+       ]
+      ) }
      ]
     ) }
    ]
   )
 
   ; to row.render-deploy-status (
-   -- Renders per-target-lane deploy status pills and Deploy button after Source execution or deploy updates
+   -- Renders per-target-lane deploy/lock status pills and Unlock or Deploy button after Source execution or package/deploy updates
    ; to { eval-result } $argv
    [ match
-    { $eval-result.laneStatuses : !render-statuses-list $eval-result.laneStatuses }
+    { $eval-result.laneStatuses : !render-statuses-list $eval-result.laneStatuses $eval-result.lockedPackages }
     { true (
      ; to targets [ match { $row.spec.targets : $row.spec.targets } { true : {} } ]
-     ; to seen ; object
-     ; to list {}
-     ; each $targets (
-      ; to { t } $argv
-      ; to already [ get seen $t.laneId ]
-      [ match
-       { $already : null }
-       { true (
-        ; to seen $t.laneId true
-        ; to lane-title [ match
-         { $lane-control.get-lane-title : !lane-control.get-lane-title $t.laneId }
-         { true : $t.laneId }
+     ; to access-check [ match
+      { [ and { [ propertyIsGreaterThan 0 targets.length ] } { $checkExportTargetsAccess } ] (
+       !checkExportTargetsAccess $data $lane-control.open-package-ids $targets $nb.lane.id
+      ) }
+      { true : null }
+     ]
+     [ match
+      { [ propertyIs true access-check.requiresPackageUnlock ] (
+       ; to seen ; object
+       ; to list {}
+       ; each $targets (
+        ; to { t } $argv
+        ; to already [ get seen $t.laneId ]
+        [ match
+         { $already : null }
+         { true (
+          ; to seen $t.laneId true
+          ; to denied [ get access-check.deniedByLaneId $t.laneId ]
+          ; to raw-title [ match
+           { $lane-control.get-lane-title : !lane-control.get-lane-title $t.laneId }
+           { true : $t.laneId }
+          ]
+          ; to lane-title [ match
+           { [ and { $denied } { [ propertyIs 'Locked Lane' raw-title ] } ] : $t.laneId }
+           { true : $raw-title }
+          ]
+          [ match
+           { $denied (
+            !list.push [ object
+             { laneId $t.laneId }
+             { laneTitle $lane-title }
+             { deployed false }
+             { hasChanges false }
+             { status 'package-locked' }
+             { packageId $denied.packageId }
+             { packageName $denied.packageName }
+             { hasPassphrase [ propertyIs true denied.hasPassphrase ] }
+             { deployStatus null }
+            ]
+           ) }
+           { true (
+            !list.push [ object
+             { laneId $t.laneId }
+             { laneTitle $lane-title }
+             { deployed false }
+             { hasChanges false }
+             { status 'staged-pending-unlock' }
+             { deployStatus null }
+            ]
+           ) }
+          ]
+         ) }
         ]
-        ; to ds ; try (
-         [ match
-          { $getLaneDeployStatus : !getLaneDeployStatus $data $data $t.laneId }
-          { true : null }
-         ]
-        ) : null
-        !list.push [ object
-         { laneId $t.laneId }
-         { laneTitle $lane-title }
-         { deployed [ match { $ds.deployed : true } { true : false } ] }
-         { hasChanges [ match { $ds.hasChanges : true } { true : false } ] }
-         { status [ match { $ds.status : $ds.status } { true : 'not-deployed' } ] }
-         { deployStatus $ds }
+       )
+       !render-statuses-list $list $access-check.lockedPackages
+      ) }
+      { true (
+       ; to seen ; object
+       ; to list {}
+       ; each $targets (
+        ; to { t } $argv
+        ; to already [ get seen $t.laneId ]
+        [ match
+         { $already : null }
+         { true (
+          ; to seen $t.laneId true
+          ; to lane-title [ match
+           { $lane-control.get-lane-title : !lane-control.get-lane-title $t.laneId }
+           { true : $t.laneId }
+          ]
+          ; to ds ; try (
+           [ match
+            { $getLaneDeployStatus : !getLaneDeployStatus $data $data $t.laneId }
+            { true : null }
+           ]
+          ) : null
+          !list.push [ object
+           { laneId $t.laneId }
+           { laneTitle $lane-title }
+           { deployed [ match { $ds.deployed : true } { true : false } ] }
+           { hasChanges [ match { $ds.hasChanges : true } { true : false } ] }
+           { status [ match { $ds.status : $ds.status } { true : 'not-deployed' } ] }
+           { deployStatus $ds }
+          ]
+         ) }
         ]
-       ) }
-      ]
-     )
-     !render-statuses-list $list
+       )
+       !render-statuses-list $list {}
+      ) }
+     ]
     ) }
    ]
   )
@@ -1917,6 +2137,7 @@
     ) }
    ]
   )
+  !unlock-btn.addEventListener click $row.prompt-unlock
   !remove-btn.addEventListener click : !nb.remove-line $row.index
   !row.update-label
   $row

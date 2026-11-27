@@ -67,6 +67,8 @@
  -- Mode 2: Unlock / Open Package form
  ; to unlock-form !document.createElement form
  ; assign $unlock-form { className lane-config-form } { hidden true }
+ ; to unlock-notice-el !document.createElement div
+ ; assign $unlock-notice-el { className lane-unlock-export-notice } { textContent '' } { hidden true }
  ; to unlock-id-field !document.createElement div
  ; set lane-config-field unlock-id-field.className
  ; to unlock-id-label !document.createElement label
@@ -94,6 +96,7 @@
  !unlock-footer.appendChild $unlock-cancel-btn
  !unlock-footer.appendChild $unlock-submit-btn
 
+ !unlock-form.appendChild $unlock-notice-el
  !unlock-form.appendChild $unlock-id-field
  !unlock-form.appendChild $unlock-pass-field
  !unlock-form.appendChild $unlock-footer
@@ -196,6 +199,8 @@
   { create-cancel-btn $create-cancel-btn }
   { create-submit-btn $create-submit-btn }
   { unlock-form $unlock-form }
+  { unlock-notice-el $unlock-notice-el }
+  { unlock-pass-field $unlock-pass-field }
   { unlock-id-input $unlock-id-input }
   { unlock-pass-input $unlock-pass-input }
   { unlock-cancel-btn $unlock-cancel-btn }
@@ -223,8 +228,10 @@
   { is-open false }
   { mode packages }
   { return-to-packages false }
+  { unlock-set-active true }
   { on-created null }
   { on-opened null }
+  { on-cancelled null }
  ]
 
  ; to set-error (
@@ -258,15 +265,30 @@
   )
  )
 
+ ; to reset-unlock-fields (
+  ; set '' unlock-notice-el.textContent
+  ; set true unlock-notice-el.hidden
+  ; set false unlock-id-input.readOnly
+  ; set false unlock-pass-field.hidden
+  ; set 'Open package' unlock-submit-btn.textContent
+ )
+
  ; to modal.close (
   -- Closes the package modal
   ; condition { propertyIs true modal.is-open } (
+   ; to cancel-cb $modal.on-cancelled
    ; set false modal.is-open
    ; set false modal.return-to-packages
+   ; set true modal.unlock-set-active
    ; set null modal.on-created
    ; set null modal.on-opened
+   ; set null modal.on-cancelled
+   !reset-unlock-fields
    !set-error ''
    !backdrop.remove
+   [ match
+    { $cancel-cb : !$cancel-cb }
+   ]
   )
  )
 
@@ -505,6 +527,7 @@
   ; set [ ternary $opts.return-to-packages true false ] modal.return-to-packages
   ; set [ match { $opts.on-created : $opts.on-created } { true : null } ] modal.on-created
   ; set null modal.on-opened
+  ; set null modal.on-cancelled
   !show-mode create 'Create Package' 'Organize lanes into a shareable, optionally passphrase-protected package'
   [ match
    { $create-name-input.focus : !create-name-input.focus }
@@ -513,24 +536,83 @@
  )
 
  ; to modal.open-unlock-package (
-  -- Opens the Open / Unlock Package dialog (by package ID + optional passphrase)
+  -- Opens the Open / Unlock Package dialog (by package ID + optional passphrase), with optional export-context framing
   ; to { opts } $argv
   ; to prefill [ match
    { $opts.package-id : $opts.package-id }
    { true : '' }
   ]
+  ; to exp-ctx $opts.export-context
+  ; to set-active-flag [ match
+   { [ propertyIs false opts.set-active ] : false }
+   { true : true }
+  ]
+  ; set $set-active-flag modal.unlock-set-active
   ; set $prefill unlock-id-input.value
   ; set '' unlock-pass-input.value
   ; set [ ternary $opts.return-to-packages true false ] modal.return-to-packages
   ; set [ match { $opts.on-opened : $opts.on-opened } { true : null } ] modal.on-opened
+  ; set [ match { $opts.on-cancelled : $opts.on-cancelled } { true : null } ] modal.on-cancelled
   ; set null modal.on-created
-  !show-mode unlock 'Open Package' 'Enter a package ID and passphrase (if required) to open it in this session'
   [ match
-   { [ propertyIs '' prefill ] (
-    [ match { $unlock-id-input.focus : !unlock-id-input.focus } ]
+   { $exp-ctx (
+    ; to has-pass [ propertyIs true exp-ctx.hasPassphrase ]
+    ; to pkg-name [ match
+     { $exp-ctx.packageName : $exp-ctx.packageName }
+     { [ propertyIs '' prefill ] : 'Target Package' }
+     { true : $prefill }
+    ]
+    ; to step-idx [ match
+     { [ propertyIsGreaterThan 0 exp-ctx.stepIndex ] : $exp-ctx.stepIndex }
+     { true : 1 }
+    ]
+    ; to step-total [ match
+     { [ propertyIsGreaterThan 0 exp-ctx.stepTotal ] : $exp-ctx.stepTotal }
+     { true : 1 }
+    ]
+    ; to step-suffix [ match
+     { [ propertyIsGreaterThan 1 step-total ] : ; add ' (' ; add $step-idx ; add ' of ' ; add $step-total ')' }
+     { true : '' }
+    ]
+    ; to modal-title [ match
+     { $has-pass : ; add 'Unlock Package for Export' $step-suffix }
+     { true : ; add 'Open Package for Export' $step-suffix }
+    ]
+    ; to src-lbl [ match
+     { $exp-ctx.sourceLaneTitle : ; add 'Export from "' ; add $exp-ctx.sourceLaneTitle '" requires opening ' }
+     { true : 'Applying staged exports requires opening ' }
+    ]
+    ; to pkg-lbl [ match
+     { [ and { $pkg-name } { [ propertyIs false [ propertyIs $pkg-name prefill ] ] } ] : ; add '"' ; add $pkg-name ; add '" (' ; add $prefill ')' }
+     { true : ; add '"' ; add $prefill '"' }
+    ]
+    ; to action-lbl [ match
+     { $has-pass : ' (passphrase-protected) for writing in this session.' }
+     { true : ' for writing in this session.' }
+    ]
+    ; to notice-txt ; add $src-lbl ; add $pkg-lbl $action-lbl
+    ; set $notice-txt unlock-notice-el.textContent
+    ; set false unlock-notice-el.hidden
+    ; set true unlock-id-input.readOnly
+    ; set [ ternary $has-pass false true ] unlock-pass-field.hidden
+    ; set [ ternary $has-pass 'Unlock package' 'Open package' ] unlock-submit-btn.textContent
+    !show-mode unlock $modal-title 'Open target package for writing in this session to apply staged exports'
+    [ match
+     { $has-pass : [ match { $unlock-pass-input.focus : !unlock-pass-input.focus } ] }
+     { true : [ match { $unlock-submit-btn.focus : !unlock-submit-btn.focus } ] }
+    ]
    ) }
    { true (
-    [ match { $unlock-pass-input.focus : !unlock-pass-input.focus } ]
+    !reset-unlock-fields
+    !show-mode unlock 'Open Package' 'Enter a package ID and passphrase (if required) to open it in this session'
+    [ match
+     { [ propertyIs '' prefill ] (
+      [ match { $unlock-id-input.focus : !unlock-id-input.focus } ]
+     ) }
+     { true (
+      [ match { $unlock-pass-input.focus : !unlock-pass-input.focus } ]
+     ) }
+    ]
    ) }
   ]
   $modal
@@ -542,6 +624,7 @@
   ; set false modal.return-to-packages
   ; set null modal.on-created
   ; set null modal.on-opened
+  ; set null modal.on-cancelled
   [ match
    { $package-id : ; set $package-id modal.selected-pkg-id }
    { $lane-control.active-package-id : ; set $lane-control.active-package-id modal.selected-pkg-id }
@@ -582,10 +665,11 @@
     [ match { $unlock-id-input.focus : !unlock-id-input.focus } ]
    ) }
    { true (
-    ; to res !lane-control.open-package $pkg-id $unlock-pass-input.value
+    ; to res !lane-control.open-package $pkg-id $unlock-pass-input.value $modal.unlock-set-active
     [ match
      { $res.ok (
       ; to cb $modal.on-opened
+      ; set null modal.on-cancelled
       !modal.close
       [ match
        { $cb : !$cb $res }
@@ -634,9 +718,14 @@
  )
 
  ; to cancel-subform (
+  ; to cancel-cb $modal.on-cancelled
+  ; set null modal.on-cancelled
   [ match
    { $modal.return-to-packages : !modal.open-packages $modal.selected-pkg-id }
    { true : !modal.close }
+  ]
+  [ match
+   { $cancel-cb : !$cancel-cb }
   ]
  )
  !close-btn.addEventListener click $modal.close

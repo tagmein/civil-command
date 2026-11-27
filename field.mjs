@@ -3909,6 +3909,65 @@ export function findWorkflowDefaultColumns(table) {
  }
 }
 
+const DISPLAY_TEMPLATE_MAX_LENGTH = 512
+
+export function parseDisplayTemplate(raw) {
+ const invalid = error => ({
+  ok: false,
+  text: typeof raw === 'string' ? raw : '',
+  args: [],
+  variables: [],
+  error,
+ })
+ if (typeof raw !== 'string') {
+  return invalid('Display template must be text')
+ }
+ const text = raw.trim()
+ if (!text) {
+  return { ok: true, text: '', args: [], variables: [], error: null }
+ }
+ if (text.length > DISPLAY_TEMPLATE_MAX_LENGTH) {
+  return invalid(`Display template is too long (max ${DISPLAY_TEMPLATE_MAX_LENGTH} characters)`)
+ }
+ let ast
+ try {
+  ast = parse(`${text}\n`, 'display-template')
+ }
+ catch (err) {
+  return invalid(err && err.message ? err.message : 'Invalid display template syntax')
+ }
+ const nodes = Array.isArray(ast)
+  ? ast.filter(node => !(Array.isArray(node) && node[0] === '@' && node[1] === 'comment'))
+  : []
+ if (nodes.length !== 1 || !Array.isArray(nodes[0]) || nodes[0][0] !== '@' || nodes[0][1] !== 'add') {
+  return invalid("Display template must be a single '; add ...' expression")
+ }
+ const args = []
+ const variables = []
+ for (let i = 2; i < nodes[0].length; i++) {
+  const arg = nodes[0][i]
+  if (Array.isArray(arg)) {
+   if (arg[0] !== '@' || arg[1] !== 'get' || arg.length !== 3 || typeof arg[2] !== 'string' || !arg[2] || FORBIDDEN_PROPERTY_KEY_SET.has(arg[2])) {
+    return invalid('Only simple $column variables are allowed in a display template')
+   }
+   args.push({ kind: 'variable', name: arg[2] })
+   if (!variables.includes(arg[2])) {
+    variables.push(arg[2])
+   }
+  }
+  else if (arg === null || typeof arg === 'string' || typeof arg === 'number' || typeof arg === 'boolean') {
+   args.push({ kind: 'literal', value: arg })
+  }
+  else {
+   return invalid('Display template may only contain text, numbers, and $column variables')
+  }
+ }
+ if (args.length === 0) {
+  return invalid('Display template must have at least one value to add')
+ }
+ return { ok: true, text, args, variables, error: null }
+}
+
 export function parseColumnType(spec, multiple, decimals) {
  if (spec && typeof spec === 'object') {
   const parsed = parseTypeString(typeof spec.type === 'string' ? spec.type : 'text')
@@ -3934,6 +3993,10 @@ export function parseColumnType(spec, multiple, decimals) {
     refTableId: typeof spec.refTableId === 'string' ? spec.refTableId : '',
     refColumnId: typeof spec.refColumnId === 'string' ? spec.refColumnId : '',
     refDisplayColumnId: typeof spec.refDisplayColumnId === 'string' ? spec.refDisplayColumnId : '',
+   }
+   const displayTemplate = parseDisplayTemplate(spec.refDisplayTemplate)
+   if (displayTemplate.ok && displayTemplate.text) {
+    rowSpec.refDisplayTemplate = displayTemplate.text
    }
    if (typeof spec.refFilterColumnId === 'string' && spec.refFilterColumnId.length > 0) {
     rowSpec.refFilterColumnId = spec.refFilterColumnId
@@ -4167,6 +4230,8 @@ export function resolveRowTarget(tables, col, ownerTableHint = null) {
  const refTableId = col && typeof col.refTableId === 'string' ? col.refTableId : ''
  const refColumnId = col && typeof col.refColumnId === 'string' ? col.refColumnId : ''
  const refDisplayColumnId = col && typeof col.refDisplayColumnId === 'string' ? col.refDisplayColumnId : ''
+ const displayTemplate = parseDisplayTemplate(col && col.refDisplayTemplate)
+ const templateActive = Boolean(displayTemplate.ok && displayTemplate.text)
  const refFilterColumnId = col && typeof col.refFilterColumnId === 'string' ? col.refFilterColumnId : ''
  const filterByColumnId = col && typeof col.filterByColumnId === 'string' ? col.filterByColumnId : ''
  const configured = Boolean(refTableId && refColumnId)
@@ -4203,6 +4268,8 @@ export function resolveRowTarget(tables, col, ownerTableHint = null) {
   refDisplayColumnId,
   refFilterColumnId,
   filterByColumnId,
+  displayTemplate,
+  templateActive,
   table,
   linkCol,
   displayCol,
@@ -4220,6 +4287,92 @@ export function resolveRowTarget(tables, col, ownerTableHint = null) {
   refFilterColName,
   filterByColName,
  }
+}
+
+function findDisplayTemplateColumn(columns, name) {
+ const list = Array.isArray(columns) ? columns : []
+ return list.find(col => col && typeof col.id === 'string' && col.id === name)
+  || list.find(col => col && typeof col.name === 'string' && col.name.trim() === name)
+  || null
+}
+
+function formatDisplayColumnText(tables, table, col, value, displayOpts, visited) {
+ if (value === null || value === undefined) {
+  return ''
+ }
+ if (Array.isArray(value)) {
+  return value
+   .map(item => formatDisplayColumnText(tables, table, col, item, displayOpts, visited))
+   .filter(text => text.length > 0)
+   .join(', ')
+ }
+ const parsed = parseColumnType(col, false)
+ if (parsed.type !== 'row') {
+  return formatRowCellText(value, parsed, displayOpts)
+ }
+ const visitKey = `${table && typeof table.id === 'string' ? table.id : ''}:${col.id || ''}:${String(value)}`
+ if (visited.has(visitKey)) {
+  return formatRowCellText(value, parsed, displayOpts)
+ }
+ const nextVisited = new Set(visited)
+ nextVisited.add(visitKey)
+ const refTable = findReferencedTable(tables, parsed.refTableId, table)
+ const linkCol = refTable && Array.isArray(refTable.columns)
+  ? refTable.columns.find(c => c && c.id === parsed.refColumnId) || null
+  : null
+ const linkedRow = refTable && linkCol && Array.isArray(refTable.rows)
+  ? refTable.rows.find(row => row && row.values && dataValuesEqual(row.values[linkCol.id], value)) || null
+  : null
+ if (!linkedRow) {
+  return formatRowCellText(value, parsed, displayOpts)
+ }
+ const ownTemplate = parseDisplayTemplate(parsed.refDisplayTemplate)
+ if (ownTemplate.ok && ownTemplate.text) {
+  return formatRowDisplayTemplate(tables, refTable, linkedRow, ownTemplate, displayOpts, nextVisited).text
+ }
+ const rawDisplayCol = parsed.refDisplayColumnId
+  ? refTable.columns.find(c => c && c.id === parsed.refDisplayColumnId) || null
+  : null
+ const displayCol = rawDisplayCol && rawDisplayCol.id !== linkCol.id ? rawDisplayCol : null
+ if (displayCol) {
+  return formatDisplayColumnText(tables, refTable, displayCol, linkedRow.values[displayCol.id], displayOpts, nextVisited)
+ }
+ const valueSpec = resolveRowValueSpec(tables, parsed, nextVisited, table)
+ return formatRowCellText(linkedRow.values[linkCol.id], valueSpec || parsed, displayOpts)
+}
+
+export function formatRowDisplayTemplate(tables, table, row, template, displayOpts = null, visited = new Set()) {
+ const parsed = template && typeof template === 'object' && Array.isArray(template.args)
+  ? template
+  : parseDisplayTemplate(template)
+ if (!parsed || !parsed.ok || parsed.args.length === 0) {
+  return { ok: false, text: '', unresolved: [], error: parsed && parsed.error ? parsed.error : 'Invalid display template' }
+ }
+ const unresolved = []
+ let result
+ for (let i = 0; i < parsed.args.length; i++) {
+  const arg = parsed.args[i]
+  let part
+  if (arg.kind === 'literal') {
+   part = arg.value === null || arg.value === undefined ? '' : arg.value
+  }
+  else {
+   const col = findDisplayTemplateColumn(table && table.columns, arg.name)
+   if (!col) {
+    if (!unresolved.includes(arg.name)) {
+     unresolved.push(arg.name)
+    }
+    part = ''
+   }
+   else {
+    const value = row && row.values && Object.hasOwn(row.values, col.id) ? row.values[col.id] : null
+    part = formatDisplayColumnText(tables, table, col, value, displayOpts, visited)
+   }
+  }
+  result = i === 0 ? part : result + part
+ }
+ const text = String(result === null || result === undefined ? '' : result).trim()
+ return { ok: true, text, unresolved, error: null }
 }
 
 export function formatColumnType(type, multiple, decimals, tables = null) {
@@ -4836,6 +4989,9 @@ export function parseStoredTables(stored) {
     normalizedCol.refTableId = parsedType.refTableId
     normalizedCol.refColumnId = parsedType.refColumnId
     normalizedCol.refDisplayColumnId = parsedType.refDisplayColumnId
+    if (parsedType.refDisplayTemplate) {
+     normalizedCol.refDisplayTemplate = parsedType.refDisplayTemplate
+    }
     if (parsedType.refFilterColumnId) {
      normalizedCol.refFilterColumnId = parsedType.refFilterColumnId
     }
@@ -4938,6 +5094,7 @@ function formatFilterCompareValue(val, col, tables, displayOpts = null) {
 export function lookupRowDisplay(tables, col, value, rowContext = null, ownerTableHint = null, displayOpts = null) {
  const resolvedOwnerHint = ownerTableHint || (rowContext && typeof rowContext === 'object' ? rowContext.ownerTable : null)
  const target = resolveRowTarget(tables, col, resolvedOwnerHint)
+ const templateActive = Boolean(target.displayTemplate && target.displayTemplate.ok && target.displayTemplate.text)
  const tableName = target.table ? (String(target.table.name || '').trim() || target.table.id) : ''
  const linkColName = target.linkCol ? (String(target.linkCol.name || '').trim() || target.linkCol.id) : ''
  const displayColName = target.displayCol ? (String(target.displayCol.name || '').trim() || target.displayCol.id) : ''
@@ -4956,6 +5113,8 @@ export function lookupRowDisplay(tables, col, value, rowContext = null, ownerTab
    filterError: null,
    error: null,
    hasSeparateDisplay: Boolean(target.displayCol),
+   displayTemplateMode: templateActive,
+   displayTemplateError: null,
    value: null,
    valueText: '',
    displayText: '',
@@ -4982,6 +5141,8 @@ export function lookupRowDisplay(tables, col, value, rowContext = null, ownerTab
    filterError: null,
    error: null,
    hasSeparateDisplay: false,
+   displayTemplateMode: templateActive,
+   displayTemplateError: null,
    value,
    valueText,
    displayText: '',
@@ -5048,12 +5209,22 @@ export function lookupRowDisplay(tables, col, value, rowContext = null, ownerTab
    }
   }
  }
- const hasSeparateDisplay = Boolean(target.displayCol)
+ let templateError = null
  let displayText = ''
- if (found && target.displayCol && target.displaySpec && Object.hasOwn(matchedRow.values, target.displayCol.id)) {
+ if (templateActive && found) {
+  const rendered = formatRowDisplayTemplate(tables, target.table, matchedRow, target.displayTemplate, displayOpts)
+  displayText = rendered.text
+  if (rendered.unresolved.length > 0) {
+   templateError = `Unknown column in template: ${rendered.unresolved.join(', ')}`
+  }
+ }
+ else if (found && target.displayCol && target.displaySpec && Object.hasOwn(matchedRow.values, target.displayCol.id)) {
   displayText = formatRowCellText(matchedRow.values[target.displayCol.id], target.displaySpec, displayOpts)
  }
- const label = hasSeparateDisplay && displayText.length > 0 ? `${displayText} (${valueText})` : valueText
+ const hasSeparateDisplay = templateActive ? displayText.length > 0 : Boolean(target.displayCol)
+ const label = templateActive && hasSeparateDisplay
+  ? displayText
+  : (hasSeparateDisplay && displayText.length > 0 ? `${displayText} (${valueText})` : valueText)
  return {
   configured: target.configured,
   valid: true,
@@ -5065,8 +5236,10 @@ export function lookupRowDisplay(tables, col, value, rowContext = null, ownerTab
   filterMatched,
   isValueValid: Boolean(found && filterMatched),
   filterError,
-  error: filterError,
+  error: filterError || templateError,
   hasSeparateDisplay,
+  displayTemplateMode: templateActive,
+  displayTemplateError: templateError,
   value,
   valueText,
   displayText,
@@ -5086,6 +5259,7 @@ export async function fetchRowOptionsPage(tables, col, options = {}) {
  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.trunc(rawOffset) : 0
  const limit = Number.isFinite(rawLimit) && rawLimit >= 1 ? Math.trunc(rawLimit) : DEFAULT_ROW_PICKER_PAGE_SIZE
  const target = resolveRowTarget(tables, col, options && options.ownerTable)
+ const templateActive = Boolean(target && target.displayTemplate && target.displayTemplate.ok && target.displayTemplate.text)
  if (!target || !target.valid) {
   return {
    ok: false,
@@ -5139,11 +5313,14 @@ export async function fetchRowOptionsPage(tables, col, options = {}) {
   }
   const valueText = formatRowCellText(rawVal, target.valueSpec, displayOpts)
   let displayText = ''
-  if (target.displayCol && target.displaySpec && Object.hasOwn(row.values, target.displayCol.id)) {
+  if (templateActive) {
+   displayText = formatRowDisplayTemplate(tables, target.table, row, target.displayTemplate, displayOpts).text
+  }
+  else if (target.displayCol && target.displaySpec && Object.hasOwn(row.values, target.displayCol.id)) {
    displayText = formatRowCellText(row.values[target.displayCol.id], target.displaySpec, displayOpts)
   }
-  const hasSeparateDisplay = Boolean(target.displayCol && displayText.length > 0)
-  const label = hasSeparateDisplay ? `${displayText} (${valueText})` : valueText
+  const hasSeparateDisplay = templateActive ? displayText.length > 0 : Boolean(target.displayCol && displayText.length > 0)
+  const label = templateActive && hasSeparateDisplay ? displayText : (hasSeparateDisplay ? `${displayText} (${valueText})` : valueText)
   items.push({
    rowId: row.id,
    rowIndex,

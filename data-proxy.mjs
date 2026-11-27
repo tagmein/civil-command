@@ -599,6 +599,86 @@ export function createDataProxyHandler(options = {}) {
   }
  }
 
+ async function handlePackageOpenAction(authCtx, body, fallbackDir) {
+  const cleanSid = String((body && body.sessionId) || '').trim()
+  const reqDir = normalizeDataDir(body && body.basePath !== undefined ? body.basePath : fallbackDir)
+  if (!cleanSid) {
+   return { status: 400, payload: { ok: false, error: 'sessionId is required to open a package' } }
+  }
+  const opened = await openPackageInSession(backendRootKv, cleanSid, {
+   packageId: body ? body.packageId : undefined,
+   passphrase: body ? body.passphrase : undefined,
+   setActive: body ? body.setActive : undefined,
+  })
+  if (!opened.ok) {
+   const status = opened.needsPassphrase ? 403 : 404
+   return { status, payload: opened }
+  }
+  const effectiveDir = opened.sessionState ? normalizeDataDir(opened.sessionState.dataDir) : reqDir
+  const sessionKv = getBoundSessionKv(effectiveDir)
+  const nextGrantSet = new Set([...authCtx.effectivePkgs, opened.pkg.id])
+  const grantedPkgs = await computeSessionGrantedPackages(
+   sessionKv,
+   effectiveDir,
+   opened.sessionState.openPackageIds,
+   nextGrantSet
+  )
+  const filteredState = await filterSessionRecordForGrants(sessionKv, opened.sessionState, new Set(grantedPkgs))
+  const token = createCapabilityToken({
+   sessionId: cleanSid,
+   basePath: effectiveDir,
+   packages: grantedPkgs,
+   allowUnlocked: false,
+  }, secretStore)
+  return {
+   status: 200,
+   payload: {
+    ok: true,
+    pkg: opened.pkg,
+    sessionState: filteredState,
+    sessionId: cleanSid,
+    basePath: effectiveDir,
+    token,
+   },
+  }
+ }
+
+ async function handlePackageCloseAction(authCtx, body, fallbackDir) {
+  const cleanSid = String((body && body.sessionId) || '').trim()
+  const cleanPkgId = String((body && body.packageId) || '').trim()
+  const reqDir = normalizeDataDir(body && body.basePath !== undefined ? body.basePath : fallbackDir)
+  if (!cleanSid || !cleanPkgId) {
+   return { status: 400, payload: { ok: false, error: 'sessionId and packageId are required' } }
+  }
+  const updatedState = await closePackageInSession(backendRootKv, cleanSid, cleanPkgId)
+  const effectiveDir = normalizeDataDir(updatedState.dataDir)
+  const sessionKv = getBoundSessionKv(effectiveDir)
+  const remainingSet = new Set([...authCtx.effectivePkgs].filter(pid => pid !== cleanPkgId))
+  const grantedPkgs = await computeSessionGrantedPackages(
+   sessionKv,
+   effectiveDir,
+   updatedState.openPackageIds,
+   remainingSet
+  )
+  const filteredState = await filterSessionRecordForGrants(sessionKv, updatedState, new Set(grantedPkgs))
+  const token = createCapabilityToken({
+   sessionId: cleanSid,
+   basePath: effectiveDir,
+   packages: grantedPkgs,
+   allowUnlocked: false,
+  }, secretStore)
+  return {
+   status: 200,
+   payload: {
+    ok: true,
+    sessionState: filteredState,
+    sessionId: cleanSid,
+    basePath: effectiveDir,
+    token,
+   },
+  }
+ }
+
  async function loadSessionSummary(sessionId, fallbackBasePath = null) {
   const cleanSid = String(sessionId || '').trim()
   const registryKv = resolveRegistryKv(backendRootKv)
@@ -790,48 +870,13 @@ export function createDataProxyHandler(options = {}) {
      return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
     }
     const body = await readJsonBody(req)
-    const cleanSid = String(body.sessionId || '').trim()
     const reqDir = normalizeDataDir(body.basePath)
     const authCtx = resolveRequestAuth(req, reqDir, true)
     if (!authCtx.ok) {
      return sendJson(res, authCtx.status, { ok: false, error: authCtx.error })
     }
-    if (!cleanSid) {
-     return sendJson(res, 400, { ok: false, error: 'sessionId is required to open a package' })
-    }
-    const opened = await openPackageInSession(backendRootKv, cleanSid, {
-     packageId: body.packageId,
-     passphrase: body.passphrase,
-     setActive: body.setActive,
-    })
-    if (!opened.ok) {
-     const status = opened.needsPassphrase ? 403 : 404
-     return sendJson(res, status, opened)
-    }
-    const effectiveDir = opened.sessionState ? normalizeDataDir(opened.sessionState.dataDir) : reqDir
-    const sessionKv = getBoundSessionKv(effectiveDir)
-    const nextGrantSet = new Set([...authCtx.effectivePkgs, opened.pkg.id])
-    const grantedPkgs = await computeSessionGrantedPackages(
-     sessionKv,
-     effectiveDir,
-     opened.sessionState.openPackageIds,
-     nextGrantSet
-    )
-    const filteredState = await filterSessionRecordForGrants(sessionKv, opened.sessionState, new Set(grantedPkgs))
-    const token = createCapabilityToken({
-     sessionId: cleanSid,
-     basePath: effectiveDir,
-     packages: grantedPkgs,
-     allowUnlocked: false,
-    }, secretStore)
-    return sendJson(res, 200, {
-     ok: true,
-     pkg: opened.pkg,
-     sessionState: filteredState,
-     sessionId: cleanSid,
-     basePath: effectiveDir,
-     token,
-    })
+    const out = await handlePackageOpenAction(authCtx, body, reqDir)
+    return sendJson(res, out.status, out.payload)
    }
 
    if (pathname === '/api/vault/package/close' && method === 'POST') {
@@ -839,40 +884,13 @@ export function createDataProxyHandler(options = {}) {
      return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
     }
     const body = await readJsonBody(req)
-    const cleanSid = String(body.sessionId || '').trim()
-    const cleanPkgId = String(body.packageId || '').trim()
     const reqDir = normalizeDataDir(body.basePath)
     const authCtx = resolveRequestAuth(req, reqDir, true)
     if (!authCtx.ok) {
      return sendJson(res, authCtx.status, { ok: false, error: authCtx.error })
     }
-    if (!cleanSid || !cleanPkgId) {
-     return sendJson(res, 400, { ok: false, error: 'sessionId and packageId are required' })
-    }
-    const updatedState = await closePackageInSession(backendRootKv, cleanSid, cleanPkgId)
-    const effectiveDir = normalizeDataDir(updatedState.dataDir)
-    const sessionKv = getBoundSessionKv(effectiveDir)
-    const remainingSet = new Set([...authCtx.effectivePkgs].filter(pid => pid !== cleanPkgId))
-    const grantedPkgs = await computeSessionGrantedPackages(
-     sessionKv,
-     effectiveDir,
-     updatedState.openPackageIds,
-     remainingSet
-    )
-    const filteredState = await filterSessionRecordForGrants(sessionKv, updatedState, new Set(grantedPkgs))
-    const token = createCapabilityToken({
-     sessionId: cleanSid,
-     basePath: effectiveDir,
-     packages: grantedPkgs,
-     allowUnlocked: false,
-    }, secretStore)
-    return sendJson(res, 200, {
-     ok: true,
-     sessionState: filteredState,
-     sessionId: cleanSid,
-     basePath: effectiveDir,
-     token,
-    })
+    const out = await handlePackageCloseAction(authCtx, body, reqDir)
+    return sendJson(res, out.status, out.payload)
    }
 
    if (pathname === '/api/vault/secret') {
@@ -1379,6 +1397,38 @@ export function createDataProxyHandler(options = {}) {
        basePath: effectiveDir,
        openPackageIds: grantedPkgs,
       },
+     }
+    }
+
+    if (cleanSub === 'package/open' && method === 'POST') {
+     const authCtx = resolveRawTokenAuth(currentToken, targetDir, true, true)
+     if (!authCtx.ok) {
+      return { ok: false, status: authCtx.status, data: { ok: false, error: authCtx.error } }
+     }
+     const out = await handlePackageOpenAction(authCtx, body, targetDir)
+     if (out.payload && typeof out.payload.token === 'string' && out.payload.token.trim()) {
+      currentToken = out.payload.token.trim()
+     }
+     return {
+      ok: Boolean(out.status >= 200 && out.status < 300 && out.payload && out.payload.ok !== false),
+      status: out.status,
+      data: out.payload,
+     }
+    }
+
+    if (cleanSub === 'package/close' && method === 'POST') {
+     const authCtx = resolveRawTokenAuth(currentToken, targetDir, true, true)
+     if (!authCtx.ok) {
+      return { ok: false, status: authCtx.status, data: { ok: false, error: authCtx.error } }
+     }
+     const out = await handlePackageCloseAction(authCtx, body, targetDir)
+     if (out.payload && typeof out.payload.token === 'string' && out.payload.token.trim()) {
+      currentToken = out.payload.token.trim()
+     }
+     return {
+      ok: Boolean(out.status >= 200 && out.status < 300 && out.payload && out.payload.ok !== false),
+      status: out.status,
+      data: out.payload,
      }
     }
 

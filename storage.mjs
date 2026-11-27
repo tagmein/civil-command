@@ -555,6 +555,9 @@ function normalizeSchemaRecord(rawSchema, tableIdFallback) {
    normalizedCol.refTableId = parsedType.refTableId
    normalizedCol.refColumnId = parsedType.refColumnId
    normalizedCol.refDisplayColumnId = parsedType.refDisplayColumnId
+   if (parsedType.refDisplayTemplate) {
+    normalizedCol.refDisplayTemplate = parsedType.refDisplayTemplate
+   }
    if (parsedType.refFilterColumnId) {
     normalizedCol.refFilterColumnId = parsedType.refFilterColumnId
    }
@@ -3331,6 +3334,154 @@ export async function checkLaneAccess(rootKv, openPackageIds, laneId) {
  return {
   allowed: list.includes(packageId),
   packageId,
+ }
+}
+
+export function normalizeExportTargetsAndValue(firstArg, secondArg, thirdArg) {
+ const isList = Array.isArray(firstArg)
+ const rawContent = isList ? secondArg : thirdArg
+ const text = rawContent === null || rawContent === undefined ? '' : String(rawContent)
+ const targets = []
+ if (isList) {
+  for (const entry of firstArg) {
+   if (!entry || typeof entry !== 'object') {
+    continue
+   }
+   const rawLane = Array.isArray(entry) ? entry[0] : entry.laneId
+   const rawLine = Array.isArray(entry) ? entry[1] : entry.lineId
+   const laneId = rawLane === null || rawLane === undefined ? '' : String(rawLane).trim()
+   const lineId = rawLine === null || rawLine === undefined ? '' : String(rawLine).trim()
+   if (laneId || lineId) {
+    targets.push({ laneId, lineId })
+   }
+  }
+ }
+ else {
+  const laneId = firstArg === null || firstArg === undefined ? '' : String(firstArg).trim()
+  const lineId = secondArg === null || secondArg === undefined ? '' : String(secondArg).trim()
+  if (laneId || lineId) {
+   targets.push({ laneId, lineId })
+  }
+ }
+ return { targets, text }
+}
+
+export async function checkExportTargetsAccess(rootKv, openPackageIds, rawTargets, callerLaneId = '') {
+ const kv = unwrapKv(rootKv)
+ const normalized = []
+ if (Array.isArray(rawTargets)) {
+  for (const entry of rawTargets) {
+   if (!entry || typeof entry !== 'object') {
+    continue
+   }
+   const rawLane = Array.isArray(entry) ? entry[0] : entry.laneId
+   const rawLine = Array.isArray(entry) ? entry[1] : entry.lineId
+   const laneId = rawLane === null || rawLane === undefined ? '' : String(rawLane).trim()
+   const lineId = rawLine === null || rawLine === undefined ? '' : String(rawLine).trim()
+   if (laneId || lineId) {
+    normalized.push({ laneId, lineId })
+   }
+  }
+ }
+ if (!kv || !Array.isArray(openPackageIds)) {
+  return {
+   allowed: true,
+   requiresPackageUnlock: false,
+   lockedPackages: [],
+   deniedByLaneId: {},
+  }
+ }
+ const cleanCaller = callerLaneId === null || callerLaneId === undefined ? '' : String(callerLaneId).trim()
+ const uniqueLaneIds = []
+ const seenLaneIds = new Set()
+ for (const item of normalized) {
+  if (!item.laneId || item.laneId === cleanCaller || seenLaneIds.has(item.laneId)) {
+   continue
+  }
+  seenLaneIds.add(item.laneId)
+  uniqueLaneIds.push(item.laneId)
+ }
+ if (uniqueLaneIds.length === 0) {
+  return {
+   allowed: true,
+   requiresPackageUnlock: false,
+   lockedPackages: [],
+   deniedByLaneId: {},
+  }
+ }
+ const accessChecks = await mapConcurrent(uniqueLaneIds, CONCURRENCY_LIMIT, async laneId => {
+  const access = await checkLaneAccess(kv, openPackageIds, laneId)
+  return { laneId, access }
+ })
+ const deniedEntries = accessChecks.filter(item => item && item.access && !item.access.allowed)
+ if (deniedEntries.length === 0) {
+  return {
+   allowed: true,
+   requiresPackageUnlock: false,
+   lockedPackages: [],
+   deniedByLaneId: {},
+  }
+ }
+ const uniqueDeniedPkgIds = []
+ const seenDeniedPkgIds = new Set()
+ for (const item of deniedEntries) {
+  const pkgId = item.access.packageId || DEFAULT_PACKAGE_ID
+  if (!seenDeniedPkgIds.has(pkgId)) {
+   seenDeniedPkgIds.add(pkgId)
+   uniqueDeniedPkgIds.push(pkgId)
+  }
+ }
+ const metaList = await mapConcurrent(uniqueDeniedPkgIds, CONCURRENCY_LIMIT, pkgId => getPackageMeta(kv, pkgId))
+ const metaByPkgId = new Map()
+ for (let i = 0; i < uniqueDeniedPkgIds.length; i++) {
+  const pkgId = uniqueDeniedPkgIds[i]
+  const meta = metaList[i]
+  metaByPkgId.set(pkgId, {
+   packageId: pkgId,
+   packageName: meta && meta.name ? String(meta.name) : pkgId,
+   hasPassphrase: Boolean(meta && meta.hasPassphrase),
+  })
+ }
+ const deniedByLaneId = {}
+ const lockedPackagesMap = new Map()
+ for (const item of deniedEntries) {
+  const pkgId = item.access.packageId || DEFAULT_PACKAGE_ID
+  const info = metaByPkgId.get(pkgId) || {
+   packageId: pkgId,
+   packageName: pkgId,
+   hasPassphrase: false,
+  }
+  deniedByLaneId[item.laneId] = info
+  if (!lockedPackagesMap.has(pkgId)) {
+   lockedPackagesMap.set(pkgId, {
+    packageId: info.packageId,
+    packageName: info.packageName,
+    hasPassphrase: info.hasPassphrase,
+    laneIds: [],
+    targets: [],
+   })
+  }
+  const group = lockedPackagesMap.get(pkgId)
+  if (!group.laneIds.includes(item.laneId)) {
+   group.laneIds.push(item.laneId)
+  }
+ }
+ for (const t of normalized) {
+  if (!t.laneId || !Object.hasOwn(deniedByLaneId, t.laneId)) {
+   continue
+  }
+  const info = deniedByLaneId[t.laneId]
+  const group = lockedPackagesMap.get(info.packageId)
+  if (group) {
+   group.targets.push({ laneId: t.laneId, lineId: t.lineId })
+  }
+ }
+ const lockedPackages = Array.from(lockedPackagesMap.values())
+ return {
+  allowed: false,
+  requiresPackageUnlock: true,
+  lockedPackages,
+  deniedByLaneId,
  }
 }
 

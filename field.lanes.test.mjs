@@ -6065,3 +6065,384 @@ test('Lane Source UI: rejects unparseable edits from saving, stores drafts in lo
   globalThis.fetch = origFetch
  }
 })
+
+test('Export to Lane enforces atomic package-lock staging, sequential Open/Unlock Package modal, cancel/retry, and SSE export-unlock-required', async () => {
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  return {
+   tag,
+   style: {},
+   attributes: {},
+   children: [],
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   checked: false,
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   readOnly: false,
+   removed: false,
+   focused: false,
+   setAttribute(name, value) { this.attributes[name] = value },
+   contains(target) {
+    if (target === this) { return true }
+    return this.children.some(child => typeof child.contains === 'function' && child.contains(target))
+   },
+   appendChild(child) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    this.children.push(child)
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child.parentNode) {
+     const prevIdx = child.parentNode.children.indexOf(child)
+     if (prevIdx !== -1) { child.parentNode.children.splice(prevIdx, 1) }
+    }
+    child.parentNode = this
+    child.removed = false
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) { this.children.push(child) }
+    else { this.children.splice(idx, 0, child) }
+    return child
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) { this.parentNode.children.splice(idx, 1) }
+     this.parentNode = null
+    }
+   },
+  }
+ }
+
+ const store = new Map()
+ const accessedKeys = []
+ const makeKv = (ns = '') => {
+  const isHash = ns.includes('#')
+  const qual = k => (isHash ? (ns.endsWith('#') ? `${ns}${k}` : `${ns}/${k}`) : (ns ? `${ns}.${k}` : k))
+  const c = {
+   prefix: ns,
+   basePath: null,
+   root: null,
+   defaultRoot: null,
+   getActiveClient() { return c },
+   withBasePath() { return c },
+   setBasePath() { return c },
+   namespace: name => makeKv(isHash ? qual(encodeKeySegment(name)) : qual(name)),
+   hashNamespace: name => makeKv(`${encodeKeySegment(name)}#`),
+   async get(k) {
+    const q = qual(k)
+    accessedKeys.push({ op: 'get', key: q })
+    return store.has(q) ? store.get(q) : null
+   },
+   async set(k, v) {
+    const q = qual(k)
+    accessedKeys.push({ op: 'set', key: q })
+    store.set(q, String(v))
+   },
+   async delete(k) {
+    const q = qual(k)
+    accessedKeys.push({ op: 'delete', key: q })
+    store.delete(q)
+   },
+  }
+  c.root = c
+  c.defaultRoot = c
+  return c
+ }
+ const kv = makeKv()
+
+ const makeStorage = () => {
+  const m = new Map()
+  return {
+   getItem(k) { return m.has(k) ? m.get(k) : null },
+   setItem(k, v) { m.set(k, String(v)) },
+   removeItem(k) { m.delete(k) },
+  }
+ }
+ let uuid = 0
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  JSON,
+  Math,
+  Number,
+  Object,
+  Reflect,
+  decodeURIComponent,
+  localStorage: makeStorage(),
+  sessionStorage: makeStorage(),
+  crypto: { randomUUID: () => `exp-lock-uuid-${++uuid}` },
+  history: { pushState(_s, _t, url) { mockWindow.location.pathname = url } },
+  location: { pathname: '/', protocol: 'http:', host: 'localhost:8080' },
+  addEventListener() {},
+  removeEventListener() {},
+ }
+ const mockDocument = { body: createMockElement('body'), defaultView: mockWindow, createElement: createMockElement }
+
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-story.fs') { return { text: async () => laneStorySource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createFsDir: async () => ({ ok: true }),
+   createIdleTracker,
+   data: kv,
+   defaultValueForType,
+   document: mockDocument,
+   fetchFsList: async () => ({ ok: true, path: '/', directories: [], breadcrumbs: [] }),
+   fetchFsRoots: async () => ({ home: '/', platform: 'linux', sep: '/', roots: [] }),
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  await f.run(parse(mainSource, '/src/main.fs'))
+  const laneControl = f.state['lane-control']
+  await laneControl['dir-modal']['default-btn'].listeners.click()
+
+  // 1. Seed Open target (Default), Closed non-passphrase package target, Vault passphrase package target, and Source lane
+  const targetOpen = await laneControl.add()
+  await laneControl.rename(targetOpen.id, 'Target Open')
+  targetOpen.notebook.rows[0]['input-el'].value = "; to v 'init'"
+  await targetOpen.notebook.rows[0]['input-el'].listeners.input()
+
+  const pkgConfirmRes = await laneControl['create-package']('PkgConfirm', '')
+  assert.equal(pkgConfirmRes.ok, true)
+  const targetClosed = await laneControl.add()
+  await laneControl.rename(targetClosed.id, 'Target Closed')
+  targetClosed.notebook.rows[0]['input-el'].value = "; to v 'init'"
+  await targetClosed.notebook.rows[0]['input-el'].listeners.input()
+
+  const pkgVaultRes = await laneControl['create-package']('PkgVault', 'vault-pw')
+  assert.equal(pkgVaultRes.ok, true)
+  const targetVault = await laneControl.add()
+  await laneControl.rename(targetVault.id, 'Target Vault')
+  targetVault.notebook.rows[0]['input-el'].value = "; to v 'init'"
+  await targetVault.notebook.rows[0]['input-el'].listeners.input()
+
+  await laneControl['set-active-package']('default')
+  const sourceLane = await laneControl.add()
+  await laneControl.rename(sourceLane.id, 'Source')
+  sourceLane.notebook.rows[0]['input-el'].value = '; to ready true'
+  await sourceLane.notebook.rows[0]['input-el'].listeners.input()
+
+  // 2. Wire multi-target Export-to-Lane row targeting Target Open, Target Closed, and Target Vault
+  await sourceLane.notebook['add-export-btn'].listeners.click()
+  const expModal = laneControl['export-modal']
+  assert.equal(expModal['is-open'], true)
+  await expModal['select-lane'](targetOpen.id)
+  await expModal['line-els'][0]['toggle-btn'].listeners.click()
+  await expModal['select-lane'](targetClosed.id)
+  await expModal['line-els'][0]['toggle-btn'].listeners.click()
+  await expModal['select-lane'](targetVault.id)
+  await expModal['line-els'][0]['toggle-btn'].listeners.click()
+  expModal['expr-input'].value = '\'; to v "exported"\''
+  await expModal.form.listeners.submit({ preventDefault() {} })
+  await new Promise(r => setTimeout(r, 20))
+
+  const expRow = sourceLane.notebook.rows[1]
+  assert.equal(expRow.kind, 'export')
+  const vaultLineId = targetVault.notebook['line-records'][0].id
+
+  // Reset all 3 targets back to init, then close both PkgConfirm and PkgVault
+  for (const tgt of [targetOpen, targetClosed, targetVault]) {
+   tgt.notebook.rows[0]['input-el'].value = "; to v 'init'"
+   await tgt.notebook.rows[0]['input-el'].listeners.input()
+  }
+  await laneControl['close-package'](pkgConfirmRes.pkg.id)
+  await laneControl['close-package'](pkgVaultRes.pkg.id)
+
+  const mountedClosed = laneControl['by-id'][targetClosed.id]
+  const mountedVault = laneControl['by-id'][targetVault.id]
+  assert.equal(mountedClosed['is-locked'], true)
+  assert.equal(mountedVault['is-locked'], true)
+
+  // Verify export-modal filters out locked mounted lanes
+  await expRow['pick-btn'].listeners.click()
+  assert.equal(expModal['is-open'], true)
+  const selectableIds = expModal['lane-items'].map(it => it.id)
+  assert.ok(selectableIds.includes(targetOpen.id))
+  assert.ok(!selectableIds.includes(targetClosed.id))
+  assert.ok(!selectableIds.includes(targetVault.id))
+  await expModal.close()
+
+  // 3. Run Source while both packages are closed -> zero KV reads/writes on locked lane scripts/deploy, atomic hold on Target Open
+  accessedKeys.length = 0
+  await sourceLane.notebook.run()
+
+  const lockedClosedSeg = `lanes#${encodeKeySegment(targetClosed.id)}/`
+  const lockedVaultSeg = `lanes#${encodeKeySegment(targetVault.id)}/`
+  const touchedLocked = accessedKeys.filter(a => (
+   a.key.startsWith(`${lockedClosedSeg}script`)
+   || a.key.startsWith(`${lockedVaultSeg}script`)
+   || a.key.startsWith(`deploy#${encodeKeySegment(targetClosed.id)}`)
+   || a.key.startsWith(`deploy#${encodeKeySegment(targetVault.id)}`)
+  ))
+  assert.deepEqual(touchedLocked, [])
+
+  const openAfterHold = await loadLaneScript(kv, kv.namespace(targetOpen.id), targetOpen.id)
+  assert.equal(openAfterHold.records[0].text, "; to v 'init'")
+
+  assert.equal(expRow['deploy-bar-el'].hidden, false)
+  assert.equal(expRow['unlock-btn'].hidden, false)
+  assert.equal(expRow['unlock-btn'].textContent, 'Unlock Packages (2)')
+  assert.equal(expRow['pending-unlock'], true)
+  assert.deepEqual(
+   expRow['pills-el'].children.map(p => p.textContent),
+   [
+    'Target Open: Staged (unlock packages first)',
+    `${targetClosed.id}: Package "PkgConfirm" not open`,
+    `${targetVault.id}: Package "PkgVault" locked`,
+   ]
+  )
+  assert.ok(expRow['pills-el'].children[0].className.includes('lane-export-status-pill--warn'))
+  assert.ok(expRow['pills-el'].children[1].className.includes('lane-export-status-pill--locked'))
+  assert.ok(expRow['pills-el'].children[2].className.includes('lane-export-status-pill--locked'))
+
+  // 4. Click Unlock Packages (2) -> Step 1/2 (Open confirm), submit -> Step 2/2 (Passphrase), Cancel -> still held
+  const pkgModal = laneControl['package-modal']
+  await expRow['unlock-btn'].listeners.click()
+  assert.equal(pkgModal['is-open'], true)
+  assert.equal(pkgModal['heading-el'].textContent, 'Open Package for Export (1 of 2)')
+  assert.equal(pkgModal['unlock-pass-field'].hidden, true)
+  assert.equal(pkgModal['unlock-id-input'].readOnly, true)
+  assert.equal(pkgModal['unlock-submit-btn'].textContent, 'Open package')
+  assert.equal(pkgModal['unlock-notice-el'].hidden, false)
+
+  await pkgModal['unlock-form'].listeners.submit({ preventDefault() {} })
+  assert.equal(pkgModal['is-open'], true)
+  assert.equal(pkgModal['heading-el'].textContent, 'Unlock Package for Export (2 of 2)')
+  assert.equal(pkgModal['unlock-pass-field'].hidden, false)
+  assert.equal(pkgModal['unlock-submit-btn'].textContent, 'Unlock package')
+
+  // Cancel Step 2 -> PkgVault stays closed and Target Open remains held atomically
+  await pkgModal['unlock-cancel-btn'].listeners.click()
+  assert.equal(pkgModal['is-open'], false)
+  assert.equal((await loadLaneScript(kv, kv.namespace(targetOpen.id), targetOpen.id)).records[0].text, "; to v 'init'")
+
+  await sourceLane.notebook.run()
+  assert.equal(expRow['unlock-btn'].hidden, false)
+  assert.equal(expRow['unlock-btn'].textContent, 'Unlock Package')
+
+  // 5. Click Unlock Package -> test wrong passphrase retry, then correct passphrase -> auto-applies all 3 targets
+  await expRow['unlock-btn'].listeners.click()
+  assert.equal(pkgModal['is-open'], true)
+  assert.equal(pkgModal['heading-el'].textContent, 'Unlock Package for Export')
+
+  pkgModal['unlock-pass-input'].value = 'bad-pw'
+  await pkgModal['unlock-form'].listeners.submit({ preventDefault() {} })
+  assert.equal(pkgModal['is-open'], true)
+  assert.equal(pkgModal['error-el'].hidden, false)
+
+  pkgModal['unlock-pass-input'].value = 'vault-pw'
+  await pkgModal['unlock-form'].listeners.submit({ preventDefault() {} })
+  await new Promise(r => setTimeout(r, 30))
+
+  assert.equal(pkgModal['is-open'], false)
+  assert.equal(expRow['unlock-btn'].hidden, true)
+  assert.equal(expRow['pending-unlock'], false)
+  for (const tgtId of [targetOpen.id, targetClosed.id, targetVault.id]) {
+   const saved = await loadLaneScript(kv, kv.namespace(tgtId), tgtId)
+   assert.equal(saved.records[0].text, '; to v "exported"')
+   assert.deepEqual(saved.records[0].setBy, { laneId: sourceLane.id, lineId: expRow.record.id })
+  }
+
+  // 6. SSE export-unlock-required opens package-modal and applies pendingExports after unlock
+  await laneControl.close(sourceLane.id)
+  targetVault.notebook.rows[0]['input-el'].value = "; to v 'init'"
+  await targetVault.notebook.rows[0]['input-el'].listeners.input()
+  await laneControl['close-package'](pkgVaultRes.pkg.id)
+  assert.equal((await loadLaneScript(kv, kv.namespace(targetVault.id), targetVault.id)).records[0].text, "; to v 'init'")
+
+  await laneControl['handle-agent-event']({
+   type: 'export-unlock-required',
+   sessionId: laneControl['session-id'],
+   laneId: 'agent-ext-src',
+   laneTitle: 'External CLI Lane',
+   lockedPackages: [{
+    packageId: pkgVaultRes.pkg.id,
+    packageName: 'PkgVault',
+    hasPassphrase: true,
+    laneIds: [targetVault.id],
+   }],
+   pendingExports: [{
+    sourceLaneId: 'agent-ext-src',
+    lineId: 'ext-line-1',
+    targets: [{ laneId: targetVault.id, lineId: vaultLineId }],
+    content: '; to v "from-sse"',
+   }],
+  })
+  assert.equal(pkgModal['is-open'], true)
+  assert.equal(pkgModal['heading-el'].textContent, 'Unlock Package for Export')
+  pkgModal['unlock-pass-input'].value = 'vault-pw'
+  await pkgModal['unlock-form'].listeners.submit({ preventDefault() {} })
+  await new Promise(r => setTimeout(r, 30))
+
+  assert.equal(pkgModal['is-open'], false)
+  const afterSse = await loadLaneScript(kv, kv.namespace(targetVault.id), targetVault.id)
+  assert.equal(afterSse.records[0].text, '; to v "from-sse"')
+  assert.deepEqual(afterSse.records[0].setBy, { laneId: 'agent-ext-src', lineId: 'ext-line-1' })
+  assert.equal(laneControl['by-id'][targetVault.id].notebook.lines[0], '; to v "from-sse"')
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})

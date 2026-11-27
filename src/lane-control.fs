@@ -76,6 +76,7 @@
  { fullscreen-lane-id null }
  { is-lane-fullscreen false }
  { fullscreen-was-pinned false }
+ { unlocking-export-packages false }
 ]
 ; to lane-fs-enter-svg '<svg class="lane-fullscreen-icon lane-fullscreen-icon--enter" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 6V2.5H6M10 2.5H13.5V6M13.5 10V13.5H10M6 13.5H2.5V10"></path></svg>'
 ; to lane-fs-exit-svg '<svg class="lane-fullscreen-icon lane-fullscreen-icon--exit" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 6H6V2.5M10 2.5V6H13.5M13.5 10H10V13.5M6 13.5V10H2.5"></path></svg>'
@@ -918,6 +919,40 @@
  !scope.end-session-status-pending
  $res
 )
+; to refresh-pending-export-lanes (
+ -- Re-runs mounted notebooks whose staged export rows now have all required packages open
+ ; to rerun-lanes {}
+ ; each $scope.lanes (
+  ; to { lane } $argv
+  ; condition { and { [ propertyIs false lane.is-locked ] } { $lane.notebook.rows } } (
+   ; to needs-rerun ; object { hit false }
+   ; each $lane.notebook.rows (
+    ; to { r } $argv
+    ; condition { and { [ propertyIs export r.kind ] } { [ propertyIs true r.pending-unlock ] } } (
+     ; to all-satisfied ; object { val true }
+     [ match
+      { $r.locked-packages (
+       ; each $r.locked-packages (
+        ; to { lp } $argv
+        ; to is-open-now [ !scope.open-package-ids.includes $lp.packageId ]
+        ; condition { propertyIs false is-open-now } : ; set false all-satisfied.val
+       )
+      ) }
+     ]
+     ; condition { propertyIs true all-satisfied.val } : ; set true needs-rerun.hit
+    )
+   )
+   ; condition { propertyIs true needs-rerun.hit } : !rerun-lanes.push $lane
+  )
+ )
+ ; each $rerun-lanes (
+  ; to { rlane } $argv
+  [ match
+   { $rlane.notebook.run : !rlane.notebook.run null false null [ object { trigger export-unlock } ] }
+  ]
+ )
+ !scope.refresh-export-statuses
+)
 ; to scope.open-package (
  -- Opens a package (verifying passphrase if required) in the active session and unlocks any locked mounted lanes
  ; to { package-id passphrase set-active } $argv
@@ -936,6 +971,7 @@
    { $res.ok (
     !scope.apply-session-packages $res.sessionState
     !scope.load-catalog
+    !scope.refresh-lane-labels
     ; each $scope.lanes (
      ; to { lane } $argv
      ; condition { propertyIs true lane.is-locked } : ; set true unlocked-lanes.hit
@@ -943,6 +979,7 @@
     [ match
      { $unlocked-lanes.hit : !scope.sync }
     ]
+    ; condition { propertyIs false scope.unlocking-export-packages } : !refresh-pending-export-lanes
    ) }
   ]
  ) : null
@@ -2299,24 +2336,31 @@
  ]
 )
 ; to scope.resolve-stored-line-number (
- -- Loads a closed lane's script records from KV to populate line-num-cache and invokes on-resolved if found
+ -- Loads a closed accessible lane's script records from KV to populate line-num-cache and invokes on-resolved if found
  ; to { lane-id line-id on-resolved } $argv
  [ match
   { [ and { $lane-id } { $line-id } ] (
-   ; to target-data !data.namespace $lane-id
-   ; to loaded !loadLaneScript $data $target-data $lane-id $window
-   ; to records [ match { $loaded.records : $loaded.records } { true : {} } ]
-   ; to found ; object { num null }
-   ; each $records (
-    ; to { rec idx } $argv
-    ; to num ; add $idx 1
-    !scope.cache-line-number $lane-id $rec.id $num
-    ; condition { propertyIs $line-id rec.id } : ; set $num found.num
-   )
+   !scope.ensure-session
+   ; to access !checkLaneAccess $data $scope.open-package-ids $lane-id
    [ match
-    { [ and { $found.num } { $on-resolved } ] : !$on-resolved $found.num }
+    { [ propertyIs true access.allowed ] (
+     ; to target-data !data.namespace $lane-id
+     ; to loaded !loadLaneScript $data $target-data $lane-id $window
+     ; to records [ match { $loaded.records : $loaded.records } { true : {} } ]
+     ; to found ; object { num null }
+     ; each $records (
+      ; to { rec idx } $argv
+      ; to num ; add $idx 1
+      !scope.cache-line-number $lane-id $rec.id $num
+      ; condition { propertyIs $line-id rec.id } : ; set $num found.num
+     )
+     [ match
+      { [ and { $found.num } { $on-resolved } ] : !$on-resolved $found.num }
+     ]
+     $found.num
+    ) }
+    { true : null }
    ]
-   $found.num
   ) }
   { true : null }
  ]
@@ -2426,18 +2470,24 @@
  ; to clean-src-line [ match { $source-line-id : ; add '' $source-line-id } { true : '' } ]
  [ match
   { [ and { $clean-lane } { $clean-line } ] (
+   !scope.ensure-session
+   ; to access !checkLaneAccess $data $scope.open-package-ids $clean-lane
    [ match
-    { $setTargetLaneLine (
-     !setTargetLaneLine $data $clean-lane $clean-line null $window [ object { clear true } { laneId $clean-src-lane } { lineId $clean-src-line } ]
+    { [ propertyIs true access.allowed ] (
+     [ match
+      { $setTargetLaneLine (
+       !setTargetLaneLine $data $clean-lane $clean-line null $window [ object { clear true } { laneId $clean-src-lane } { lineId $clean-src-line } ]
+      ) }
+     ]
+     ; to open-target [ get scope.by-id $clean-lane ]
+     [ match
+      { $open-target.notebook.clear-line-set-by (
+       !open-target.notebook.clear-line-set-by $clean-line $clean-src-lane $clean-src-line
+      ) }
+     ]
+     !scope.sync-export-links
     ) }
    ]
-   ; to open-target [ get scope.by-id $clean-lane ]
-   [ match
-    { $open-target.notebook.clear-line-set-by (
-     !open-target.notebook.clear-line-set-by $clean-line $clean-src-lane $clean-src-line
-    ) }
-   ]
-   !scope.sync-export-links
   ) }
  ]
 )
@@ -2820,7 +2870,17 @@
    !scope.ensure-session
    ; to access !checkLaneAccess $data $scope.open-package-ids $clean-lane
    [ match
-    { [ propertyIs false access.allowed ] : ; object { ok false } { changed false } { laneId $clean-lane } { lineId $clean-line } { error 'Access denied: lane belongs to a locked package' } }
+    { [ propertyIs false access.allowed ] (
+     ; to pkg-meta ; try (
+      [ match
+       { $getPackageMeta : !getPackageMeta $data $access.packageId }
+       { true : null }
+      ]
+     ) : null
+     ; to pkg-name [ match { $pkg-meta.name : $pkg-meta.name } { true : $access.packageId } ]
+     ; to has-pass [ propertyIs true pkg-meta.hasPassphrase ]
+     ; object { ok false } { changed false } { accessDenied true } { requiresPackageUnlock true } { packageId $access.packageId } { packageName $pkg-name } { hasPassphrase $has-pass } { laneId $clean-lane } { lineId $clean-line } { error 'Access denied: lane belongs to a locked package' }
+    ) }
     { true (
      ; to resolved-caller-line !scope.resolve-exporter-line-id $caller-lane-id $clean-lane $clean-line $caller-line-id
      ; to set-by-spec [ match
@@ -2884,70 +2944,349 @@
  ]
 )
 ; to scope.export-lane-line (
- -- Updates one or more { laneId lineId } targets with evaluated content and summarizes per-lane deploy status
+ -- Updates one or more { laneId lineId } targets with evaluated content (atomically staging if any target package is closed or locked) and summarizes per-lane deploy status
  ; to { caller-lane-id first-arg second-arg third-arg visited caller-line-id } $argv
+ ; to norm-pair [ match
+  { $normalizeExportTargetsAndValue : !normalizeExportTargetsAndValue $first-arg $second-arg $third-arg }
+  { true : null }
+ ]
  ; to is-list [ match { $first-arg.map : true } { true : false } ]
- ; to raw-targets [ match
-  { $is-list : $first-arg }
-  { true : { { $first-arg $second-arg } } }
- ]
- ; to raw-content [ match
-  { $is-list : $second-arg }
-  { true : $third-arg }
- ]
- ; to content-str [ match
-  { [ propertyIs null raw-content ] : '' }
-  { [ propertyIs undefined raw-content ] : '' }
-  { true : ; add '' $raw-content }
- ]
  ; to norm-targets {}
- ; each $raw-targets (
-  ; to { entry } $argv
-  ; to lid [ match { $entry.laneId : $entry.laneId } { $entry.0 : $entry.0 } { true : '' } ]
-  ; to lnid [ match { $entry.lineId : $entry.lineId } { $entry.1 : $entry.1 } { true : '' } ]
-  [ match
-   { $lid (
+ ; to content-str ''
+ [ match
+  { $norm-pair (
+   ; set $norm-pair.targets norm-targets
+   ; set $norm-pair.text content-str
+  ) }
+  { true (
+   ; to raw-targets [ match
+    { $is-list : $first-arg }
+    { true : { { $first-arg $second-arg } } }
+   ]
+   ; to raw-content [ match
+    { $is-list : $second-arg }
+    { true : $third-arg }
+   ]
+   ; set [ match
+    { [ propertyIs null raw-content ] : '' }
+    { [ propertyIs undefined raw-content ] : '' }
+    { true : ; add '' $raw-content }
+   ] content-str
+   ; each $raw-targets (
+    ; to { entry } $argv
+    ; to lid [ match { $entry.laneId : $entry.laneId } { $entry.0 : $entry.0 } { true : '' } ]
+    ; to lnid [ match { $entry.lineId : $entry.lineId } { $entry.1 : $entry.1 } { true : '' } ]
     [ match
-     { $lnid : !norm-targets.push [ object { laneId $lid } { lineId $lnid } ] }
+     { $lid (
+      [ match
+       { $lnid : !norm-targets.push [ object { laneId $lid } { lineId $lnid } ] }
+      ]
+     ) }
     ]
-   ) }
-  ]
- )
- ; to results {}
- ; to lane-statuses {}
- ; to seen-lanes ; object
- ; to changed-count ; object { n 0 }
- ; to needs-deploy-count ; object { n 0 }
- ; each $norm-targets (
-  ; to { t } $argv
-  ; to res !scope.set-lane-line $t.laneId $t.lineId $content-str $caller-lane-id $visited $caller-line-id
-  !results.push $res
-  ; condition { propertyIs true res.changed } : ; set [ ; add $changed-count.n 1 ] changed-count.n
-  ; to already-lane [ get seen-lanes $res.laneId ]
+   )
+  ) }
+ ]
+ !scope.ensure-session
+ ; to access-check [ match
+  { [ propertyIs 0 norm-targets.length ] : ; object { allowed true } { requiresPackageUnlock false } { lockedPackages {} } { deniedByLaneId [ object ] } }
+  { $checkExportTargetsAccess : !checkExportTargetsAccess $data $scope.open-package-ids $norm-targets $caller-lane-id }
+  { true (
+   ; to locked-pkgs {}
+   ; to denied-map ; object
+   ; to seen-pkgs ; object
+   ; each $norm-targets (
+    ; to { nt } $argv
+    ; to is-self [ propertyIs $nt.laneId caller-lane-id ]
+    ; condition { and { $nt.laneId } { [ propertyIs false is-self ] } } (
+     ; to acc !checkLaneAccess $data $scope.open-package-ids $nt.laneId
+     ; condition { propertyIs false acc.allowed } (
+      ; to pm ; try ( [ match { $getPackageMeta : !getPackageMeta $data $acc.packageId } { true : null } ] ) : null
+      ; to pname [ match { $pm.name : $pm.name } { true : $acc.packageId } ]
+      ; to ppass [ propertyIs true pm.hasPassphrase ]
+      ; to denied-map $nt.laneId [ object { packageId $acc.packageId } { packageName $pname } { hasPassphrase $ppass } ]
+      ; to grp [ get seen-pkgs $acc.packageId ]
+      [ match
+       { $grp (
+        ; to has-lid !grp.laneIds.includes $nt.laneId
+        ; condition { propertyIs false has-lid } : !grp.laneIds.push $nt.laneId
+        !grp.targets.push [ object { laneId $nt.laneId } { lineId $nt.lineId } ]
+       ) }
+       { true (
+        ; to fresh [ object { packageId $acc.packageId } { packageName $pname } { hasPassphrase $ppass } { laneIds { $nt.laneId } } { targets { [ object { laneId $nt.laneId } { lineId $nt.lineId } ] } } ]
+        ; to seen-pkgs $acc.packageId $fresh
+        !locked-pkgs.push $fresh
+       ) }
+      ]
+     )
+    )
+   )
+   ; object { allowed [ propertyIs 0 locked-pkgs.length ] } { requiresPackageUnlock [ propertyIsGreaterThan 0 locked-pkgs.length ] } { lockedPackages $locked-pkgs } { deniedByLaneId $denied-map }
+  ) }
+ ]
+ [ match
+  { [ propertyIs true access-check.requiresPackageUnlock ] (
+   ; to pkg-labels {}
+   ; each $access-check.lockedPackages (
+    ; to { lp } $argv
+    ; to lbl [ match
+     { [ and { $lp.packageName } { [ propertyIs false [ propertyIs $lp.packageName lp.packageId ] ] } ] : ; add '"' ; add $lp.packageName ; add '" (' ; add $lp.packageId ')' }
+     { true : ; add '"' ; add $lp.packageId '"' }
+    ]
+    !pkg-labels.push $lbl
+   )
+   ; to pkg-summary !pkg-labels.join ', '
+   ; to block-err ; add 'Access denied: target package(s) must be opened/unlocked for writing before applying exports (' ; add $pkg-summary ')'
+   ; to staged-results {}
+   ; to lane-statuses {}
+   ; to seen-lanes ; object
+   ; each $norm-targets (
+    ; to { nt } $argv
+    ; to denied [ get access-check.deniedByLaneId $nt.laneId ]
+    [ match
+     { $denied (
+      !staged-results.push [ object
+       { ok false }
+       { changed false }
+       { staged true }
+       { accessDenied true }
+       { requiresPackageUnlock true }
+       { packageId $denied.packageId }
+       { packageName $denied.packageName }
+       { hasPassphrase [ propertyIs true denied.hasPassphrase ] }
+       { laneId $nt.laneId }
+       { lineId $nt.lineId }
+       { text $content-str }
+       { error [ ; add 'Access denied: lane belongs to unopened/locked package "' ; add $denied.packageName '"' ] }
+      ]
+     ) }
+     { true (
+      !staged-results.push [ object
+       { ok false }
+       { changed false }
+       { staged true }
+       { blockedByLockedPackage true }
+       { requiresPackageUnlock true }
+       { laneId $nt.laneId }
+       { lineId $nt.lineId }
+       { text $content-str }
+       { error $block-err }
+      ]
+     ) }
+    ]
+    ; to already-lane [ get seen-lanes $nt.laneId ]
+    [ match
+     { $already-lane : null }
+     { true (
+      ; to seen-lanes $nt.laneId true
+      ; to raw-title !scope.get-lane-title $nt.laneId
+      ; to l-title [ match
+       { [ and { $denied } { [ propertyIs 'Locked Lane' raw-title ] } ] : $nt.laneId }
+       { true : $raw-title }
+      ]
+      [ match
+       { $denied (
+        !lane-statuses.push [ object
+         { laneId $nt.laneId }
+         { laneTitle $l-title }
+         { deployed false }
+         { hasChanges false }
+         { status 'package-locked' }
+         { packageId $denied.packageId }
+         { packageName $denied.packageName }
+         { hasPassphrase [ propertyIs true denied.hasPassphrase ] }
+         { deployStatus null }
+        ]
+       ) }
+       { true (
+        !lane-statuses.push [ object
+         { laneId $nt.laneId }
+         { laneTitle $l-title }
+         { deployed false }
+         { hasChanges false }
+         { status 'staged-pending-unlock' }
+         { deployStatus null }
+        ]
+       ) }
+      ]
+     ) }
+    ]
+   )
+   [ object
+    { ok false }
+    { staged true }
+    { accessDenied true }
+    { requiresPackageUnlock true }
+    { lockedPackages $access-check.lockedPackages }
+    { content $content-str }
+    { targets $staged-results }
+    { laneStatuses $lane-statuses }
+    { changedCount 0 }
+    { needsDeployCount 0 }
+    { error $block-err }
+   ]
+  ) }
+  { true (
+   ; to results {}
+   ; to lane-statuses {}
+   ; to seen-lanes ; object
+   ; to changed-count ; object { n 0 }
+   ; to needs-deploy-count ; object { n 0 }
+   ; to all-ok ; object { val true }
+   ; each $norm-targets (
+    ; to { t } $argv
+    ; to res !scope.set-lane-line $t.laneId $t.lineId $content-str $caller-lane-id $visited $caller-line-id
+    !results.push $res
+    ; condition { propertyIs false res.ok } : ; set false all-ok.val
+    ; condition { propertyIs true res.changed } : ; set [ ; add $changed-count.n 1 ] changed-count.n
+    ; to already-lane [ get seen-lanes $res.laneId ]
+    [ match
+     { $already-lane : null }
+     { true (
+      ; to seen-lanes $res.laneId true
+      ; to ds $res.deployStatus
+      ; to has-changes [ match { $ds.hasChanges : true } { true : false } ]
+      ; condition { propertyIs true has-changes } : ; set [ ; add $needs-deploy-count.n 1 ] needs-deploy-count.n
+      !lane-statuses.push [ object
+       { laneId $res.laneId }
+       { laneTitle $res.laneTitle }
+       { deployed [ match { $ds.deployed : true } { true : false } ] }
+       { hasChanges $has-changes }
+       { status [ match { $ds.status : $ds.status } { true : 'not-deployed' } ] }
+       { deployStatus $ds }
+      ]
+     ) }
+    ]
+   )
+   [ object
+    { ok $all-ok.val }
+    { requiresPackageUnlock false }
+    { lockedPackages {} }
+    { content $content-str }
+    { targets $results }
+    { laneStatuses $lane-statuses }
+    { changedCount $changed-count.n }
+    { needsDeployCount $needs-deploy-count.n }
+   ]
+  ) }
+ ]
+)
+; to scope.prompt-unlock-packages-for-export (
+ -- Sequentially prompts user to open/unlock any closed or passphrase-locked exported-to packages, then applies staged exports
+ ; to { opts } $argv
+ !scope.ensure-session
+ ; to raw-pkgs [ match { $opts.locked-packages : $opts.locked-packages } { $opts.lockedPackages : $opts.lockedPackages } { true : {} } ]
+ ; to queue {}
+ ; to seen-q ; object
+ ; each $raw-pkgs (
+  ; to { pkg } $argv
+  ; to pid [ match { $pkg.packageId : $pkg.packageId } { $pkg.id : $pkg.id } { true : '' } ]
   [ match
-   { $already-lane : null }
-   { true (
-    ; to seen-lanes $res.laneId true
-    ; to ds $res.deployStatus
-    ; to has-changes [ match { $ds.hasChanges : true } { true : false } ]
-    ; condition { propertyIs true has-changes } : ; set [ ; add $needs-deploy-count.n 1 ] needs-deploy-count.n
-    !lane-statuses.push [ object
-     { laneId $res.laneId }
-     { laneTitle $res.laneTitle }
-     { deployed [ match { $ds.deployed : true } { true : false } ] }
-     { hasChanges $has-changes }
-     { status [ match { $ds.status : $ds.status } { true : 'not-deployed' } ] }
-     { deployStatus $ds }
-    ]
+   { $pid (
+    ; to already-seen [ get seen-q $pid ]
+    ; to is-open-now [ !scope.open-package-ids.includes $pid ]
+    ; condition { and { [ propertyIs undefined already-seen ] } { [ propertyIs false is-open-now ] } } (
+     ; to seen-q $pid true
+     !queue.push [ object
+      { packageId $pid }
+      { packageName [ match { $pkg.packageName : $pkg.packageName } { $pkg.name : $pkg.name } { true : $pid } ] }
+      { hasPassphrase [ propertyIs true pkg.hasPassphrase ] }
+     ]
+    )
    ) }
   ]
  )
- [ object
-  { content $content-str }
-  { targets $results }
-  { laneStatuses $lane-statuses }
-  { changedCount $changed-count.n }
-  { needsDeployCount $needs-deploy-count.n }
+ ; to src-id [ match { $opts.source-lane-id : $opts.source-lane-id } { $opts.sourceLaneId : $opts.sourceLaneId } { true : '' } ]
+ ; to src-title [ match
+  { $opts.source-lane-title : $opts.source-lane-title }
+  { $opts.sourceLaneTitle : $opts.sourceLaneTitle }
+  { [ and { $src-id } { $scope.get-lane-title } ] : !scope.get-lane-title $src-id }
+  { true : '' }
+ ]
+ ; to pending-exps [ match { $opts.pending-exports : $opts.pending-exports } { $opts.pendingExports : $opts.pendingExports } { true : null } ]
+ ; to finish-unlocked (
+  ; to { opened-ids } $argv
+  ; set false scope.unlocking-export-packages
+  !scope.refresh-lane-labels
+  [ match
+   { $pending-exps (
+    ; each $pending-exps (
+     ; to { pe } $argv
+     [ match
+      { [ and { $pe.sourceLaneId } { $pe.targets } ] (
+       !scope.export-lane-line $pe.sourceLaneId $pe.targets $pe.content null null $pe.lineId
+      ) }
+     ]
+    )
+   ) }
+  ]
+  [ match
+   { $opts.on-unlocked : !$opts.on-unlocked $opened-ids }
+   { $src-id (
+    ; to open-src [ get scope.by-id $src-id ]
+    [ match
+     { [ and { $open-src.notebook.run } { [ propertyIs false open-src.is-locked ] } ] : !open-src.notebook.run null false null [ object { trigger export-unlock } ] }
+    ]
+   ) }
+  ]
+  !scope.refresh-export-statuses
+ )
+ [ match
+  { [ propertyIs 0 queue.length ] (
+   !finish-unlocked {}
+   ; object { ok true } { openedCount 0 }
+  ) }
+  { true (
+   ; set true scope.unlocking-export-packages
+   ; to total $queue.length
+   ; to opened-ids {}
+   ; to run-step-box ; object { fn null }
+   ; to run-step (
+    ; to { idx } $argv
+    [ match
+     { [ propertyIsGreaterThanOrEqual $total idx ] : !finish-unlocked $opened-ids }
+     { true (
+      ; to pkg [ get queue $idx ]
+      ; to is-open-now [ !scope.open-package-ids.includes $pkg.packageId ]
+      [ match
+       { $is-open-now : !$run-step-box.fn [ ; add $idx 1 ] }
+       { true (
+        ; to step-num ; add $idx 1
+        ; to exp-ctx [ object
+         { packageId $pkg.packageId }
+         { packageName $pkg.packageName }
+         { hasPassphrase $pkg.hasPassphrase }
+         { stepIndex $step-num }
+         { stepTotal $total }
+         { sourceLaneId $src-id }
+         { sourceLaneTitle $src-title }
+        ]
+        !package-modal.open-unlock-package [ object
+         { package-id $pkg.packageId }
+         { set-active false }
+         { export-context $exp-ctx }
+         { on-opened (
+          !opened-ids.push $pkg.packageId
+          ; to next-idx ; add $idx 1
+          !$run-step-box.fn $next-idx
+         ) }
+         { on-cancelled (
+          ; set false scope.unlocking-export-packages
+          !scope.refresh-lane-labels
+          !scope.refresh-export-statuses
+          [ match
+           { $opts.on-cancel : !$opts.on-cancel $opened-ids }
+          ]
+         ) }
+        ]
+       ) }
+      ]
+     ) }
+    ]
+   )
+   ; set $run-step run-step-box.fn
+   !$run-step 0
+   ; object { ok true } { promptedCount $total }
+  ) }
  ]
 )
 ; to scope.sync-lane-table (
@@ -6268,6 +6607,71 @@
             !scope.update-url
            ) : null
            !scope.end-session-status-pending
+          ) }
+         ]
+        ) }
+       ]
+      ) }
+     ]
+    ) }
+    { [ propertyIs 'export-unlock-required' ev-type ] (
+     ; to matches-session [ match
+      { [ propertyIs null ev.sessionId ] : true }
+      { [ propertyIs undefined ev.sessionId ] : true }
+      { [ propertyIs '' ev.sessionId ] : true }
+      { [ propertyIs $scope.session-id ev.sessionId ] : true }
+      { true : false }
+     ]
+     [ match
+      { [ and { $matches-session } { [ propertyIs false package-modal.is-open ] } { $ev.lockedPackages } { [ propertyIsGreaterThan 0 ev.lockedPackages.length ] } ] (
+       !scope.prompt-unlock-packages-for-export [ object
+        { locked-packages $ev.lockedPackages }
+        { source-lane-id $target-id }
+        { source-lane-title $ev.laneTitle }
+        { pending-exports $ev.pendingExports }
+       ]
+      ) }
+     ]
+     [ match
+      { $target-id : !scope.refresh-export-statuses $target-id }
+     ]
+    ) }
+    { [ propertyIs 'package-opened' ev-type ] (
+     ; to matches-session [ match
+      { [ propertyIs null ev.sessionId ] : true }
+      { [ propertyIs undefined ev.sessionId ] : true }
+      { [ propertyIs '' ev.sessionId ] : true }
+      { [ propertyIs $scope.session-id ev.sessionId ] : true }
+      { true : false }
+     ]
+     [ match
+      { $matches-session (
+       ; to already-has [ match
+        { $ev.packageId : [ !scope.open-package-ids.includes $ev.packageId ] }
+        { true : false }
+       ]
+       [ match
+        { [ propertyIs false already-has ] (
+         ; to refreshed [ match
+          { [ and { $switchTabSession } { $scope.session-id } ] : !switchTabSession $data $window $scope.session-id }
+          { $initSessionState : !initSessionState $data $window }
+          { true : null }
+         ]
+         [ match
+          { $refreshed (
+           !scope.apply-session-packages $refreshed
+           !scope.load-catalog
+           !scope.refresh-lane-labels
+           ; to locked-hit ; object { val false }
+           ; each $scope.lanes (
+            ; to { lane } $argv
+            ; condition { propertyIs true lane.is-locked } : ; set true locked-hit.val
+           )
+           [ match
+            { $locked-hit.val : !scope.sync }
+           ]
+           !refresh-pending-export-lanes
+           !sync-session-ui
           ) }
          ]
         ) }

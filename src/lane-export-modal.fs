@@ -330,7 +330,8 @@
   ; each $lane-control.lanes (
    ; to { lane } $argv
    ; to is-self [ propertyIs $lane.id modal.current-lane-id ]
-   ; condition { propertyIs false is-self } (
+   ; to is-locked [ propertyIs true lane.is-locked ]
+   ; condition { and { [ propertyIs false is-self ] } { [ propertyIs false is-locked ] } } (
     ; to seen $lane.id true
     !candidates.push [ object { id $lane.id } { title $lane.title } { is-open true } ]
    )

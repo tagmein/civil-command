@@ -37,6 +37,7 @@ import {
  formatImportLine,
  formatLaneRouteSegment,
  formatLaneRoutes,
+ formatRowDisplayTemplate,
  getInboundSubtableRowsForParent,
  getWorkflowCellState,
  hasImportCycle,
@@ -62,6 +63,7 @@ import {
  parse,
  parseCellValue,
  parseColumnType,
+ parseDisplayTemplate,
  parseImportLine,
  parseLaneRouteSegment,
  parseLaneRoutes,
@@ -1516,6 +1518,120 @@ test('row Data type helpers: target/literal resolution, coercion, 2-pass stored 
  assert.equal((await fetchRowOptionsPage(tables, { type: 'row', refTableId: 'nope', refColumnId: 'c-id' })).ok, false)
  assert.equal(dataValuesEqual({ a: [1] }, { a: [1] }), true)
  assert.equal(dataValuesEqual(1, '1'), false)
+})
+
+test('Row display templates: strict "; add ..." micro-syntax, nested row Displays, empty/unknown tokens, cycles, grid labels, picker labels/search, and persistence', async () => {
+ // Only a single, flat `; add ...` expression is accepted; no commands, blocks, or property paths
+ const valid = parseDisplayTemplate("; add $family ' ' $version")
+ assert.equal(valid.ok, true)
+ assert.deepEqual(valid.variables, ['family', 'version'])
+ assert.equal(parseDisplayTemplate('').ok, true)
+ assert.equal(parseDisplayTemplate('').text, '')
+ assert.equal(parseDisplayTemplate('; add').ok, false)
+ assert.equal(parseDisplayTemplate('; sub 1 2').ok, false)
+ assert.equal(parseDisplayTemplate('; add $family.name').ok, false)
+ assert.equal(parseDisplayTemplate('; add $__proto__').ok, false)
+ assert.equal(parseDisplayTemplate('; add [ add 1 2 ] 3').ok, false)
+ assert.equal(parseDisplayTemplate('; add 1 ; sub 2 3').ok, false)
+ assert.equal(parseDisplayTemplate(`; add ${'x'.repeat(600)}`).ok, false)
+ assert.equal(parseColumnType({ type: 'row', refTableId: 'os', refColumnId: 'id', refDisplayTemplate: '; sub 1 2' }).refDisplayTemplate, undefined)
+
+ const tables = [
+  {
+   id: 'computers',
+   name: 'computers',
+   columns: [
+    {
+     id: 'c-os',
+     name: 'operating_system',
+     type: 'row',
+     refTableId: 'os',
+     refColumnId: 'os-id',
+     refDisplayColumnId: 'os-version',
+     refDisplayTemplate: "; add $family ' ' $version",
+    },
+   ],
+   rows: [
+    { id: 'pc1', values: { 'c-os': '0' } },
+    { id: 'pc2', values: { 'c-os': '1' } },
+   ],
+  },
+  {
+   id: 'os',
+   name: 'operating_systems',
+   columns: [
+    { id: 'os-id', name: 'id', type: 'text' },
+    { id: 'os-family', name: 'family', type: 'row', refTableId: 'families', refColumnId: 'fam-code', refDisplayColumnId: 'fam-name' },
+    { id: 'os-version', name: 'version', type: 'text' },
+   ],
+   rows: [
+    { id: 'os0', values: { 'os-id': '0', 'os-family': 'fedora', 'os-version': '45' } },
+    { id: 'os1', values: { 'os-id': '1', 'os-family': 'android', 'os-version': '17' } },
+   ],
+  },
+  {
+   id: 'families',
+   name: 'families',
+   columns: [
+    { id: 'fam-code', name: 'code', type: 'text' },
+    { id: 'fam-name', name: 'name', type: 'text' },
+   ],
+   rows: [
+    { id: 'f1', values: { 'fam-code': 'fedora', 'fam-name': 'Fedora' } },
+    { id: 'f2', values: { 'fam-code': 'android', 'fam-name': 'Google Android' } },
+   ],
+  },
+ ]
+
+ // Nested row tokens resolve through that column's own Display setting, never the raw link value
+ const osCol = tables[1].columns[0]
+ assert.deepEqual(formatRowDisplayTemplate(tables, tables[1], tables[1].rows[0], "; add $family ' ' $version"), {
+  ok: true,
+  text: 'Fedora 45',
+  unresolved: [],
+  error: null,
+ })
+ assert.equal(formatRowDisplayTemplate(tables, tables[1], tables[1].rows[1], "; add $family ' ' $version").text, 'Google Android 17')
+ assert.equal(formatRowDisplayTemplate(tables, tables[1], tables[1].rows[0], "; add $family ' ' $version ' LTS'").text, 'Fedora 45 LTS')
+ assert.equal(formatRowDisplayTemplate(tables, tables[1], tables[1].rows[0], "; add $missing $version").text, '45')
+ assert.equal(formatRowDisplayTemplate(tables, tables[1], tables[1].rows[1], "; add $missing ''").text, '')
+ assert.equal(formatRowDisplayTemplate(tables, tables[1], tables[1].rows[1], '; sub 1 2').ok, false)
+
+ // A row[] token renders every linked row through the same template, joined with ", "
+ assert.equal(formatRowDisplayTemplate(tables, tables[1], { values: { 'os-family': ['fedora', 'android'] } }, "; add $family ''").text, 'Fedora, Google Android')
+
+ // Templates with cycles terminate instead of recursing forever
+ const cycleTables = [
+  { id: 'a', name: 'a', columns: [
+   { id: 'a-id', name: 'id', type: 'text' },
+   { id: 'a-next', name: 'next', type: 'row', refTableId: 'b', refColumnId: 'b-id', refDisplayColumnId: 'b-name', refDisplayTemplate: "; add $next '!'" },
+  ], rows: [{ id: 'ar', values: { 'a-id': '1', 'a-next': '1' } }] },
+  { id: 'b', name: 'b', columns: [
+   { id: 'b-id', name: 'id', type: 'text' },
+   { id: 'b-next', name: 'next', type: 'row', refTableId: 'a', refColumnId: 'a-id', refDisplayColumnId: 'a-name', refDisplayTemplate: "; add $next '?'" },
+  ], rows: [{ id: 'br', values: { 'b-id': '1', 'b-next': '1' } }] },
+ ]
+ assert.equal(formatRowDisplayTemplate(cycleTables, cycleTables[0], cycleTables[0].rows[0], "; add $next ''").text.length > 0, true)
+
+ // Grid and picker show only the template output (no appended id), while picker search still finds it
+ const grid = lookupRowDisplay(tables, tables[0].columns[0], '0')
+ assert.equal(grid.displayTemplateMode, true)
+ assert.equal(grid.displayTemplateError, null)
+ assert.equal(grid.displayText, 'Fedora 45')
+ assert.equal(grid.label, 'Fedora 45')
+ assert.equal(grid.valueText, '0')
+ const page = await fetchRowOptionsPage(tables, tables[0].columns[0], {})
+ assert.deepEqual(page.items.map(i => i.label), ['Fedora 45', 'Google Android 17'])
+ assert.deepEqual(filterRowOptions(page.items, 'fedora').map(i => i.value), ['0'])
+ assert.deepEqual(filterRowOptions(page.items, 'android').map(i => i.value), ['1'])
+
+ // parseStoredTables and parseColumnType preserve valid templates but strip invalid ones
+ const stored = parseStoredTables(JSON.stringify(tables))
+ assert.equal(stored[0].columns[0].refDisplayTemplate, "; add $family ' ' $version")
+ const reparsed = parseStoredTables(JSON.stringify(stored))
+ assert.equal(reparsed[0].columns[0].refDisplayTemplate, "; add $family ' ' $version")
+ assert.equal(parseColumnType(stored[0].columns[0]).refDisplayTemplate, "; add $family ' ' $version")
+ assert.equal(osCol.refDisplayTemplate, undefined)
 })
 
 test('Data tab row type: stacked schema config, joined table display, and on-demand async paginated & searchable picker', async () => {
@@ -3882,14 +3998,16 @@ test('Data tab row Filter: "Filter where <state.country> is <person.country>" sc
   await dataView['schema-rows'][2]['type-el'].listeners.change()
   const peopleStateColId = dataView.tables[0].columns[2].id
 
-  // Verify Filter field is placed directly below Display in row-config-wrap with "where <select1> is <select2>"
+  // Verify Template then Filter fields are placed directly below Display in row-config-wrap with "where <select1> is <select2>"
   let stateSrow = dataView['schema-rows'][2]
   const rowConfigChildren = stateSrow['row-config-wrap'].children
   assert.equal(rowConfigChildren[0].children[0].textContent, 'Table')
   assert.equal(rowConfigChildren[1].children[0].textContent, 'Column')
   assert.equal(rowConfigChildren[2].children[0].textContent, 'Display')
-  assert.equal(rowConfigChildren[3].children[0].textContent, 'Filter')
-  assert.equal(rowConfigChildren[3], stateSrow['ref-filter-field'])
+  assert.equal(rowConfigChildren[3].children[0].textContent, 'Template')
+  assert.equal(rowConfigChildren[3], stateSrow['ref-tmpl-field'])
+  assert.equal(rowConfigChildren[4].children[0].textContent, 'Filter')
+  assert.equal(rowConfigChildren[4], stateSrow['ref-filter-field'])
   const filterControls = stateSrow['ref-filter-controls'].children
   assert.equal(filterControls[0].textContent, 'where')
   assert.equal(filterControls[1], stateSrow['ref-filter-col-el'])

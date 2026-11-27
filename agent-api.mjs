@@ -29,6 +29,7 @@ import {
  DEFAULT_PACKAGE_ID,
  addLaneTable,
  addTableRow,
+ checkExportTargetsAccess,
  checkLaneAccess,
  clearTableRows,
  collectLaneSyncBundle,
@@ -50,6 +51,8 @@ import {
  loadLaneTables,
  loadSessionCatalog,
  loadTableUpdates,
+ normalizeExportTargetsAndValue,
+ openPackageInSession,
  recordTableDeploymentUpdate,
  registerLaneInPackage,
  resolveLaneSecrets,
@@ -383,6 +386,9 @@ export async function agentEvalLane(rootKv, options = {}) {
  }
 
  const evalCache = new Map()
+ const lockedPackagesById = new Map()
+ const pendingExports = []
+ const changedExportLaneIds = new Set()
  const safeFetch = typeof options.fetch === 'function' ? options.fetch : createSafeExternalFetch()
 
  async function evaluateLaneById(targetId, stack = new Set(), isRoot = false) {
@@ -393,7 +399,7 @@ export async function agentEvalLane(rootKv, options = {}) {
   if (stack.has(cleanId)) {
    return { ok: false, state: null, error: 'Circular lane import detected' }
   }
-  if (!isRoot && openPackageIds && openPackageIds.length > 0) {
+  if (!isRoot && Array.isArray(openPackageIds)) {
    const access = await checkLaneAccess(sessionKv, openPackageIds, cleanId)
    if (!access.allowed) {
     return { ok: false, state: null, error: 'Access denied: lane belongs to a locked package' }
@@ -508,7 +514,7 @@ export async function agentEvalLane(rootKv, options = {}) {
      }
      return errRes
     }
-    if (openPackageIds && openPackageIds.length > 0) {
+    if (Array.isArray(openPackageIds)) {
      const access = await checkLaneAccess(sessionKv, openPackageIds, cleanTarget)
      if (!access.allowed) {
       const errRes = { ok: false, changed: false, laneId: cleanTarget, count: 0, error: 'Access denied: lane belongs to a locked package' }
@@ -573,7 +579,7 @@ export async function agentEvalLane(rootKv, options = {}) {
     if (!cleanTarget) {
      return { ok: false, status: 'error', error: 'Target lane ID is required' }
     }
-    if (openPackageIds && openPackageIds.length > 0) {
+    if (Array.isArray(openPackageIds)) {
      const access = await checkLaneAccess(sessionKv, openPackageIds, cleanTarget)
      if (!access.allowed) {
       return { ok: false, status: 'error', laneId: cleanTarget, error: 'Access denied: lane belongs to a locked package' }
@@ -695,43 +701,189 @@ export async function agentEvalLane(rootKv, options = {}) {
      invokeImport,
     })
    },
-   exportLaneLine: async (targets, valueExpr) => {
-    const targetList = Array.isArray(targets) ? targets : []
-    const text = valueExpr === null || valueExpr === undefined ? '' : String(valueExpr)
-    const results = []
-    let changedCount = 0
-    for (const pair of targetList) {
-     if (!Array.isArray(pair) || pair.length < 2) {
-      continue
-     }
-     const [tLaneId, tLineId] = pair
-     if (applyExports) {
-      const writeRes = await setTargetLaneLine(sessionKv, tLaneId, tLineId, text, null)
-      if (writeRes.changed) {
-       changedCount += 1
-       eventHub.emit({
-        type: 'lane-updated',
-        sessionId: resolved.activeSession ? resolved.activeSession.id : null,
-        dataDir: resolved.dataDir,
-        laneId: String(tLaneId),
-        action: 'export-line',
-       })
-      }
-      results.push(writeRes)
-     }
-     else {
-      results.push({
+   exportLaneLine: async (firstArg, secondArg, thirdArg) => {
+    const { targets: targetList, text } = normalizeExportTargetsAndValue(firstArg, secondArg, thirdArg)
+    const accessCheck = Array.isArray(openPackageIds)
+     ? await checkExportTargetsAccess(sessionKv, openPackageIds, targetList, cleanId)
+     : { allowed: true, requiresPackageUnlock: false, lockedPackages: [], deniedByLaneId: {} }
+
+    if (!applyExports) {
+     const results = targetList.map(t => {
+      const denied = Object.hasOwn(accessCheck.deniedByLaneId, t.laneId)
+       ? accessCheck.deniedByLaneId[t.laneId]
+       : null
+      return {
        ok: true,
        readonly: true,
-       laneId: String(tLaneId),
-       lineId: String(tLineId),
+       laneId: t.laneId,
+       lineId: t.lineId,
        text,
+       ...(denied ? {
+        lockedPackage: true,
+        packageId: denied.packageId,
+        packageName: denied.packageName,
+        hasPassphrase: denied.hasPassphrase,
+       } : {}),
+      }
+     })
+     const expRes = {
+      ok: true,
+      readonly: true,
+      requiresPackageUnlock: Boolean(accessCheck.requiresPackageUnlock),
+      lockedPackages: accessCheck.lockedPackages,
+      content: text,
+      changedCount: 0,
+      targets: results,
+     }
+     if (storyRecorder) {
+      trackStoryExportLineCall({
+       recorder: storyRecorder,
+       lineContext,
+       lines,
+       result: expRes,
       })
      }
+     return expRes
+    }
+
+    if (accessCheck.requiresPackageUnlock) {
+     const pkgSummary = accessCheck.lockedPackages
+      .map(p => (p.packageName && p.packageName !== p.packageId ? `"${p.packageName}" (${p.packageId})` : `"${p.packageId}"`))
+      .join(', ')
+     const blockError = `Access denied: target package(s) must be opened/unlocked for writing before applying exports (${pkgSummary})`
+     const results = targetList.map(t => {
+      const denied = Object.hasOwn(accessCheck.deniedByLaneId, t.laneId)
+       ? accessCheck.deniedByLaneId[t.laneId]
+       : null
+      if (denied) {
+       return {
+        ok: false,
+        changed: false,
+        staged: true,
+        accessDenied: true,
+        requiresPackageUnlock: true,
+        packageId: denied.packageId,
+        packageName: denied.packageName,
+        hasPassphrase: denied.hasPassphrase,
+        laneId: t.laneId,
+        lineId: t.lineId,
+        text,
+        error: `Access denied: lane belongs to unopened/locked package "${denied.packageName || denied.packageId}"`,
+       }
+      }
+      return {
+       ok: false,
+       changed: false,
+       staged: true,
+       blockedByLockedPackage: true,
+       requiresPackageUnlock: true,
+       laneId: t.laneId,
+       lineId: t.lineId,
+       text,
+       error: blockError,
+      }
+     })
+     for (const pkg of accessCheck.lockedPackages) {
+      if (!lockedPackagesById.has(pkg.packageId)) {
+       lockedPackagesById.set(pkg.packageId, {
+        packageId: pkg.packageId,
+        packageName: pkg.packageName,
+        hasPassphrase: Boolean(pkg.hasPassphrase),
+        laneIds: [...pkg.laneIds],
+        targets: pkg.targets.map(t => ({ laneId: t.laneId, lineId: t.lineId })),
+       })
+      }
+      else {
+       const existing = lockedPackagesById.get(pkg.packageId)
+       for (const lid of pkg.laneIds) {
+        if (!existing.laneIds.includes(lid)) {
+         existing.laneIds.push(lid)
+        }
+       }
+       for (const tgt of pkg.targets) {
+        if (!existing.targets.some(e => e.laneId === tgt.laneId && e.lineId === tgt.lineId)) {
+         existing.targets.push({ laneId: tgt.laneId, lineId: tgt.lineId })
+        }
+       }
+      }
+     }
+     pendingExports.push({
+      sourceLaneId: cleanId,
+      sourceLaneTitle: title ? String(title) : cleanId,
+      lineId: lineContext.lineId || '',
+      lineNumber: lineContext.lineNumber || null,
+      content: text,
+      targets: targetList.map(t => ({ laneId: t.laneId, lineId: t.lineId })),
+      lockedPackages: accessCheck.lockedPackages,
+     })
+     const expRes = {
+      ok: false,
+      readonly: false,
+      staged: true,
+      accessDenied: true,
+      requiresPackageUnlock: true,
+      lockedPackages: accessCheck.lockedPackages,
+      content: text,
+      changedCount: 0,
+      targets: results,
+      error: blockError,
+     }
+     if (storyRecorder) {
+      trackStoryExportLineCall({
+       recorder: storyRecorder,
+       lineContext,
+       lines,
+       result: expRes,
+      })
+     }
+     return expRes
+    }
+
+    const results = []
+    let changedCount = 0
+    const setBySpec = lineContext.lineId ? { laneId: cleanId, lineId: lineContext.lineId } : { laneId: cleanId, lineId: '' }
+    for (const pair of targetList) {
+     const tLaneId = pair.laneId
+     const tLineId = pair.lineId
+     if (!tLaneId || !tLineId) {
+      results.push({
+       ok: false,
+       changed: false,
+       laneId: tLaneId,
+       lineId: tLineId,
+       error: 'Target lane and line ID are required',
+      })
+      continue
+     }
+     if (tLaneId === cleanId) {
+      results.push({
+       ok: false,
+       changed: false,
+       laneId: tLaneId,
+       lineId: tLineId,
+       error: 'Cannot export to the same lane',
+      })
+      continue
+     }
+     const writeRes = await setTargetLaneLine(sessionKv, tLaneId, tLineId, text, null, setBySpec)
+     if (writeRes.changed) {
+      changedCount += 1
+      changedExportLaneIds.add(String(tLaneId))
+      eventHub.emit({
+       type: 'lane-updated',
+       sessionId: resolved.activeSession ? resolved.activeSession.id : null,
+       dataDir: resolved.dataDir,
+       laneId: String(tLaneId),
+       action: 'export-line',
+      })
+     }
+     results.push(writeRes)
     }
     const expRes = {
-     ok: true,
-     readonly: !applyExports,
+     ok: results.every(r => r && r.ok !== false),
+     readonly: false,
+     requiresPackageUnlock: false,
+     lockedPackages: [],
      content: text,
      changedCount,
      targets: results,
@@ -937,8 +1089,7 @@ export async function agentEvalLane(rootKv, options = {}) {
   })
  }
 
- return {
-  ok: true,
+ const baseEvalPayload = {
   activeSession: resolved.activeSession,
   dataDir: resolved.dataDir,
   laneId: evaluated.laneId,
@@ -958,6 +1109,126 @@ export async function agentEvalLane(rootKv, options = {}) {
   httpSimulation,
   logs,
  }
+
+ if (applyExports && pendingExports.length > 0) {
+  const lockedPackages = Array.from(lockedPackagesById.values())
+  const pkgSummary = lockedPackages
+   .map(p => (p.packageName && p.packageName !== p.packageId ? `"${p.packageName}" (${p.packageId})` : `"${p.packageId}"`))
+   .join(', ')
+  const blockError = `Access denied: target package(s) must be opened/unlocked for writing before applying exports (${pkgSummary})`
+  eventHub.emit({
+   type: 'export-unlock-required',
+   sessionId: resolved.activeSession ? resolved.activeSession.id : null,
+   dataDir: resolved.dataDir,
+   laneId: evaluated.laneId,
+   laneTitle: evaluated.title,
+   lockedPackages,
+   pendingExports,
+  })
+  return {
+   ok: false,
+   accessDenied: true,
+   requiresPackageUnlock: true,
+   lockedPackages,
+   pendingExports,
+   changedExportLaneIds: Array.from(changedExportLaneIds),
+   error: blockError,
+   ...baseEvalPayload,
+  }
+ }
+
+ return {
+  ok: true,
+  ...(applyExports ? { changedExportLaneIds: Array.from(changedExportLaneIds) } : {}),
+  ...baseEvalPayload,
+ }
+}
+
+export async function unlockPackagesForExport(rootKv, options = {}) {
+ const kv = resolveAgentRootKv(rootKv)
+ const sessionId = options && options.sessionId ? String(options.sessionId).trim() : ''
+ const lockedPackages = Array.isArray(options && options.lockedPackages) ? options.lockedPackages : []
+ const maxPassphraseAttempts = Number.isInteger(options && options.maxPassphraseAttempts) && options.maxPassphraseAttempts > 0
+  ? options.maxPassphraseAttempts
+  : 3
+ const promptConfirmOpen = typeof (options && options.promptConfirmOpen) === 'function' ? options.promptConfirmOpen : null
+ const promptPassphrase = typeof (options && options.promptPassphrase) === 'function' ? options.promptPassphrase : null
+ const onPackageOpened = typeof (options && options.onPackageOpened) === 'function' ? options.onPackageOpened : null
+ if (!sessionId) {
+  return { ok: false, error: 'sessionId is required to open packages', openedPackageIds: [] }
+ }
+ const openedPackageIds = []
+ for (let i = 0; i < lockedPackages.length; i++) {
+  const pkg = lockedPackages[i]
+  if (!pkg || !pkg.packageId) {
+   continue
+  }
+  const pkgInfo = {
+   packageId: String(pkg.packageId).trim(),
+   packageName: pkg.packageName ? String(pkg.packageName) : String(pkg.packageId).trim(),
+   hasPassphrase: Boolean(pkg.hasPassphrase),
+   laneIds: Array.isArray(pkg.laneIds) ? pkg.laneIds : [],
+   targets: Array.isArray(pkg.targets) ? pkg.targets : [],
+   stepIndex: i + 1,
+   stepTotal: lockedPackages.length,
+  }
+  if (!pkgInfo.hasPassphrase) {
+   const confirmed = promptConfirmOpen ? await promptConfirmOpen(pkgInfo) : false
+   if (!confirmed) {
+    return { ok: false, cancelled: true, openedPackageIds }
+   }
+   const openRes = await openPackageInSession(kv, sessionId, {
+    packageId: pkgInfo.packageId,
+    passphrase: '',
+    setActive: false,
+   })
+   if (!openRes || !openRes.ok) {
+    return {
+     ok: false,
+     error: (openRes && openRes.error) || `Failed to open package "${pkgInfo.packageId}"`,
+     openedPackageIds,
+    }
+   }
+   openedPackageIds.push(pkgInfo.packageId)
+   if (onPackageOpened) {
+    await onPackageOpened(pkgInfo, openRes)
+   }
+   continue
+  }
+  let unlocked = false
+  let lastError = ''
+  for (let attempt = 1; attempt <= maxPassphraseAttempts; attempt++) {
+   const passphrase = promptPassphrase ? await promptPassphrase(pkgInfo, attempt, lastError) : null
+   if (passphrase === null || passphrase === undefined || passphrase === '') {
+    return { ok: false, cancelled: true, openedPackageIds }
+   }
+   const openRes = await openPackageInSession(kv, sessionId, {
+    packageId: pkgInfo.packageId,
+    passphrase: String(passphrase),
+    setActive: false,
+   })
+   if (openRes && openRes.ok) {
+    openedPackageIds.push(pkgInfo.packageId)
+    if (onPackageOpened) {
+     await onPackageOpened(pkgInfo, openRes)
+    }
+    unlocked = true
+    break
+   }
+   lastError = (openRes && openRes.error) || 'Incorrect passphrase'
+   if (!openRes || !openRes.needsPassphrase) {
+    return { ok: false, error: lastError, openedPackageIds }
+   }
+  }
+  if (!unlocked) {
+   return {
+    ok: false,
+    error: lastError || `Failed to unlock package "${pkgInfo.packageId}" after ${maxPassphraseAttempts} attempts`,
+    openedPackageIds,
+   }
+  }
+ }
+ return { ok: true, openedPackageIds }
 }
 
 export async function agentCreateLane(rootKv, options = {}) {
@@ -1299,6 +1570,20 @@ function findColumnByIdOrName(columns, query) {
  return columns.find(c => c && String(c.name || '').trim().toLowerCase() === lower) || null
 }
 
+function summarizeTriggeredEval(triggeredEval) {
+ if (!triggeredEval) {
+  return null
+ }
+ return {
+  ok: triggeredEval.ok,
+  errorCount: triggeredEval.errorCount,
+  requiresPackageUnlock: Boolean(triggeredEval.requiresPackageUnlock),
+  lockedPackages: Array.isArray(triggeredEval.lockedPackages) ? triggeredEval.lockedPackages : [],
+  pendingExports: Array.isArray(triggeredEval.pendingExports) ? triggeredEval.pendingExports : [],
+  error: triggeredEval.error || null,
+ }
+}
+
 function coerceAgentCellValue(rawVal, col, allTables) {
  const parsedType = parseColumnType(col)
  if (typeof rawVal === 'string' && (parsedType.type === 'fixed' || parsedType.type === 'integer' || parsedType.type === 'decimal' || parsedType.type === 'boolean')) {
@@ -1331,7 +1616,7 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
   if (sourceLaneId === laneId) {
    return { ok: false, error: 'Cannot import a table from the same lane' }
   }
-  if (resolved.openPackageIds && resolved.openPackageIds.length > 0) {
+  if (Array.isArray(resolved.openPackageIds)) {
    const access = await checkLaneAccess(sessionKv, resolved.openPackageIds, sourceLaneId)
    if (!access.allowed) {
     return { ok: false, accessDenied: true, error: 'Access denied: source lane belongs to a locked package' }
@@ -1570,7 +1855,7 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
    isNew,
    row: rowRecord,
    table: { ...formatTableWithNamedRows(table), updates },
-   triggeredEval: triggeredEval ? { ok: triggeredEval.ok, errorCount: triggeredEval.errorCount } : null,
+   triggeredEval: summarizeTriggeredEval(triggeredEval),
   }
  }
 
@@ -1582,11 +1867,12 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
   }
   table.rows.splice(idx, 1)
   await deleteTableRow(sessionKv, laneData, laneId, table, rowId, table.rows.map(r => r.id))
+  let triggeredEval = null
   const scriptLoaded = await loadLaneScript(sessionKv, laneData, laneId, null)
   const hasTriggerScript = Array.isArray(scriptLoaded && scriptLoaded.records) &&
    scriptLoaded.records.some(r => r && typeof r.text === 'string' && /\b(?:syncLaneTable|deployLane|resyncLane|exportLaneLine|setLaneLine)\b/.test(r.text))
   if (hasTriggerScript && options.runScriptOnTableChange !== false) {
-   await agentEvalLane(resolved.rootKv, {
+   triggeredEval = await agentEvalLane(resolved.rootKv, {
     sessionId: resolved.activeSession ? resolved.activeSession.id : options.sessionId,
     dataDir: resolved.dataDir,
     laneId,
@@ -1607,6 +1893,7 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
    ...(isRemoteTable(table) ? { ownerLaneId: table.remote.laneId } : {}),
    tableId: table.id,
    deletedRowId: rowId,
+   triggeredEval: summarizeTriggeredEval(triggeredEval),
   }
  }
 
@@ -1614,11 +1901,12 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
   const removedIds = table.rows.map(r => r.id)
   table.rows = []
   await clearTableRows(sessionKv, laneData, laneId, table, removedIds)
+  let triggeredEval = null
   const scriptLoaded = await loadLaneScript(sessionKv, laneData, laneId, null)
   const hasTriggerScript = Array.isArray(scriptLoaded && scriptLoaded.records) &&
    scriptLoaded.records.some(r => r && typeof r.text === 'string' && /\b(?:syncLaneTable|deployLane|resyncLane|exportLaneLine|setLaneLine)\b/.test(r.text))
   if (hasTriggerScript && options.runScriptOnTableChange !== false) {
-   await agentEvalLane(resolved.rootKv, {
+   triggeredEval = await agentEvalLane(resolved.rootKv, {
     sessionId: resolved.activeSession ? resolved.activeSession.id : options.sessionId,
     dataDir: resolved.dataDir,
     laneId,
@@ -1639,6 +1927,7 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
    ...(isRemoteTable(table) ? { ownerLaneId: table.remote.laneId } : {}),
    tableId: table.id,
    clearedCount: removedIds.length,
+   triggeredEval: summarizeTriggeredEval(triggeredEval),
   }
  }
 
@@ -2178,6 +2467,73 @@ export async function handleMcpJsonRpc(rootKv, message, options = {}) {
 
 // ---------- HTTP Handler for /api/agent/* and /api/mcp ----------
 
+function sanitizeNotifyTargets(raw) {
+ if (!Array.isArray(raw)) {
+  return []
+ }
+ const out = []
+ for (const item of raw) {
+  if (!item || typeof item !== 'object') {
+   continue
+  }
+  const laneId = item.laneId === null || item.laneId === undefined ? '' : String(item.laneId).trim()
+  const lineId = item.lineId === null || item.lineId === undefined ? '' : String(item.lineId).trim()
+  if (laneId || lineId) {
+   out.push({ laneId, lineId })
+  }
+ }
+ return out
+}
+
+function sanitizeNotifyLockedPackages(raw) {
+ if (!Array.isArray(raw)) {
+  return []
+ }
+ const out = []
+ for (const item of raw) {
+  if (!item || typeof item !== 'object') {
+   continue
+  }
+  const packageId = item.packageId === null || item.packageId === undefined ? '' : String(item.packageId).trim()
+  if (!packageId) {
+   continue
+  }
+  const packageName = item.packageName !== undefined && item.packageName !== null
+   ? String(item.packageName).trim() || packageId
+   : packageId
+  out.push({
+   packageId,
+   packageName,
+   hasPassphrase: Boolean(item.hasPassphrase),
+   laneIds: Array.isArray(item.laneIds) ? item.laneIds.map(id => String(id || '').trim()).filter(Boolean) : [],
+   targets: sanitizeNotifyTargets(item.targets),
+  })
+ }
+ return out
+}
+
+function sanitizeNotifyPendingExports(raw) {
+ if (!Array.isArray(raw)) {
+  return []
+ }
+ const out = []
+ for (const item of raw) {
+  if (!item || typeof item !== 'object') {
+   continue
+  }
+  out.push({
+   sourceLaneId: item.sourceLaneId ? String(item.sourceLaneId).trim() : '',
+   sourceLaneTitle: item.sourceLaneTitle ? String(item.sourceLaneTitle).trim() : '',
+   lineId: item.lineId ? String(item.lineId).trim() : '',
+   lineNumber: Number.isInteger(item.lineNumber) ? item.lineNumber : null,
+   content: item.content === null || item.content === undefined ? '' : String(item.content),
+   targets: sanitizeNotifyTargets(item.targets),
+   lockedPackages: sanitizeNotifyLockedPackages(item.lockedPackages),
+  })
+ }
+ return out
+}
+
 function sendJson(res, status, payload, extraHeaders = null) {
  const body = JSON.stringify(payload)
  res.writeHead(status, {
@@ -2441,13 +2797,26 @@ export async function handleAgentApiRequest(req, res, opts = {}) {
     return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
    }
    const body = await readJsonBody(req)
-   const emitted = eventHub.emit({
+   const payload = {
     type: body.type || 'lane-updated',
     sessionId: body.sessionId || null,
     dataDir: body.dataDir || null,
     laneId: body.laneId || null,
     action: body.action || 'external',
-   })
+   }
+   if (typeof body.laneTitle === 'string' && body.laneTitle.trim()) {
+    payload.laneTitle = body.laneTitle.trim()
+   }
+   if (typeof body.packageId === 'string' && body.packageId.trim()) {
+    payload.packageId = body.packageId.trim()
+   }
+   if (Array.isArray(body.lockedPackages)) {
+    payload.lockedPackages = sanitizeNotifyLockedPackages(body.lockedPackages)
+   }
+   if (Array.isArray(body.pendingExports)) {
+    payload.pendingExports = sanitizeNotifyPendingExports(body.pendingExports)
+   }
+   const emitted = eventHub.emit(payload)
    return sendJson(res, 200, { ok: true, event: emitted })
   }
 

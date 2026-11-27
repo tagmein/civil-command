@@ -1194,6 +1194,69 @@
   ]
  )
 
+ ; to view.display-template-token (
+  -- Returns a $name token for simple column names, otherwise a $id token
+  ; to { col } $argv
+  ; to name !view.display-col-name $col
+  ; to safe [ match
+   { [ !name.includes ' ' ] : false }
+   { [ !name.includes '.' ] : false }
+   { [ !name.includes '\'' ] : false }
+   { true : true }
+  ]
+  ; to token [ match { $safe : ; add '$' $name } { true : ; add '$' $col.id } ]
+  $token
+ )
+
+ ; to view.preview-display-template (
+  -- Previews a display template against the first linked row, reporting syntax errors and unknown columns
+  ; to { tbl col text } $argv
+  ; to box ; object { ok true } { text '' } { error '' } { unresolved null }
+  ; to parsed !parseDisplayTemplate $text
+  [ match
+   { [ propertyIs false parsed.ok ] (
+    ; set false box.ok
+    ; set $parsed.error box.error
+   ) }
+   { [ propertyIs '' parsed.text ] : null }
+   { true (
+    ; to target !resolveRowTarget $view.tables $col $tbl
+    [ match
+     { [ propertyIs false target.valid ] (
+      ; set false box.ok
+      ; set 'Configure a valid link first' box.error
+     ) }
+     { true (
+      ; to clock-opts !view.get-clock-display-opts
+      ; to rows [ match { $target.table.rows : $target.table.rows } { true : null } ]
+      ; match
+       { $rows (
+        ; each $rows (
+         ; to { item } $argv
+         [ match { [ propertyIs '' box.text ] (
+          ; to rendered !formatRowDisplayTemplate $view.tables $target.table $item $parsed $clock-opts
+          ; set $rendered.text box.text
+          ; set $rendered.unresolved box.unresolved
+         ) } { true : null } ]
+        )
+       ) }
+       { true : null }
+      ; match
+       { $box.unresolved (
+        ; match
+         { propertyIsGreaterThan 0 box.unresolved.length (
+          ; set [ ; add 'Unknown column: ' $box.unresolved.0 ] box.error
+         ) }
+         { true : null }
+        ) }
+       { true : null }
+     ) }
+    ]
+   ) }
+  ]
+  $box
+ )
+
  ; to view.row-placeholder-label (
   -- Returns "Select <column name>…" when the column has a name, or "Select row…" when unnamed
   ; to { col } $argv
@@ -3672,6 +3735,7 @@
        !window.Reflect.deleteProperty $col refTableId
        !window.Reflect.deleteProperty $col refColumnId
        !window.Reflect.deleteProperty $col refDisplayColumnId
+       !window.Reflect.deleteProperty $col refDisplayTemplate
        !window.Reflect.deleteProperty $col refFilterColumnId
        !window.Reflect.deleteProperty $col filterByColumnId
       ) }
@@ -3679,6 +3743,7 @@
        ; set undefined col.refTableId
        ; set undefined col.refColumnId
        ; set undefined col.refDisplayColumnId
+       ; set undefined col.refDisplayTemplate
        ; set undefined col.refFilterColumnId
        ; set undefined col.filterByColumnId
       ) }
@@ -4074,6 +4139,24 @@
      !ref-disp-field.appendChild $ref-disp-label
      !ref-disp-field.appendChild $ref-display-el
 
+     ; to ref-tmpl-field !document.createElement label
+     ; set 'lane-data-row-field lane-data-row-field--template' ref-tmpl-field.className
+     ; to ref-tmpl-label !document.createElement span
+     ; assign $ref-tmpl-label { className lane-data-row-label } { textContent Template }
+     ; to ref-tmpl-el !document.createElement input
+     ; assign $ref-tmpl-el { type text } { className 'lane-input-type lane-data-row-template' } { placeholder '; add $family \' \' $version' } { spellcheck false } { autocomplete off } { disabled $is-ro } { readOnly $is-ro }
+     ; to ref-tmpl-tools !document.createElement div
+     ; set lane-data-row-template-tools ref-tmpl-tools.className
+     ; to ref-tmpl-preview !document.createElement span
+     ; set lane-data-row-template-preview ref-tmpl-preview.className
+     ; to ref-tmpl-error !document.createElement span
+     ; set lane-data-row-template-error ref-tmpl-error.className
+     !ref-tmpl-field.appendChild $ref-tmpl-label
+     !ref-tmpl-field.appendChild $ref-tmpl-el
+     !ref-tmpl-field.appendChild $ref-tmpl-tools
+     !ref-tmpl-field.appendChild $ref-tmpl-preview
+     !ref-tmpl-field.appendChild $ref-tmpl-error
+
      ; to ref-filter-field !document.createElement div
      ; set 'lane-data-row-field lane-data-row-field--filter' ref-filter-field.className
      ; to ref-filter-label !document.createElement span
@@ -4203,6 +4286,63 @@
        ; set $filter-op-word ref-filter-is.textContent
        ; set [ match { $sel-col : $sel-col.id } { true : '' } ] ref-col-el.value
        ; set [ match { $sel-disp : $sel-disp.id } { true : '' } ] ref-display-el.value
+       ; set [ match { $col.refDisplayTemplate : $col.refDisplayTemplate } { true : '' } ] ref-tmpl-el.value
+       ; to refresh-tmpl-preview (
+        ; to pv !view.preview-display-template $tbl $col $ref-tmpl-el.value
+        ; set $pv.text ref-tmpl-preview.textContent
+        ; set [ match { [ propertyIs true pv.ok ] : '' } { true : $pv.error } ] ref-tmpl-error.textContent
+        ; set [ match { [ propertyIs true pv.ok ] : 'lane-data-row-template-preview' } { true : 'lane-data-row-template-preview lane-data-row-template-preview--error' } ] ref-tmpl-preview.className
+       )
+       ; to apply-tmpl-change (
+        ; to parsed !parseDisplayTemplate $ref-tmpl-el.value
+        [ match
+         { [ propertyIs false parsed.ok ] (
+          !refresh-tmpl-preview
+         ) }
+         { true (
+          [ match
+           { [ propertyIs '' parsed.text ] (
+            [ match
+             { $window.Reflect.deleteProperty (
+              !window.Reflect.deleteProperty $col refDisplayTemplate
+             ) }
+             { true : ; set undefined col.refDisplayTemplate }
+            ]
+           ) }
+           { true : ; set $parsed.text col.refDisplayTemplate }
+          ]
+          !view.render-schema
+          !view.render-grid
+          !view.save-schema $tbl
+         ) }
+        ]
+       )
+       !ref-tmpl-el.addEventListener input : !refresh-tmpl-preview
+       !ref-tmpl-el.addEventListener change : !apply-tmpl-change
+       ; match
+        { $sel-table (
+         ; each $sel-table.columns (
+          ; to { tc } $argv
+          ; to tc-name !view.display-col-name $tc
+          ; to token !view.display-template-token $tc
+          ; to chip !document.createElement button
+          ; assign $chip { type button } { className lane-data-row-template-chip } { textContent $token } { title [ ; add 'Insert ' ; add $tc-name ' column' ] } { disabled $is-ro }
+          !chip.addEventListener click (
+           ; to start $ref-tmpl-el.selectionStart
+           ; to end $ref-tmpl-el.selectionEnd
+           ; to before !ref-tmpl-el.value.slice 0 $start
+           ; to after !ref-tmpl-el.value.slice $end
+           ; set [ ; add $before ; add $token $after ] ref-tmpl-el.value
+           ; to caret [ ; add $start $token.length ]
+           !ref-tmpl-el.focus
+           !ref-tmpl-el.setSelectionRange $caret $caret
+           !apply-tmpl-change
+          )
+          !ref-tmpl-tools.appendChild $chip
+         )
+        ) }
+        { true : null }
+       !refresh-tmpl-preview
        ; set [ match { $sel-filter-col : $sel-filter-col.id } { true : '' } ] ref-filter-col-el.value
        ; set [ match { $sel-filter-by : $sel-filter-by.id } { true : '' } ] filter-by-col-el.value
        ; set [ ternary $sel-col 'lane-input-type lane-data-row-select' 'lane-input-type lane-data-row-select lane-data-row-select--required' ] ref-col-el.className
@@ -4247,6 +4387,11 @@
          ]
         ) }
        ]
+       ; match
+        { $col.refDisplayTemplate (
+         ; set [ ; add $hint-text ; add ' · template ' $col.refDisplayTemplate ] hint-text
+        ) }
+        { true : null }
        ; set $hint-text row-hint-el.textContent
       ) }
      ]
@@ -4254,6 +4399,7 @@
      !row-config-wrap.appendChild $ref-table-field
      !row-config-wrap.appendChild $ref-col-field
      !row-config-wrap.appendChild $ref-disp-field
+     !row-config-wrap.appendChild $ref-tmpl-field
      !row-config-wrap.appendChild $ref-filter-field
      !row-config-wrap.appendChild $row-hint-el
      !type-td.appendChild $row-config-wrap
@@ -4461,6 +4607,11 @@
       { ref-table-el $ref-table-el }
       { ref-col-el $ref-col-el }
       { ref-display-el $ref-display-el }
+      { ref-tmpl-field $ref-tmpl-field }
+      { ref-tmpl-el $ref-tmpl-el }
+      { ref-tmpl-tools $ref-tmpl-tools }
+      { ref-tmpl-preview $ref-tmpl-preview }
+      { ref-tmpl-error $ref-tmpl-error }
       { ref-filter-field $ref-filter-field }
       { ref-filter-controls $ref-filter-controls }
       { ref-filter-col-el $ref-filter-col-el }
