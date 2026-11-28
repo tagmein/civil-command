@@ -417,14 +417,81 @@
   -- Creates a single typed input/select/checkbox control for a column in the expanded new row option
   ; to { col col-label initial-val is-req on-change on-enter } $argv
   ; to wf-constraint [ match
-   { [ propertyIs text col.type ] : !normalizeColumnConstraint $col.constraint }
+   { $getColumnWorkflowConstraint : !getColumnWorkflowConstraint $col }
    { true : null }
   ]
   ; to wf-state [ match
    { $wf-constraint : !getWorkflowCellState $modal.tables $col $initial-val }
    { true : null }
   ]
+  ; to validate-add-constraint (
+   ; to { check-val } $argv
+   ; to copts !get-clock-display-opts
+   [ match
+    { $validateColumnConstraints : !validateColumnConstraints $col $check-val [ object { tables $modal.tables } { table $modal.target-table } { displayOpts $copts } ] }
+    { true : ; object { ok true } { error null } }
+   ]
+  )
   [ match
+   { [ match { $wf-state : $wf-state.valid } { true : false } ] (
+    ; to select-el !document.createElement select
+    ; set 'lane-data-cell-select lane-row-picker-add-select' select-el.className
+    ; each $wf-state.options (
+     ; to { opt-spec } $argv
+     ; to opt !document.createElement option
+     ; assign $opt { value $opt-spec.value } { textContent $opt-spec.label }
+     ; condition { propertyIs true opt-spec.isCurrent } : ; set true opt.selected
+     !select-el.appendChild $opt
+    )
+    ; set $wf-state.currentValue select-el.value
+    ; to single-spec [ object { type $col.type } { multiple false } ]
+    ; to read-value (
+     ; to next-val !parseWorkflowOptionValue $select-el.value $col
+     ; to is-empty !isDataCellValueEmpty $next-val $single-spec
+     ; to is-req-empty [ match
+      { $is-req : $is-empty }
+      { true : false }
+     ]
+     ; to wf-cur-state !getWorkflowCellState $modal.tables $col $next-val
+     ; to vres !validate-add-constraint $next-val
+     [ match
+      { $is-req-empty (
+       ; to err ; add $col-label ' is required'
+       ; set 'lane-data-cell-select lane-row-picker-add-select lane-data-cell-select--invalid lane-data-cell-select--required-empty' select-el.className
+       ; set $err select-el.title
+       !select-el.setAttribute aria-invalid 'true'
+       ; object { ok false } { value $next-val } { error $err }
+      ) }
+      { [ propertyIs false wf-cur-state.isValueValid ] (
+       ; set 'lane-data-cell-select lane-row-picker-add-select lane-data-cell-select--invalid' select-el.className
+       ; set $wf-cur-state.error select-el.title
+       !select-el.setAttribute aria-invalid 'true'
+       ; object { ok false } { value $next-val } { error [ add $col-label [ add ': ' $wf-cur-state.error ] ] }
+      ) }
+      { [ propertyIs false vres.ok ] (
+       ; set 'lane-data-cell-select lane-row-picker-add-select lane-data-cell-select--invalid' select-el.className
+       ; set $vres.error select-el.title
+       !select-el.setAttribute aria-invalid 'true'
+       ; object { ok false } { value $next-val } { error [ add $col-label [ add ': ' $vres.error ] ] }
+      ) }
+      { true (
+       ; set 'lane-data-cell-select lane-row-picker-add-select' select-el.className
+       ; set '' select-el.title
+       !select-el.setAttribute aria-invalid 'false'
+       ; object { ok true } { value $next-val } { error '' }
+      ) }
+     ]
+    )
+    !select-el.addEventListener change (
+     ; to res !read-value
+     ; set '' add-error-el.textContent
+     ; set true add-error-el.hidden
+     [ match
+      { $on-change : !$on-change $res.value }
+     ]
+    )
+    ; object { el $select-el } { input-el $select-el } { select-el $select-el } { read-value $read-value }
+   ) }
    { [ propertyIs boolean col.type ] (
     ; to wrap !document.createElement label
     ; set lane-data-bool-wrap wrap.className
@@ -439,7 +506,23 @@
     ; to read-value (
      ; to next-bool [ ternary $cb.checked true false ]
      ; set [ ternary $next-bool 'true' 'false' ] txt.textContent
-     ; object { ok true } { value $next-bool } { error '' }
+     ; to vres !validate-add-constraint $next-bool
+     [ match
+      { [ propertyIs false vres.ok ] (
+       ; set 'lane-data-bool-wrap lane-data-bool-wrap--invalid' wrap.className
+       ; set $vres.error wrap.title
+       ; set $vres.error cb.title
+       !cb.setAttribute aria-invalid 'true'
+       ; object { ok false } { value $next-bool } { error [ add $col-label [ add ': ' $vres.error ] ] }
+      ) }
+      { true (
+       ; set lane-data-bool-wrap wrap.className
+       ; set '' wrap.title
+       ; set '' cb.title
+       !cb.setAttribute aria-invalid 'false'
+       ; object { ok true } { value $next-bool } { error '' }
+      ) }
+     ]
     )
     !cb.addEventListener change (
      ; to res !read-value
@@ -549,8 +632,18 @@
        ; object { ok false } { value null } { error $err }
       ) }
       { true (
-       !apply-select-state true '' false
-       ; object { ok true } { value $found.value } { error '' }
+       ; to vres !validate-add-constraint $found.value
+       [ match
+        { [ propertyIs false vres.ok ] (
+         ; to err ; add $col-label ; add ': ' $vres.error
+         !apply-select-state false $vres.error false
+         ; object { ok false } { value $found.value } { error $err }
+        ) }
+        { true (
+         !apply-select-state true '' false
+         ; object { ok true } { value $found.value } { error '' }
+        ) }
+       ]
       ) }
      ]
     )
@@ -617,59 +710,22 @@
        ; object { ok false } { value null } { error $err }
       ) }
       { true (
-       ; set 'lane-data-cell-select lane-row-picker-add-select' select-el.className
-       ; set '' select-el.title
-       !select-el.setAttribute aria-invalid 'false'
-       ; object { ok true } { value $val } { error '' }
-      ) }
-     ]
-    )
-    !select-el.addEventListener change (
-     ; to res !read-value
-     ; set '' add-error-el.textContent
-     ; set true add-error-el.hidden
-     [ match
-      { $on-change : !$on-change $res.value }
-     ]
-    )
-    ; object { el $select-el } { input-el $select-el } { select-el $select-el } { read-value $read-value }
-   ) }
-   { [ match { $wf-state : $wf-state.valid } { true : false } ] (
-    ; to select-el !document.createElement select
-    ; set 'lane-data-cell-select lane-row-picker-add-select' select-el.className
-    ; each $wf-state.options (
-     ; to { opt-spec } $argv
-     ; to opt !document.createElement option
-     ; assign $opt { value $opt-spec.value } { textContent $opt-spec.label }
-     ; condition { propertyIs true opt-spec.isCurrent } : ; set true opt.selected
-     !select-el.appendChild $opt
-    )
-    ; set $wf-state.currentValue select-el.value
-    ; to single-spec [ object { type text } { multiple false } ]
-    ; to read-value (
-     ; to next-val [ match
-      { [ propertyIs undefined select-el.value ] : '' }
-      { [ propertyIs null select-el.value ] : '' }
-      { true : ; add '' $select-el.value }
-     ]
-     ; to is-empty !isDataCellValueEmpty $next-val $single-spec
-     ; to is-req-empty [ match
-      { $is-req : $is-empty }
-      { true : false }
-     ]
-     [ match
-      { $is-req-empty (
-       ; to err ; add $col-label ' is required'
-       ; set 'lane-data-cell-select lane-row-picker-add-select lane-data-cell-select--invalid lane-data-cell-select--required-empty' select-el.className
-       ; set $err select-el.title
-       !select-el.setAttribute aria-invalid 'true'
-       ; object { ok false } { value $next-val } { error $err }
-      ) }
-      { true (
-       ; set 'lane-data-cell-select lane-row-picker-add-select' select-el.className
-       ; set '' select-el.title
-       !select-el.setAttribute aria-invalid 'false'
-       ; object { ok true } { value $next-val } { error '' }
+       ; to vres !validate-add-constraint $val
+       [ match
+        { [ propertyIs false vres.ok ] (
+         ; to err ; add $col-label ; add ': ' $vres.error
+         ; set 'lane-data-cell-select lane-row-picker-add-select lane-data-cell-select--invalid' select-el.className
+         ; set $vres.error select-el.title
+         !select-el.setAttribute aria-invalid 'true'
+         ; object { ok false } { value $val } { error $err }
+        ) }
+        { true (
+         ; set 'lane-data-cell-select lane-row-picker-add-select' select-el.className
+         ; set '' select-el.title
+         !select-el.setAttribute aria-invalid 'false'
+         ; object { ok true } { value $val } { error '' }
+        ) }
+       ]
       ) }
      ]
     )
@@ -783,10 +839,16 @@
         { $is-req : $is-empty }
         { true : false }
        ]
+       ; to vres !validate-add-constraint $parsed.value
        [ match
         { $is-req-empty (
          !apply-input-state true $parsed.value '' true
          ; to err ; add $col-label ' is required'
+         ; object { ok false } { value $parsed.value } { error $err }
+        ) }
+        { [ propertyIs false vres.ok ] (
+         !apply-input-state false null $vres.error false
+         ; to err ; add $col-label ; add ': ' $vres.error
          ; object { ok false } { value $parsed.value } { error $err }
         ) }
         { true (
@@ -925,9 +987,13 @@
    ) }
    { true (
     ; to input-el !document.createElement input
+    ; to is-num-col [ match
+     { [ propertyIs integer col.type ] : true }
+     { [ propertyIs decimal col.type ] : true }
+     { [ propertyIs fixed col.type ] : true }
+     { true : false }
+    ]
     ; to input-type [ match
-     { [ propertyIs integer col.type ] : number }
-     { [ propertyIs decimal col.type ] : number }
      { [ propertyIs date col.type ] : date }
      { [ propertyIs datetime col.type ] : datetime-local }
      { [ propertyIs url col.type ] : url }
@@ -958,10 +1024,25 @@
     ; to formatted !formatCellInputValue $initial-val $col
     ; assign $input-el { type $input-type } { className $base-cls } { value $formatted } { placeholder $placeholder } { spellcheck false } { autocomplete off }
     [ match
-     { [ propertyIs integer col.type ] : !input-el.setAttribute step '1' }
-     { [ propertyIs decimal col.type ] : !input-el.setAttribute step any }
-     { [ propertyIs fixed col.type ] : !input-el.setAttribute inputmode decimal }
+     { [ propertyIs integer col.type ] (
+      !input-el.setAttribute inputmode numeric
+      !input-el.setAttribute data-num-type integer
+     ) }
+     { [ propertyIs decimal col.type ] (
+      !input-el.setAttribute inputmode decimal
+      !input-el.setAttribute data-num-type decimal
+     ) }
+     { [ propertyIs fixed col.type ] (
+      !input-el.setAttribute inputmode decimal
+      !input-el.setAttribute data-num-type fixed
+     ) }
     ]
+    ; to parse-current (
+     [ match
+      { [ and { propertyIs true is-num-col } { $parseNumericCellInput } ] : !parseNumericCellInput $input-el.value $col }
+      { true : !parseCellValue $input-el.value $col }
+     ]
+    )
     ; to single-spec [ object { type $col.type } { multiple false } ]
     ; to apply-input-state (
      ; to { ok val err-msg show-req } $argv
@@ -996,7 +1077,7 @@
     )
     !apply-input-state true $initial-val '' false
     ; to read-value (
-     ; to parsed !parseCellValue $input-el.value $col
+     ; to parsed !parse-current
      [ match
       { [ propertyIs false parsed.ok ] (
        !apply-input-state false null $parsed.error true
@@ -1009,10 +1090,16 @@
         { $is-req : $is-empty }
         { true : false }
        ]
+       ; to vres !validate-add-constraint $parsed.value
        [ match
         { $is-req-empty (
          !apply-input-state true $parsed.value '' true
          ; to err ; add $col-label ' is required'
+         ; object { ok false } { value $parsed.value } { error $err }
+        ) }
+        { [ propertyIs false vres.ok ] (
+         !apply-input-state false null $vres.error false
+         ; to err ; add $col-label ; add ': ' $vres.error
          ; object { ok false } { value $parsed.value } { error $err }
         ) }
         { true (
@@ -1024,7 +1111,7 @@
      ]
     )
     ; to handle-edit (
-     ; to parsed !parseCellValue $input-el.value $col
+     ; to parsed !parse-current
      [ match
       { $parsed.ok (
        !apply-input-state true $parsed.value '' false
@@ -1043,9 +1130,9 @@
     [ match
      { [ propertyIs date col.type ] : !input-el.addEventListener change $handle-edit }
      { [ propertyIs datetime col.type ] : !input-el.addEventListener change $handle-edit }
-     { [ propertyIs fixed col.type ] (
+     { $is-num-col (
       !input-el.addEventListener blur (
-       ; to parsed !parseCellValue $input-el.value $col
+       ; to parsed !parse-current
        [ match
         { $parsed.ok (
          ; to formatted-blur !formatCellInputValue $parsed.value $col
@@ -1128,13 +1215,13 @@
       { true : null }
      ]
      ; to nested-wf-target [ match
-      { [ propertyIs text col.type ] : !resolveWorkflowTarget $modal.tables $col }
+      { [ match { $getColumnWorkflowConstraint : !getColumnWorkflowConstraint $col } { true : null } ] : !resolveWorkflowTarget $modal.tables $col }
       { true : null }
      ]
      ; to is-selectable-multi [ match
       { [ propertyIs lane col.type ] : true }
       { [ and { [ propertyIs row col.type ] } { $nested-row-target.valid } ] : true }
-      { [ and { [ propertyIs text col.type ] } { $nested-wf-target.valid } ] : true }
+      { [ and { $nested-wf-target } { $nested-wf-target.valid } ] : true }
       { true : false }
      ]
      [ match
@@ -1198,7 +1285,7 @@
            )
           )
          ) }
-         { [ propertyIs text col.type ] (
+         { [ and { $nested-wf-target } { $nested-wf-target.valid } ] (
           ; to seen-wf ; object
           ; each $nested-wf-target.fromValues (
            ; to { fv } $argv
@@ -1208,7 +1295,8 @@
             { [ propertyIs '' fv ] : null }
             { true (
              ; to seen-wf $fv true
-             !opts-out.push [ object { value $fv } { valueText $fv } { displayText $fv } { hasSeparateDisplay false } { label $fv } ]
+             ; to typed-fv !parseWorkflowOptionValue $fv $col
+             !opts-out.push [ object { value $typed-fv } { valueText $fv } { displayText $fv } { hasSeparateDisplay false } { label $fv } ]
             ) }
            ]
           )
@@ -1220,7 +1308,8 @@
             { [ propertyIs '' tv ] : null }
             { true (
              ; to seen-wf $tv true
-             !opts-out.push [ object { value $tv } { valueText $tv } { displayText $tv } { hasSeparateDisplay false } { label $tv } ]
+             ; to typed-tv !parseWorkflowOptionValue $tv $col
+             !opts-out.push [ object { value $typed-tv } { valueText $tv } { displayText $tv } { hasSeparateDisplay false } { label $tv } ]
             ) }
            ]
           )
@@ -1273,6 +1362,7 @@
            { true : ; add '' $v }
           ]
          ) }
+         { [ propertyIs boolean col.type ] : [ ternary $v 'true' 'false' ] }
          { true : ; add '' $v }
         ]
        )

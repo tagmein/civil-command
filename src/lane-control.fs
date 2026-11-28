@@ -67,6 +67,9 @@
  { saved-active-package-id '' }
  { table-display-options ; object }
  { saved-table-display-options ; object }
+ { session-settings ; object { minimap false } { minimapScale 1 } }
+ { session-minimap false }
+ { session-minimap-scale 1 }
  { session-dirty false }
  { session-status-pending false }
  { session-status-label '' }
@@ -270,6 +273,35 @@
  ]
  [ match
   { [ and { propertyIs true package-modal.is-open } { propertyIs packages package-modal.mode } { $package-modal.render-packages-page } ] : !package-modal.render-packages-page }
+ ]
+ [ match
+  { $rails.sync-minimap : !rails.sync-minimap }
+ ]
+)
+
+; to normalize-session-settings-obj (
+ -- Normalizes a session settings object with safe defaults when storage helpers are absent
+ ; to { raw } $argv
+ [ match
+  { $normalizeSessionSettings : !normalizeSessionSettings $raw }
+  { true (
+   ; to enabled [ match
+    { [ propertyIs true raw.minimap ] : true }
+    { [ propertyIs 'true' raw.minimap ] : true }
+    { true : false }
+   ]
+   ; to scale [ match
+    { $normalizeMinimapScale : !normalizeMinimapScale $raw.minimapScale 1 }
+    { [ propertyIsGreaterThan 0 raw.minimapScale ] (
+     [ match
+      { $window.Math.max : !window.Math.max 0.5 [ !window.Math.min 2.5 $raw.minimapScale ] }
+      { true : $raw.minimapScale }
+     ]
+    ) }
+    { true : 1 }
+   ]
+   [ object { minimap $enabled } { minimapScale $scale } ]
+  ) }
  ]
 )
 ; to scope.recompute-session-dirty (
@@ -477,6 +509,15 @@
    ]
    ; set $prev-ids scope.previous-session-ids
    ; set $next-ids scope.next-session-ids
+   ; to raw-settings [ match
+    { $sess.settings : $sess.settings }
+    { $sess.meta.settings : $sess.meta.settings }
+    { true : null }
+   ]
+   ; to norm-settings !normalize-session-settings-obj $raw-settings
+   ; set $norm-settings scope.session-settings
+   ; set [ ternary $norm-settings.minimap true false ] scope.session-minimap
+   ; set $norm-settings.minimapScale scope.session-minimap-scale
    ; set false scope.session-dirty
    !scope.apply-session-packages $sess
   ) }
@@ -753,6 +794,7 @@
    { openPackageIds !copy-id-list $scope.open-package-ids }
    { activePackageId $scope.active-package-id }
    { tableDisplayOptions $cur-disp-opts }
+   { settings [ !normalize-session-settings-obj $scope.session-settings ] }
    { incrementVersion true }
   ]
   ; set [ !saveSessionVersion $data $window $scope.session-id $opts ] res
@@ -799,6 +841,7 @@
     { openPackageIds !copy-id-list $scope.open-package-ids }
     { activePackageId $scope.active-package-id }
     { tableDisplayOptions $cur-disp-opts }
+    { settings [ !normalize-session-settings-obj $scope.session-settings ] }
     { tabOnly [ ternary $tab-only true false ] }
     { restoreSourcePackageIds !copy-id-list $scope.saved-package-ids }
     { restoreSourceActivePackageId $scope.saved-active-package-id }
@@ -1002,6 +1045,101 @@
   ; condition { propertyIs false is-same } : !filtered.push $id
  )
  !scope.set-session-links $scope.previous-session-ids $filtered
+)
+; to scope.preview-minimap-scale (
+ -- Updates the live minimap scale in memory during interactive dragging without persisting to KV
+ ; to { raw-scale } $argv
+ ; to next-scale [ match
+  { $normalizeMinimapScale : !normalizeMinimapScale $raw-scale $scope.session-minimap-scale }
+  { [ propertyIsGreaterThan 0 raw-scale ] : $raw-scale }
+  { true : $scope.session-minimap-scale }
+ ]
+ ; to next-settings !normalize-session-settings-obj [ object { minimap $scope.session-minimap } { minimapScale $next-scale } ]
+ ; set $next-settings scope.session-settings
+ ; set $next-settings.minimapScale scope.session-minimap-scale
+ [ match
+  { $rails.sync-minimap : !rails.sync-minimap }
+ ]
+ $next-settings.minimapScale
+)
+; to scope.set-session-settings (
+ -- Updates and persists session settings in KV without marking the session draft dirty
+ ; to { patch } $argv
+ !scope.ensure-session
+ ; to merged ; object
+ [ match
+  { $scope.session-settings : ; assign $merged $scope.session-settings }
+ ]
+ [ match
+  { $patch : ; assign $merged $patch }
+ ]
+ ; to optimistic !normalize-session-settings-obj $merged
+ ; set $optimistic scope.session-settings
+ ; set $optimistic.minimap scope.session-minimap
+ ; set $optimistic.minimapScale scope.session-minimap-scale
+ [ match
+  { $rails.sync-minimap : !rails.sync-minimap }
+ ]
+ ; to res [ match
+  { $setSessionSettings : !setSessionSettings $data $window $scope.session-id $optimistic }
+  { true : ; object { ok true } { settings $optimistic } }
+ ]
+ [ match
+  { $res.ok (
+   [ match
+    { $res.meta : ; set $res.meta scope.session-meta }
+   ]
+   ; to norm !normalize-session-settings-obj [ match
+    { $res.settings : $res.settings }
+    { true : $optimistic }
+   ]
+   ; set $norm scope.session-settings
+   ; set $norm.minimap scope.session-minimap
+   ; set $norm.minimapScale scope.session-minimap-scale
+  ) }
+ ]
+ !sync-session-ui
+ $res
+)
+; to scope.set-session-minimap (
+ -- Enables or disables the workspace minimap for the active session
+ ; to { enabled } $argv
+ !scope.set-session-settings [ object { minimap [ ternary $enabled true false ] } ]
+)
+; to scope.toggle-session-minimap (
+ -- Toggles the workspace minimap for the active session
+ ; to next-val [ ternary [ propertyIs true scope.session-minimap ] false true ]
+ !scope.set-session-minimap $next-val
+)
+; to scope.set-session-minimap-scale (
+ -- Updates and persists the minimap scale factor for the active session
+ ; to { raw-scale } $argv
+ ; to next-scale [ match
+  { $normalizeMinimapScale : !normalizeMinimapScale $raw-scale $scope.session-minimap-scale }
+  { [ propertyIsGreaterThan 0 raw-scale ] : $raw-scale }
+  { true : $scope.session-minimap-scale }
+ ]
+ !scope.set-session-settings [ object { minimapScale $next-scale } ]
+)
+; to scope.step-session-minimap-scale (
+ -- Steps the active session minimap scale by delta-steps and persists it
+ ; to { delta-steps } $argv
+ ; to steps [ match
+  { [ propertyIs undefined delta-steps ] : 1 }
+  { [ propertyIs null delta-steps ] : 1 }
+  { true : $delta-steps }
+ ]
+ ; to next-scale [ match
+  { $stepMinimapScale : !stepMinimapScale $scope.session-minimap-scale $steps }
+  { true (
+   ; to raw ; add $scope.session-minimap-scale [ ; multiply $steps 0.25 ]
+   [ match
+    { $window.Math.max : !window.Math.max 0.5 [ !window.Math.min 2.5 $raw ] }
+    { true : $raw }
+   ]
+  ) }
+ ]
+ !scope.set-session-minimap-scale $next-scale
 )
 ; to scope.list-available-sessions (
  -- Returns all currently available sessions (excluding the active session) for navigation pickers
@@ -1597,6 +1735,9 @@
    [ match
     { $rails.sync-preferences-menu : !rails.sync-preferences-menu }
    ]
+   [ match
+    { $rails.sync-minimap : !rails.sync-minimap }
+   ]
   ) }
  ]
  $lane
@@ -1825,6 +1966,9 @@
    [ match
     { [ and { [ propertyIs true restore-pin ] } { [ propertyIs true lane.is-minimized ] } { $rails.pin } ] : !rails.pin $lane.id }
    ]
+   [ match
+    { $rails.sync-minimap : !rails.sync-minimap }
+   ]
    $lane
   ) }
   { true : null }
@@ -1892,6 +2036,9 @@
    ; set false fullscreen-el.hidden
    [ match
     { $lane.notebook.auto-size-rows : !lane.notebook.auto-size-rows }
+   ]
+   [ match
+    { $rails.sync-minimap : !rails.sync-minimap }
    ]
    $lane
   ) }
@@ -2147,6 +2294,9 @@
      ; condition { propertyIs $lane.id rails.preview-lane.id } : !rails.update $lane
     ) }
    ]
+   [ match
+    { $rails.sync-minimap : !rails.sync-minimap }
+   ]
   ) }
  ]
  $lane
@@ -2239,6 +2389,9 @@
       { $skip-save : null }
       { true : !lane.data.set minimized $side }
      ]
+     [ match
+      { $rails.sync-minimap : !rails.sync-minimap }
+     ]
     ) }
    ]
   ) }
@@ -2284,6 +2437,9 @@
        { true : !scope.scroll-lane-into-view $lane }
       ]
      ) }
+    ]
+    [ match
+     { $rails.sync-minimap : !rails.sync-minimap }
     ]
    )
   ) }
@@ -2688,6 +2844,9 @@
    ; condition { propertyIs true lane.is-highlighted } (
     ; set false lane.is-highlighted
     !sync-lane-highlight-classes $lane
+    [ match
+     { $rails.sync-minimap : !rails.sync-minimap }
+    ]
    )
   ) }
  ]
@@ -2708,11 +2867,17 @@
     ; set true lane.is-highlighted
     !sync-lane-highlight-classes $lane
     [ match
+     { $rails.sync-minimap : !rails.sync-minimap }
+    ]
+    [ match
      { $window.setTimeout (
       ; to timer !window.setTimeout (
        ; set null lane.highlight-timer
        ; set false lane.is-highlighted
        !sync-lane-highlight-classes $lane
+       [ match
+        { $rails.sync-minimap : !rails.sync-minimap }
+       ]
       ) 2200
       ; set $timer lane.highlight-timer
      ) }
@@ -4362,6 +4527,9 @@
   ; set $num item.number
  )
  ; to scope.by-id $id $lane
+ [ match
+  { $rails.sync-minimap : !rails.sync-minimap }
+ ]
  $lane
 )
 ; to default-lane-features : ; object { httpServer false } { runEvery30Minutes false }
@@ -4576,6 +4744,9 @@
    ]
    !scope.apply-lane-width $lane $initial-width
   ) }
+ ]
+ [ match
+  { $rails.sync-minimap : !rails.sync-minimap }
  ]
  $lane
 )
@@ -5486,6 +5657,9 @@
   ) }
  ]
  ; to scope.opening-by-id ; object
+ [ match
+  { $rails.sync-minimap : !rails.sync-minimap }
+ ]
 )
 ; to scope.sync (
  -- Synchronizes mounted lanes and their active tabs from the current URL pathname

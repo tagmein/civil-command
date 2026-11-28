@@ -9,11 +9,15 @@ import { spawn } from 'node:child_process'
 import {
  DATA_RUNTIME_ENV,
  DEFAULT_KV_CHUNK_BYTES,
+ DEFAULT_MINIMAP_SCALE,
  DEFAULT_PACKAGE_ID,
+ DEFAULT_SESSION_SETTINGS,
  KV_CHUNK_BYTES_ENV_VAR,
  KV_CHUNK_BYTES_GLOBAL,
  MAX_KV_VALUE_BYTES,
+ MAX_MINIMAP_SCALE,
  MCP_TOOLS,
+ MIN_MINIMAP_SCALE,
  PRIMITIVE_TYPES,
  SECRET_MASK,
  SESSION_STORAGE_KEY,
@@ -46,6 +50,7 @@ import {
  exportDeployModalSource,
  exportModalSource,
  field,
+ forkSession,
  formatAgentContext,
  formatAgentPrompt,
  formatDataDirLabel,
@@ -80,6 +85,7 @@ import {
  normalizeKvChunkBytes,
  normalizePrimitiveType,
  normalizeSessionLinkIds,
+ normalizeSessionSettings,
  openPackageInSession,
  packageLaneKey,
  packageModalSource,
@@ -96,13 +102,16 @@ import {
  runLines,
  runTransportedScripts,
  saveLaneScript,
+ saveSessionVersion,
  scriptLineKey,
  sessionMetaKey,
  sessionModalSource,
+ sessionSettingsEqual,
  setKvChunkBytes,
  setLaneSecret,
  setSessionDataDir,
  setSessionLinks,
+ setSessionSettings,
  spawnPty,
  splitUtf8Chunks,
  switchBrowserSession,
@@ -1274,11 +1283,13 @@ test('Session & Package UI rework: split top-rail menus, workspace summary, draf
   assert.equal(laneControl['session-dirty'], true)
   const dvA = laneA.notebook['data-view']
   await dvA['add-table-btn'].listeners.click()
-  dvA['table-name-input'].value = 'Users'
-  await dvA['table-name-input'].listeners.input()
+  await dvA['open-edit-table-modal']()
+  dvA['edit-table-modal']['name-input'].value = 'Users'
+  await dvA['edit-table-modal']['save-btn'].listeners.click({})
   await dvA['add-table-btn'].listeners.click()
-  dvA['table-name-input'].value = 'Orders'
-  await dvA['table-name-input'].listeners.input()
+  await dvA['open-edit-table-modal']()
+  dvA['edit-table-modal']['name-input'].value = 'Orders'
+  await dvA['edit-table-modal']['save-btn'].listeners.click({})
   assert.equal(mockWindow.location.pathname, `/${laneA.id};data|Orders`)
 
   // Select Users table and Save Main Workspace as v3 (session-specific lane path: /laneA;data|Users)
@@ -4515,4 +4526,101 @@ test('workspace summary, rails menus, and lane modal show loading states while s
   releaseBoot()
   globalThis.fetch = origFetch
  }
+})
+
+test('storage.mjs session settings (minimap, minimapScale): normalization, non-dirtying updates, version save, and fork inheritance', async () => {
+ assert.deepEqual(DEFAULT_SESSION_SETTINGS, { minimap: false, minimapScale: DEFAULT_MINIMAP_SCALE })
+ assert.deepEqual(normalizeSessionSettings(null), { minimap: false, minimapScale: 1 })
+ assert.deepEqual(normalizeSessionSettings({ minimap: 'true', minimapScale: '150%' }), { minimap: true, minimapScale: 1.5 })
+ assert.deepEqual(normalizeSessionSettings({ minimap: true, minimapScale: 0.1 }), { minimap: true, minimapScale: MIN_MINIMAP_SCALE })
+ assert.deepEqual(normalizeSessionSettings({ minimap: false, minimapScale: 9 }), { minimap: false, minimapScale: MAX_MINIMAP_SCALE })
+ assert.deepEqual(normalizeSessionSettings({ minimap: true, minimapScale: 'invalid' }), { minimap: true, minimapScale: 1 })
+
+ assert.equal(sessionSettingsEqual({ minimap: true, minimapScale: 1.25 }, { minimap: 'true', minimapScale: '125%' }), true)
+ assert.equal(sessionSettingsEqual({ minimap: true, minimapScale: 1.25 }, { minimap: true, minimapScale: 1.5 }), false)
+ assert.equal(sessionSettingsEqual({ minimap: false, minimapScale: 1 }, { minimap: true, minimapScale: 1 }), false)
+
+ const kvMap = new Map()
+ const kv = {
+  namespace(p) {
+   const prefix = p ? `${p}.` : ''
+   return {
+    namespace(c) { return kv.namespace(`${prefix}${c}`) },
+    hashNamespace(h) { return kv.namespace(`${h}#`) },
+    async get(k) { return kvMap.has(`${prefix}${k}`) ? kvMap.get(`${prefix}${k}`) : null },
+    async set(k, v) { kvMap.set(`${prefix}${k}`, String(v)) },
+    async delete(k) { kvMap.delete(`${prefix}${k}`) },
+   }
+  },
+  hashNamespace(h) {
+   const makeHash = cur => ({
+    namespace(seg) {
+     const next = cur.endsWith('#') ? `${cur}${seg}` : `${cur}/${seg}`
+     return makeHash(next)
+    },
+    async get(k) {
+     const full = cur.endsWith('#') ? `${cur}${k}` : `${cur}/${k}`
+     return kvMap.has(full) ? kvMap.get(full) : null
+    },
+    async set(k, v) {
+     const full = cur.endsWith('#') ? `${cur}${k}` : `${cur}/${k}`
+     kvMap.set(full, String(v))
+    },
+    async delete(k) {
+     const full = cur.endsWith('#') ? `${cur}${k}` : `${cur}/${k}`
+     kvMap.delete(full)
+    },
+   })
+   return makeHash(`${h}#`)
+  },
+  async get(k) { return kvMap.has(k) ? kvMap.get(k) : null },
+  async set(k, v) { kvMap.set(k, String(v)) },
+  async delete(k) { kvMap.delete(k) },
+ }
+
+ const makeMem = () => {
+  const m = new Map()
+  return {
+   getItem(k) { return m.has(k) ? m.get(k) : null },
+   setItem(k, v) { m.set(k, String(v)) },
+   removeItem(k) { m.delete(k) },
+  }
+ }
+ let seq = 0
+ const win = {
+  localStorage: makeMem(),
+  sessionStorage: makeMem(),
+  crypto: { randomUUID: () => `sess-settings-${++seq}` },
+ }
+
+ const missingRes = await setSessionSettings(kv, win, '', { minimap: true })
+ assert.equal(missingRes.ok, false)
+
+ const sA = await initSessionState(kv, win)
+ assert.deepEqual(sA.settings, { minimap: false, minimapScale: 1 })
+ assert.deepEqual(sA.meta.settings, { minimap: false, minimapScale: 1 })
+ assert.equal(sA.meta.version, 1)
+
+ const updatedA = await setSessionSettings(kv, win, sA.sessionId, { minimap: true, minimapScale: 1.5 })
+ assert.equal(updatedA.ok, true)
+ assert.deepEqual(updatedA.settings, { minimap: true, minimapScale: 1.5 })
+ assert.equal(updatedA.meta.version, 1)
+
+ const sB = await createNewSession(kv, win, { name: 'Session B' })
+ assert.deepEqual(sB.settings, { minimap: false, minimapScale: 1 })
+
+ const reloadedA = await switchBrowserSession(kv, win, sA.sessionId)
+ assert.deepEqual(reloadedA.settings, { minimap: true, minimapScale: 1.5 })
+ assert.equal(reloadedA.meta.version, 1)
+
+ const savedA = await saveSessionVersion(kv, win, sA.sessionId, { incrementVersion: true })
+ assert.deepEqual(savedA.settings, { minimap: true, minimapScale: 1.5 })
+ assert.equal(savedA.meta.version, 2)
+
+ const forked = await forkSession(kv, win, sA.sessionId, { name: 'Forked Settings' })
+ assert.deepEqual(forked.settings, { minimap: true, minimapScale: 1.5 })
+
+ await setSessionSettings(kv, win, forked.sessionId, { minimap: false, minimapScale: 0.75 })
+ const checkA = await switchBrowserSession(kv, win, sA.sessionId)
+ assert.deepEqual(checkA.settings, { minimap: true, minimapScale: 1.5 })
 })

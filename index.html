@@ -72,6 +72,17 @@
    [hidden] {
     display: none !important;
    }
+
+   input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+   }
+
+   input[type="number"]::-webkit-inner-spin-button,
+   input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+   }
    
    body *::selection {
     background: #ffffff80;
@@ -3777,6 +3788,341 @@
     border-color: #9ce5ff66;
    }
 
+   .lane-edit-table-modal {
+    max-width: 380px;
+    width: min(380px, 92vw);
+   }
+
+   .lane-data-view-wrap {
+    align-items: center;
+    display: flex;
+    flex: 1 1 10em;
+    min-width: 8em;
+    position: relative;
+   }
+
+   .lane-data-view-wrap[hidden] {
+    display: none;
+   }
+
+   .lane-data-view-btn {
+    align-items: center;
+    background: #ffffff0a;
+    border: 1px solid #ffffff1c;
+    border-radius: 4px;
+    box-sizing: border-box;
+    color: white;
+    cursor: pointer;
+    display: flex;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    gap: 0.45em;
+    justify-content: space-between;
+    min-width: 0;
+    padding: 0.25em 0.5em;
+    text-align: left;
+    width: 100%;
+   }
+
+   .lane-data-view-btn:hover:not(:disabled),
+   .lane-data-view-btn:focus-visible {
+    background: #ffffff14;
+    border-color: #9ce5ff66;
+    outline: none;
+   }
+
+   .lane-data-view-btn--open {
+    background: #9ce5ff18;
+    border-color: #9ce5ff77;
+   }
+
+   .lane-data-view-btn--dirty {
+    border-color: #ffcf6b66;
+   }
+
+   .lane-data-view-btn-main {
+    align-items: center;
+    display: flex;
+    flex: 1 1 auto;
+    gap: 0.4em;
+    min-width: 0;
+   }
+
+   .lane-data-view-btn-name {
+    font-weight: bold;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+   }
+
+   .lane-data-view-btn-count {
+    background: #9ce5ff22;
+    border-radius: 999px;
+    color: #9ce5ff;
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: bold;
+    line-height: 1.2;
+    padding: 1px 6px;
+   }
+
+   .lane-data-view-btn-count[hidden] {
+    display: none;
+   }
+
+   .lane-data-view-dirty-badge {
+    background: #ffcf6b24;
+    border: 1px solid #ffcf6b66;
+    border-radius: 999px;
+    color: #ffdf9a;
+    flex-shrink: 0;
+    font-size: 9px;
+    font-weight: bold;
+    line-height: 1.2;
+    padding: 1px 6px;
+    white-space: nowrap;
+   }
+
+   .lane-data-view-dirty-badge[hidden] {
+    display: none;
+   }
+
+   .lane-data-view-btn-caret {
+    color: #ffffff88;
+    flex-shrink: 0;
+    font-size: 11px;
+    line-height: 1;
+   }
+
+   .lane-data-view-menu {
+    background: #202020;
+    border: 1px solid #ffffff28;
+    border-radius: 6px;
+    box-shadow: 0 12px 30px #000000cc;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    left: 0;
+    max-width: min(360px, 95%);
+    min-width: 260px;
+    padding: 8px;
+    position: absolute;
+    top: calc(100% + 4px);
+    z-index: 42;
+   }
+
+   .lane-data-view-menu[hidden] {
+    display: none;
+   }
+
+   .lane-data-view-menu-status {
+    color: #ffffff90;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+    line-height: 1.3;
+   }
+
+   .lane-data-view-menu-status[hidden] {
+    display: none;
+   }
+
+   .lane-data-view-title-btn {
+    align-items: center;
+    background: #ffffff08;
+    border: 1px solid #ffffff16;
+    border-radius: 4px;
+    box-sizing: border-box;
+    color: white;
+    cursor: pointer;
+    display: flex;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    gap: 8px;
+    justify-content: space-between;
+    min-width: 0;
+    padding: 4px 7px;
+    text-align: left;
+    width: 100%;
+   }
+
+   .lane-data-view-title-btn:hover,
+   .lane-data-view-title-btn:focus-visible {
+    background: #ffffff14;
+    border-color: #9ce5ff66;
+    outline: none;
+   }
+
+   .lane-data-view-title-btn[hidden] {
+    display: none;
+   }
+
+   .lane-data-view-title-text {
+    font-weight: bold;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+   }
+
+   .lane-data-view-title-hint {
+    color: #9ce5ffaa;
+    flex-shrink: 0;
+    font-size: 10px;
+   }
+
+   .lane-data-view-rename-row {
+    align-items: center;
+    display: flex;
+    gap: 4px;
+   }
+
+   .lane-data-view-rename-row[hidden] {
+    display: none;
+   }
+
+   .lane-data-view-rename-input {
+    background: #ffffff0a;
+    border: 1px solid #ffffff24;
+    border-radius: 4px;
+    box-sizing: border-box;
+    color: white;
+    flex: 1 1 auto;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    min-width: 0;
+    outline: none;
+    padding: 3px 6px;
+   }
+
+   .lane-data-view-rename-input:focus {
+    background: #2a2a2a;
+    border-color: #9ce5ff66;
+   }
+
+   .lane-data-view-draft[hidden] {
+    display: none;
+   }
+
+   .lane-data-view-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 180px;
+    overflow-y: auto;
+   }
+
+   .lane-data-view-option {
+    align-items: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    box-sizing: border-box;
+    color: #ffffffd8;
+    cursor: pointer;
+    display: flex;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    gap: 8px;
+    justify-content: space-between;
+    padding: 5px 7px;
+    text-align: left;
+    width: 100%;
+   }
+
+   .lane-data-view-option:hover:not(:disabled),
+   .lane-data-view-option:focus-visible:not(:disabled) {
+    background: #ffffff12;
+    border-color: #ffffff30;
+    color: white;
+    outline: none;
+   }
+
+   .lane-data-view-option--active {
+    background: #9ce5ff18;
+    border-color: #9ce5ff44;
+    color: #d6f5ff;
+   }
+
+   .lane-data-view-option:disabled {
+    color: #ffffff44;
+    cursor: not-allowed;
+    opacity: 0.55;
+   }
+
+   .lane-data-view-option-name {
+    font-weight: bold;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+   }
+
+   .lane-data-view-option-meta {
+    color: #ffffff77;
+    flex-shrink: 0;
+    font-size: 10px;
+    white-space: nowrap;
+   }
+
+   .lane-data-view-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+   }
+
+   .lane-data-view-action-item {
+    align-items: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    box-sizing: border-box;
+    color: #ffffffd4;
+    cursor: pointer;
+    display: flex;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    justify-content: flex-start;
+    padding: 5px 8px;
+    text-align: left;
+    width: 100%;
+   }
+
+   .lane-data-view-action-item:hover:not(:disabled),
+   .lane-data-view-action-item:focus-visible:not(:disabled) {
+    background: #ffffff14;
+    border-color: #ffffff30;
+    color: white;
+    outline: none;
+   }
+
+   .lane-data-view-action-item--primary {
+    color: #9ce5ff;
+   }
+
+   .lane-data-view-action-item--primary:hover:not(:disabled) {
+    background: #9ce5ff1c;
+    border-color: #9ce5ff55;
+    color: #d6f5ff;
+   }
+
+   .lane-data-view-action-item--danger {
+    color: #ffb0b0;
+   }
+
+   .lane-data-view-action-item--danger:hover:not(:disabled) {
+    background: #ff555524;
+    border-color: #ff555555;
+    color: #ffc8c8;
+   }
+
+   .lane-data-view-action-item:disabled {
+    color: #ffffff44;
+    cursor: not-allowed;
+    opacity: 0.5;
+   }
+
    .lane-data-table-actions {
     align-items: center;
     display: flex;
@@ -4035,6 +4381,14 @@
     border-color: #9ce5ff66;
    }
 
+   .lane-data-decimals-input--invalid,
+   .lane-data-decimals-input--invalid:focus {
+    background-color: #3a1216;
+    border-color: #ff5555cc;
+    box-shadow: inset 0 0 0 1px #ff555540;
+    color: #ffb8b8;
+   }
+
    .lane-data-schema-row .lane-input-cell {
     vertical-align: top;
    }
@@ -4189,6 +4543,17 @@
     display: none;
    }
 
+   .lane-data-constraints-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35em;
+    margin-top: 0.35em;
+   }
+
+   .lane-data-constraints-list[hidden] {
+    display: none;
+   }
+
    .lane-data-constraint-config {
     border-left: 2px solid #9ce5ff38;
     display: flex;
@@ -4199,8 +4564,63 @@
     white-space: normal;
    }
 
+   .lane-data-constraints-list .lane-data-constraint-config {
+    margin-top: 0;
+   }
+
    .lane-data-constraint-config[hidden] {
     display: none;
+   }
+
+   .lane-data-constraint-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3em;
+   }
+
+   .lane-data-constraint-preset {
+    background: #1c1c1c;
+    border: 1px solid #ffffff24;
+    border-radius: 4px;
+    color: #ffffffb8;
+    cursor: pointer;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    line-height: 1.2;
+    padding: 0.22em 0.5em;
+    white-space: nowrap;
+   }
+
+   .lane-data-constraint-preset:hover:not(:disabled),
+   .lane-data-constraint-preset:focus:not(:disabled) {
+    background: #252525;
+    border-color: #ffffff44;
+    color: white;
+   }
+
+   .lane-data-constraint-preset--active {
+    background: #9ce5ff22;
+    border-color: #9ce5ff88;
+    color: #c8f1ff;
+   }
+
+   .lane-data-constraint-preset--active:hover:not(:disabled),
+   .lane-data-constraint-preset--active:focus:not(:disabled) {
+    background: #9ce5ff30;
+    border-color: #9ce5ffaa;
+    color: #e2f8ff;
+   }
+
+   .lane-data-constraint-preset:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+   }
+
+   .lane-data-constraint-input {
+    box-sizing: border-box;
+    font-size: 11px;
+    min-width: 7em;
+    width: 100%;
    }
 
    .lane-data-constraint-header {
@@ -4287,6 +4707,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.35em;
+    position: relative;
    }
 
    .lane-data-rows-header {
@@ -4566,6 +4987,231 @@
     width: 1.8em;
    }
 
+   .lane-data-filter-th {
+    background: #ffffff04;
+    border-bottom: 1px solid #ffffff1c;
+    font-weight: normal;
+    padding: 0.25em 0.5em;
+    vertical-align: middle;
+    white-space: normal;
+   }
+
+   .lane-data-filter-th--funnel {
+    color: #ffffff58;
+    padding-right: 0.5em;
+    text-align: right;
+    vertical-align: middle;
+    white-space: nowrap;
+   }
+
+   .lane-data-filter-funnel-icon {
+    color: currentColor;
+    display: inline-block;
+    height: 1em;
+    vertical-align: middle;
+    width: 1em;
+   }
+
+   .lane-data-filter-th--actions,
+   .lane-data-filter-th--subtoggle {
+    white-space: nowrap;
+   }
+
+   .lane-data-filter-cell {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-height: 20px;
+   }
+
+   .lane-data-filter-chip {
+    align-items: center;
+    background: #9ce5ff18;
+    border: 1px solid #9ce5ff44;
+    border-radius: 999px;
+    display: inline-flex;
+    max-width: 100%;
+    overflow: hidden;
+   }
+
+   .lane-data-filter-bubble {
+    background: transparent;
+    border: none;
+    color: #d6f5ff;
+    cursor: pointer;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+    line-height: 1.3;
+    max-width: 18em;
+    overflow: hidden;
+    padding: 2px 6px 2px 7px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+   }
+
+   .lane-data-filter-bubble:hover,
+   .lane-data-filter-bubble:focus-visible {
+    background: #9ce5ff1c;
+    color: white;
+    outline: none;
+   }
+
+   .lane-data-filter-remove {
+    align-items: center;
+    background: transparent;
+    border: none;
+    border-left: 1px solid #9ce5ff28;
+    color: #9ce5ffaa;
+    cursor: pointer;
+    display: inline-flex;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    justify-content: center;
+    line-height: 1;
+    padding: 2px 5px;
+   }
+
+   .lane-data-filter-remove:hover,
+   .lane-data-filter-remove:focus-visible {
+    background: #ff555530;
+    color: #ffb0b0;
+    outline: none;
+   }
+
+   .lane-data-filter-add-btn {
+    align-items: center;
+    background: transparent;
+    border: 1px dotted #ffffff48;
+    border-radius: 4px;
+    color: #ffffff96;
+    cursor: pointer;
+    display: inline-flex;
+    flex: 0 0 auto;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    height: 18px;
+    justify-content: center;
+    line-height: 1;
+    padding: 0 6px;
+   }
+
+   .lane-data-filter-add-btn:hover,
+   .lane-data-filter-add-btn:focus-visible {
+    background: #9ce5ff14;
+    border-color: #9ce5ff88;
+    color: #d6f5ff;
+    outline: none;
+   }
+
+   .lane-data-filter-menu {
+    background: #202020;
+    border: 1px solid #ffffff2c;
+    border-radius: 6px;
+    box-shadow: 0 12px 30px #000000cc;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    left: 0;
+    max-width: min(340px, 95%);
+    min-width: 248px;
+    padding: 8px;
+    position: absolute;
+    top: 28px;
+    z-index: 45;
+   }
+
+   .lane-data-filter-menu[hidden] {
+    display: none;
+   }
+
+   .lane-data-filter-menu-header {
+    align-items: center;
+    display: flex;
+    gap: 6px;
+    justify-content: space-between;
+   }
+
+   .lane-data-filter-menu-col {
+    color: #ffffffea;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    font-weight: bold;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+   }
+
+   .lane-data-filter-op-select {
+    width: 100%;
+   }
+
+   .lane-data-filter-value-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+   }
+
+   .lane-data-filter-value-wrap[hidden] {
+    display: none;
+   }
+
+   .lane-data-filter-value-fields {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+   }
+
+   .lane-data-filter-range-sep {
+    color: #ffffff88;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+   }
+
+   .lane-data-filter-input {
+    flex: 1 1 9em;
+    min-width: 0;
+   }
+
+   .lane-data-filter-error {
+    background: #ff55551a;
+    border: 1px solid #ff55554d;
+    border-radius: 4px;
+    color: #ff9c9c;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+    padding: 3px 6px;
+   }
+
+   .lane-data-filter-error[hidden] {
+    display: none;
+   }
+
+   .lane-data-filter-menu-actions {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+   }
+
+   .lane-data-filter-delete {
+    border-color: #ff55554d;
+    color: #ffb0b0;
+    margin-left: auto;
+   }
+
+   .lane-data-filter-delete:hover:not(:disabled) {
+    background: #ff555528;
+    border-color: #ff555588;
+    color: #ffc8c8;
+   }
+
+   .lane-data-filter-delete[hidden] {
+    display: none;
+   }
+
    .lane-data-th-inner {
     align-items: baseline;
     display: flex;
@@ -4636,7 +5282,8 @@
     text-align: right;
    }
 
-   .lane-data-td--required-empty {
+   .lane-data-td--required-empty,
+   .lane-data-td:has(.lane-data-cell-input--invalid) {
     background: #ff555514;
    }
 
@@ -4772,9 +5419,15 @@
 
    .lane-data-cell-input--invalid,
    .lane-data-cell-input--invalid:focus {
-    background: #ff55551a;
-    border-color: #ff5555aa;
+    background-color: #3a1216;
+    border-color: #ff5555cc;
+    box-shadow: inset 0 0 0 1px #ff555540;
     color: #ffb8b8;
+   }
+
+   .lane-data-cell-input--invalid::selection {
+    background: #ff555566;
+    color: white;
    }
 
    .lane-data-cell-input--invalid.lane-data-cell-input--date-empty,
@@ -4862,6 +5515,13 @@
     padding: 0.2em 0.25em;
     user-select: none;
     white-space: nowrap;
+   }
+
+   .lane-data-bool-wrap--invalid {
+    background: #ff55551a;
+    border: 1px solid #ff5555aa;
+    border-radius: 4px;
+    color: #ffb8b8;
    }
 
    .lane-data-multi-item .lane-data-bool-wrap {
@@ -4953,8 +5613,10 @@
     width: 100%;
    }
 
-   .lane-data-multi-item .lane-data-cell-input--invalid {
-    border-color: #ff5555aa;
+   .lane-data-multi-item .lane-data-cell-input--invalid,
+   .lane-data-multi-item .lane-data-cell-input--invalid:focus {
+    background-color: #3a1216;
+    border-color: #ff5555cc;
    }
 
    .lane-data-multi-item .lane-data-cell-input--num {
@@ -5474,6 +6136,14 @@
    .lane-row-picker-add-control .lane-data-cell-select:focus {
     background-color: #181818;
     border-color: #9ce5ff77;
+   }
+
+   .lane-row-picker-add-control .lane-data-cell-input--invalid,
+   .lane-row-picker-add-control .lane-data-cell-input--invalid:focus {
+    background-color: #3a1216;
+    border-color: #ff5555cc;
+    box-shadow: inset 0 0 0 1px #ff555540;
+    color: #ffb8b8;
    }
 
    .lane-row-picker-add-error {
@@ -6542,6 +7212,93 @@
 
    .lane-session-advanced-body[hidden] {
     display: none;
+   }
+
+   .lane-session-settings {
+    border-top: 1px solid #ffffff16;
+    padding-top: 0.6em;
+   }
+
+   .lane-session-settings-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45em;
+    white-space: normal;
+   }
+
+   .lane-session-setting-item {
+    background: #ffffff06;
+    border: 1px solid #ffffff16;
+    border-radius: 7px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35em;
+    padding: 0.55em 0.65em;
+   }
+
+   .lane-session-setting-row {
+    align-items: center;
+    display: flex;
+    gap: 0.5em;
+    justify-content: space-between;
+   }
+
+   .lane-session-minimap-scale {
+    align-items: center;
+    border-top: 1px solid #ffffff12;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4em;
+    margin-top: 0.15em;
+    padding-top: 0.45em;
+   }
+
+   .lane-session-minimap-scale[hidden] {
+    display: none;
+   }
+
+   .lane-session-minimap-scale-label {
+    color: #ffffff8c;
+    flex-shrink: 0;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+   }
+
+   .lane-session-minimap-scale-range {
+    accent-color: #9ce5ff;
+    cursor: pointer;
+    flex: 1;
+    min-width: 6em;
+   }
+
+   .lane-session-minimap-scale-btn,
+   .lane-session-minimap-scale-reset {
+    background: #ffffff0e;
+    border: 1px solid #ffffff24;
+    border-radius: 4px;
+    color: #ffffffd8;
+    cursor: pointer;
+    flex-shrink: 0;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    line-height: 1.2;
+    padding: 0.15em 0.45em;
+   }
+
+   .lane-session-minimap-scale-btn:hover:not(:disabled),
+   .lane-session-minimap-scale-btn:focus-visible,
+   .lane-session-minimap-scale-reset:hover:not(:disabled),
+   .lane-session-minimap-scale-reset:focus-visible {
+    background: #9ce5ff22;
+    border-color: #9ce5ff66;
+    color: white;
+    outline: none;
+   }
+
+   .lane-session-minimap-scale-btn:disabled,
+   .lane-session-minimap-scale-reset:disabled {
+    cursor: default;
+    opacity: 0.45;
    }
 
    .lane-page-body {
@@ -7750,6 +8507,183 @@
     min-width: 480px;
    }
 
+   .lane-minimap {
+    backdrop-filter: blur(8px);
+    background: #141414e8;
+    border: 1px solid #ffffff26;
+    border-radius: 8px;
+    bottom: 12px;
+    box-shadow: 0 10px 28px #00000099;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px 8px 8px;
+    position: fixed;
+    right: 40px;
+    user-select: none;
+    white-space: normal;
+    z-index: 900;
+   }
+
+   .lane-minimap[hidden] {
+    display: none;
+   }
+
+   .lane-minimap-scale-handle {
+    cursor: nwse-resize;
+    height: 12px;
+    left: 0;
+    position: absolute;
+    top: 0;
+    touch-action: none;
+    width: 12px;
+    z-index: 3;
+   }
+
+   .lane-minimap-scale-handle::after {
+    border-left: 2px solid #ffffff44;
+    border-top: 2px solid #ffffff44;
+    border-top-left-radius: 3px;
+    content: "";
+    height: 6px;
+    left: 3px;
+    position: absolute;
+    top: 3px;
+    transition: border-color 120ms ease;
+    width: 6px;
+   }
+
+   .lane-minimap-scale-handle:hover::after,
+   .lane-minimap-scale-handle--active::after {
+    border-left-color: #9ce5ffcc;
+    border-top-color: #9ce5ffcc;
+   }
+
+   .lane-minimap-header {
+    align-items: center;
+    display: flex;
+    gap: 6px;
+    justify-content: space-between;
+    min-width: 0;
+    padding-left: 8px;
+   }
+
+   .lane-minimap-title {
+    color: #ffffff9e;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+   }
+
+   .lane-minimap-controls {
+    align-items: center;
+    display: inline-flex;
+    gap: 3px;
+   }
+
+   .lane-minimap-btn {
+    align-items: center;
+    background: #ffffff0c;
+    border: 1px solid #ffffff20;
+    border-radius: 4px;
+    color: #ffffffcc;
+    cursor: pointer;
+    display: inline-flex;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+    height: 18px;
+    justify-content: center;
+    line-height: 1;
+    padding: 0 5px;
+   }
+
+   .lane-minimap-btn:hover:not(:disabled),
+   .lane-minimap-btn:focus-visible {
+    background: #9ce5ff22;
+    border-color: #9ce5ff66;
+    color: white;
+    outline: none;
+   }
+
+   .lane-minimap-btn:disabled {
+    cursor: default;
+    opacity: 0.45;
+   }
+
+   .lane-minimap-stage {
+    background: #0a0a0a;
+    border: 1px solid #ffffff1a;
+    border-radius: 5px;
+    box-sizing: border-box;
+    cursor: grab;
+    overflow: hidden;
+    position: relative;
+    touch-action: none;
+   }
+
+   .lane-minimap--dragging .lane-minimap-stage,
+   .lane-minimap--dragging .lane-minimap-viewport {
+    cursor: grabbing;
+   }
+
+   .lane-minimap-lanes {
+    inset: 0;
+    pointer-events: none;
+    position: absolute;
+   }
+
+   .lane-minimap-lane {
+    align-items: flex-start;
+    background: #ffffff14;
+    border: 1px solid #ffffff2e;
+    border-radius: 2px;
+    box-sizing: border-box;
+    display: flex;
+    justify-content: center;
+    overflow: hidden;
+    padding-top: 2px;
+    position: absolute;
+   }
+
+   .lane-minimap-lane--minimized {
+    background: #ffffff09;
+    border-color: #ffffff24;
+   }
+
+   .lane-minimap-lane--locked {
+    background: #ffb86c1c;
+    border-color: #ffb86c66;
+   }
+
+   .lane-minimap-lane--highlighted {
+    background: #38d39f30;
+    border-color: #38d39fcc;
+   }
+
+   .lane-minimap-lane-label {
+    color: #ffffff88;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 8px;
+    line-height: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+   }
+
+   .lane-minimap-viewport {
+    background: #9ce5ff1a;
+    border: 1.5px solid #9ce5ffcc;
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px #00000066;
+    box-sizing: border-box;
+    cursor: grab;
+    position: absolute;
+    z-index: 2;
+   }
+
    .lane-fullscreen {
     background-color: #000000;
     box-sizing: border-box;
@@ -8491,28 +9425,46 @@
    import {
     DATA_COLUMN_TYPES,
     DATA_CONSTRAINT_TYPES,
+    WORKFLOW_COLUMN_TYPES,
+    DEFAULT_MINIMAP_HEIGHT,
+    DEFAULT_MINIMAP_SCALE,
+    DEFAULT_MINIMAP_WIDTH,
     DEFAULT_ROW_PICKER_PAGE_SIZE,
     DEFAULT_SCROLLBAR_COLOR,
+    DEFAULT_TABLE_VIEW_ID,
     LANE_CRON_INTERVAL_MS,
     LANE_FEATURES,
+    MAX_MINIMAP_SCALE,
+    MINIMAP_SCALE_STEP,
     MIN_LANE_MODAL_HEIGHT,
     MIN_LANE_MODAL_WIDTH,
+    MIN_MINIMAP_SCALE,
     PRIMITIVE_TYPES,
     TABLE_IMPORT_MODES,
     buildTablesScope,
     buildTopRailTimezoneOptions,
+    buildUniqueTableViewName,
     checkColumnChangeImpact,
     coerceDataValue,
+    columnSupportsWorkflow,
     computeLaneScrollLeft,
     computeLaneScrollTop,
+    computeMinimapDraggedScale,
+    computeMinimapLayout,
+    computeMinimapScrollTarget,
+    createDefaultColumnConstraint,
     createIdleTracker,
     dataValuesEqual,
     defaultDataValue,
     defaultValueForType,
+    describeAllColumnConstraints,
+    describeColumnConstraint,
+    evaluateTableFilter,
     extractTimezoneNames,
     fetchRowOptionsPage,
     field,
     filterRowOptions,
+    filterTableRows,
     filterTimezoneOptions,
     findWorkflowDefaultColumns,
     formatCellInputValue,
@@ -8525,11 +9477,17 @@
     formatImportLine,
     formatLanePath,
     formatLaneRoutes,
+    formatMinimapScalePercent,
+    formatTableFilterBubbleLabel,
+    formatTableFilterInputValues,
     formatTimestampWithZone,
     formatTopRailClock,
     getBrowserTimeZone,
+    getColumnWorkflowConstraint,
+    getFilterOperatorsForColumn,
     getInboundSubtableRowsForParent,
     getLaneInitial,
+    getSupportedColumnConstraints,
     getWorkflowCellState,
     hasImportCycle,
     isDataCellValueEmpty,
@@ -8542,6 +9500,7 @@
     normalizeClockHourFormat,
     normalizeClockShowSeconds,
     normalizeColumnConstraint,
+    normalizeColumnConstraints,
     normalizeColumnWidth,
     normalizeDataColumnType,
     normalizeFixedDecimals,
@@ -8550,9 +9509,12 @@
     normalizeLanePath,
     normalizeLaneTab,
     normalizeLaneWidth,
+    normalizeMinimapScale,
     normalizePrimitiveType,
+    normalizeTableFilter,
     normalizeTableImportMode,
     normalizeTableRemoteSpec,
+    normalizeTableViewsRecord,
     normalizeTopRailHidden,
     normalizeTopRailOrder,
     parseCellValue,
@@ -8560,12 +9522,16 @@
     parseDatetimeInTimeZone,
     parseDisplayTemplate,
     parseExportLine,
+    parseFixedDecimalsInput,
     parseHashOptions,
     parseImportLine,
     parseLaneFeatures,
     parseLanePath,
     parseLaneRoutes,
+    parseNumericCellInput,
     parseStoredTables,
+    parseTableFilterInput,
+    parseWorkflowOptionValue,
     resolveActiveClockTimezone,
     resolveClockDisplayOptions,
     resolveImportValue,
@@ -8575,13 +9541,18 @@
     resolveRowValueSpec,
     resolveScopeColumns,
     resolveScrollbarColor,
+    resolveTableViewDisplayName,
     resolveTopRailElementId,
     resolveTopRailLayout,
     resolveWorkflowTarget,
     rowFilterValuesMatch,
+    sanitizeTableViewsForColumns,
     seedPreferencesScrollbarRecords,
     seedPreferencesScrollbarSource,
+    stepMinimapScale,
     syncTableRowsInMemory,
+    tableViewFiltersEqual,
+    validateColumnConstraints,
     validateFieldScriptLine,
     validateFieldScriptLines,
     zonedWallClockToUtcMs
@@ -8606,6 +9577,7 @@
    import {
     DEFAULT_PACKAGE_ID,
     DEFAULT_PACKAGE_NAME,
+    DEFAULT_SESSION_SETTINGS,
     addLaneTable,
     addTableRow,
     allocateNextPort,
@@ -8655,12 +9627,14 @@
     loadLaneTables,
     loadSessionCatalog,
     loadTableUpdates,
+    loadTableViews,
     moveLaneToPackage,
     normalizeDomainName,
     normalizeExportTargetsAndValue,
     normalizeLineSetBy,
     normalizeServiceSlug,
     normalizeSessionLinkIds,
+    normalizeSessionSettings,
     normalizeSessionTableDisplayOptions,
     normalizeSubpath,
     openPackageInSession,
@@ -8687,15 +9661,19 @@
     saveTableSchema,
     saveTableSchemaAndRows,
     saveTableUpdates,
+    saveTableViews,
     setActivePackageInSession,
     setLaneSecret,
     setSessionDataDir,
     setSessionLinks,
+    setSessionSettings,
     setTargetLaneLine,
+    sessionSettingsEqual,
     sessionTableDisplayOptionsEqual,
     switchBrowserSession,
     switchTabSession,
     tableUpdatesKey,
+    tableViewsKey,
     writeLaneSyncBundleToKv
    } from '/storage.mjs'
    import {
@@ -8732,10 +9710,18 @@
    const main = field({
     DEFAULT_PACKAGE_ID,
     DEFAULT_PACKAGE_NAME,
+    DEFAULT_SESSION_SETTINGS,
     DEFAULT_STORY_PAGE_SIZE,
+    DEFAULT_TABLE_VIEW_ID,
     LANE_CRON_INTERVAL_MS,
     LANE_FEATURES,
     TABLE_IMPORT_MODES,
+    DEFAULT_MINIMAP_HEIGHT,
+    DEFAULT_MINIMAP_SCALE,
+    DEFAULT_MINIMAP_WIDTH,
+    MAX_MINIMAP_SCALE,
+    MINIMAP_SCALE_STEP,
+    MIN_MINIMAP_SCALE,
     addLaneTable,
     addTableRow,
     allocateNextPort,
@@ -8746,6 +9732,7 @@
     buildStoryRunSnapshot,
     buildTablesScope,
     buildTopRailTimezoneOptions,
+    buildUniqueTableViewName,
     captureStoryEnvInputs,
     checkColumnChangeImpact,
     checkExportTargetsAccess,
@@ -8758,9 +9745,14 @@
     closePackageInSession,
     coerceDataValue,
     collectLaneSyncBundle,
+    columnSupportsWorkflow,
     computeLaneScrollLeft,
     computeLaneScrollTop,
+    computeMinimapDraggedScale,
+    computeMinimapLayout,
+    computeMinimapScrollTarget,
     console,
+    createDefaultColumnConstraint,
     createFsDir,
     createIdleTracker,
     createNewSession,
@@ -8773,6 +9765,7 @@
     data,
     dataColumnTypes: DATA_COLUMN_TYPES,
     dataConstraintTypes: DATA_CONSTRAINT_TYPES,
+    workflowColumnTypes: WORKFLOW_COLUMN_TYPES,
     dataValuesEqual,
     defaultDataValue,
     defaultRowPickerPageSize: DEFAULT_ROW_PICKER_PAGE_SIZE,
@@ -8783,14 +9776,18 @@
     deleteLaneSecret,
     deleteLaneTable,
     deleteTableRow,
+    describeAllColumnConstraints,
+    describeColumnConstraint,
     detectLaneHandlers,
     diffLaneScripts,
     document,
+    evaluateTableFilter,
     extractTimezoneNames,
     fetchFsList,
     fetchFsRoots,
     fetchRowOptionsPage,
     filterRowOptions,
+    filterTableRows,
     filterTimezoneOptions,
     findWorkflowDefaultColumns,
     forkSession,
@@ -8808,18 +9805,24 @@
     formatLanePath,
     formatLaneRoutes,
     formatLineTimestamp,
+    formatMinimapScalePercent,
     formatOrdinalDay,
     formatSessionDuration,
     formatStoryEntryTime,
+    formatTableFilterBubbleLabel,
+    formatTableFilterInputValues,
     formatTimestampWithZone,
     formatTopRailClock,
     generateLineId,
     getBrowserTimeZone,
+    getColumnWorkflowConstraint,
+    getFilterOperatorsForColumn,
     getInboundSubtableRowsForParent,
     getLaneDeployStatus,
     getLaneInitial,
     getLanePackageId,
     getPackageMeta,
+    getSupportedColumnConstraints,
     getWorkflowCellState,
     hasImportCycle,
     initSessionState,
@@ -8850,6 +9853,7 @@
     loadLaneTables,
     loadSessionCatalog,
     loadTableUpdates,
+    loadTableViews,
     lookupRowDisplay,
     minLaneModalHeight: MIN_LANE_MODAL_HEIGHT,
     minLaneModalWidth: MIN_LANE_MODAL_WIDTH,
@@ -8858,6 +9862,7 @@
     normalizeClockHourFormat,
     normalizeClockShowSeconds,
     normalizeColumnConstraint,
+    normalizeColumnConstraints,
     normalizeColumnWidth,
     normalizeDataColumnType,
     normalizeDataDir,
@@ -8870,13 +9875,17 @@
     normalizeLaneTab,
     normalizeLaneWidth,
     normalizeLineSetBy,
+    normalizeMinimapScale,
     normalizePrimitiveType,
     normalizeServiceSlug,
     normalizeSessionLinkIds,
+    normalizeSessionSettings,
     normalizeSessionTableDisplayOptions,
     normalizeSubpath,
+    normalizeTableFilter,
     normalizeTableImportMode,
     normalizeTableRemoteSpec,
+    normalizeTableViewsRecord,
     normalizeTopRailHidden,
     normalizeTopRailOrder,
     openPackageInSession,
@@ -8885,12 +9894,16 @@
     parseDatetimeInTimeZone,
     parseDisplayTemplate,
     parseExportLine,
+    parseFixedDecimalsInput,
     parseHashOptions,
     parseImportLine,
     parseLaneFeatures,
     parseLanePath,
     parseLaneRoutes,
+    parseNumericCellInput,
     parseStoredTables,
+    parseTableFilterInput,
+    parseWorkflowOptionValue,
     primitiveTypes: PRIMITIVE_TYPES,
     promoteTabToBrowserSession,
     proxyDeployRequest,
@@ -8912,6 +9925,7 @@
     resolveScopeColumns,
     resolveScrollbarColor,
     resolveSessionLinks,
+    resolveTableViewDisplayName,
     resolveTopRailElementId,
     resolveTopRailLayout,
     resolveWorkflowTarget,
@@ -8919,6 +9933,7 @@
     returnToBrowserSession,
     rowFilterValuesMatch,
     runLines: runLinesInWorker,
+    sanitizeTableViewsForColumns,
     saveDeployServer,
     saveDeployedLaneScript,
     saveImportedTableLink,
@@ -8933,27 +9948,34 @@
     saveTableSchema,
     saveTableSchemaAndRows,
     saveTableUpdates,
+    saveTableViews,
     seedPreferencesScrollbarRecords,
     seedPreferencesScrollbarSource,
     setActivePackageInSession,
     setLaneSecret,
     setSessionDataDir,
     setSessionLinks,
+    setSessionSettings,
     setTargetLaneLine,
+    sessionSettingsEqual,
     sessionTableDisplayOptionsEqual,
     simulateLaneRequest: simulateLaneRequestInWorker,
     snapshotStoryValue,
     startDeployTerminalSession,
+    stepMinimapScale,
     subscribeAgentEvents,
     switchBrowserSession,
     switchTabSession,
     syncLaneToRemoteCivilMemory,
     syncTableRowsInMemory,
     tableUpdatesKey,
+    tableViewsKey,
+    tableViewFiltersEqual,
     testRemoteCivilMemory,
     trackStoryExportLineCall,
     trackStoryExportTableCall,
     trackStoryImportCall,
+    validateColumnConstraints,
     validateFieldScriptLine,
     validateFieldScriptLines,
     writeLaneSyncBundleToKv,

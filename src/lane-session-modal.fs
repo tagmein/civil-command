@@ -67,6 +67,56 @@
  !active-field.appendChild $active-dir-row
  !active-field.appendChild $rename-row
 
+ ; to settings-field !document.createElement div
+ ; set 'lane-config-field lane-session-settings' settings-field.className
+ ; to settings-label !document.createElement div
+ ; assign $settings-label { className lane-config-label } { textContent 'Session Settings' }
+ ; to settings-group !document.createElement div
+ ; set lane-session-settings-group settings-group.className
+ ; to minimap-item !document.createElement div
+ ; set lane-session-setting-item minimap-item.className
+ ; to minimap-row !document.createElement div
+ ; set lane-session-setting-row minimap-row.className
+ ; to minimap-label !document.createElement label
+ ; set cc-checkbox-label minimap-label.className
+ ; to minimap-check !document.createElement input
+ ; assign $minimap-check { type checkbox } { checked false }
+ !minimap-check.setAttribute data-setting minimap
+ ; to minimap-txt !document.createElement span
+ ; assign $minimap-txt { textContent Minimap }
+ !minimap-label.appendChild $minimap-check
+ !minimap-label.appendChild $minimap-txt
+ !minimap-row.appendChild $minimap-label
+ ; to minimap-desc !document.createElement div
+ ; assign $minimap-desc { className lane-config-feature-desc } { textContent 'Show a scalable minimap in the bottom right to see all lanes and drag your viewport' }
+ ; to minimap-scale-row !document.createElement div
+ ; assign $minimap-scale-row { className lane-session-minimap-scale } { hidden true }
+ ; to minimap-scale-label !document.createElement span
+ ; assign $minimap-scale-label { className lane-session-minimap-scale-label } { textContent Scale }
+ ; to minimap-scale-down-btn !document.createElement button
+ ; assign $minimap-scale-down-btn { type button } { className lane-session-minimap-scale-btn } { textContent '−' } { title 'Decrease minimap scale' }
+ !minimap-scale-down-btn.setAttribute aria-label 'Decrease minimap scale'
+ ; to minimap-scale-range !document.createElement input
+ ; assign $minimap-scale-range { type range } { className lane-session-minimap-scale-range } { min '50' } { max '250' } { step '5' } { value '100' }
+ !minimap-scale-range.setAttribute aria-label 'Minimap scale'
+ ; to minimap-scale-up-btn !document.createElement button
+ ; assign $minimap-scale-up-btn { type button } { className lane-session-minimap-scale-btn } { textContent '+' } { title 'Increase minimap scale' }
+ !minimap-scale-up-btn.setAttribute aria-label 'Increase minimap scale'
+ ; to minimap-scale-reset-btn !document.createElement button
+ ; assign $minimap-scale-reset-btn { type button } { className lane-session-minimap-scale-reset } { textContent '100%' } { title 'Reset minimap scale to 100%' }
+ !minimap-scale-reset-btn.setAttribute aria-label 'Reset minimap scale'
+ !minimap-scale-row.appendChild $minimap-scale-label
+ !minimap-scale-row.appendChild $minimap-scale-down-btn
+ !minimap-scale-row.appendChild $minimap-scale-range
+ !minimap-scale-row.appendChild $minimap-scale-up-btn
+ !minimap-scale-row.appendChild $minimap-scale-reset-btn
+ !minimap-item.appendChild $minimap-row
+ !minimap-item.appendChild $minimap-desc
+ !minimap-item.appendChild $minimap-scale-row
+ !settings-group.appendChild $minimap-item
+ !settings-field.appendChild $settings-label
+ !settings-field.appendChild $settings-group
+
  ; to draft-field !document.createElement div
  ; assign $draft-field { className 'workspace-session-draft lane-session-draft-banner' } { hidden true }
  ; to draft-text !document.createElement div
@@ -224,6 +274,7 @@
  !session-footer.appendChild $session-done-btn
 
  !session-body.appendChild $active-field
+ !session-body.appendChild $settings-field
  !session-body.appendChild $draft-field
  !session-body.appendChild $links-field
  !session-body.appendChild $switch-field
@@ -294,6 +345,14 @@
   { active-dir-btn $active-dir-btn }
   { rename-input $rename-input }
   { rename-btn $rename-btn }
+  { settings-field $settings-field }
+  { settings-label $settings-label }
+  { minimap-check $minimap-check }
+  { minimap-scale-row $minimap-scale-row }
+  { minimap-scale-down-btn $minimap-scale-down-btn }
+  { minimap-scale-range $minimap-scale-range }
+  { minimap-scale-up-btn $minimap-scale-up-btn }
+  { minimap-scale-reset-btn $minimap-scale-reset-btn }
   { draft-field $draft-field }
   { draft-text $draft-text }
   { draft-btns $draft-btns }
@@ -510,6 +569,34 @@
   ]
  )
 
+ ; to sync-settings-ui (
+  -- Syncs the Session Settings controls (Minimap checkbox and scale controls) with active session state
+  ; to enabled [ propertyIs true lane-control.session-minimap ]
+  ; to raw-scale $lane-control.session-minimap-scale
+  ; to norm-scale [ match
+   { $normalizeMinimapScale : !normalizeMinimapScale $raw-scale 1 }
+   { [ propertyIsGreaterThan 0 raw-scale ] : $raw-scale }
+   { true : 1 }
+  ]
+  ; to pct-num [ match
+   { $window.Math.round : !window.Math.round [ ; multiply $norm-scale 100 ] }
+   { true : ; multiply $norm-scale 100 }
+  ]
+  ; to pct-str [ match
+   { $formatMinimapScalePercent : !formatMinimapScalePercent $norm-scale }
+   { true : ; add $pct-num '%' }
+  ]
+  ; set $enabled minimap-check.checked
+  ; set [ ternary $enabled false true ] minimap-scale-row.hidden
+  ; set [ ; add '' $pct-num ] minimap-scale-range.value
+  ; set $pct-str minimap-scale-reset-btn.textContent
+  ; to min-scale [ match { [ propertyIsGreaterThan 0 MIN_MINIMAP_SCALE ] : $MIN_MINIMAP_SCALE } { true : 0.5 } ]
+  ; to max-scale [ match { [ propertyIsGreaterThan 0 MAX_MINIMAP_SCALE ] : $MAX_MINIMAP_SCALE } { true : 2.5 } ]
+  ; set [ propertyIsLessThanOrEqual $min-scale norm-scale ] minimap-scale-down-btn.disabled
+  ; set [ propertyIsGreaterThanOrEqual $max-scale norm-scale ] minimap-scale-up-btn.disabled
+  ; set [ propertyIs 1 norm-scale ] minimap-scale-reset-btn.disabled
+ )
+
  ; to modal.render-session (
   -- Renders streamlined Session Switcher & Manager with collapsible Advanced tab/browser controls
   ; to rseq ; add $modal.render-seq 1
@@ -581,6 +668,8 @@
    ; set [ match { [ and { [ propertyIs false has-session ] } { $pending } ] : true } { true : $dirs-disabled } ] active-dir-row.hidden
    ; set [ match { $dirs-disabled : true } { [ and { [ propertyIs false has-session ] } { $pending } ] : true } { true : $dir-confirmed } ] active-dir-btn.hidden
    ; set [ match { [ and { [ propertyIs false has-session ] } { $pending } ] : '' } { true : $cur-name } ] rename-input.value
+   ; set [ ternary [ and { [ propertyIs false has-session ] } { $pending } ] true false ] minimap-check.disabled
+   !sync-settings-ui
    ; set [ ternary $blocked false true ] draft-field.hidden
    ; set [ ternary $pending 'workspace-session-draft workspace-session-draft--pending lane-session-draft-banner' 'workspace-session-draft lane-session-draft-banner' ] draft-field.className
    ; set [ ternary $pending $pending-lbl 'Unsaved version' ] draft-text.textContent
@@ -869,6 +958,42 @@
    !lane-control.rename-session $next-name
    !modal.render-session
   )
+ )
+ !minimap-check.addEventListener change (
+  !lane-control.set-session-minimap $minimap-check.checked
+  !modal.render-session
+ )
+ !minimap-scale-down-btn.addEventListener click (
+  !lane-control.step-session-minimap-scale -1
+  !modal.render-session
+ )
+ !minimap-scale-up-btn.addEventListener click (
+  !lane-control.step-session-minimap-scale 1
+  !modal.render-session
+ )
+ !minimap-scale-reset-btn.addEventListener click (
+  !lane-control.set-session-minimap-scale 1
+  !modal.render-session
+ )
+ !minimap-scale-range.addEventListener input (
+  ; to num-val [ match
+   { $window.Number : !window.Number $minimap-scale-range.value }
+   { true : $minimap-scale-range.value }
+  ]
+  ; to next-scale ; divide $num-val 100
+  [ match
+   { $lane-control.preview-minimap-scale : !lane-control.preview-minimap-scale $next-scale }
+  ]
+  !sync-settings-ui
+ )
+ !minimap-scale-range.addEventListener change (
+  ; to num-val [ match
+   { $window.Number : !window.Number $minimap-scale-range.value }
+   { true : $minimap-scale-range.value }
+  ]
+  ; to next-scale ; divide $num-val 100
+  !lane-control.set-session-minimap-scale $next-scale
+  !modal.render-session
  )
  !draft-save-btn.addEventListener click (
   !lane-control.save-session-draft

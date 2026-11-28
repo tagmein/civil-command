@@ -35,16 +35,27 @@
   { active-table-id '' }
   { schema-open true }
   { table-menu-open false }
+  { view-menu-open false }
+  { editing-view-name false }
+  { table-views ; object }
+  { pinned-row-ids ; object }
+  { view-option-els {} }
   { id-seq 0 }
   { used-ids ; object }
   { table-tabs {} }
   { schema-rows {} }
   { grid-head-cells {} }
+  { grid-filter-cells {} }
   { grid-rows {} }
   { display-options-btns {} }
   { subtable-group-collapsed ; object }
   { table-updates ; object }
   { update-rows {} }
+  { filter-editor ; object { open false } { mode add } { table-id '' } { column-id '' } { filter-id '' } { anchor-el null } }
+  { filter-op-els {} }
+  { filter-input-els {} }
+  { filter-val-el null }
+  { filter-val-to-el null }
   { on-record-change null }
  ]
 
@@ -90,8 +101,107 @@
 
  ; to table-header-el !document.createElement div
  ; set lane-data-table-header table-header-el.className
- ; to table-name-input !document.createElement input
- ; assign $table-name-input { type text } { className lane-data-table-name } { placeholder 'table_name' } { spellcheck false } { autocomplete off }
+ ; to view-wrap !document.createElement div
+ ; set lane-data-view-wrap view-wrap.className
+ ; to view-btn !document.createElement button
+ ; assign $view-btn { type button } { className lane-data-view-btn } { title 'Switch, save, or manage table views' }
+ !view-btn.setAttribute aria-haspopup dialog
+ !view-btn.setAttribute aria-expanded 'false'
+ ; to view-btn-main !document.createElement span
+ ; set lane-data-view-btn-main view-btn-main.className
+ ; to view-name-el !document.createElement span
+ ; assign $view-name-el { className lane-data-view-btn-name } { textContent '' }
+ ; to view-count-badge !document.createElement span
+ ; assign $view-count-badge { className lane-data-view-btn-count } { textContent '' } { hidden true }
+ ; to view-dirty-badge !document.createElement span
+ ; assign $view-dirty-badge { className lane-data-view-dirty-badge } { textContent 'Unsaved filters' } { hidden true }
+ !view-btn-main.appendChild $view-name-el
+ !view-btn-main.appendChild $view-count-badge
+ !view-btn-main.appendChild $view-dirty-badge
+ ; to view-caret-el !document.createElement span
+ ; assign $view-caret-el { className lane-data-view-btn-caret } { textContent '▾' }
+ !view-btn.appendChild $view-btn-main
+ !view-btn.appendChild $view-caret-el
+
+ ; to view-menu !document.createElement div
+ ; assign $view-menu { className lane-data-view-menu } { hidden true }
+ !view-menu.setAttribute role dialog
+ !view-menu.setAttribute aria-label 'Table views'
+ ; to view-default-status !document.createElement div
+ ; assign $view-default-status { className lane-data-view-menu-status } { textContent '' }
+ ; to view-title-btn !document.createElement button
+ ; assign $view-title-btn { type button } { className lane-data-view-title-btn } { hidden true } { title 'Click to rename view' }
+ ; to view-title-text !document.createElement span
+ ; assign $view-title-text { className lane-data-view-title-text } { textContent '' }
+ ; to view-title-hint !document.createElement span
+ ; assign $view-title-hint { className lane-data-view-title-hint } { textContent Rename }
+ !view-title-btn.appendChild $view-title-text
+ !view-title-btn.appendChild $view-title-hint
+ ; to view-rename-row !document.createElement div
+ ; assign $view-rename-row { className lane-data-view-rename-row } { hidden true }
+ ; to view-rename-input !document.createElement input
+ ; assign $view-rename-input { type text } { className lane-data-view-rename-input } { placeholder 'View name...' } { spellcheck false } { autocomplete off }
+ ; to view-rename-btn !document.createElement button
+ ; assign $view-rename-btn { type button } { className 'workspace-mini-btn workspace-mini-btn--save' } { textContent Save }
+ ; to view-rename-cancel-btn !document.createElement button
+ ; assign $view-rename-cancel-btn { type button } { className workspace-mini-btn } { textContent Cancel }
+ !view-rename-row.appendChild $view-rename-input
+ !view-rename-row.appendChild $view-rename-btn
+ !view-rename-row.appendChild $view-rename-cancel-btn
+ ; to view-draft-row !document.createElement div
+ ; assign $view-draft-row { className 'workspace-session-draft lane-data-view-draft' } { hidden true }
+ ; to view-draft-label !document.createElement div
+ ; assign $view-draft-label { className workspace-session-draft-label } { textContent 'Unsaved filters' }
+ ; to view-draft-actions !document.createElement div
+ ; set workspace-session-draft-actions view-draft-actions.className
+ ; to view-save-btn !document.createElement button
+ ; assign $view-save-btn { type button } { className 'workspace-mini-btn workspace-mini-btn--save' } { textContent 'Save view' }
+ ; to view-fork-btn !document.createElement button
+ ; assign $view-fork-btn { type button } { className workspace-mini-btn } { textContent 'Fork view' }
+ ; to view-abandon-btn !document.createElement button
+ ; assign $view-abandon-btn { type button } { className 'workspace-mini-btn workspace-mini-btn--danger' } { textContent 'Abandon changes' }
+ !view-draft-actions.appendChild $view-save-btn
+ !view-draft-actions.appendChild $view-fork-btn
+ !view-draft-actions.appendChild $view-abandon-btn
+ !view-draft-row.appendChild $view-draft-label
+ !view-draft-row.appendChild $view-draft-actions
+ ; to view-list-title !document.createElement div
+ ; assign $view-list-title { className top-rail-menu-section-title } { textContent Views }
+ ; to view-list-el !document.createElement div
+ ; set lane-data-view-list view-list-el.className
+ !view-list-el.setAttribute role listbox
+ !view-list-el.setAttribute aria-label 'Table views list'
+ ; to view-menu-div !document.createElement div
+ ; set top-rail-menu-divider view-menu-div.className
+ ; to view-actions-el !document.createElement div
+ ; set lane-data-view-actions view-actions-el.className
+ ; to view-new-btn !document.createElement button
+ ; assign $view-new-btn { type button } { className 'lane-data-view-action-item lane-data-view-action-item--primary' } { textContent 'New view' } { title 'Create a new view for this table' }
+ !view-new-btn.setAttribute role menuitem
+ ; to view-duplicate-btn !document.createElement button
+ ; assign $view-duplicate-btn { type button } { className lane-data-view-action-item } { textContent 'Duplicate view' } { title 'Duplicate the current view' }
+ !view-duplicate-btn.setAttribute role menuitem
+ ; to view-reset-btn !document.createElement button
+ ; assign $view-reset-btn { type button } { className lane-data-view-action-item } { textContent 'Reset view' } { title 'Clear all filters in this view' }
+ !view-reset-btn.setAttribute role menuitem
+ ; to view-delete-btn !document.createElement button
+ ; assign $view-delete-btn { type button } { className 'lane-data-view-action-item lane-data-view-action-item--danger' } { textContent 'Delete view' } { title 'Delete this saved view' }
+ !view-delete-btn.setAttribute role menuitem
+ !view-actions-el.appendChild $view-new-btn
+ !view-actions-el.appendChild $view-duplicate-btn
+ !view-actions-el.appendChild $view-reset-btn
+ !view-actions-el.appendChild $view-delete-btn
+ !view-menu.appendChild $view-default-status
+ !view-menu.appendChild $view-title-btn
+ !view-menu.appendChild $view-rename-row
+ !view-menu.appendChild $view-draft-row
+ !view-menu.appendChild $view-list-title
+ !view-menu.appendChild $view-list-el
+ !view-menu.appendChild $view-menu-div
+ !view-menu.appendChild $view-actions-el
+ !view-wrap.appendChild $view-btn
+ !view-wrap.appendChild $view-menu
+
  ; to header-actions-el !document.createElement div
  ; set lane-data-table-actions header-actions-el.className
  ; to schema-toggle-btn !document.createElement button
@@ -107,6 +217,9 @@
  ; assign $table-menu { className lane-data-table-menu } { hidden true }
  !table-menu.setAttribute role menu
  !table-menu.setAttribute aria-label 'Table actions'
+ ; to edit-table-btn !document.createElement button
+ ; assign $edit-table-btn { type button } { className 'lane-data-table-menu-item lane-data-table-menu-item--neutral lane-data-edit-table' } { textContent 'Edit table' } { title 'Rename this table' }
+ !edit-table-btn.setAttribute role menuitem
  ; to clear-rows-btn !document.createElement button
  ; assign $clear-rows-btn { type button } { className 'lane-data-table-menu-item lane-data-clear-rows' } { textContent 'Clear rows' } { title 'Delete all rows in this table' }
  !clear-rows-btn.setAttribute role menuitem
@@ -119,14 +232,79 @@
  ; to edit-import-btn !document.createElement button
  ; assign $edit-import-btn { type button } { className 'lane-data-table-menu-item lane-data-table-menu-item--neutral lane-data-edit-import' } { textContent 'Import settings…' } { title 'Edit remote table import mode or local name' }
  !edit-import-btn.setAttribute role menuitem
+ !table-menu.appendChild $edit-table-btn
  !table-menu.appendChild $clear-rows-btn
  !table-menu.appendChild $delete-table-btn
  !table-menu-wrap.appendChild $table-menu-btn
  !table-menu-wrap.appendChild $table-menu
  !header-actions-el.appendChild $schema-toggle-btn
  !header-actions-el.appendChild $table-menu-wrap
- !table-header-el.appendChild $table-name-input
+ !table-header-el.appendChild $view-wrap
  !table-header-el.appendChild $header-actions-el
+
+ ; to edit-table-backdrop !document.createElement div
+ ; set 'lane-modal-backdrop lane-config-backdrop lane-edit-table-backdrop' edit-table-backdrop.className
+ !edit-table-backdrop.setAttribute role dialog
+ !edit-table-backdrop.setAttribute aria-modal 'true'
+ !edit-table-backdrop.setAttribute aria-label 'Edit table'
+ ; to edit-table-panel !document.createElement div
+ ; set 'lane-modal lane-config-modal lane-edit-table-modal' edit-table-panel.className
+ ; to edit-table-modal-header !document.createElement div
+ ; set lane-modal-header edit-table-modal-header.className
+ ; to edit-table-title-wrap !document.createElement div
+ ; set lane-config-title-wrap edit-table-title-wrap.className
+ ; to edit-table-heading !document.createElement div
+ ; assign $edit-table-heading { className lane-modal-title } { textContent 'Edit Table' }
+ ; to edit-table-id-el !document.createElement div
+ ; assign $edit-table-id-el { className lane-config-id } { textContent '' }
+ ; to edit-table-close-btn !document.createElement button
+ ; assign $edit-table-close-btn { type button } { className lane-modal-close } { textContent '×' } { title 'Cancel (Esc)' }
+ !edit-table-title-wrap.appendChild $edit-table-heading
+ !edit-table-title-wrap.appendChild $edit-table-id-el
+ !edit-table-modal-header.appendChild $edit-table-title-wrap
+ !edit-table-modal-header.appendChild $edit-table-close-btn
+ ; to edit-table-form !document.createElement form
+ ; set lane-config-form edit-table-form.className
+ ; to edit-table-field !document.createElement div
+ ; set lane-config-field edit-table-field.className
+ ; to edit-table-name-label !document.createElement label
+ ; assign $edit-table-name-label { className lane-config-label } { textContent 'Table Name' }
+ ; to edit-table-name-input !document.createElement input
+ ; assign $edit-table-name-input { type text } { className 'lane-config-input lane-data-table-name' } { placeholder 'table_name' } { spellcheck false } { autocomplete off }
+ ; to edit-table-error-el !document.createElement div
+ ; assign $edit-table-error-el { className lane-data-filter-error } { textContent '' } { hidden true }
+ ; to edit-table-footer !document.createElement div
+ ; set lane-config-footer edit-table-footer.className
+ ; to edit-table-cancel-btn !document.createElement button
+ ; assign $edit-table-cancel-btn { type button } { className 'lane-modal-action lane-config-btn--cancel' } { textContent Cancel }
+ ; to edit-table-save-btn !document.createElement button
+ ; assign $edit-table-save-btn { type button } { className 'lane-modal-action lane-config-btn--save' } { textContent 'Save changes' }
+ !edit-table-field.appendChild $edit-table-name-label
+ !edit-table-field.appendChild $edit-table-name-input
+ !edit-table-footer.appendChild $edit-table-cancel-btn
+ !edit-table-footer.appendChild $edit-table-save-btn
+ !edit-table-form.appendChild $edit-table-field
+ !edit-table-form.appendChild $edit-table-error-el
+ !edit-table-form.appendChild $edit-table-footer
+ !edit-table-panel.appendChild $edit-table-modal-header
+ !edit-table-panel.appendChild $edit-table-form
+ !edit-table-backdrop.appendChild $edit-table-panel
+ ; to edit-table-modal [ object
+  { backdrop $edit-table-backdrop }
+  { panel $edit-table-panel }
+  { heading $edit-table-heading }
+  { id-el $edit-table-id-el }
+  { close-btn $edit-table-close-btn }
+  { form $edit-table-form }
+  { name-input $edit-table-name-input }
+  { error-el $edit-table-error-el }
+  { cancel-btn $edit-table-cancel-btn }
+  { save-btn $edit-table-save-btn }
+  { is-open false }
+  { is-saving false }
+  { table null }
+  { lane null }
+ ]
 
  ; to schema-section !document.createElement div
  ; set lane-data-schema schema-section.className
@@ -187,7 +365,10 @@
  ; set lane-data-grid grid-table.className
  ; to grid-thead !document.createElement thead
  ; to grid-hrow !document.createElement tr
+ ; to grid-frow !document.createElement tr
+ ; set lane-data-filter-row grid-frow.className
  !grid-thead.appendChild $grid-hrow
+ !grid-thead.appendChild $grid-frow
  ; to grid-tbody !document.createElement tbody
  ; set lane-data-grid-body grid-tbody.className
  !grid-table.appendChild $grid-thead
@@ -198,9 +379,49 @@
  ; to rows-empty-el !document.createElement div
  ; assign $rows-empty-el { className lane-data-subempty } { textContent 'Add at least one column to start entering rows.' }
 
+ ; to filter-menu !document.createElement div
+ ; assign $filter-menu { className lane-data-filter-menu } { hidden true }
+ !filter-menu.setAttribute role dialog
+ !filter-menu.setAttribute aria-label 'Column filter'
+ ; to filter-menu-header !document.createElement div
+ ; set lane-data-filter-menu-header filter-menu-header.className
+ ; to filter-menu-col-name !document.createElement span
+ ; assign $filter-menu-col-name { className lane-data-filter-menu-col } { textContent '' }
+ ; to filter-menu-col-type !document.createElement span
+ ; assign $filter-menu-col-type { className lane-data-th-type } { textContent '' }
+ !filter-menu-header.appendChild $filter-menu-col-name
+ !filter-menu-header.appendChild $filter-menu-col-type
+ ; to filter-op-select !document.createElement select
+ ; assign $filter-op-select { className 'lane-input-type lane-data-filter-op-select' }
+ !filter-op-select.setAttribute aria-label 'Filter operator'
+ ; to filter-value-wrap !document.createElement div
+ ; assign $filter-value-wrap { className lane-data-filter-value-wrap } { hidden false }
+ ; to filter-value-fields !document.createElement div
+ ; set lane-data-filter-value-fields filter-value-fields.className
+ !filter-value-wrap.appendChild $filter-value-fields
+ ; to filter-error-el !document.createElement div
+ ; assign $filter-error-el { className lane-data-filter-error } { textContent '' } { hidden true }
+ ; to filter-menu-actions !document.createElement div
+ ; set lane-data-filter-menu-actions filter-menu-actions.className
+ ; to filter-apply-btn !document.createElement button
+ ; assign $filter-apply-btn { type button } { className 'lane-modal-action lane-config-btn--save lane-data-filter-apply' } { textContent 'Add filter' }
+ ; to filter-cancel-btn !document.createElement button
+ ; assign $filter-cancel-btn { type button } { className 'lane-data-btn lane-data-filter-cancel' } { textContent Cancel }
+ ; to filter-delete-btn !document.createElement button
+ ; assign $filter-delete-btn { type button } { className 'lane-data-btn lane-data-filter-delete' } { textContent 'Delete filter' } { hidden true }
+ !filter-menu-actions.appendChild $filter-apply-btn
+ !filter-menu-actions.appendChild $filter-cancel-btn
+ !filter-menu-actions.appendChild $filter-delete-btn
+ !filter-menu.appendChild $filter-menu-header
+ !filter-menu.appendChild $filter-op-select
+ !filter-menu.appendChild $filter-value-wrap
+ !filter-menu.appendChild $filter-error-el
+ !filter-menu.appendChild $filter-menu-actions
+
  !rows-section.appendChild $rows-header
  !rows-section.appendChild $grid-wrap
  !rows-section.appendChild $rows-empty-el
+ !rows-section.appendChild $filter-menu
 
  ; to updates-section !document.createElement div
  ; assign $updates-section { className lane-data-updates-section } { hidden true }
@@ -238,7 +459,25 @@
  !root-el.appendChild $active-el
  !container.appendChild $root-el
 
- ; assign $view { element $root-el } { bar-el $bar-el } { tabs-el $tabs-el } { bar-actions-el $bar-actions-el } { add-table-btn $add-table-btn } { import-table-btn $import-table-btn } { loading-el $loading-el } { empty-el $empty-el } { active-el $active-el } { remote-bar-el $remote-bar-el } { remote-mode-badge $remote-mode-badge } { remote-jump-btn $remote-jump-btn } { remote-status-el $remote-status-el } { remote-edit-btn $remote-edit-btn } { table-name-input $table-name-input } { header-actions-el $header-actions-el } { schema-toggle-btn $schema-toggle-btn } { table-menu-wrap $table-menu-wrap } { table-menu-btn $table-menu-btn } { table-menu $table-menu } { jump-owner-btn $jump-owner-btn } { edit-import-btn $edit-import-btn } { clear-rows-btn $clear-rows-btn } { delete-table-btn $delete-table-btn } { schema-section $schema-section } { schema-tbody $schema-tbody } { schema-empty-el $schema-empty-el } { add-col-btn $add-col-btn } { updates-section $updates-section } { updates-header $updates-header } { updates-title-wrap $updates-title-wrap } { updates-title $updates-title } { updates-count-badge $updates-count-badge } { updates-status-badge $updates-status-badge } { updates-caption $updates-caption } { updates-list $updates-list } { rows-section $rows-section } { rows-title $rows-title } { add-row-btn $add-row-btn } { grid-wrap $grid-wrap } { display-options-el $display-options-el } { display-options-label $display-options-label } { display-options-list $display-options-list } { grid-hrow $grid-hrow } { grid-tbody $grid-tbody } { rows-empty-el $rows-empty-el }
+ ; assign $view { element $root-el } { bar-el $bar-el } { tabs-el $tabs-el } { bar-actions-el $bar-actions-el } { add-table-btn $add-table-btn } { import-table-btn $import-table-btn } { loading-el $loading-el } { empty-el $empty-el } { active-el $active-el } { remote-bar-el $remote-bar-el } { remote-mode-badge $remote-mode-badge } { remote-jump-btn $remote-jump-btn } { remote-status-el $remote-status-el } { remote-edit-btn $remote-edit-btn } { table-header-el $table-header-el } { view-wrap $view-wrap } { view-btn $view-btn } { view-name-el $view-name-el } { view-count-badge $view-count-badge } { view-dirty-badge $view-dirty-badge } { view-menu $view-menu } { view-default-status $view-default-status } { view-title-btn $view-title-btn } { view-title-text $view-title-text } { view-rename-row $view-rename-row } { view-rename-input $view-rename-input } { view-rename-btn $view-rename-btn } { view-rename-cancel-btn $view-rename-cancel-btn } { view-draft-row $view-draft-row } { view-save-btn $view-save-btn } { view-fork-btn $view-fork-btn } { view-abandon-btn $view-abandon-btn } { view-list-el $view-list-el } { view-new-btn $view-new-btn } { view-duplicate-btn $view-duplicate-btn } { view-reset-btn $view-reset-btn } { view-delete-btn $view-delete-btn } { header-actions-el $header-actions-el } { schema-toggle-btn $schema-toggle-btn } { table-menu-wrap $table-menu-wrap } { table-menu-btn $table-menu-btn } { table-menu $table-menu } { edit-table-btn $edit-table-btn } { edit-table-modal $edit-table-modal } { jump-owner-btn $jump-owner-btn } { edit-import-btn $edit-import-btn } { clear-rows-btn $clear-rows-btn } { delete-table-btn $delete-table-btn } { schema-section $schema-section } { schema-tbody $schema-tbody } { schema-empty-el $schema-empty-el } { add-col-btn $add-col-btn } { updates-section $updates-section } { updates-header $updates-header } { updates-title-wrap $updates-title-wrap } { updates-title $updates-title } { updates-count-badge $updates-count-badge } { updates-status-badge $updates-status-badge } { updates-caption $updates-caption } { updates-list $updates-list } { rows-section $rows-section } { rows-title $rows-title } { add-row-btn $add-row-btn } { grid-wrap $grid-wrap } { display-options-el $display-options-el } { display-options-label $display-options-label } { display-options-list $display-options-list } { grid-hrow $grid-hrow } { grid-frow $grid-frow } { grid-tbody $grid-tbody } { rows-empty-el $rows-empty-el } { filter-menu $filter-menu } { filter-menu-col-name $filter-menu-col-name } { filter-menu-col-type $filter-menu-col-type } { filter-op-select $filter-op-select } { filter-value-wrap $filter-value-wrap } { filter-value-fields $filter-value-fields } { filter-error-el $filter-error-el } { filter-apply-btn $filter-apply-btn } { filter-cancel-btn $filter-cancel-btn } { filter-delete-btn $filter-delete-btn }
+
+ ; to clear-children (
+  -- Safely removes all child nodes from an element in both browser and mock DOMs
+  ; to { parent } $argv
+  [ match
+   { $parent.children (
+    ; while { propertyIsGreaterThan 0 parent.children.length } (
+     ; to prev-len $parent.children.length
+     ; to cidx ; subtract $prev-len 1
+     ; to child [ get parent.children $cidx ]
+     [ match
+      { $child.remove : !child.remove }
+     ]
+     ; condition { propertyIs $prev-len parent.children.length } : !parent.children.pop
+    )
+   ) }
+  ]
+ )
 
  ; to view.close-table-menu (
   -- Closes the "..." table actions dropdown menu
@@ -248,8 +487,34 @@
   !table-menu-btn.setAttribute aria-expanded 'false'
  )
 
+ ; to view.close-view-menu (
+  -- Closes the table views selector popover
+  ; set false view.view-menu-open
+  ; set false view.editing-view-name
+  ; set true view-menu.hidden
+  !view-btn.setAttribute aria-expanded 'false'
+  !view.sync-view-btn-class
+ )
+
+ ; to view.close-filter-menu (
+  -- Closes the column filter popover menu and clears transient inputs
+  ; set false view.filter-editor.open
+  ; set true filter-menu.hidden
+  ; set '' filter-error-el.textContent
+  ; set true filter-error-el.hidden
+  ; while { propertyIsGreaterThan 0 view.filter-input-els.length } (
+   ; to old-in !view.filter-input-els.pop
+   [ match { $old-in.remove : !old-in.remove } ]
+  )
+  !clear-children $filter-value-fields
+  ; set null view.filter-val-el
+  ; set null view.filter-val-to-el
+ )
+
  ; to view.open-table-menu (
   -- Opens the "..." table actions dropdown menu
+  !view.close-view-menu
+  !view.close-filter-menu
   ; set true view.table-menu-open
   ; set false table-menu.hidden
   ; set 'lane-data-btn lane-data-table-menu-btn lane-data-table-menu-btn--open' table-menu-btn.className
@@ -262,6 +527,1393 @@
    { $view.table-menu-open : !view.close-table-menu }
    { true : !view.open-table-menu }
   ]
+ )
+
+ ; to edit-table-modal.close (
+  -- Closes the Edit Table modal without saving and detaches it from the DOM
+  ; condition { propertyIs true edit-table-modal.is-open } (
+   ; to prev-lane $edit-table-modal.lane
+   ; set false edit-table-modal.is-open
+   ; set null edit-table-modal.table
+   ; set null edit-table-modal.lane
+   ; set '' edit-table-error-el.textContent
+   ; set true edit-table-error-el.hidden
+   !edit-table-backdrop.remove
+   [ match
+    { [ and { $prev-lane } { $lane-control.unmount-lane-modal } ] : !lane-control.unmount-lane-modal $prev-lane $edit-table-modal }
+   ]
+  )
+ )
+
+ ; to view.rename-table (
+  -- Applies a table rename, updates tabs/view selector/notebook scope/URL path, and persists schema
+  ; to { target-tbl next-name } $argv
+  ; to is-ro [ match { $target-tbl : !view.is-readonly-table $target-tbl } { true : true } ]
+  ; to raw-name [ match
+   { [ propertyIs undefined next-name ] : '' }
+   { [ propertyIs null next-name ] : '' }
+   { true : ; add '' $next-name }
+  ]
+  ; to trimmed !raw-name.trim
+  ; to empty-name [ propertyIs '' trimmed ]
+  [ match
+   { [ and { $target-tbl } { [ propertyIs false is-ro ] } { [ propertyIs false empty-name ] } ] (
+    ; to prev-name $target-tbl.name
+    ; set $trimmed target-tbl.name
+    ; condition { propertyIs $target-tbl.id view.active-table-id } : ; set $trimmed lane.subroute
+    !view.sync-notebook-table-scope $prev-name
+    !view.update-table-tabs-text
+    !view.sync-view-ui
+    ; to is-rem !view.is-remote-table $target-tbl
+    ; to is-custom [ match
+     { [ and { $is-rem } { [ propertyIs true target-tbl.remote.customName ] } ] : true }
+     { true : false }
+    ]
+    [ match
+     { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Saving…' }
+    ]
+    ; try (
+     [ match
+      { $is-custom [ match
+       { $saveImportedTableLink : !saveImportedTableLink $data $view.lane.data $view.lane.id $target-tbl }
+       { true : !view.save-schema $target-tbl }
+      ] }
+      { true (
+       [ match
+        { $is-rem (
+         ; set $target-tbl.remote.tableName target-tbl.name
+         ; condition { propertyIs $target-tbl.id view.active-table-id } : ; set $target-tbl.name lane.subroute
+         !view.render-remote-bar
+         !view.sync-view-ui
+        ) }
+       ]
+       !view.save-schema $target-tbl
+      ) }
+     ]
+     !view.sync-data-path
+     [ match
+      { $lane-control.update-url : !lane-control.update-url }
+     ]
+    ) : null
+    [ match
+     { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
+    ]
+    true
+   ) }
+   { true : false }
+  ]
+ )
+
+ ; to edit-table-modal.save (
+  -- Validates and saves the renamed table name from the Edit Table modal
+  ; to tbl $edit-table-modal.table
+  ; to is-ro [ match { $tbl : !view.is-readonly-table $tbl } { true : true } ]
+  [ match
+   { [ and { [ propertyIs true edit-table-modal.is-open ] } { [ propertyIs false edit-table-modal.is-saving ] } { $tbl } { [ propertyIs false is-ro ] } ] (
+    ; to raw $edit-table-name-input.value
+    ; to trimmed !raw.trim
+    [ match
+     { [ propertyIs '' trimmed ] (
+      ; set 'Enter a table name' edit-table-error-el.textContent
+      ; set false edit-table-error-el.hidden
+      [ match { $edit-table-name-input.focus : !edit-table-name-input.focus } ]
+      false
+     ) }
+     { true (
+      ; set true edit-table-modal.is-saving
+      ; set true edit-table-save-btn.disabled
+      ; set 'lane-modal-action lane-config-btn--save cc-btn-busy' edit-table-save-btn.className
+      ; set 'Saving…' edit-table-save-btn.textContent
+      ; try (
+       !view.rename-table $tbl $trimmed
+      ) : null
+      ; set false edit-table-modal.is-saving
+      ; set false edit-table-save-btn.disabled
+      ; set 'lane-modal-action lane-config-btn--save' edit-table-save-btn.className
+      ; set 'Save changes' edit-table-save-btn.textContent
+      !edit-table-modal.close
+      true
+     ) }
+    ]
+   ) }
+   { true : false }
+  ]
+ )
+
+ ; to view.open-edit-table-modal (
+  -- Opens the lane-scoped Edit Table modal from the "..." menu without modifying the View selector header
+  !view.close-table-menu
+  !view.close-view-menu
+  !view.close-filter-menu
+  ; to tbl !view.get-active-table
+  ; to is-ro [ match { $tbl : !view.is-readonly-table $tbl } { true : true } ]
+  [ match
+   { [ and { $tbl } { [ propertyIs false is-ro ] } ] (
+    !edit-table-modal.close
+    ; set $view.lane edit-table-modal.lane
+    ; set $tbl edit-table-modal.table
+    ; set $tbl.id edit-table-id-el.textContent
+    ; set $tbl.name edit-table-name-input.value
+    ; set '' edit-table-error-el.textContent
+    ; set true edit-table-error-el.hidden
+    ; set false edit-table-save-btn.disabled
+    ; set 'lane-modal-action lane-config-btn--save' edit-table-save-btn.className
+    ; set 'Save changes' edit-table-save-btn.textContent
+    ; set 'lane-modal-backdrop lane-config-backdrop lane-edit-table-backdrop' edit-table-backdrop.className
+    ; set true edit-table-modal.is-open
+    [ match
+     { $lane-control.mount-lane-modal : !lane-control.mount-lane-modal $view.lane $edit-table-modal }
+     { $view.container.appendChild (
+      !edit-table-backdrop.setAttribute data-lane-modal 'true'
+      ; set 'lane-modal-backdrop lane-config-backdrop lane-edit-table-backdrop lane-modal-backdrop--lane' edit-table-backdrop.className
+      !view.container.appendChild $edit-table-backdrop
+     ) }
+     { $view.lane.body.appendChild (
+      !edit-table-backdrop.setAttribute data-lane-modal 'true'
+      ; set 'lane-modal-backdrop lane-config-backdrop lane-edit-table-backdrop lane-modal-backdrop--lane' edit-table-backdrop.className
+      !view.lane.body.appendChild $edit-table-backdrop
+     ) }
+     { $document.body.appendChild : !document.body.appendChild $edit-table-backdrop }
+    ]
+    [ match { $edit-table-name-input.focus : !edit-table-name-input.focus } ]
+    [ match { $edit-table-name-input.select : !edit-table-name-input.select } ]
+    $edit-table-modal
+   ) }
+   { true : null }
+  ]
+ )
+
+ ; to funnel-svg '<svg class="lane-data-filter-funnel-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 2H10.5L7 6.1V9.8L5 10.8V6.1L1.5 2Z"></path></svg>'
+
+ ; to view.lookup-lane-title (
+  -- Returns display title for a linked lane ID if known, otherwise falls back to the ID
+  ; to { lane-id } $argv
+  ; to info !view.lookup-lane-info $lane-id
+  [ match
+   { $info.found : $info.title }
+   { true : $lane-id }
+  ]
+ )
+
+ ; to view.get-table-index (
+  -- Returns 0-based index of a table within view.tables (or 0 if missing)
+  ; to { tbl } $argv
+  [ match
+   { $tbl (
+    ; to idx !view.tables.indexOf $tbl
+    [ ternary [ propertyIsLessThan 0 idx ] 0 $idx ]
+   ) }
+   { true : 0 }
+  ]
+ )
+
+ ; to view.clear-pinned-rows (
+  -- Clears temporarily pinned new rows for a table when view, filters, or table selection changes
+  ; to { tbl-id } $argv
+  [ match
+   { $tbl-id : ; to view.pinned-row-ids $tbl-id {} }
+  ]
+ )
+
+ ; to view.pin-row-id (
+  -- Pins a newly added row ID so it stays visible even when active filters would hide its default values
+  ; to { tbl-id row-id } $argv
+  [ match
+   { [ and { $tbl-id } { $row-id } ] (
+    ; to cur [ get view.pinned-row-ids $tbl-id ]
+    ; to list [ match
+     { [ !window.Array.isArray $cur ] : $cur }
+     { true : {} }
+    ]
+    ; to has-id !list.includes $row-id
+    ; condition { propertyIs false has-id } : !list.push $row-id
+    ; to view.pinned-row-ids $tbl-id $list
+   ) }
+  ]
+ )
+
+ ; to view.unpin-row-id (
+  -- Removes a deleted row ID from the pinned rows list of a table
+  ; to { tbl-id row-id } $argv
+  [ match
+   { [ and { $tbl-id } { $row-id } ] (
+    ; to cur [ get view.pinned-row-ids $tbl-id ]
+    [ match
+     { [ !window.Array.isArray $cur ] (
+      ; to next {}
+      ; each $cur (
+       ; to { pid } $argv
+       ; to is-same [ propertyIs $row-id pid ]
+       ; condition { propertyIs false is-same } : !next.push $pid
+      )
+      ; to view.pinned-row-ids $tbl-id $next
+     ) }
+    ]
+   ) }
+  ]
+ )
+
+ ; to view.register-views-used-ids (
+  -- Registers loaded view and filter IDs in view.used-ids so generated IDs never collide
+  ; to { st } $argv
+  [ match
+   { [ and { $st } { [ !window.Array.isArray $st.views ] } ] (
+    ; each $st.views (
+     ; to { v } $argv
+     [ match { $v.id : ; to view.used-ids $v.id true } ]
+     [ match
+      { [ !window.Array.isArray $v.filters ] (
+       ; each $v.filters (
+        ; to { f } $argv
+        [ match { $f.id : ; to view.used-ids $f.id true } ]
+       )
+      ) }
+     ]
+    )
+   ) }
+  ]
+ )
+
+ ; to view.ensure-table-views-state (
+  -- Returns existing view state for a table or initializes the default view state
+  ; to { tbl } $argv
+  [ match
+   { [ and { $tbl } { $tbl.id } ] (
+    ; to existing [ get view.table-views $tbl.id ]
+    [ match
+     { $existing : $existing }
+     { true (
+      ; to def-id [ match { $DEFAULT_TABLE_VIEW_ID : $DEFAULT_TABLE_VIEW_ID } { true : default } ]
+      ; to fallback-views {}
+      !fallback-views.push [ object { id $def-id } { name '' } { isDefault true } { filters {} } ]
+      ; to norm [ match
+       { $normalizeTableViewsRecord : !normalizeTableViewsRecord null $tbl.columns $view.tables }
+       { true : ; object { activeViewId $def-id } { views $fallback-views } }
+      ]
+      ; to active-box ; object { v null }
+      ; each $norm.views (
+       ; to { v } $argv
+       ; condition { propertyIs $norm.activeViewId v.id } : ; set $v active-box.v
+      )
+      [ match
+       { [ propertyIs null active-box.v ] : ; set [ get norm.views 0 ] active-box.v }
+      ]
+      ; to active-v $active-box.v
+      ; to wf !clone-plain-data [ match { $active-v.filters : $active-v.filters } { true : {} } ] {}
+      ; to st [ object
+       { activeViewId $norm.activeViewId }
+       { views $norm.views }
+       { workingFilters $wf }
+      ]
+      !view.register-views-used-ids $st
+      ; to view.table-views $tbl.id $st
+      $st
+     ) }
+    ]
+   ) }
+   { true : null }
+  ]
+ )
+
+ ; to view.get-active-view-record (
+  -- Returns the currently active saved view record for a table (falling back to the first view)
+  ; to { tbl st } $argv
+  ; to eff-tbl [ match { $tbl : $tbl } { true : !view.get-active-table } ]
+  ; to eff-st [ match
+   { $st : $st }
+   { $eff-tbl : !view.ensure-table-views-state $eff-tbl }
+   { true : null }
+  ]
+  [ match
+   { [ and { $eff-st } { [ !window.Array.isArray $eff-st.views ] } { [ propertyIsGreaterThan 0 eff-st.views.length ] } ] (
+    ; to found ; object { rec null }
+    ; each $eff-st.views (
+     ; to { v } $argv
+     ; condition { propertyIs $eff-st.activeViewId v.id } : ; set $v found.rec
+    )
+    [ match
+     { $found.rec : $found.rec }
+     { true : [ get eff-st.views 0 ] }
+    ]
+   ) }
+   { true : null }
+  ]
+ )
+
+ ; to view.is-view-dirty (
+  -- Returns true when workingFilters differ from the active view's saved filters
+  ; to { tbl st } $argv
+  ; to eff-tbl [ match { $tbl : $tbl } { true : !view.get-active-table } ]
+  ; to eff-st [ match
+   { $st : $st }
+   { $eff-tbl : !view.ensure-table-views-state $eff-tbl }
+   { true : null }
+  ]
+  ; to active-v [ match { $eff-st : !view.get-active-view-record $eff-tbl $eff-st } { true : null } ]
+  [ match
+   { [ and { $eff-st } { $active-v } ] (
+    [ match
+     { $tableViewFiltersEqual (
+      ; to eq !tableViewFiltersEqual $active-v.filters $eff-st.workingFilters
+      [ propertyIs false eq ]
+     ) }
+     { true : false }
+    ]
+   ) }
+   { true : false }
+  ]
+ )
+
+ ; to view.persist-table-views (
+  -- Persists saved view definitions for a table without triggering deployment record updates
+  ; to { tbl } $argv
+  [ match
+   { [ and { $tbl } { $tbl.id } { $saveTableViews } ] (
+    ; to st !view.ensure-table-views-state $tbl
+    [ match
+     { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Saving…' }
+    ]
+    ; try (
+     !saveTableViews $data $view.lane.data $view.lane.id $tbl.id [ object { activeViewId $st.activeViewId } { views $st.views } ] $tbl.columns $view.tables
+    ) : null
+    [ match
+     { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
+    ]
+   ) }
+  ]
+ )
+
+ ; to view.sanitize-views-for-table (
+  -- Drops saved and working filters referencing deleted or incompatible columns without wiping views during remote outages
+  ; to { tbl persist } $argv
+  [ match
+   { [ and { $tbl } { $tbl.id } { $sanitizeTableViewsForColumns } ] (
+    ; to skip-outage [ match
+     { [ and { $tbl.remote } { [ propertyIs true tbl.remote.missing ] } ] : true }
+     { [ and { $tbl.remote } { [ propertyIs true tbl.remote.accessDenied ] } ] : true }
+     { true : false }
+    ]
+    ; condition { propertyIs false skip-outage } (
+     ; to st !view.ensure-table-views-state $tbl
+     ; to res !sanitizeTableViewsForColumns $st $tbl.columns $view.tables
+     ; set $res.activeViewId st.activeViewId
+     ; set $res.views st.views
+     ; to next-wf !clone-plain-data [ match { $res.workingFilters : $res.workingFilters } { true : {} } ] {}
+     ; set $next-wf st.workingFilters
+     [ match
+      { [ and { [ propertyIs true persist ] } { [ propertyIs true res.savedChanged ] } ] : !view.persist-table-views $tbl }
+     ]
+    )
+   ) }
+  ]
+ )
+
+ ; to view.sync-view-btn-class (
+  -- Keeps the View selector button highlight synced with open and Unsaved filters states
+  ; to tbl !view.get-active-table
+  ; to is-dirty [ match { $tbl : !view.is-view-dirty $tbl null } { true : false } ]
+  ; to cls-dirty [ ternary $is-dirty ' lane-data-view-btn--dirty' '' ]
+  ; to cls-open [ ternary $view.view-menu-open ' lane-data-view-btn--open' '' ]
+  ; set [ add 'lane-data-view-btn' ; add $cls-dirty $cls-open ] view-btn.className
+ )
+
+ ; to view.render-view-options (
+  -- Renders clickable view items in the Views popover and locks switching while Unsaved filters exist
+  ; to { tbl st is-dirty } $argv
+  ; while { propertyIsGreaterThan 0 view.view-option-els.length } (
+   ; to old-o !view.view-option-els.pop
+   [ match { $old-o.el.remove : !old-o.el.remove } ]
+  )
+  !clear-children $view-list-el
+  ; to t-idx !view.get-table-index $tbl
+  ; each $st.views (
+   ; to { v } $argv
+   ; to is-active [ propertyIs $st.activeViewId v.id ]
+   ; to v-name [ match
+    { $resolveTableViewDisplayName : !resolveTableViewDisplayName $v $tbl $t-idx }
+    { true : [ match { $v.isDefault : !view.display-table-name $tbl $t-idx } { $v.name : $v.name } { true : View } ] }
+   ]
+   ; to f-count [ match
+    { $is-active : $st.workingFilters.length }
+    { [ !window.Array.isArray $v.filters ] : $v.filters.length }
+    { true : 0 }
+   ]
+   ; to opt-cls [ ternary $is-active 'lane-data-view-option lane-data-view-option--active' lane-data-view-option ]
+   ; to opt-btn !document.createElement button
+   ; assign $opt-btn { type button } { className $opt-cls }
+   !opt-btn.setAttribute role option
+   !opt-btn.setAttribute aria-selected [ ternary $is-active 'true' 'false' ]
+   ; to lock-switch [ ternary [ and { [ propertyIs true is-dirty ] } { [ propertyIs false is-active ] } ] true false ]
+   ; set $lock-switch opt-btn.disabled
+   ; set [ ternary $lock-switch 'Save, fork, or abandon unsaved filters before switching views' [ add 'Switch to view ' $v-name ] ] opt-btn.title
+   ; to name-el !document.createElement span
+   ; assign $name-el { className lane-data-view-option-name } { textContent $v-name }
+   ; to meta-el !document.createElement span
+   ; to meta-parts {}
+   ; condition { propertyIs true v.isDefault } : !meta-parts.push default
+   ; condition { propertyIsGreaterThan 0 f-count } : !meta-parts.push [ add $f-count [ ternary [ propertyIs 1 f-count ] ' filter' ' filters' ] ]
+   ; condition { and { [ propertyIs true is-active ] } { [ propertyIs true is-dirty ] } } : !meta-parts.push unsaved
+   ; to meta-txt !meta-parts.join ' · '
+   ; assign $meta-el { className lane-data-view-option-meta } { textContent $meta-txt }
+   !opt-btn.appendChild $name-el
+   !opt-btn.appendChild $meta-el
+   !opt-btn.addEventListener click (
+    ; to { ev } $argv
+    [ match { $ev.stopPropagation : !ev.stopPropagation } ]
+    !view.switch-view $v.id
+   )
+   !view-list-el.appendChild $opt-btn
+   !view.view-option-els.push ; object { id $v.id } { el $opt-btn }
+  )
+ )
+
+ ; to view.sync-view-ui (
+  -- Synchronizes the View selector button label, filter count badge, Unsaved filters bar, and popover controls
+  ; to tbl !view.get-active-table
+  [ match
+   { [ propertyIs null tbl ] (
+    ; set '' view-name-el.textContent
+    ; set '' view-count-badge.textContent
+    ; set true view-count-badge.hidden
+    ; set true view-dirty-badge.hidden
+    ; set '' view-title-text.textContent
+    ; set true view-title-btn.hidden
+    ; set true view-rename-row.hidden
+    ; set true view-default-status.hidden
+    ; set false view.editing-view-name
+    ; while { propertyIsGreaterThan 0 view.view-option-els.length } (
+     ; to old-o !view.view-option-els.pop
+     [ match { $old-o.el.remove : !old-o.el.remove } ]
+    )
+    !clear-children $view-list-el
+    !view.sync-view-btn-class
+   ) }
+   { true (
+    ; to st !view.ensure-table-views-state $tbl
+    ; to active-v !view.get-active-view-record $tbl $st
+    ; to t-idx !view.get-table-index $tbl
+    ; to v-name [ match
+     { $resolveTableViewDisplayName : !resolveTableViewDisplayName $active-v $tbl $t-idx }
+     { true : !view.display-table-name $tbl $t-idx }
+    ]
+    ; to is-dirty !view.is-view-dirty $tbl $st
+    ; to f-count $st.workingFilters.length
+    ; to is-default [ propertyIs true active-v.isDefault ]
+    ; set $v-name view-name-el.textContent
+    ; set [ add '' $f-count ] view-count-badge.textContent
+    ; set [ propertyIs 0 f-count ] view-count-badge.hidden
+    ; set [ ternary $is-dirty false true ] view-dirty-badge.hidden
+    !view.sync-view-btn-class
+
+    [ match
+     { $is-default (
+      ; set false view.editing-view-name
+      ; set false view-default-status.hidden
+      ; set [ add 'Default view · named after table (' ; add $v-name ')' ] view-default-status.textContent
+      ; set true view-title-btn.hidden
+      ; set true view-rename-row.hidden
+     ) }
+     { true (
+      ; set true view-default-status.hidden
+      ; set $v-name view-title-text.textContent
+      [ match
+       { [ propertyIs true view.editing-view-name ] (
+        ; set true view-title-btn.hidden
+        ; set false view-rename-row.hidden
+        ; to is-focused [ propertyIs $view-rename-input document.activeElement ]
+        ; condition { propertyIs false is-focused } : ; set $v-name view-rename-input.value
+       ) }
+       { true (
+        ; set false view-title-btn.hidden
+        ; set true view-rename-row.hidden
+       ) }
+      ]
+     ) }
+    ]
+    ; set [ ternary $is-dirty false true ] view-draft-row.hidden
+    ; to draft-unit [ ternary [ propertyIs 1 f-count ] ' filter)' ' filters)' ]
+    ; set [ add 'Unsaved filters (' ; add $f-count $draft-unit ] view-draft-label.textContent
+    ; set $is-dirty view-new-btn.disabled
+    ; set [ ternary $is-dirty 'Save, fork, or abandon unsaved filters before creating a new view' 'Create a new view for this table' ] view-new-btn.title
+    ; set false view-duplicate-btn.disabled
+    ; to no-filters [ propertyIs 0 f-count ]
+    ; set $no-filters view-reset-btn.disabled
+    ; to can-delete [ ternary [ and { [ propertyIs false is-default ] } { [ propertyIsGreaterThan 1 st.views.length ] } ] true false ]
+    ; set [ propertyIs false can-delete ] view-delete-btn.disabled
+    ; set [ ternary $is-default 'Default view cannot be deleted' 'Delete this saved view' ] view-delete-btn.title
+    !view.render-view-options $tbl $st $is-dirty
+   ) }
+  ]
+ )
+
+ ; to view.open-view-menu (
+  -- Opens the table Views selector popover
+  !view.close-table-menu
+  !view.close-filter-menu
+  ; set true view.view-menu-open
+  ; set false view-menu.hidden
+  !view-btn.setAttribute aria-expanded 'true'
+  !view.sync-view-ui
+ )
+
+ ; to view.toggle-view-menu (
+  -- Toggles the table Views selector popover open or closed
+  [ match
+   { $view.view-menu-open : !view.close-view-menu }
+   { true : !view.open-view-menu }
+  ]
+ )
+
+ ; to view.switch-view (
+  -- Switches to a saved table view when no unsaved filter changes block switching
+  ; to { target-id } $argv
+  ; to tbl !view.get-active-table
+  [ match
+   { $tbl (
+    ; to st !view.ensure-table-views-state $tbl
+    [ match
+     { [ propertyIs $st.activeViewId target-id ] : !view.close-view-menu }
+     { true (
+      ; to is-dirty !view.is-view-dirty $tbl $st
+      ; condition { propertyIs false is-dirty } (
+       ; to found-box ; object { v null }
+       ; each $st.views (
+        ; to { v } $argv
+        ; condition { propertyIs $target-id v.id } : ; set $v found-box.v
+       )
+       ; to found-v $found-box.v
+       [ match
+        { $found-v (
+         ; set $found-v.id st.activeViewId
+         ; to next-wf !clone-plain-data [ match { $found-v.filters : $found-v.filters } { true : {} } ] {}
+         ; set $next-wf st.workingFilters
+         ; set false view.editing-view-name
+         !view.clear-pinned-rows $tbl.id
+         !view.close-view-menu
+         !view.close-filter-menu
+         !view.sync-view-ui
+         !view.render-grid
+         !view.persist-table-views $tbl
+        ) }
+       ]
+      )
+     ) }
+    ]
+   ) }
+  ]
+ )
+
+ ; to view.save-active-view (
+  -- Saves workingFilters onto the active view record and persists table views
+  ; to tbl !view.get-active-table
+  [ match
+   { $tbl (
+    ; to st !view.ensure-table-views-state $tbl
+    ; to active-v !view.get-active-view-record $tbl $st
+    [ match
+     { $active-v (
+      ; to saved-clone !clone-plain-data $st.workingFilters {}
+      ; set $saved-clone active-v.filters
+      !view.clear-pinned-rows $tbl.id
+      !view.sync-view-ui
+      !view.render-grid
+      !view.persist-table-views $tbl
+     ) }
+    ]
+   ) }
+  ]
+ )
+
+ ; to view.fork-active-view (
+  -- Creates a new saved view with the current working filters, leaving the original view unchanged
+  ; to tbl !view.get-active-table
+  [ match
+   { $tbl (
+    ; to st !view.ensure-table-views-state $tbl
+    ; to active-v !view.get-active-view-record $tbl $st
+    ; to t-idx !view.get-table-index $tbl
+    ; to cur-name [ match
+     { $resolveTableViewDisplayName : !resolveTableViewDisplayName $active-v $tbl $t-idx }
+     { true : !view.display-table-name $tbl $t-idx }
+    ]
+    ; to fork-base ; add $cur-name ' copy'
+    ; to new-name [ match
+     { $buildUniqueTableViewName : !buildUniqueTableViewName $st.views $fork-base $tbl $t-idx }
+     { true : $fork-base }
+    ]
+    ; to new-id !view.next-id view
+    ; to saved-clone !clone-plain-data $st.workingFilters {}
+    ; to next-wf !clone-plain-data $st.workingFilters {}
+    ; to new-view [ object
+     { id $new-id }
+     { name $new-name }
+     { isDefault false }
+     { filters $saved-clone }
+    ]
+    !st.views.push $new-view
+    ; set $new-id st.activeViewId
+    ; set $next-wf st.workingFilters
+    ; set false view.editing-view-name
+    !view.clear-pinned-rows $tbl.id
+    !view.sync-view-ui
+    !view.render-grid
+    !view.persist-table-views $tbl
+    $new-view
+   ) }
+  ]
+ )
+
+ ; to view.abandon-view-changes (
+  -- Reverts workingFilters back to the active view's saved filters
+  ; to tbl !view.get-active-table
+  [ match
+   { $tbl (
+    ; to st !view.ensure-table-views-state $tbl
+    ; to active-v !view.get-active-view-record $tbl $st
+    [ match
+     { $active-v (
+      ; to restored !clone-plain-data [ match { $active-v.filters : $active-v.filters } { true : {} } ] {}
+      ; set $restored st.workingFilters
+      !view.clear-pinned-rows $tbl.id
+      !view.close-filter-menu
+      !view.sync-view-ui
+      !view.render-grid
+     ) }
+    ]
+   ) }
+  ]
+ )
+
+ ; to view.create-new-view (
+  -- Creates a blank custom view when no unsaved filters block switching
+  ; to tbl !view.get-active-table
+  [ match
+   { $tbl (
+    ; to st !view.ensure-table-views-state $tbl
+    ; to is-dirty !view.is-view-dirty $tbl $st
+    ; condition { propertyIs false is-dirty } (
+     ; to t-idx !view.get-table-index $tbl
+     ; to new-name [ match
+      { $buildUniqueTableViewName : !buildUniqueTableViewName $st.views View $tbl $t-idx }
+      { true : View }
+     ]
+     ; to new-id !view.next-id view
+     ; to new-view [ object
+      { id $new-id }
+      { name $new-name }
+      { isDefault false }
+      { filters {} }
+     ]
+     !st.views.push $new-view
+     ; set $new-id st.activeViewId
+     ; set {} st.workingFilters
+     ; set false view.editing-view-name
+     !view.clear-pinned-rows $tbl.id
+     !view.close-filter-menu
+     !view.sync-view-ui
+     !view.render-grid
+     !view.persist-table-views $tbl
+     $new-view
+    )
+   ) }
+  ]
+ )
+
+ ; to view.duplicate-active-view (
+  -- Duplicates the active view (including current working filters) into a new saved view
+  !view.fork-active-view
+ )
+
+ ; to view.reset-active-view (
+  -- Clears all working filters on the current view (dirtying saved views until saved or abandoned)
+  ; to tbl !view.get-active-table
+  [ match
+   { $tbl (
+    ; to st !view.ensure-table-views-state $tbl
+    ; set {} st.workingFilters
+    !view.clear-pinned-rows $tbl.id
+    !view.close-filter-menu
+    !view.sync-view-ui
+    !view.render-grid
+   ) }
+  ]
+ )
+
+ ; to view.request-delete-view (
+  -- Prompts for confirmation before deleting a custom saved view
+  ; to tbl !view.get-active-table
+  [ match
+   { $tbl (
+    ; to st !view.ensure-table-views-state $tbl
+    ; to active-v !view.get-active-view-record $tbl $st
+    ; to is-def [ match { $active-v : [ propertyIs true active-v.isDefault ] } { true : true } ]
+    ; to can-del [ ternary [ and { [ propertyIs false is-def ] } { [ propertyIsGreaterThan 1 st.views.length ] } ] true false ]
+    ; condition { propertyIs true can-del } (
+     ; to t-idx !view.get-table-index $tbl
+     ; to v-name [ match
+      { $resolveTableViewDisplayName : !resolveTableViewDisplayName $active-v $tbl $t-idx }
+      { true : $active-v.name }
+     ]
+     !view.close-view-menu
+     !view.close-filter-menu
+     ; to msg ; add 'Delete view "' ; add $v-name '"?'
+     ; to opts [ object
+      { title 'Delete View' }
+      { message $msg }
+      { require-agreement false }
+      { confirm-label 'Delete view' }
+      { on-confirm (
+       ; to next-views {}
+       ; each $st.views (
+        ; to { v } $argv
+        ; to same-id [ propertyIs $active-v.id v.id ]
+        ; condition { propertyIs false same-id } : !next-views.push $v
+       )
+       ; set $next-views st.views
+       ; to fallback-v [ get next-views 0 ]
+       ; set [ match { $fallback-v : $fallback-v.id } { true : default } ] st.activeViewId
+       ; to restored !clone-plain-data [ match { $fallback-v.filters : $fallback-v.filters } { true : {} } ] {}
+       ; set $restored st.workingFilters
+       ; set false view.editing-view-name
+       !view.clear-pinned-rows $tbl.id
+       !view.sync-view-ui
+       !view.render-grid
+       !view.persist-table-views $tbl
+      ) }
+     ]
+     !view.confirm $opts
+    )
+   ) }
+  ]
+ )
+
+ ; to view.open-edit-view-name (
+  -- Enters click-to-edit rename mode inside the Views popover for custom views
+  ; to tbl !view.get-active-table
+  [ match
+   { $tbl (
+    ; to st !view.ensure-table-views-state $tbl
+    ; to active-v !view.get-active-view-record $tbl $st
+    ; to is-def [ match { $active-v : [ propertyIs true active-v.isDefault ] } { true : true } ]
+    ; condition { propertyIs false is-def } (
+     ; to t-idx !view.get-table-index $tbl
+     ; to v-name [ match
+      { $resolveTableViewDisplayName : !resolveTableViewDisplayName $active-v $tbl $t-idx }
+      { true : $active-v.name }
+     ]
+     ; set true view.editing-view-name
+     ; set $v-name view-rename-input.value
+     !view.sync-view-ui
+     [ match { $view-rename-input.focus : !view-rename-input.focus } ]
+     [ match { $view-rename-input.select : !view-rename-input.select } ]
+    )
+   ) }
+  ]
+ )
+
+ ; to view.cancel-edit-view-name (
+  -- Exits click-to-edit rename mode inside the Views popover without changing the view name
+  ; set false view.editing-view-name
+  !view.sync-view-ui
+ )
+
+ ; to view.rename-active-view (
+  -- Renames the active custom (non-default) view, exits edit mode, and persists table views
+  ; to tbl !view.get-active-table
+  [ match
+   { $tbl (
+    ; to st !view.ensure-table-views-state $tbl
+    ; to active-v !view.get-active-view-record $tbl $st
+    ; to is-def [ match { $active-v : [ propertyIs true active-v.isDefault ] } { true : true } ]
+    ; condition { propertyIs false is-def } (
+     ; to raw $view-rename-input.value
+     ; to trimmed !raw.trim
+     ; to is-empty [ propertyIs '' trimmed ]
+     ; set false view.editing-view-name
+     [ match
+      { [ propertyIs false is-empty ] (
+       ; set $trimmed active-v.name
+       !view.sync-view-ui
+       !view.persist-table-views $tbl
+      ) }
+      { true : !view.sync-view-ui }
+     ]
+    )
+   ) }
+  ]
+ )
+
+ ; to view.format-bubble-text (
+  -- Formats concise pill text for an active column filter bubble
+  ; to { tbl col flt } $argv
+  ; to clock-opts !view.get-clock-display-opts
+  ; to opts [ object
+   { tables $view.tables }
+   { ownerTable $tbl }
+   { displayOpts $clock-opts }
+   { lookupLaneTitle $view.lookup-lane-title }
+  ]
+  [ match
+   { $formatTableFilterBubbleLabel : !formatTableFilterBubbleLabel $flt $col $opts }
+   { true : $flt.operator }
+  ]
+ )
+
+ ; to view.refresh-filter-bubble-labels (
+  -- Refreshes displayed bubble labels after lane title or timezone display changes
+  ; to tbl !view.get-active-table
+  [ match
+   { $tbl (
+    ; each $view.grid-filter-cells (
+     ; to { fcell } $argv
+     [ match
+      { [ and { $fcell.col } { [ !window.Array.isArray $fcell.chips ] } ] (
+       ; each $fcell.chips (
+        ; to { chip } $argv
+        [ match
+         { [ and { $chip.label-el } { $chip.flt } ] : ; set [ !view.format-bubble-text $tbl $fcell.col $chip.flt ] chip.label-el.textContent }
+        ]
+       )
+      ) }
+     ]
+    )
+   ) }
+  ]
+ )
+
+ ; to view.build-single-filter-control (
+  -- Builds the typed input or select control for a filter editor operand
+  ; to { tbl col op-desc initial-val placeholder-override } $argv
+  ; to kind [ match { $op-desc.inputKind : $op-desc.inputKind } { true : text } ]
+  ; to init-str [ match
+   { [ propertyIs undefined initial-val ] : '' }
+   { [ propertyIs null initial-val ] : '' }
+   { true : ; add '' $initial-val }
+  ]
+  ; to is-num-kind [ match
+   { [ propertyIs integer kind ] : true }
+   { [ propertyIs decimal kind ] : true }
+   { [ propertyIs fixed kind ] : true }
+   { true : false }
+  ]
+  ; to ctrl [ match
+   { [ propertyIs boolean kind ] (
+    ; to sel !document.createElement select
+    ; set 'lane-input-type lane-data-filter-input' sel.className
+    !sel.setAttribute aria-label 'Filter boolean value'
+    ; to opt-t !document.createElement option
+    ; assign $opt-t { value 'true' } { textContent 'true' }
+    ; to opt-f !document.createElement option
+    ; assign $opt-f { value 'false' } { textContent 'false' }
+    !sel.appendChild $opt-t
+    !sel.appendChild $opt-f
+    ; set [ ternary [ propertyIs 'false' init-str ] 'false' 'true' ] sel.value
+    $sel
+   ) }
+   { [ propertyIs workflow kind ] (
+    ; to wf [ match
+     { $resolveWorkflowTarget : !resolveWorkflowTarget $view.tables $col }
+     { true : ; object { valid false } { values {} } }
+    ]
+    [ match
+     { [ and { [ propertyIs true wf.valid ] } { [ propertyIsGreaterThan 0 wf.values.length ] } ] (
+      ; to sel !document.createElement select
+      ; set 'lane-input-type lane-data-filter-input' sel.className
+      !sel.setAttribute aria-label 'Filter workflow value'
+      ; to seen ; object
+      ; each $wf.values (
+       ; to { wv } $argv
+       ; to wv-str ; add '' $wv
+       ; to opt !document.createElement option
+       ; assign $opt { value $wv-str } { textContent $wv-str }
+       !sel.appendChild $opt
+       ; to seen $wv-str true
+      )
+      ; to is-init-empty [ propertyIs '' init-str ]
+      [ match
+       { [ propertyIs false is-init-empty ] (
+        ; to has-seen [ get seen $init-str ]
+        ; to seen-flag [ propertyIs true has-seen ]
+        ; condition { propertyIs false seen-flag } (
+         ; to extra !document.createElement option
+         ; assign $extra { value $init-str } { textContent $init-str }
+         !sel.appendChild $extra
+        )
+        ; set $init-str sel.value
+       ) }
+       { true : ; set [ add '' [ get wf.values 0 ] ] sel.value }
+      ]
+      $sel
+     ) }
+     { true (
+      ; to inp !document.createElement input
+      ; assign $inp { type text } { className 'lane-data-cell-input lane-data-filter-input' } { placeholder [ match { $placeholder-override : $placeholder-override } { true : 'Workflow value…' } ] } { spellcheck false } { autocomplete off }
+      ; set $init-str inp.value
+      $inp
+     ) }
+    ]
+   ) }
+   { [ propertyIs row kind ] (
+    ; to clock-opts !view.get-clock-display-opts
+    ; to page [ match
+     { $fetchRowOptionsPage : !fetchRowOptionsPage $view.tables $col [ object { offset 0 } { limit 200 } { ownerTable $tbl } { displayOpts $clock-opts } ] }
+     { true : ; object { options {} } }
+    ]
+    [ match
+     { [ and { $page.options } { [ propertyIsGreaterThan 0 page.options.length ] } ] (
+      ; to sel !document.createElement select
+      ; set 'lane-input-type lane-data-filter-input' sel.className
+      !sel.setAttribute aria-label 'Filter row link value'
+      ; to blank-opt !document.createElement option
+      ; assign $blank-opt { value '' } { textContent 'Select row…' }
+      !sel.appendChild $blank-opt
+      ; to seen ; object
+      ; each $page.options (
+       ; to { ro } $argv
+       ; to v-str ; add '' $ro.valueText
+       ; to opt !document.createElement option
+       ; assign $opt { value $v-str } { textContent $ro.label }
+       !sel.appendChild $opt
+       ; to seen $v-str true
+      )
+      ; to is-init-empty [ propertyIs '' init-str ]
+      [ match
+       { [ propertyIs false is-init-empty ] (
+        ; to has-seen [ get seen $init-str ]
+        ; to seen-flag [ propertyIs true has-seen ]
+        ; condition { propertyIs false seen-flag } (
+         ; to extra !document.createElement option
+         ; assign $extra { value $init-str } { textContent $init-str }
+         !sel.appendChild $extra
+        )
+        ; set $init-str sel.value
+       ) }
+      ]
+      $sel
+     ) }
+     { true (
+      ; to inp !document.createElement input
+      ; assign $inp { type text } { className 'lane-data-cell-input lane-data-filter-input' } { placeholder [ match { $placeholder-override : $placeholder-override } { true : 'Row value…' } ] } { spellcheck false } { autocomplete off }
+      ; set $init-str inp.value
+      $inp
+     ) }
+    ]
+   ) }
+   { [ propertyIs lane kind ] (
+    ; to lane-ids {}
+    ; to seen-ids ; object
+    [ match
+     { [ !window.Array.isArray $lane-control.lanes ] (
+      ; each $lane-control.lanes (
+       ; to { ol } $argv
+       [ match
+        { $ol.id (
+         ; to id-str ; add '' $ol.id
+         ; to already [ get seen-ids $id-str ]
+         ; to already-flag [ propertyIs true already ]
+         ; condition { propertyIs false already-flag } (
+          ; to seen-ids $id-str true
+          !lane-ids.push $id-str
+         )
+        ) }
+       ]
+      )
+     ) }
+    ]
+    [ match
+     { [ and { $lane-control.catalog } { $window.Object.keys } ] (
+      ; to cat-keys !window.Object.keys $lane-control.catalog
+      ; each $cat-keys (
+       ; to { cid } $argv
+       ; to cid-str ; add '' $cid
+       ; to already [ get seen-ids $cid-str ]
+       ; to already-flag [ propertyIs true already ]
+       ; condition { propertyIs false already-flag } (
+        ; to seen-ids $cid-str true
+        !lane-ids.push $cid-str
+       )
+      )
+     ) }
+    ]
+    [ match
+     { [ propertyIsGreaterThan 0 lane-ids.length ] (
+      ; to sel !document.createElement select
+      ; set 'lane-input-type lane-data-filter-input' sel.className
+      !sel.setAttribute aria-label 'Filter lane value'
+      ; to blank-opt !document.createElement option
+      ; assign $blank-opt { value '' } { textContent 'Select lane…' }
+      !sel.appendChild $blank-opt
+      ; each $lane-ids (
+       ; to { lid } $argv
+       ; to linfo !view.lookup-lane-info $lid
+       ; to opt !document.createElement option
+       ; assign $opt { value $lid } { textContent $linfo.label }
+       !sel.appendChild $opt
+      )
+      ; to is-init-empty [ propertyIs '' init-str ]
+      [ match
+       { [ propertyIs false is-init-empty ] (
+        ; to has-seen [ get seen-ids $init-str ]
+        ; to seen-flag [ propertyIs true has-seen ]
+        ; condition { propertyIs false seen-flag } (
+         ; to extra !document.createElement option
+         ; assign $extra { value $init-str } { textContent $init-str }
+         !sel.appendChild $extra
+        )
+        ; set $init-str sel.value
+       ) }
+      ]
+      $sel
+     ) }
+     { true (
+      ; to inp !document.createElement input
+      ; assign $inp { type text } { className 'lane-data-cell-input lane-data-filter-input' } { placeholder [ match { $placeholder-override : $placeholder-override } { true : 'lane-id' } ] } { spellcheck false } { autocomplete off }
+      ; set $init-str inp.value
+      $inp
+     ) }
+    ]
+   ) }
+   { [ propertyIs date kind ] (
+    ; to inp !document.createElement input
+    ; assign $inp { type date } { className 'lane-data-cell-input lane-data-filter-input' } { placeholder [ match { $placeholder-override : $placeholder-override } { true : YYYY-MM-DD } ] } { spellcheck false } { autocomplete off }
+    ; set $init-str inp.value
+    $inp
+   ) }
+   { [ propertyIs datetime kind ] (
+    ; to clock-opts !view.get-clock-display-opts
+    ; to dt-ph [ match
+     { $placeholder-override : $placeholder-override }
+     { $formatDatetimePlaceholder : !formatDatetimePlaceholder $clock-opts }
+     { true : 'YYYY-MM-DD HH:mm' }
+    ]
+    ; to inp !document.createElement input
+    ; assign $inp { type text } { className 'lane-data-cell-input lane-data-filter-input' } { placeholder $dt-ph } { spellcheck false } { autocomplete off }
+    ; set $init-str inp.value
+    $inp
+   ) }
+   { [ propertyIs true is-num-kind ] (
+    ; to num-ph [ match
+     { $placeholder-override : $placeholder-override }
+     { [ propertyIs in_last_days op-desc.op ] : days }
+     { [ propertyIs in_next_days op-desc.op ] : days }
+     { true : '0' }
+    ]
+    ; to num-mode [ ternary [ propertyIs integer kind ] numeric decimal ]
+    ; to inp !document.createElement input
+    ; assign $inp { type text } { className 'lane-data-cell-input lane-data-filter-input' } { placeholder $num-ph } { spellcheck false } { autocomplete off }
+    !inp.setAttribute inputmode $num-mode
+    !inp.setAttribute data-num-type $kind
+    ; set $init-str inp.value
+    ; to validate-filter-num (
+     ; to raw-val $inp.value
+     [ match
+      { [ propertyIs '' raw-val ] (
+       ; set 'lane-data-cell-input lane-data-filter-input' inp.className
+       ; set '' inp.title
+       !inp.setAttribute aria-invalid 'false'
+      ) }
+      { true (
+       ; to fmt-res [ match
+        { $parseNumericCellInput : !parseNumericCellInput $raw-val $kind [ !normalizeFixedDecimals $col.decimals ] }
+        { true : ; object { ok true } { value null } { error '' } }
+       ]
+       ; to flt-res [ match
+        { [ and { propertyIs true fmt-res.ok } { $parseTableFilterInput } ] : !parseTableFilterInput $col $op-desc.op $raw-val $raw-val [ object { tables $view.tables } ] }
+        { true : $fmt-res }
+       ]
+       [ match
+        { [ propertyIs false flt-res.ok ] (
+         ; set 'lane-data-cell-input lane-data-filter-input lane-data-cell-input--invalid' inp.className
+         ; set [ match { $flt-res.error : $flt-res.error } { true : 'Invalid number' } ] inp.title
+         !inp.setAttribute aria-invalid 'true'
+        ) }
+        { true (
+         ; set 'lane-data-cell-input lane-data-filter-input' inp.className
+         ; set '' inp.title
+         !inp.setAttribute aria-invalid 'false'
+        ) }
+       ]
+      ) }
+     ]
+    )
+    !validate-filter-num
+    !inp.addEventListener input $validate-filter-num
+    $inp
+   ) }
+   { [ propertyIs list kind ] (
+    ; to inp !document.createElement input
+    ; assign $inp { type text } { className 'lane-data-cell-input lane-data-filter-input' } { placeholder [ match { $placeholder-override : $placeholder-override } { true : 'value1, value2, …' } ] } { spellcheck false } { autocomplete off }
+    ; set $init-str inp.value
+    $inp
+   ) }
+   { true (
+    ; to txt-ph [ match
+     { $placeholder-override : $placeholder-override }
+     { [ propertyIs matches_regex op-desc.op ] : '/pattern/i' }
+     { [ propertyIs has_key op-desc.op ] : key }
+     { true : 'Filter value…' }
+    ]
+    ; to inp !document.createElement input
+    ; assign $inp { type text } { className 'lane-data-cell-input lane-data-filter-input' } { placeholder $txt-ph } { spellcheck false } { autocomplete off }
+    ; set $init-str inp.value
+    $inp
+   ) }
+  ]
+  [ match
+   { $ctrl (
+    !ctrl.addEventListener keydown (
+     ; to { ev } $argv
+     [ match
+      { [ propertyIs Enter ev.key ] (
+       [ match { $ev.preventDefault : !ev.preventDefault } ]
+       !view.apply-filter-editor
+      ) }
+      { [ propertyIs Escape ev.key ] (
+       [ match { $ev.stopPropagation : !ev.stopPropagation } ]
+       !view.close-filter-menu
+      ) }
+     ]
+    )
+    !view.filter-input-els.push $ctrl
+   ) }
+  ]
+  $ctrl
+ )
+
+ ; to view.render-filter-value-inputs (
+  -- Rebuilds operand value input controls inside the filter popover for the selected operator
+  ; to { tbl col op-value init-val init-val-to } $argv
+  ; while { propertyIsGreaterThan 0 view.filter-input-els.length } (
+   ; to old-in !view.filter-input-els.pop
+   [ match { $old-in.remove : !old-in.remove } ]
+  )
+  !clear-children $filter-value-fields
+  ; set null view.filter-val-el
+  ; set null view.filter-val-to-el
+  ; set '' filter-error-el.textContent
+  ; set true filter-error-el.hidden
+
+  ; to ops [ match
+   { $getFilterOperatorsForColumn : !getFilterOperatorsForColumn $col $view.tables }
+   { true : {} }
+  ]
+  ; to desc-box ; object { desc null }
+  ; each $ops (
+   ; to { item } $argv
+   ; condition { propertyIs $op-value item.op } : ; set $item desc-box.desc
+  )
+  ; to op-desc $desc-box.desc
+  [ match
+   { [ propertyIs null op-desc ] : ; set true filter-value-wrap.hidden }
+   { [ propertyIs 0 op-desc.arity ] (
+    ; set true filter-value-wrap.hidden
+    ; set none view.filter-editor.input-kind
+   ) }
+   { [ propertyIs 2 op-desc.arity ] (
+    ; set false filter-value-wrap.hidden
+    ; set $op-desc.inputKind view.filter-editor.input-kind
+    ; to c1 !view.build-single-filter-control $tbl $col $op-desc $init-val null
+    ; to sep !document.createElement span
+    ; assign $sep { className lane-data-filter-range-sep } { textContent and }
+    ; to c2 !view.build-single-filter-control $tbl $col $op-desc $init-val-to null
+    ; set $c1 view.filter-val-el
+    ; set $c2 view.filter-val-to-el
+    !filter-value-fields.appendChild $c1
+    !filter-value-fields.appendChild $sep
+    !filter-value-fields.appendChild $c2
+   ) }
+   { true (
+    ; set false filter-value-wrap.hidden
+    ; set $op-desc.inputKind view.filter-editor.input-kind
+    ; to c1 !view.build-single-filter-control $tbl $col $op-desc $init-val null
+    ; set $c1 view.filter-val-el
+    !filter-value-fields.appendChild $c1
+   ) }
+  ]
+ )
+
+ ; to view.open-filter-menu (
+  -- Opens the column filter popover in add or edit mode anchored to the '+' or bubble element
+  ; to { tbl col existing-flt anchor-el } $argv
+  !view.close-table-menu
+  !view.close-view-menu
+  ; to is-edit [ match { $existing-flt : true } { true : false } ]
+  ; set true view.filter-editor.open
+  ; set [ ternary $is-edit edit add ] view.filter-editor.mode
+  ; set $tbl.id view.filter-editor.table-id
+  ; set $col.id view.filter-editor.column-id
+  ; set [ match { $existing-flt.id : $existing-flt.id } { true : '' } ] view.filter-editor.filter-id
+  ; set $anchor-el view.filter-editor.anchor-el
+
+  ; to col-label !view.display-col-name $col
+  ; set $col-label filter-menu-col-name.textContent
+  ; set [ !formatColumnType $col undefined undefined $view.tables ] filter-menu-col-type.textContent
+
+  ; while { propertyIsGreaterThan 0 view.filter-op-els.length } (
+   ; to old-op !view.filter-op-els.pop
+   [ match { $old-op.remove : !old-op.remove } ]
+  )
+  !clear-children $filter-op-select
+  ; to ops [ match
+   { $getFilterOperatorsForColumn : !getFilterOperatorsForColumn $col $view.tables }
+   { true : {} }
+  ]
+  ; to op-box ; object { first '' } { matched '' }
+  ; each $ops (
+   ; to { item idx } $argv
+   ; condition { propertyIs 0 idx } : ; set $item.op op-box.first
+   ; condition { and { $existing-flt } { [ propertyIs $existing-flt.operator item.op ] } } : ; set $item.op op-box.matched
+   ; to opt !document.createElement option
+   ; assign $opt { value $item.op } { textContent $item.label }
+   !filter-op-select.appendChild $opt
+   !view.filter-op-els.push $opt
+  )
+  ; to is-matched-empty [ propertyIs '' op-box.matched ]
+  ; to selected-op [ ternary $is-matched-empty $op-box.first $op-box.matched ]
+  ; set $selected-op filter-op-select.value
+
+  ; to clock-opts !view.get-clock-display-opts
+  ; to formatted [ match
+   { [ and { $existing-flt } { $formatTableFilterInputValues } ] : !formatTableFilterInputValues $existing-flt $col [ object { tables $view.tables } { displayOpts $clock-opts } ] }
+   { true : ; object { value '' } { valueTo '' } }
+  ]
+  !view.render-filter-value-inputs $tbl $col $selected-op $formatted.value $formatted.valueTo
+
+  ; set [ ternary $is-edit 'Update filter' 'Add filter' ] filter-apply-btn.textContent
+  ; set [ ternary $is-edit false true ] filter-delete-btn.hidden
+  ; set false filter-menu.hidden
+  [ match
+   { [ and { $anchor-el } { $anchor-el.getBoundingClientRect } { $rows-section.getBoundingClientRect } ] (
+    ; to a-rect !anchor-el.getBoundingClientRect
+    ; to r-rect !rows-section.getBoundingClientRect
+    ; to raw-left ; subtract $a-rect.left $r-rect.left
+    ; to clamp-l [ ternary [ propertyIsLessThan 0 raw-left ] 0 $raw-left ]
+    ; to max-l ; subtract $r-rect.width 260
+    ; to final-l [ match
+     { [ and { [ propertyIsGreaterThan 0 max-l ] } { [ propertyIsLessThan $clamp-l max-l ] } ] : $max-l }
+     { true : $clamp-l }
+    ]
+    ; to raw-top ; subtract $a-rect.bottom $r-rect.top
+    ; to final-t ; add $raw-top 4
+    ; to l-css ; add $final-l px
+    ; to t-css ; add $final-t px
+    ; assign $filter-menu.style { left $l-css } { top $t-css }
+   ) }
+  ]
+  [ match
+   { [ and { $view.filter-val-el } { $view.filter-val-el.focus } ] : !view.filter-val-el.focus }
+   { $filter-op-select.focus : !filter-op-select.focus }
+  ]
+ )
+
+ ; to view.apply-filter-editor (
+  -- Validates the filter popover inputs and adds or updates the filter on workingFilters
+  ; to tbl !view.get-active-table
+  ; to col-box ; object { col null }
+  [ match
+   { $tbl (
+    ; each $tbl.columns (
+     ; to { candidate } $argv
+     ; condition { propertyIs $view.filter-editor.column-id candidate.id } : ; set $candidate col-box.col
+    )
+   ) }
+  ]
+  ; to col $col-box.col
+  [ match
+   { [ and { $tbl } { $col } { $parseTableFilterInput } ] (
+    ; to op $filter-op-select.value
+    ; to raw1 [ match { $view.filter-val-el : $view.filter-val-el.value } { true : undefined } ]
+    ; to raw2 [ match { $view.filter-val-to-el : $view.filter-val-to-el.value } { true : undefined } ]
+    ; to clock-opts !view.get-clock-display-opts
+    ; to parsed !parseTableFilterInput $col $op $raw1 $raw2 [ object { tables $view.tables } { displayOpts $clock-opts } ]
+    [ match
+     { [ propertyIs false parsed.ok ] (
+      ; set [ match { $parsed.error : $parsed.error } { true : 'Invalid filter value' } ] filter-error-el.textContent
+      ; set false filter-error-el.hidden
+      false
+     ) }
+     { true (
+      ; to is-edit [ propertyIs edit view.filter-editor.mode ]
+      ; to flt-id [ match
+       { [ and { $is-edit } { $view.filter-editor.filter-id } ] : $view.filter-editor.filter-id }
+       { true : !view.next-id flt }
+      ]
+      ; to next-flt [ object
+       { id $flt-id }
+       { columnId $col.id }
+       { operator $parsed.operator }
+      ]
+      [ match
+       { [ propertyIs true parsed.hasValue ] (
+        ; to stored-val [ match
+         { [ !window.Array.isArray $parsed.value ] : !clone-plain-data $parsed.value {} }
+         { true : $parsed.value }
+        ]
+        ; set $stored-val next-flt.value
+        ; to no-v2 [ propertyIs undefined parsed.valueTo ]
+        ; condition { propertyIs false no-v2 } : ; set $parsed.valueTo next-flt.valueTo
+       ) }
+      ]
+      ; to st !view.ensure-table-views-state $tbl
+      [ match
+       { $is-edit (
+        ; to replaced ; object { hit false }
+        ; to next-list {}
+        ; each $st.workingFilters (
+         ; to { existing } $argv
+         [ match
+          { [ propertyIs $flt-id existing.id ] (
+           !next-list.push $next-flt
+           ; set true replaced.hit
+          ) }
+          { true : !next-list.push $existing }
+         ]
+        )
+        ; condition { propertyIs false replaced.hit } : !next-list.push $next-flt
+        ; set $next-list st.workingFilters
+       ) }
+       { true : !st.workingFilters.push $next-flt }
+      ]
+      !view.clear-pinned-rows $tbl.id
+      !view.close-filter-menu
+      !view.sync-view-ui
+      !view.render-grid
+      true
+     ) }
+    ]
+   ) }
+   { true : false }
+  ]
+ )
+
+ ; to view.delete-filter-by-id (
+  -- Removes a filter bubble by ID from workingFilters, marks the view dirty, and re-renders rows
+  ; to { tbl filter-id } $argv
+  ; to eff-tbl [ match { $tbl : $tbl } { true : !view.get-active-table } ]
+  [ match
+   { [ and { $eff-tbl } { $filter-id } ] (
+    ; to st !view.ensure-table-views-state $eff-tbl
+    ; to next-list {}
+    ; each $st.workingFilters (
+     ; to { flt } $argv
+     ; to same-id [ propertyIs $filter-id flt.id ]
+     ; condition { propertyIs false same-id } : !next-list.push $flt
+    )
+    ; set $next-list st.workingFilters
+    !view.clear-pinned-rows $eff-tbl.id
+    ; condition { and { [ propertyIs true view.filter-editor.open ] } { [ propertyIs $filter-id view.filter-editor.filter-id ] } } : !view.close-filter-menu
+    !view.sync-view-ui
+    !view.render-grid
+   ) }
+  ]
+ )
+
+ ; to view.delete-editing-filter (
+  -- Deletes the currently open filter from the filter editor popover
+  ; to tbl !view.get-active-table
+  ; to fid $view.filter-editor.filter-id
+  !view.delete-filter-by-id $tbl $fid
+  !view.close-filter-menu
  )
 
  ; to view.next-id (
@@ -458,15 +2110,8 @@
  ; to view.sync-table-menu (
   -- Populates the "..." table actions dropdown menu items appropriate for local vs remote tables
   ; to { tbl } $argv
-  ; while { propertyIsGreaterThan 0 table-menu.children.length } (
-   ; to prev-len $table-menu.children.length
-   ; to cidx ; subtract $prev-len 1
-   ; to child [ get table-menu.children $cidx ]
-   [ match
-    { $child.remove : !child.remove }
-   ]
-   ; condition { propertyIs $prev-len table-menu.children.length } : !table-menu.children.pop
-  )
+  !clear-children $table-menu
+  !edit-table-btn.remove
   !jump-owner-btn.remove
   !edit-import-btn.remove
   !clear-rows-btn.remove
@@ -479,11 +2124,15 @@
      { $lane-control.pick-table-import : !table-menu.appendChild $edit-import-btn }
     ]
     ; to is-ro !view.is-readonly-table $tbl
-    ; condition { propertyIs false is-ro } : !table-menu.appendChild $clear-rows-btn
+    ; condition { propertyIs false is-ro } (
+     !table-menu.appendChild $edit-table-btn
+     !table-menu.appendChild $clear-rows-btn
+    )
     ; assign $delete-table-btn { textContent 'Remove import' } { title 'Remove imported remote table from this lane' }
     !table-menu.appendChild $delete-table-btn
    ) }
    { true (
+    !table-menu.appendChild $edit-table-btn
     !table-menu.appendChild $clear-rows-btn
     ; assign $delete-table-btn { textContent 'Delete table' } { title 'Delete this table' }
     !table-menu.appendChild $delete-table-btn
@@ -1036,6 +2685,7 @@
        ) }
       ]
       !register-table-used-ids $tbl
+      !view.sanitize-views-for-table $tbl false
       ; to has-custom [ propertyIs true tbl.remote.customName ]
       ; to same-rname [ propertyIs $next-rname tbl.name ]
       ; condition { and { [ propertyIs false has-custom ] } { [ propertyIs false same-rname ] } } (
@@ -1116,6 +2766,7 @@
       ; set $next-cols tbl.columns
       ; set $next-rows tbl.rows
       !register-table-used-ids $tbl
+      !view.sanitize-views-for-table $tbl false
       ; set true changed.hit
      ) }
     ]
@@ -1412,49 +3063,138 @@
   !fetchRowOptionsPage $view.tables $col $page-opts
  )
 
+ ; to view.set-col-constraints (
+  -- Normalizes and assigns col.constraints + col.constraint (or removes both when empty)
+  ; to { col next-list } $argv
+  ; to norm [ match
+   { $normalizeColumnConstraints : !normalizeColumnConstraints $next-list $col.type $col.decimals }
+   { true : {} }
+  ]
+  [ match
+   { [ propertyIsGreaterThan 0 norm.length ] (
+    ; to first-c [ get norm 0 ]
+    ; set $first-c col.constraint
+    ; set $norm col.constraints
+   ) }
+   { true (
+    [ match
+     { $window.Reflect.deleteProperty (
+      !window.Reflect.deleteProperty $col constraint
+      !window.Reflect.deleteProperty $col constraints
+     ) }
+     { true (
+      ; set undefined col.constraint
+      ; set undefined col.constraints
+     ) }
+    ]
+   ) }
+  ]
+  $norm
+ )
+
+ ; to view.validate-cell-value (
+  -- Validates a single cell or array-item value against non-workflow column constraints
+  ; to { col val owner-tbl owner-row item-idx } $argv
+  ; to row-arr [ match
+   { [ and { $col.multiple } { $owner-row.values } ] (
+    ; to raw-list [ get owner-row.values $col.id ]
+    [ match
+     { [ !window.Array.isArray $raw-list ] : $raw-list }
+     { true : null }
+    ]
+   ) }
+   { true : null }
+  ]
+  ; to copts !view.get-clock-display-opts
+  [ match
+   { $validateColumnConstraints : !validateColumnConstraints $col $val [ object { tables $view.tables } { table $owner-tbl } { row $owner-row } { itemIndex $item-idx } { rowValuesArray $row-arr } { displayOpts $copts } ] }
+   { true : ; object { ok true } { error null } { errors {} } }
+  ]
+ )
+
+ ; to view.col-has-unique-constraint (
+  -- Returns true if col defines a unique constraint
+  ; to { col } $argv
+  ; to clist [ match
+   { $normalizeColumnConstraints : !normalizeColumnConstraints $col $col.type $col.decimals }
+   { true : {} }
+  ]
+  ; to found ; object { hit false }
+  ; each $clist (
+   ; to { c } $argv
+   ; condition { propertyIs unique c.type } : ; set true found.hit
+  )
+  $found.hit
+ )
+
  ; to view.refresh-row-cells (
-  -- Re-evaluates row-type cell triggers in a row when any column value in that row changes
+  -- Re-evaluates row-type cell triggers and cross-row unique constraints when a column value changes
   ; to { row } $argv
   [ match
    { $row (
     ; to refresh-cells-in-grow (
-     ; to { target-tbl grow } $argv
-     ; condition { propertyIs $row.id grow.row.id } (
-      ; each $grow.cells (
-       ; to { cell } $argv
-       ; condition { propertyIs row cell.col.type } (
-        ; to val [ get grow.row.values $cell.col.id ]
-        [ match
-         { $cell.multi (
-          ; to arr [ match
-           { [ !window.Array.isArray $val ] : $val }
-           { true : {} }
+     ; to { target-tbl grow unique-col-ids } $argv
+     ; to is-same-row [ propertyIs $row.id grow.row.id ]
+     ; each $grow.cells (
+      ; to { cell } $argv
+      ; to is-row-cell [ and { $is-same-row } { [ propertyIs row cell.col.type ] } ]
+      ; to is-uniq-cell [ match
+       { [ get unique-col-ids $cell.col.id ] : true }
+       { true : false }
+      ]
+      ; to should-refresh [ match
+       { $is-row-cell : true }
+       { $is-uniq-cell : true }
+       { true : false }
+      ]
+      ; condition { propertyIs true should-refresh } (
+       ; to val [ get grow.row.values $cell.col.id ]
+       [ match
+        { $cell.multi (
+         ; to arr [ match
+          { [ !window.Array.isArray $val ] : $val }
+          { true : {} }
+         ]
+         ; each $cell.items (
+          ; to { item idx } $argv
+          [ match
+           { $item.update-trigger : !item.update-trigger [ get arr $idx ] }
           ]
-          ; each $cell.items (
-           ; to { item idx } $argv
-           [ match
-            { $item.update-trigger : !item.update-trigger [ get arr $idx ] }
-           ]
-          )
-          !view.apply-multi-filter $target-tbl $grow.row $cell.col $cell
-         ) }
-         { $cell.update-trigger : !cell.update-trigger $val }
-        ]
-       )
+         )
+         !view.apply-multi-filter $target-tbl $grow.row $cell.col $cell
+        ) }
+        { $cell.update-trigger : !cell.update-trigger $val }
+       ]
       )
      )
     )
+    ; to build-uniq-map (
+     ; to { tbl } $argv
+     ; to umap ; object
+     [ match
+      { $tbl.columns (
+       ; each $tbl.columns (
+        ; to { ucol } $argv
+        ; to is-uniq !view.col-has-unique-constraint $ucol
+        ; condition { propertyIs true is-uniq } : ; set true umap $ucol.id
+       )
+      ) }
+     ]
+     $umap
+    )
     ; to active-tbl !view.get-active-table
+    ; to active-uniq !build-uniq-map $active-tbl
     ; each $view.grid-rows (
      ; to { grow } $argv
-     !refresh-cells-in-grow $active-tbl $grow
+     !refresh-cells-in-grow $active-tbl $grow $active-uniq
      [ match
       { $grow.subtable-groups (
        ; each $grow.subtable-groups (
         ; to { sgrp } $argv
+        ; to s-uniq !build-uniq-map $sgrp.table
         ; each $sgrp.rows (
          ; to { sgrow } $argv
-         !refresh-cells-in-grow $sgrp.table $sgrow
+         !refresh-cells-in-grow $sgrp.table $sgrow $s-uniq
         )
        )
       ) }
@@ -1549,6 +3289,7 @@
     ) }
    ]
   )
+  !view.refresh-filter-bubble-labels
  )
 
  ; to view.refresh-clock-displays (
@@ -1560,6 +3301,7 @@
     ; to { cell } $argv
     ; to is-tz-col [ match
      { [ propertyIs datetime cell.col.type ] : true }
+     { [ propertyIs date cell.col.type ] : true }
      { [ propertyIs row cell.col.type ] : true }
      { true : false }
     ]
@@ -1600,6 +3342,7 @@
     ) }
    ]
   )
+  !view.refresh-filter-bubble-labels
  )
 
  ; to create-picker-trigger (
@@ -1620,8 +3363,12 @@
 
  ; to view.create-typed-control (
   -- Builds an editable typed input, checkbox, or async row/lane picker trigger for a single value of col.type
-  ; to { col initial-val on-valid on-enter owner-tbl owner-row on-open-picker } $argv
+  ; to { col initial-val on-valid on-enter owner-tbl owner-row on-open-picker item-idx } $argv
   ; to is-ro !view.is-readonly-table $owner-tbl
+  ; to wf-constraint [ match
+   { $getColumnWorkflowConstraint : !getColumnWorkflowConstraint $col }
+   { true : null }
+  ]
   [ match
    { [ propertyIs row col.type ] (
     ; to { trigger-btn display-el id-el } !create-picker-trigger
@@ -1737,6 +3484,14 @@
        !trigger-btn.setAttribute aria-invalid 'false'
       ) }
      ]
+     ; condition { and { [ propertyIs false info.isEmpty ] } { $info.valid } { $info.filterMatched } } (
+      ; to vres !view.validate-cell-value $col $next-val $owner-tbl $owner-row $item-idx
+      ; condition { propertyIs false vres.ok } (
+       ; set 'lane-data-row-trigger lane-data-row-trigger--invalid' trigger-btn.className
+       ; set $vres.error trigger-btn.title
+       !trigger-btn.setAttribute aria-invalid 'true'
+      )
+     )
      ; condition { propertyIs true is-ro } : ; set true trigger-btn.disabled
     )
     !update-trigger $initial-val
@@ -1959,6 +3714,14 @@
        !trigger-btn.setAttribute aria-invalid 'false'
       ) }
      ]
+     ; condition { propertyIs false info.is-empty } (
+      ; to vres !view.validate-cell-value $col $next-val $owner-tbl $owner-row $item-idx
+      ; condition { propertyIs false vres.ok } (
+       ; set 'lane-data-row-trigger lane-data-row-trigger--invalid lane-data-lane-id-btn' trigger-btn.className
+       ; set $vres.error trigger-btn.title
+       !trigger-btn.setAttribute aria-invalid 'true'
+      )
+     )
     )
     !update-trigger $initial-val
 
@@ -2013,27 +3776,7 @@
     )
     ; object { el $control-wrap } { input-el $trigger-btn } { trigger-el $trigger-btn } { open-el $open-btn } { placeholder-el $placeholder-el } { display-el $display-el } { id-el $id-el } { update-trigger $update-trigger }
    ) }
-   { [ propertyIs boolean col.type ] (
-    ; to wrap !document.createElement label
-    ; set lane-data-bool-wrap wrap.className
-    ; to cb !document.createElement input
-    ; assign $cb { type checkbox } { className lane-data-bool-input } { disabled $is-ro }
-    ; to bool-val !formatCellInputValue $initial-val boolean
-    ; set $bool-val cb.checked
-    ; to txt !document.createElement span
-    ; assign $txt { className lane-data-bool-label } { textContent [ ternary $bool-val 'true' 'false' ] }
-    !wrap.appendChild $cb
-    !wrap.appendChild $txt
-    !cb.addEventListener change (
-     ; condition { propertyIs false is-ro } (
-      ; to next-bool [ ternary $cb.checked true false ]
-      ; set [ ternary $next-bool 'true' 'false' ] txt.textContent
-      !$on-valid $next-bool
-     )
-    )
-    ; object { el $wrap } { input-el $cb } { label-el $txt }
-   ) }
-   { [ match { [ propertyIs text col.type ] : !normalizeColumnConstraint $col.constraint } { true : null } ] (
+   { $wf-constraint (
     ; to select-el !document.createElement select
     ; to ctrl-state ; object { value $initial-val } { option-els {} }
     ; to render-options (
@@ -2059,6 +3802,7 @@
       { $col.required : !isDataCellValueEmpty $cur-val $wf-single-spec }
       { true : false }
      ]
+     ; to wf-vres !view.validate-cell-value $col $cur-val $owner-tbl $owner-row $item-idx
      [ match
       { [ propertyIs false wf-state.valid ] (
        ; set 'lane-data-cell-select lane-data-cell-select--unconfigured' select-el.className
@@ -2071,6 +3815,12 @@
        ; set false select-el.disabled
        !select-el.setAttribute aria-invalid 'true'
        ; set $wf-state.error select-el.title
+      ) }
+      { [ propertyIs false wf-vres.ok ] (
+       ; set 'lane-data-cell-select lane-data-cell-select--invalid' select-el.className
+       ; set false select-el.disabled
+       !select-el.setAttribute aria-invalid 'true'
+       ; set $wf-vres.error select-el.title
       ) }
       { $is-wf-req-empty (
        ; set 'lane-data-cell-select lane-data-cell-select--invalid lane-data-cell-select--required-empty' select-el.className
@@ -2090,12 +3840,53 @@
     !render-options $initial-val
     !select-el.addEventListener change (
      ; condition { propertyIs false is-ro } (
-      ; to next-val $select-el.value
+      ; to next-val !parseWorkflowOptionValue $select-el.value $col
       !render-options $next-val
       !$on-valid $next-val
      )
     )
-    ; object { el $select-el } { input-el $select-el } { select-el $select-el } { option-els $ctrl-state.option-els } { render-options $render-options }
+    ; object { el $select-el } { input-el $select-el } { select-el $select-el } { option-els $ctrl-state.option-els } { render-options $render-options } { update-trigger $render-options }
+   ) }
+   { [ propertyIs boolean col.type ] (
+    ; to wrap !document.createElement label
+    ; set lane-data-bool-wrap wrap.className
+    ; to cb !document.createElement input
+    ; assign $cb { type checkbox } { className lane-data-bool-input } { disabled $is-ro }
+    ; to bool-val !formatCellInputValue $initial-val boolean
+    ; to txt !document.createElement span
+    ; set lane-data-bool-label txt.className
+    !wrap.appendChild $cb
+    !wrap.appendChild $txt
+    ; to apply-bool-state (
+     ; to { next-b } $argv
+     ; to clean-b !formatCellInputValue $next-b boolean
+     ; set $clean-b cb.checked
+     ; set [ ternary $clean-b 'true' 'false' ] txt.textContent
+     ; to vres !view.validate-cell-value $col $clean-b $owner-tbl $owner-row $item-idx
+     [ match
+      { [ propertyIs false vres.ok ] (
+       ; set 'lane-data-bool-wrap lane-data-bool-wrap--invalid' wrap.className
+       ; set $vres.error wrap.title
+       ; set $vres.error cb.title
+       !cb.setAttribute aria-invalid 'true'
+      ) }
+      { true (
+       ; set lane-data-bool-wrap wrap.className
+       ; set '' wrap.title
+       ; set '' cb.title
+       !cb.setAttribute aria-invalid 'false'
+      ) }
+     ]
+    )
+    !apply-bool-state $bool-val
+    !cb.addEventListener change (
+     ; condition { propertyIs false is-ro } (
+      ; to next-bool [ ternary $cb.checked true false ]
+      !apply-bool-state $next-bool
+      !$on-valid $next-bool
+     )
+    )
+    ; object { el $wrap } { input-el $cb } { label-el $txt } { update-trigger $apply-bool-state }
    ) }
    { [ propertyIs datetime col.type ] (
     ; to cal-svg '<svg class="lane-data-datetime-picker-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.5" y="2.5" width="9" height="8" rx="1.2"></rect><path d="M1.5 5.2h9M4 1.5v2M8 1.5v2"></path></svg>'
@@ -2143,6 +3934,10 @@
      ]
      ; to cls 'lane-data-cell-input lane-data-cell-input--datetime'
      ; condition { propertyIs true is-date-empty } : ; set [ add $cls ' lane-data-cell-input--date-empty' ] cls
+     ; to vres [ match
+      { [ and { [ propertyIs true ok ] } { [ propertyIs false is-req-empty ] } ] : !view.validate-cell-value $col $val $owner-tbl $owner-row $item-idx }
+      { true : ; object { ok true } { error null } }
+     ]
      [ match
       { [ propertyIs false ok ] (
        ; set [ add $cls ' lane-data-cell-input--invalid' ] cls
@@ -2152,6 +3947,11 @@
       { $is-req-empty (
        ; set [ add $cls ' lane-data-cell-input--invalid lane-data-cell-input--required-empty' ] cls
        ; set 'Required value' input-el.title
+       !input-el.setAttribute aria-invalid 'true'
+      ) }
+      { [ propertyIs false vres.ok ] (
+       ; set [ add $cls ' lane-data-cell-input--invalid' ] cls
+       ; set $vres.error input-el.title
        !input-el.setAttribute aria-invalid 'true'
       ) }
       { true (
@@ -2182,8 +3982,11 @@
 
     ; to update-datetime (
      ; to { next-val } $argv
-     ; set $next-val ctrl-state.value
-     ; set true ctrl-state.valid
+     ; to resolved-next [ match
+      { [ propertyIs undefined next-val ] : $ctrl-state.value }
+      { true : $next-val }
+     ]
+     ; to was-invalid [ propertyIs false ctrl-state.valid ]
      ; to copts !view.get-clock-display-opts
      ; to next-ph !resolve-placeholder $copts
      ; set $next-ph input-el.placeholder
@@ -2192,17 +3995,18 @@
       { $document.activeElement : [ propertyIs $input-el document.activeElement ] }
       { true : false }
      ]
-     ; to aria-inv [ match
-      { $input-el.getAttribute : !input-el.getAttribute aria-invalid }
-      { true : 'false' }
-     ]
-     ; to keep-editing [ and { propertyIs true is-focused } { propertyIs 'true' aria-inv } ]
+     ; to keep-editing [ and { propertyIs true is-focused } { propertyIs true was-invalid } ]
      [ match
       { $keep-editing : null }
       { true (
-       ; to next-fmt !formatCellInputValue $next-val $col undefined $view.tables $copts
-       ; set $next-fmt input-el.value
-       !apply-input-state true $next-val ''
+       ; set $resolved-next ctrl-state.value
+       ; set true ctrl-state.valid
+       ; to next-fmt !formatCellInputValue $resolved-next $col undefined $view.tables $copts
+       [ match
+        { [ propertyIs $next-fmt input-el.value ] : null }
+        { true : ; set $next-fmt input-el.value }
+       ]
+       !apply-input-state true $resolved-next ''
       ) }
      ]
     )
@@ -2319,9 +4123,13 @@
    ) }
    { true (
     ; to input-el !document.createElement input
+    ; to is-num-col [ match
+     { [ propertyIs integer col.type ] : true }
+     { [ propertyIs decimal col.type ] : true }
+     { [ propertyIs fixed col.type ] : true }
+     { true : false }
+    ]
     ; to input-type [ match
-     { [ propertyIs integer col.type ] : number }
-     { [ propertyIs decimal col.type ] : number }
      { [ propertyIs date col.type ] : date }
      { [ propertyIs datetime col.type ] : datetime-local }
      { [ propertyIs url col.type ] : url }
@@ -2352,10 +4160,26 @@
     ; to formatted !formatCellInputValue $initial-val $col
     ; assign $input-el { type $input-type } { className $base-cls } { value $formatted } { placeholder $placeholder } { spellcheck false } { autocomplete off }
     [ match
-     { [ propertyIs integer col.type ] : !input-el.setAttribute step '1' }
-     { [ propertyIs decimal col.type ] : !input-el.setAttribute step any }
-     { [ propertyIs fixed col.type ] : !input-el.setAttribute inputmode decimal }
+     { [ propertyIs integer col.type ] (
+      !input-el.setAttribute inputmode numeric
+      !input-el.setAttribute data-num-type integer
+     ) }
+     { [ propertyIs decimal col.type ] (
+      !input-el.setAttribute inputmode decimal
+      !input-el.setAttribute data-num-type decimal
+     ) }
+     { [ propertyIs fixed col.type ] (
+      !input-el.setAttribute inputmode decimal
+      !input-el.setAttribute data-num-type fixed
+     ) }
     ]
+    ; to parse-current (
+     [ match
+      { [ and { propertyIs true is-num-col } { $parseNumericCellInput } ] : !parseNumericCellInput $input-el.value $col }
+      { true : !parseCellValue $input-el.value $col }
+     ]
+    )
+    ; to ctrl-state ; object { value $initial-val } { syntax-ok true }
     ; to single-spec [ object { type $col.type } { multiple false } ]
     ; to apply-input-state (
      ; to { ok val err-msg } $argv
@@ -2370,6 +4194,10 @@
      ]
      ; to cls $base-cls
      ; condition { propertyIs true is-date-empty } : ; set [ add $cls ' lane-data-cell-input--date-empty' ] cls
+     ; to vres [ match
+      { [ and { [ propertyIs true ok ] } { [ propertyIs false is-req-empty ] } ] : !view.validate-cell-value $col $val $owner-tbl $owner-row $item-idx }
+      { true : ; object { ok true } { error null } }
+     ]
      [ match
       { [ propertyIs false ok ] (
        ; set [ add $cls ' lane-data-cell-input--invalid' ] cls
@@ -2379,6 +4207,11 @@
       { $is-req-empty (
        ; set [ add $cls ' lane-data-cell-input--invalid lane-data-cell-input--required-empty' ] cls
        ; set 'Required value' input-el.title
+       !input-el.setAttribute aria-invalid 'true'
+      ) }
+      { [ propertyIs false vres.ok ] (
+       ; set [ add $cls ' lane-data-cell-input--invalid' ] cls
+       ; set $vres.error input-el.title
        !input-el.setAttribute aria-invalid 'true'
       ) }
       { true (
@@ -2393,15 +4226,29 @@
      ; set true input-el.disabled
      ; set true input-el.readOnly
     )
+    ; to revalidate (
+     ; to { next-val } $argv
+     ; condition { propertyIs true ctrl-state.syntax-ok } (
+      ; to cur-v [ match
+       { [ propertyIs undefined next-val ] : $ctrl-state.value }
+       { true : $next-val }
+      ]
+      ; set $cur-v ctrl-state.value
+      !apply-input-state true $cur-v ''
+     )
+    )
     ; to handle-edit (
      ; condition { propertyIs false is-ro } (
-      ; to parsed !parseCellValue $input-el.value $col
+      ; to parsed !parse-current
       [ match
        { $parsed.ok (
+        ; set $parsed.value ctrl-state.value
+        ; set true ctrl-state.syntax-ok
         !apply-input-state true $parsed.value ''
         !$on-valid $parsed.value
        ) }
        { true (
+        ; set false ctrl-state.syntax-ok
         !apply-input-state false null $parsed.error
        ) }
       ]
@@ -2411,9 +4258,9 @@
     [ match
      { [ propertyIs date col.type ] : !input-el.addEventListener change $handle-edit }
      { [ propertyIs datetime col.type ] : !input-el.addEventListener change $handle-edit }
-     { [ propertyIs fixed col.type ] (
+     { $is-num-col (
       !input-el.addEventListener blur (
-       ; to parsed !parseCellValue $input-el.value $col
+       ; to parsed !parse-current
        [ match
         { $parsed.ok (
          ; to formatted-blur !formatCellInputValue $parsed.value $col
@@ -2436,7 +4283,7 @@
       )
      ) }
     ]
-    ; object { el $input-el } { input-el $input-el }
+    ; object { el $input-el } { input-el $input-el } { update-trigger $revalidate }
    ) }
   ]
  )
@@ -2553,11 +4400,11 @@
      { true : ; object { selectable true } { ready false } { reason 'Lane picker unavailable' } }
     ]
    ) }
-   { [ match { [ propertyIs text col.type ] : !normalizeColumnConstraint $col.constraint } { true : null } ] (
+   { [ match { $getColumnWorkflowConstraint : !getColumnWorkflowConstraint $col } { true : null } ] (
     ; to wf-target !resolveWorkflowTarget $view.tables $col
     [ match
      { $wf-target.valid : ; object { selectable true } { ready true } { reason '' } }
-     { $wf-target.configured : ; object { selectable true } { ready false } { reason 'Workflow table or columns not found' } }
+     { $wf-target.configured : ; object { selectable true } { ready false } { reason [ match { $wf-target.typeMismatch : ; add 'Workflow From and To columns must be ' $col.type } { true : 'Workflow table or columns not found' } ] } }
      { true : ; object { selectable true } { ready false } { reason 'Configure workflow table, From, and To columns in Schema' } }
     ]
    ) }
@@ -2756,7 +4603,7 @@
       !view.row-picker.open $pick-opts
      )
     ) }
-    { [ match { [ propertyIs text col.type ] : !normalizeColumnConstraint $col.constraint } { true : null } ] (
+    { [ match { $getColumnWorkflowConstraint : !getColumnWorkflowConstraint $col } { true : null } ] (
      ; to wf-target !resolveWorkflowTarget $view.tables $col
      ; condition { propertyIs true wf-target.valid } (
       ; to col-label !view.display-col-name $col
@@ -2771,7 +4618,8 @@
         { [ propertyIs '' fv ] : null }
         { true (
          ; to seen-states $fv true
-         !state-items.push [ object { value $fv } { valueText $fv } { displayText $fv } { hasSeparateDisplay false } { label $fv } ]
+         ; to typed-fv !parseWorkflowOptionValue $fv $col
+         !state-items.push [ object { value $typed-fv } { valueText $fv } { displayText $fv } { hasSeparateDisplay false } { label $fv } ]
         ) }
        ]
       )
@@ -2783,7 +4631,8 @@
         { [ propertyIs '' tv ] : null }
         { true (
          ; to seen-states $tv true
-         !state-items.push [ object { value $tv } { valueText $tv } { displayText $tv } { hasSeparateDisplay false } { label $tv } ]
+         ; to typed-tv !parseWorkflowOptionValue $tv $col
+         !state-items.push [ object { value $typed-tv } { valueText $tv } { displayText $tv } { hasSeparateDisplay false } { label $tv } ]
         ) }
        ]
       )
@@ -2801,13 +4650,9 @@
        { page-size $view.row-page-size }
        { resolve-display (
         ; to { val } $argv
-        ; to st-txt [ match
-         { [ propertyIs undefined val ] : '' }
-         { [ propertyIs null val ] : '' }
-         { true : ; add '' $val }
-        ]
-        ; to wf-st !getWorkflowCellState $view.tables $col $st-txt
-        ; object { isEmpty [ propertyIs '' st-txt ] } { valueText $st-txt } { displayText $st-txt } { hasSeparateDisplay false } { label $st-txt } { filterMatched $wf-st.isValueValid }
+        ; to wf-st !getWorkflowCellState $view.tables $col $val
+        ; to st-txt $wf-st.currentValue
+        ; object { isEmpty !isDataCellValueEmpty $val $single-spec } { valueText $st-txt } { displayText $st-txt } { hasSeparateDisplay false } { label $st-txt } { filterMatched $wf-st.isValueValid }
        ) }
        { fetch-page (
         ; to { offset limit } $argv
@@ -2872,7 +4717,7 @@
     !view.save-row $tbl $row
    )
    ; to eff-enter [ ternary $is-ro null $on-item-enter ]
-   ; to ctrl !view.create-typed-control $col $item-val $on-item-valid $eff-enter $tbl $row $multi-picker-cb
+   ; to ctrl !view.create-typed-control $col $item-val $on-item-valid $eff-enter $tbl $row $multi-picker-cb $item-idx
    ; to rm-btn !document.createElement button
    ; assign $rm-btn { type button } { className lane-data-multi-remove } { textContent '×' } { title 'Remove item' } { hidden $is-ro } { disabled $is-ro }
    !rm-btn.addEventListener click : ; condition { propertyIs false is-ro } : !view.request-remove-multi-item $tbl $row $row-idx $col $cell-rec $item-idx
@@ -3010,6 +4855,13 @@
    { $h-cell.el (
     ; assign h-cell.el.style { width $px } { minWidth $px } { maxWidth $px }
     ; set [ ternary $has-w 'lane-data-th lane-data-th--sized' lane-data-th ] h-cell.el.className
+   ) }
+  ]
+  ; to f-cell [ get view.grid-filter-cells $h-idx ]
+  [ match
+   { $f-cell.el (
+    ; assign f-cell.el.style { width $px } { minWidth $px } { maxWidth $px }
+    ; set [ ternary $has-w 'lane-data-th lane-data-filter-th lane-data-th--sized' 'lane-data-th lane-data-filter-th' ] f-cell.el.className
    ) }
   ]
   ; each $view.grid-rows (
@@ -3262,11 +5114,25 @@
  )
 
  ; to view.render-grid (
-  -- Renders the editable table headers, display options bar, and rows (plus any visible inbound subtable groups) for the active table
+  -- Renders the editable table headers, filters row, display options bar, and rows (plus any visible inbound subtable groups) for the active table
   ; while { propertyIsGreaterThan 0 view.grid-head-cells.length } (
    ; to old-h !view.grid-head-cells.pop
    !old-h.el.remove
   )
+  ; while { propertyIsGreaterThan 0 view.grid-filter-cells.length } (
+   ; to old-f !view.grid-filter-cells.pop
+   [ match
+    { $old-f.chips (
+     ; each $old-f.chips (
+      ; to { oc } $argv
+      [ match { $oc.el.remove : !oc.el.remove } ]
+     )
+    ) }
+   ]
+   [ match { $old-f.add-btn.remove : !old-f.add-btn.remove } ]
+   [ match { $old-f.el.remove : !old-f.el.remove } ]
+  )
+  !clear-children $grid-frow
   ; while { propertyIsGreaterThan 0 view.grid-rows.length } (
    ; to old-r !view.grid-rows.pop
    [ match
@@ -3285,7 +5151,24 @@
     ; to is-ro !view.is-readonly-table $tbl
     ; to col-count $tbl.columns.length
     ; to row-count $tbl.rows.length
-    ; set [ add 'Rows (' ; add $row-count ')' ] rows-title.textContent
+    ; to st !view.ensure-table-views-state $tbl
+    ; to clock-opts !view.get-clock-display-opts
+    ; to pinned [ get view.pinned-row-ids $tbl.id ]
+    ; to filtered [ match
+     { $filterTableRows : !filterTableRows $tbl $st.workingFilters [ object { tables $view.tables } { displayOpts $clock-opts } { lookupLaneTitle $view.lookup-lane-title } { pinnedRowIds $pinned } ] }
+     { true (
+      ; to fb-entries {}
+      ; each $tbl.rows (
+       ; to { frow fidx } $argv
+       !fb-entries.push ; object { row $frow } { rowIndex $fidx } { rowNumber ; add $fidx 1 }
+      )
+      ; object { matchedEntries $fb-entries } { totalCount $row-count } { matchedCount $row-count } { hasActiveFilters false }
+     ) }
+    ]
+    ; set [ match
+     { [ propertyIs true filtered.hasActiveFilters ] : ; add 'Rows (' ; add $filtered.matchedCount ; add ' of ' ; add $row-count ')' }
+     { true : ; add 'Rows (' ; add $row-count ')' }
+    ] rows-title.textContent
     ; to has-cols [ propertyIsGreaterThan 0 col-count ]
     ; to has-rows [ propertyIsGreaterThan 0 row-count ]
     ; set $is-ro add-row-btn.hidden
@@ -3354,19 +5237,18 @@
           { true : ; set 'Linked row column not configured' type-span.title }
          ]
         ) }
-        { [ propertyIs text col.type ] (
-         ; to wf-target !resolveWorkflowTarget $view.tables $col
-         [ match
-          { [ propertyIs false wf-target.active ] : null }
-          { $wf-target.valid (
-           ; to wf-title ; add 'Workflow: ' ; add $wf-target.tableName ; add ' (' ; add $wf-target.fromColName ; add ' → ' ; add $wf-target.toColName ')'
-           ; set $wf-title type-span.title
-          ) }
-          { true : ; set 'Workflow constraint not configured' type-span.title }
-         ]
-        ) }
         { [ propertyIs lane col.type ] : ; set 'Stores a selected lane ID' type-span.title }
        ]
+       ; to c-desc [ match
+        { $describeAllColumnConstraints : !describeAllColumnConstraints $col $view.tables $clock-opts }
+        { true : '' }
+       ]
+       ; condition { propertyIsGreaterThan 0 c-desc.length } (
+        [ match
+         { [ propertyIs '' type-span.title ] : ; set $c-desc type-span.title }
+         { true : ; set [ add $type-span.title [ add ' · ' $c-desc ] ] type-span.title }
+        ]
+       )
        ; to resizer-el !document.createElement div
        ; assign $resizer-el { className lane-data-col-resizer } { title 'Drag to resize column (double-click to reset)' } { hidden $is-ro }
        !resizer-el.setAttribute role separator
@@ -3458,9 +5340,79 @@
       !grid-hrow.appendChild $act-th
       !view.grid-head-cells.push ; object { kind actions } { el $act-th }
 
+      [ match
+       { $has-visible-subtables (
+        ; to f-subtoggle-th !document.createElement th
+        ; assign $f-subtoggle-th { className 'lane-data-th lane-data-th--subtoggle lane-data-filter-th lane-data-filter-th--subtoggle' } { textContent '' }
+        !grid-frow.appendChild $f-subtoggle-th
+        !view.grid-filter-cells.push ; object { kind subtoggle } { el $f-subtoggle-th }
+       ) }
+      ]
+      ; to f-num-th !document.createElement th
+      ; assign $f-num-th { className 'lane-data-th lane-data-th--num lane-data-filter-th lane-data-filter-th--funnel' } { innerHTML $funnel-svg } { title 'Column filters' }
+      !f-num-th.setAttribute aria-label Filters
+      !grid-frow.appendChild $f-num-th
+      !view.grid-filter-cells.push ; object { kind num } { el $f-num-th }
+
+      ; each $tbl.columns (
+       ; to { fcol } $argv
+       ; to f-th !document.createElement th
+       ; set 'lane-data-th lane-data-filter-th' f-th.className
+       ; to f-cell-wrap !document.createElement div
+       ; set lane-data-filter-cell f-cell-wrap.className
+       ; to chips {}
+       ; each $st.workingFilters (
+        ; to { flt } $argv
+        ; condition { propertyIs $fcol.id flt.columnId } (
+         ; to chip-el !document.createElement span
+         ; set lane-data-filter-chip chip-el.className
+         ; to bubble-btn !document.createElement button
+         ; to bubble-label !view.format-bubble-text $tbl $fcol $flt
+         ; assign $bubble-btn { type button } { className lane-data-filter-bubble } { textContent $bubble-label } { title 'Edit filter' }
+         !bubble-btn.addEventListener click (
+          ; to { ev } $argv
+          [ match { $ev.stopPropagation : !ev.stopPropagation } ]
+          !view.open-filter-menu $tbl $fcol $flt $bubble-btn
+         )
+         ; to rm-flt-btn !document.createElement button
+         ; assign $rm-flt-btn { type button } { className lane-data-filter-remove } { textContent '×' } { title 'Remove filter' }
+         !rm-flt-btn.setAttribute aria-label 'Remove filter'
+         !rm-flt-btn.addEventListener click (
+          ; to { ev } $argv
+          [ match { $ev.stopPropagation : !ev.stopPropagation } ]
+          !view.delete-filter-by-id $tbl $flt.id
+         )
+         !chip-el.appendChild $bubble-btn
+         !chip-el.appendChild $rm-flt-btn
+         !f-cell-wrap.appendChild $chip-el
+         !chips.push ; object { flt $flt } { el $chip-el } { label-el $bubble-btn } { remove-el $rm-flt-btn }
+        )
+       )
+       ; to add-flt-btn !document.createElement button
+       ; assign $add-flt-btn { type button } { className lane-data-filter-add-btn } { textContent '+' } { title 'Add filter' }
+       !add-flt-btn.setAttribute aria-label 'Add filter'
+       !add-flt-btn.addEventListener click (
+        ; to { ev } $argv
+        [ match { $ev.stopPropagation : !ev.stopPropagation } ]
+        !view.open-filter-menu $tbl $fcol null $add-flt-btn
+       )
+       !f-cell-wrap.appendChild $add-flt-btn
+       !f-th.appendChild $f-cell-wrap
+       !grid-frow.appendChild $f-th
+       !view.grid-filter-cells.push ; object { kind col } { col $fcol } { el $f-th } { wrap-el $f-cell-wrap } { add-btn $add-flt-btn } { chips $chips }
+      )
+
+      ; to f-act-th !document.createElement th
+      ; assign $f-act-th { className 'lane-data-th lane-data-th--actions lane-data-filter-th lane-data-filter-th--actions' } { textContent '' }
+      !grid-frow.appendChild $f-act-th
+      !view.grid-filter-cells.push ; object { kind actions } { el $f-act-th }
+
       ; to span-col-count ; add $col-count 1
-      ; each $tbl.rows (
-       ; to { row row-idx } $argv
+      ; each $filtered.matchedEntries (
+       ; to { entry } $argv
+       ; to row $entry.row
+       ; to row-idx $entry.rowIndex
+       ; to row-num $entry.rowNumber
        ; to tr !document.createElement tr
        ; set lane-data-row tr.className
        ; to subtoggle-td [ match
@@ -3472,7 +5424,6 @@
         ) }
         { true : null }
        ]
-       ; to row-num ; add $row-idx 1
        ; to num-td !document.createElement td
        ; assign $num-td { className 'lane-data-td lane-data-td--num' } { textContent $row-num }
        !tr.appendChild $num-td
@@ -3685,10 +5636,13 @@
        ]
       )
 
-      ; set $has-rows rows-empty-el.hidden
+      ; to has-filtered-rows [ propertyIsGreaterThan 0 filtered.matchedCount ]
+      ; to no-matches [ ternary [ and { $has-rows } { [ propertyIs false has-filtered-rows ] } ] true false ]
+      ; set $has-filtered-rows rows-empty-el.hidden
       ; set [ match
        { [ propertyIs true tbl.remote.accessDenied ] : 'Owner lane package is locked.' }
        { [ propertyIs true tbl.remote.missing ] : 'Owner table was deleted.' }
+       { $no-matches : 'No rows match the active filters.' }
        { $is-ro : 'No rows in remote table.' }
        { true : 'No rows yet. Click + Row to add data.' }
       ] rows-empty-el.textContent
@@ -3770,23 +5724,22 @@
      ]
     ) }
    ]
-   [ match
-    { [ propertyIs text next-spec.type ] [ match
-     { $next-spec.constraint : ; set $next-spec.constraint col.constraint }
-     { true (
+   ; to preserved-constraints [ match
+    { [ propertyIs $from-spec.type next-spec.type ] : $next-spec.constraints }
+    { $next-spec.constraints (
+     ; to filtered-c {}
+     ; each $next-spec.constraints (
+      ; to { nc } $argv
       [ match
-       { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col constraint }
-       { true : ; set undefined col.constraint }
+       { [ propertyIs workflow nc.type ] : null }
+       { true : !filtered-c.push $nc }
       ]
-     ) }
-    ] }
-    { true (
-     [ match
-      { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col constraint }
-      { true : ; set undefined col.constraint }
-     ]
+     )
+     $filtered-c
     ) }
+    { true : {} }
    ]
+   !view.set-col-constraints $col $preserved-constraints
    ; each $tbl.rows (
     ; to { row } $argv
     ; to cur [ get row.values $col.id ]
@@ -3796,6 +5749,8 @@
    [ match
     { [ and { [ propertyIs lane col.type ] } { $lane-control.load-catalog } ] : !lane-control.load-catalog }
    ]
+   !view.sanitize-views-for-table $tbl true
+   !view.sync-view-ui
    !view.render-schema
    !view.render-grid
    !view.save-schema-and-rows $tbl
@@ -3872,6 +5827,8 @@
         )
         ; set $next-vals row.values
        )
+       !view.sanitize-views-for-table $tbl true
+       !view.sync-view-ui
        !view.render-schema
        !view.render-grid
        !view.save-schema-and-rows $tbl
@@ -3899,6 +5856,9 @@
     { on-confirm (
      ; to removed [ get tbl.rows $row-idx ]
      !tbl.rows.splice $row-idx 1
+     [ match
+      { $removed : !view.unpin-row-id $tbl.id $removed.id }
+     ]
      !view.render-grid
      !view.update-table-tabs-text
      ; to row-ids !collect-ids $tbl.rows
@@ -3946,6 +5906,7 @@
       { on-confirm (
        ; to removed-ids !collect-ids $tbl.rows
        ; set 0 tbl.rows.length
+       !view.clear-pinned-rows $tbl.id
        !view.render-grid
        !view.update-table-tabs-text
        !clearTableRows $data $view.lane.data $view.lane.id $tbl $removed-ids
@@ -3969,6 +5930,15 @@
     ; to is-rem !view.is-remote-table $tbl
     ; to on-confirm-remove (
      ; to removed-name $tbl.name
+     ; to removed-tid $tbl.id
+     !edit-table-modal.close
+     !view.close-view-menu
+     !view.close-filter-menu
+     !view.clear-pinned-rows $removed-tid
+     [ match
+      { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $view.table-views $removed-tid }
+      { true : ; to view.table-views $removed-tid undefined }
+     ]
      ; to cur-idx !view.tables.indexOf $tbl
      ; condition { propertyIsGreaterThanOrEqual 0 cur-idx } : !view.tables.splice $cur-idx 1
      ; to next-tbl [ match
@@ -4094,22 +6064,36 @@
      ; to decimals-label !document.createElement span
      ; assign $decimals-label { className lane-data-decimals-label } { textContent dp }
      ; to decimals-el !document.createElement input
-     ; assign $decimals-el { type number } { className lane-data-decimals-input } { value [ add '' $dec-val ] } { title 'Decimal places (0–12)' } { spellcheck false } { autocomplete off } { disabled $is-ro } { readOnly $is-ro }
-     !decimals-el.setAttribute min '0'
-     !decimals-el.setAttribute max '12'
-     !decimals-el.setAttribute step '1'
+     ; assign $decimals-el { type text } { className lane-data-decimals-input } { value [ add '' $dec-val ] } { title 'Decimal places (0–12)' } { spellcheck false } { autocomplete off } { disabled $is-ro } { readOnly $is-ro }
+     !decimals-el.setAttribute inputmode numeric
+     !decimals-el.setAttribute data-num-type integer
+     !decimals-el.setAttribute aria-invalid 'false'
      !decimals-wrap.appendChild $decimals-label
      !decimals-wrap.appendChild $decimals-el
 
-     ; to is-text [ propertyIs text col.type ]
-     ; to cur-constraint [ match
-      { $is-text : !normalizeColumnConstraint $col.constraint }
-      { true : null }
+     ; to supported-constraints [ match
+      { $getSupportedColumnConstraints : !getSupportedColumnConstraints $col.type }
+      { true : {} }
      ]
-     ; to has-constraint [ match { $cur-constraint : true } { true : false } ]
+     ; to cur-constraints [ match
+      { $normalizeColumnConstraints : !normalizeColumnConstraints $col $col.type $col.decimals }
+      { true : {} }
+     ]
+     ; to used-ctypes ; object
+     ; each $cur-constraints (
+      ; to { cc } $argv
+      ; to used-ctypes $cc.type true
+     )
+     ; to remaining-constraints {}
+     ; each $supported-constraints (
+      ; to { sc } $argv
+      ; to is-used [ match { [ get used-ctypes $sc.type ] : true } { true : false } ]
+      ; condition { propertyIs false is-used } : !remaining-constraints.push $sc
+     )
+     ; to has-constraints [ propertyIsGreaterThan 0 cur-constraints.length ]
      ; to show-add-constraint [ match
       { $is-ro : false }
-      { $is-text : [ ternary $has-constraint false true ] }
+      { [ propertyIsGreaterThan 0 remaining-constraints.length ] : true }
       { true : false }
      ]
      ; to constraint-add-el !document.createElement select
@@ -4117,9 +6101,12 @@
      ; to constraint-add-placeholder !document.createElement option
      ; assign $constraint-add-placeholder { value '' } { textContent '+ constraint' }
      !constraint-add-el.appendChild $constraint-add-placeholder
-     ; to constraint-add-wf !document.createElement option
-     ; assign $constraint-add-wf { value workflow } { textContent Workflow }
-     !constraint-add-el.appendChild $constraint-add-wf
+     ; each $remaining-constraints (
+      ; to { sc } $argv
+      ; to opt-sc !document.createElement option
+      ; assign $opt-sc { value $sc.type } { textContent $sc.label }
+      !constraint-add-el.appendChild $opt-sc
+     )
      ; set '' constraint-add-el.value
 
      !type-wrap.appendChild $type-el
@@ -4432,157 +6419,703 @@
      !row-config-wrap.appendChild $row-hint-el
      !type-td.appendChild $row-config-wrap
 
-     ; to constraint-config-wrap !document.createElement div
-     ; assign $constraint-config-wrap { className lane-data-constraint-config } { hidden [ ternary $has-constraint false true ] }
-
-     ; to constraint-header !document.createElement div
-     ; set lane-data-constraint-header constraint-header.className
-     ; to constraint-title !document.createElement span
-     ; assign $constraint-title { className lane-data-constraint-title } { textContent Constraint }
-     ; to constraint-remove-btn !document.createElement button
-     ; assign $constraint-remove-btn { type button } { className lane-data-constraint-remove } { textContent '×' } { title 'Remove constraint' } { hidden $is-ro } { disabled $is-ro }
-     !constraint-header.appendChild $constraint-title
-     !constraint-header.appendChild $constraint-remove-btn
-
-     ; to constraint-type-field !document.createElement label
-     ; set lane-data-row-field constraint-type-field.className
-     ; to constraint-type-label !document.createElement span
-     ; assign $constraint-type-label { className lane-data-row-label } { textContent Type }
-     ; to constraint-type-el !document.createElement select
-     ; assign $constraint-type-el { className 'lane-input-type lane-data-row-select lane-data-constraint-type' } { disabled $is-ro }
-     ; to constraint-type-wf !document.createElement option
-     ; assign $constraint-type-wf { value workflow } { textContent Workflow }
-     !constraint-type-el.appendChild $constraint-type-wf
-     !constraint-type-field.appendChild $constraint-type-label
-     !constraint-type-field.appendChild $constraint-type-el
-
-     ; to constraint-table-field !document.createElement label
-     ; set lane-data-row-field constraint-table-field.className
-     ; to constraint-table-label !document.createElement span
-     ; assign $constraint-table-label { className lane-data-row-label } { textContent Table }
-     ; to constraint-table-el !document.createElement select
-     ; assign $constraint-table-el { className 'lane-input-type lane-data-row-select lane-data-constraint-table' } { disabled $is-ro }
-     ; to constraint-table-empty !document.createElement option
-     ; assign $constraint-table-empty { value '' } { textContent 'Select table…' }
-     !constraint-table-el.appendChild $constraint-table-empty
-     !constraint-table-field.appendChild $constraint-table-label
-     !constraint-table-field.appendChild $constraint-table-el
-
-     ; to constraint-from-field !document.createElement label
-     ; set lane-data-row-field constraint-from-field.className
-     ; to constraint-from-label !document.createElement span
-     ; assign $constraint-from-label { className lane-data-row-label } { textContent From }
-     ; to constraint-from-el !document.createElement select
-     ; set 'lane-input-type lane-data-row-select lane-data-constraint-from' constraint-from-el.className
-     ; to constraint-from-empty !document.createElement option
-     ; assign $constraint-from-empty { value '' } { textContent 'Select column…' }
-     !constraint-from-el.appendChild $constraint-from-empty
-     !constraint-from-field.appendChild $constraint-from-label
-     !constraint-from-field.appendChild $constraint-from-el
-
-     ; to constraint-to-field !document.createElement label
-     ; set lane-data-row-field constraint-to-field.className
-     ; to constraint-to-label !document.createElement span
-     ; assign $constraint-to-label { className lane-data-row-label } { textContent To }
-     ; to constraint-to-el !document.createElement select
-     ; set 'lane-input-type lane-data-row-select lane-data-constraint-to' constraint-to-el.className
-     ; to constraint-to-empty !document.createElement option
-     ; assign $constraint-to-empty { value '' } { textContent 'Select column…' }
-     !constraint-to-el.appendChild $constraint-to-empty
-     !constraint-to-field.appendChild $constraint-to-label
-     !constraint-to-field.appendChild $constraint-to-el
-
-     ; to constraint-hint-el !document.createElement div
-     ; assign $constraint-hint-el { className lane-data-row-hint } { textContent '' }
-
-     [ match
-      { $has-constraint (
-       ; set $cur-constraint.type constraint-type-el.value
-       ; to cur-wf-table-id $cur-constraint.tableId
-       ; to cur-wf-from-id $cur-constraint.fromColumnId
-       ; to cur-wf-to-id $cur-constraint.toColumnId
-
-       ; to sel-wf-table-box ; object { table null }
-       ; each $view.tables (
-        ; to { t t-idx } $argv
-        ; to allow-wt [ match
-         { [ propertyIs false is-rem ] : true }
-         { [ and { $t.remote } { [ propertyIs $tbl.remote.laneId t.remote.laneId ] } ] : true }
-         { true : false }
-        ]
-        ; condition { propertyIs true allow-wt } (
-         ; to opt-wval [ match { $is-rem : $t.remote.tableId } { true : $t.id } ]
-         ; to opt-wt !document.createElement option
-         ; assign $opt-wt { value $opt-wval } { textContent !view.display-table-name $t $t-idx }
-         !constraint-table-el.appendChild $opt-wt
-         ; condition { propertyIs $cur-wf-table-id opt-wval } : ; set $t sel-wf-table-box.table
-        )
-       )
-       ; to sel-wf-table $sel-wf-table-box.table
-       ; to sel-wf-val [ match
-        { [ propertyIs null sel-wf-table ] : '' }
-        { $is-rem : $sel-wf-table.remote.tableId }
-        { true : $sel-wf-table.id }
-       ]
-       ; set $sel-wf-val constraint-table-el.value
-       ; set [ ternary $sel-wf-table 'lane-input-type lane-data-row-select lane-data-constraint-table' 'lane-input-type lane-data-row-select lane-data-constraint-table lane-data-row-select--required' ] constraint-table-el.className
-
-       ; to sel-wf-col-box ; object { from-col null } { to-col null }
-       [ match
-        { $sel-wf-table (
-         ; set $is-ro constraint-from-el.disabled
-         ; set $is-ro constraint-to-el.disabled
-         ; each $sel-wf-table.columns (
-          ; to { tc } $argv
-          ; to tc-name !view.display-col-name $tc
-          ; to tc-type !formatColumnType $tc undefined undefined $view.tables
-          ; to tc-label ; add $tc-name ; add ' (' ; add $tc-type ')'
-          ; to opt-f !document.createElement option
-          ; assign $opt-f { value $tc.id } { textContent $tc-label }
-          !constraint-from-el.appendChild $opt-f
-          ; to opt-t2 !document.createElement option
-          ; assign $opt-t2 { value $tc.id } { textContent $tc-label }
-          !constraint-to-el.appendChild $opt-t2
-          ; condition { propertyIs $cur-wf-from-id tc.id } : ; set $tc sel-wf-col-box.from-col
-          ; condition { propertyIs $cur-wf-to-id tc.id } : ; set $tc sel-wf-col-box.to-col
-         )
-        ) }
-        { true (
-         ; set true constraint-from-el.disabled
-         ; set true constraint-to-el.disabled
-        ) }
-       ]
-       ; to sel-wf-from $sel-wf-col-box.from-col
-       ; to sel-wf-to $sel-wf-col-box.to-col
-       ; set [ match { $sel-wf-from : $sel-wf-from.id } { true : '' } ] constraint-from-el.value
-       ; set [ match { $sel-wf-to : $sel-wf-to.id } { true : '' } ] constraint-to-el.value
-       ; set [ ternary $sel-wf-from 'lane-input-type lane-data-row-select lane-data-constraint-from' 'lane-input-type lane-data-row-select lane-data-constraint-from lane-data-row-select--required' ] constraint-from-el.className
-       ; set [ ternary $sel-wf-to 'lane-input-type lane-data-row-select lane-data-constraint-to' 'lane-input-type lane-data-row-select lane-data-constraint-to lane-data-row-select--required' ] constraint-to-el.className
-
-       ; to wf-hint-text [ match
-        { [ propertyIs null sel-wf-table ] : 'Select workflow table (required)' }
-        { [ propertyIs null sel-wf-from ] [ match
-         { [ propertyIs null sel-wf-to ] : 'Select From and To columns (required)' }
-         { true : 'Select From column (required)' }
-        ] }
-        { [ propertyIs null sel-wf-to ] : 'Select To column (required)' }
-        { true (
-         ; to wf-info !resolveWorkflowTarget $view.tables $col
-         ; to unit [ ternary [ propertyIs 1 wf-info.transitionCount ] transition transitions ]
-         ; add $wf-info.tableName ; add ' (' ; add $wf-info.fromColName ; add ' → ' ; add $wf-info.toColName ; add ') · ' ; add $wf-info.transitionCount ; add ' ' $unit
-        ) }
-       ]
-       ; set $wf-hint-text constraint-hint-el.textContent
-      ) }
+     ; to constraints-list-el !document.createElement div
+     ; assign $constraints-list-el { className lane-data-constraints-list } { hidden [ ternary $has-constraints false true ] }
+     ; to constraint-cards {}
+     ; to single-col-spec [ match
+      { [ propertyIs fixed col.type ] : ; object { type fixed } { multiple false } { decimals !normalizeFixedDecimals $col.decimals } }
+      { true : ; object { type $col.type } { multiple false } }
      ]
+     ; to make-constraint-field (
+      ; to { lbl-txt ctrl-el } $argv
+      ; to fld !document.createElement label
+      ; set lane-data-row-field fld.className
+      ; to lbl !document.createElement span
+      ; assign $lbl { className lane-data-row-label } { textContent $lbl-txt }
+      !fld.appendChild $lbl
+      !fld.appendChild $ctrl-el
+      $fld
+     )
+     ; to read-latest-constraint (
+      ; to { idx fallback } $argv
+      ; to latest-all !normalizeColumnConstraints $col $col.type $col.decimals
+      ; to found [ get latest-all $idx ]
+      [ match { $found : $found } { true : $fallback } ]
+     )
+     ; to update-constraint-at (
+      ; to { target-idx next-c-obj do-rerender chint-el } $argv
+      ; to latest-all !normalizeColumnConstraints $col $col.type $col.decimals
+      ; to next-all {}
+      ; each $latest-all (
+       ; to { lc lidx } $argv
+       [ match
+        { [ propertyIs $target-idx lidx ] : !next-all.push $next-c-obj }
+        { true : !next-all.push $lc }
+       ]
+      )
+      ; to norm-all !view.set-col-constraints $col $next-all
+      [ match
+       { $do-rerender (
+        !view.render-schema
+        !view.render-grid
+        !view.save-schema $tbl
+       ) }
+       { true (
+        ; to updated-c [ get norm-all $target-idx ]
+        ; to ref-c [ match { $updated-c : $updated-c } { true : $next-c-obj } ]
+        ; to copts !view.get-clock-display-opts
+        ; to hint-txt [ match
+         { $describeColumnConstraint : !describeColumnConstraint $ref-c $col $view.tables $copts }
+         { true : '' }
+        ]
+        [ match { $chint-el : ; set $hint-txt chint-el.textContent } ]
+        !view.render-grid
+        !view.save-schema $tbl
+       ) }
+      ]
+     )
 
-     !constraint-config-wrap.appendChild $constraint-header
-     !constraint-config-wrap.appendChild $constraint-type-field
-     !constraint-config-wrap.appendChild $constraint-table-field
-     !constraint-config-wrap.appendChild $constraint-from-field
-     !constraint-config-wrap.appendChild $constraint-to-field
-     !constraint-config-wrap.appendChild $constraint-hint-el
-     !type-td.appendChild $constraint-config-wrap
+     ; each $cur-constraints (
+      ; to { c-item c-idx } $argv
+      ; to card-wrap !document.createElement div
+      ; assign $card-wrap { className lane-data-constraint-config } { hidden false }
+
+      ; to card-header !document.createElement div
+      ; set lane-data-constraint-header card-header.className
+      ; to card-title !document.createElement span
+      ; assign $card-title { className lane-data-constraint-title } { textContent Constraint }
+      ; to card-remove-btn !document.createElement button
+      ; assign $card-remove-btn { type button } { className lane-data-constraint-remove } { textContent '×' } { title 'Remove constraint' } { hidden $is-ro } { disabled $is-ro }
+      !card-header.appendChild $card-title
+      !card-header.appendChild $card-remove-btn
+
+      ; to ctype-el !document.createElement select
+      ; assign $ctype-el { className 'lane-input-type lane-data-row-select lane-data-constraint-type' } { disabled $is-ro }
+      ; each $supported-constraints (
+       ; to { sc } $argv
+       ; to is-cur-type [ propertyIs $c-item.type sc.type ]
+       ; to is-other-used [ match { [ get used-ctypes $sc.type ] : true } { true : false } ]
+       ; to allow-ctype [ match
+        { $is-cur-type : true }
+        { [ propertyIs false is-other-used ] : true }
+        { true : false }
+       ]
+       ; condition { propertyIs true allow-ctype } (
+        ; to opt-ct !document.createElement option
+        ; assign $opt-ct { value $sc.type } { textContent $sc.label }
+        !ctype-el.appendChild $opt-ct
+       )
+      )
+      ; set $c-item.type ctype-el.value
+      ; to ctype-field !make-constraint-field Type $ctype-el
+
+      ; to chint-el !document.createElement div
+      ; assign $chint-el { className lane-data-row-hint } { textContent '' }
+
+      !card-wrap.appendChild $card-header
+      !card-wrap.appendChild $ctype-field
+
+      ; to card-refs ; object { table-el null } { from-el null } { to-el null } { min-el null } { max-el null } { step-el null } { text-el null } { preset-past-btn null } { preset-future-btn null } { preset-true-btn null } { preset-false-btn null } { preset-object-btn null } { preset-array-btn null }
+
+      [ match
+       { [ propertyIs workflow c-item.type ] (
+        ; to ctable-el !document.createElement select
+        ; assign $ctable-el { className 'lane-input-type lane-data-row-select lane-data-constraint-table' } { disabled $is-ro }
+        ; to ctable-empty !document.createElement option
+        ; assign $ctable-empty { value '' } { textContent 'Select table…' }
+        !ctable-el.appendChild $ctable-empty
+        ; to ctable-field !make-constraint-field Table $ctable-el
+
+        ; to cfrom-el !document.createElement select
+        ; set 'lane-input-type lane-data-row-select lane-data-constraint-from' cfrom-el.className
+        ; to cfrom-empty !document.createElement option
+        ; assign $cfrom-empty { value '' } { textContent 'Select column…' }
+        !cfrom-el.appendChild $cfrom-empty
+        ; to cfrom-field !make-constraint-field From $cfrom-el
+
+        ; to cto-el !document.createElement select
+        ; set 'lane-input-type lane-data-row-select lane-data-constraint-to' cto-el.className
+        ; to cto-empty !document.createElement option
+        ; assign $cto-empty { value '' } { textContent 'Select column…' }
+        !cto-el.appendChild $cto-empty
+        ; to cto-field !make-constraint-field To $cto-el
+
+        ; set $ctable-el card-refs.table-el
+        ; set $cfrom-el card-refs.from-el
+        ; set $cto-el card-refs.to-el
+
+        ; to cur-wf-table-id $c-item.tableId
+        ; to cur-wf-from-id $c-item.fromColumnId
+        ; to cur-wf-to-id $c-item.toColumnId
+
+        ; to sel-wf-table-box ; object { table null } { name '' }
+        ; each $view.tables (
+         ; to { t t-idx } $argv
+         ; to allow-wt [ match
+          { [ propertyIs false is-rem ] : true }
+          { [ and { $t.remote } { [ propertyIs $tbl.remote.laneId t.remote.laneId ] } ] : true }
+          { true : false }
+         ]
+         ; condition { propertyIs true allow-wt } (
+          ; to opt-wval [ match { $is-rem : $t.remote.tableId } { true : $t.id } ]
+          ; to wname !view.display-table-name $t $t-idx
+          ; to opt-wt !document.createElement option
+          ; assign $opt-wt { value $opt-wval } { textContent $wname }
+          !ctable-el.appendChild $opt-wt
+          ; condition { propertyIs $cur-wf-table-id opt-wval } (
+           ; set $t sel-wf-table-box.table
+           ; set $wname sel-wf-table-box.name
+          )
+         )
+        )
+        ; to sel-wf-table $sel-wf-table-box.table
+        ; to sel-wf-val [ match
+         { [ propertyIs null sel-wf-table ] : '' }
+         { $is-rem : $sel-wf-table.remote.tableId }
+         { true : $sel-wf-table.id }
+        ]
+        ; set $sel-wf-val ctable-el.value
+        ; set [ ternary $sel-wf-table 'lane-input-type lane-data-row-select lane-data-constraint-table' 'lane-input-type lane-data-row-select lane-data-constraint-table lane-data-row-select--required' ] ctable-el.className
+
+        ; to sel-wf-col-box ; object { from-col null } { to-col null } { match-count 0 }
+        [ match
+         { $sel-wf-table (
+          ; set $is-ro cfrom-el.disabled
+          ; set $is-ro cto-el.disabled
+          ; each $sel-wf-table.columns (
+           ; to { tc } $argv
+           ; to tc-matches [ ternary [ and { [ propertyIs false tc.multiple ] } { [ propertyIs $col.type tc.type ] } ] true false ]
+           ; condition { propertyIs true tc-matches } (
+            ; set [ add $sel-wf-col-box.match-count 1 ] sel-wf-col-box.match-count
+            ; to tc-name !view.display-col-name $tc
+            ; to tc-type !formatColumnType $tc undefined undefined $view.tables
+            ; to tc-label ; add $tc-name ; add ' (' ; add $tc-type ')'
+            ; to opt-f !document.createElement option
+            ; assign $opt-f { value $tc.id } { textContent $tc-label }
+            !cfrom-el.appendChild $opt-f
+            ; to opt-t2 !document.createElement option
+            ; assign $opt-t2 { value $tc.id } { textContent $tc-label }
+            !cto-el.appendChild $opt-t2
+            ; condition { propertyIs $cur-wf-from-id tc.id } : ; set $tc sel-wf-col-box.from-col
+            ; condition { propertyIs $cur-wf-to-id tc.id } : ; set $tc sel-wf-col-box.to-col
+           )
+          )
+         ) }
+         { true (
+          ; set true cfrom-el.disabled
+          ; set true cto-el.disabled
+         ) }
+        ]
+        ; to sel-wf-from $sel-wf-col-box.from-col
+        ; to sel-wf-to $sel-wf-col-box.to-col
+        ; set [ match { $sel-wf-from : $sel-wf-from.id } { true : '' } ] cfrom-el.value
+        ; set [ match { $sel-wf-to : $sel-wf-to.id } { true : '' } ] cto-el.value
+        ; set [ ternary $sel-wf-from 'lane-input-type lane-data-row-select lane-data-constraint-from' 'lane-input-type lane-data-row-select lane-data-constraint-from lane-data-row-select--required' ] cfrom-el.className
+        ; set [ ternary $sel-wf-to 'lane-input-type lane-data-row-select lane-data-constraint-to' 'lane-input-type lane-data-row-select lane-data-constraint-to lane-data-row-select--required' ] cto-el.className
+
+        ; to wf-hint-text [ match
+         { [ propertyIs null sel-wf-table ] : 'Select workflow table (required)' }
+         { [ propertyIs 0 sel-wf-col-box.match-count ] : ; add 'No ' ; add $col.type ; add ' columns in ' ; add $sel-wf-table-box.name ; add ' — From and To must be ' $col.type }
+         { [ propertyIs null sel-wf-from ] [ match
+          { [ propertyIs null sel-wf-to ] : ; add 'Select ' ; add $col.type ' From and To columns (required)' }
+          { true : ; add 'Select ' ; add $col.type ' From column (required)' }
+         ] }
+         { [ propertyIs null sel-wf-to ] : ; add 'Select ' ; add $col.type ' To column (required)' }
+         { true (
+          ; to wf-info !resolveWorkflowTarget $view.tables $col
+          ; to unit [ ternary [ propertyIs 1 wf-info.transitionCount ] transition transitions ]
+          ; add $wf-info.tableName ; add ' (' ; add $wf-info.fromColName ; add ' → ' ; add $wf-info.toColName ; add ') · ' ; add $wf-info.transitionCount ; add ' ' $unit
+         ) }
+        ]
+        ; set $wf-hint-text chint-el.textContent
+
+        !ctable-el.addEventListener change (
+         ; condition { propertyIs false is-ro } (
+          ; to next-tbl-id $ctable-el.value
+          ; to found-tbl ; object { table null }
+          ; each $view.tables (
+           ; to { cand } $argv
+           ; to match-cand [ match
+            { $is-rem : [ ternary [ and { $cand.remote } { [ propertyIs $tbl.remote.laneId cand.remote.laneId ] } { [ propertyIs $next-tbl-id cand.remote.tableId ] } ] true false ] }
+            { true : [ propertyIs $next-tbl-id cand.id ] }
+           ]
+           ; condition { propertyIs true match-cand } : ; set $cand found-tbl.table
+          )
+          ; to defaults !findWorkflowDefaultColumns $found-tbl.table $col.type
+          ; to next-c [ object
+           { type workflow }
+           { tableId $next-tbl-id }
+           { fromColumnId $defaults.fromColumnId }
+           { toColumnId $defaults.toColumnId }
+          ]
+          !update-constraint-at $c-idx $next-c true $chint-el
+         )
+        )
+        !cfrom-el.addEventListener change (
+         ; condition { propertyIs false is-ro } (
+          ; to cur-c !read-latest-constraint $c-idx $c-item
+          ; to next-c [ object
+           { type workflow }
+           { tableId $cur-c.tableId }
+           { fromColumnId $cfrom-el.value }
+           { toColumnId $cur-c.toColumnId }
+          ]
+          !update-constraint-at $c-idx $next-c true $chint-el
+         )
+        )
+        !cto-el.addEventListener change (
+         ; condition { propertyIs false is-ro } (
+          ; to cur-c !read-latest-constraint $c-idx $c-item
+          ; to next-c [ object
+           { type workflow }
+           { tableId $cur-c.tableId }
+           { fromColumnId $cur-c.fromColumnId }
+           { toColumnId $cto-el.value }
+          ]
+          !update-constraint-at $c-idx $next-c true $chint-el
+         )
+        )
+
+        !card-wrap.appendChild $ctable-field
+        !card-wrap.appendChild $cfrom-field
+        !card-wrap.appendChild $cto-field
+       ) }
+       { [ propertyIs date_range c-item.type ] (
+        ; to is-date-col [ propertyIs date col.type ]
+        ; to past-val [ ternary $is-date-col today_or_past past ]
+        ; to future-val [ ternary $is-date-col today_or_future future ]
+        ; to past-lbl [ ternary $is-date-col 'Must be today or past' 'Must be in the past' ]
+        ; to future-lbl [ ternary $is-date-col 'Must be today or future' 'Must be in the future' ]
+        ; to is-past [ propertyIs $past-val c-item.relative ]
+        ; to is-future [ propertyIs $future-val c-item.relative ]
+
+        ; to presets-wrap !document.createElement div
+        ; set lane-data-constraint-presets presets-wrap.className
+        ; to cpast-btn !document.createElement button
+        ; assign $cpast-btn { type button } { className [ ternary $is-past 'lane-data-constraint-preset lane-data-constraint-preset--active' lane-data-constraint-preset ] } { textContent $past-lbl } { disabled $is-ro }
+        !cpast-btn.setAttribute aria-pressed [ ternary $is-past 'true' 'false' ]
+        ; to cfuture-btn !document.createElement button
+        ; assign $cfuture-btn { type button } { className [ ternary $is-future 'lane-data-constraint-preset lane-data-constraint-preset--active' lane-data-constraint-preset ] } { textContent $future-lbl } { disabled $is-ro }
+        !cfuture-btn.setAttribute aria-pressed [ ternary $is-future 'true' 'false' ]
+        !presets-wrap.appendChild $cpast-btn
+        !presets-wrap.appendChild $cfuture-btn
+        ; set $cpast-btn card-refs.preset-past-btn
+        ; set $cfuture-btn card-refs.preset-future-btn
+
+        !cpast-btn.addEventListener click (
+         ; condition { propertyIs false is-ro } (
+          ; to cur-c !read-latest-constraint $c-idx $c-item
+          ; to next-rel [ ternary [ propertyIs $past-val cur-c.relative ] '' $past-val ]
+          ; to next-c [ object { type date_range } { relative $next-rel } { min $cur-c.min } { max $cur-c.max } ]
+          !update-constraint-at $c-idx $next-c true $chint-el
+         )
+        )
+        !cfuture-btn.addEventListener click (
+         ; condition { propertyIs false is-ro } (
+          ; to cur-c !read-latest-constraint $c-idx $c-item
+          ; to next-rel [ ternary [ propertyIs $future-val cur-c.relative ] '' $future-val ]
+          ; to next-c [ object { type date_range } { relative $next-rel } { min $cur-c.min } { max $cur-c.max } ]
+          !update-constraint-at $c-idx $next-c true $chint-el
+         )
+        )
+        !card-wrap.appendChild $presets-wrap
+
+        ; to make-date-bound (
+         ; to { bound-key raw-init } $argv
+         ; to inp !document.createElement input
+         ; to copts !view.get-clock-display-opts
+         [ match
+          { $is-date-col (
+           ; assign $inp { type date } { className 'lane-data-cell-input lane-data-constraint-input' } { value $raw-init } { spellcheck false } { autocomplete off } { disabled $is-ro } { readOnly $is-ro }
+          ) }
+          { true (
+           ; to init-fmt [ match
+            { [ propertyIs '' raw-init ] : '' }
+            { true : !formatCellInputValue $raw-init datetime undefined $view.tables $copts }
+           ]
+           ; to ph [ match { $formatDatetimePlaceholder : !formatDatetimePlaceholder $copts } { true : 'YYYY-MM-DD HH:mm' } ]
+           ; assign $inp { type text } { className 'lane-data-cell-input lane-data-constraint-input' } { value $init-fmt } { placeholder $ph } { spellcheck false } { autocomplete off } { disabled $is-ro } { readOnly $is-ro }
+          ) }
+         ]
+         ; to on-bound-change (
+          ; condition { propertyIs false is-ro } (
+           ; to cur-copts !view.get-clock-display-opts
+           ; to parsed [ match
+            { $is-date-col : !parseCellValue $inp.value date }
+            { true : !parseCellValue $inp.value datetime undefined $view.tables $cur-copts }
+           ]
+           [ match
+            { $parsed.ok (
+             ; set 'lane-data-cell-input lane-data-constraint-input' inp.className
+             ; set '' inp.title
+             !inp.setAttribute aria-invalid 'false'
+             ; to cur-c !read-latest-constraint $c-idx $c-item
+             ; to next-min [ match { [ propertyIs min bound-key ] : $parsed.value } { true : $cur-c.min } ]
+             ; to next-max [ match { [ propertyIs max bound-key ] : $parsed.value } { true : $cur-c.max } ]
+             ; to next-c [ object { type date_range } { relative $cur-c.relative } { min $next-min } { max $next-max } ]
+             !update-constraint-at $c-idx $next-c false $chint-el
+            ) }
+            { true (
+             ; set 'lane-data-cell-input lane-data-constraint-input lane-data-cell-input--invalid' inp.className
+             ; set $parsed.error inp.title
+             !inp.setAttribute aria-invalid 'true'
+            ) }
+           ]
+          )
+         )
+         !inp.addEventListener input $on-bound-change
+         !inp.addEventListener change $on-bound-change
+         $inp
+        )
+        ; to cmin-el !make-date-bound min $c-item.min
+        ; to cmax-el !make-date-bound max $c-item.max
+        ; set $cmin-el card-refs.min-el
+        ; set $cmax-el card-refs.max-el
+        !card-wrap.appendChild [ !make-constraint-field Min $cmin-el ]
+        !card-wrap.appendChild [ !make-constraint-field Max $cmax-el ]
+        ; to dr-copts !view.get-clock-display-opts
+        ; set [ !describeColumnConstraint $c-item $col $view.tables $dr-copts ] chint-el.textContent
+       ) }
+       { [ match { [ propertyIs min c-item.type ] : true } { [ propertyIs max c-item.type ] : true } { [ propertyIs range c-item.type ] : true } { true : false } ] (
+        ; to make-num-bound (
+         ; to { bound-key cur-val } $argv
+         ; to inp !document.createElement input
+         ; to ph [ match { [ propertyIs fixed col.type ] : !formatCellInputValue 0 $col } { true : '' } ]
+         ; to fmt-val [ match
+          { [ propertyIs null cur-val ] : '' }
+          { [ propertyIs undefined cur-val ] : '' }
+          { true : ; add '' !formatCellInputValue $cur-val $single-col-spec }
+         ]
+         ; assign $inp { type text } { className 'lane-data-cell-input lane-data-constraint-input' } { value $fmt-val } { placeholder $ph } { spellcheck false } { autocomplete off } { disabled $is-ro } { readOnly $is-ro }
+         !inp.setAttribute inputmode [ ternary [ propertyIs integer col.type ] numeric decimal ]
+         !inp.setAttribute data-num-type $col.type
+         !inp.setAttribute aria-invalid 'false'
+         ; to parse-num-bound (
+          [ match
+           { $parseNumericCellInput : !parseNumericCellInput $inp.value $single-col-spec }
+           { true : !parseCellValue $inp.value $single-col-spec }
+          ]
+         )
+         !inp.addEventListener input (
+          ; condition { propertyIs false is-ro } (
+           ; to parsed !parse-num-bound
+           [ match
+            { $parsed.ok (
+             ; set 'lane-data-cell-input lane-data-constraint-input' inp.className
+             ; set '' inp.title
+             !inp.setAttribute aria-invalid 'false'
+             ; to cur-c !read-latest-constraint $c-idx $c-item
+             ; to next-c [ match
+              { [ propertyIs min c-item.type ] : ; object { type min } { min $parsed.value } }
+              { [ propertyIs max c-item.type ] : ; object { type max } { max $parsed.value } }
+              { true (
+               ; to next-min [ match { [ propertyIs min bound-key ] : $parsed.value } { true : $cur-c.min } ]
+               ; to next-max [ match { [ propertyIs max bound-key ] : $parsed.value } { true : $cur-c.max } ]
+               ; object { type range } { min $next-min } { max $next-max }
+              ) }
+             ]
+             !update-constraint-at $c-idx $next-c false $chint-el
+            ) }
+            { true (
+             ; set 'lane-data-cell-input lane-data-constraint-input lane-data-cell-input--invalid' inp.className
+             ; set $parsed.error inp.title
+             !inp.setAttribute aria-invalid 'true'
+            ) }
+           ]
+          )
+         )
+         ; to normalize-num-bound (
+          ; condition { propertyIs false is-ro } (
+           ; to parsed !parse-num-bound
+           ; condition { propertyIs true parsed.ok } (
+            ; to norm-s [ match
+             { [ propertyIs null parsed.value ] : '' }
+             { true : ; add '' !formatCellInputValue $parsed.value $single-col-spec }
+            ]
+            ; set $norm-s inp.value
+           )
+          )
+         )
+         !inp.addEventListener change $normalize-num-bound
+         !inp.addEventListener blur $normalize-num-bound
+         $inp
+        )
+        [ match
+         { [ propertyIs min c-item.type ] (
+          ; to cmin-el !make-num-bound min $c-item.min
+          ; set $cmin-el card-refs.min-el
+          !card-wrap.appendChild [ !make-constraint-field Min $cmin-el ]
+         ) }
+         { [ propertyIs max c-item.type ] (
+          ; to cmax-el !make-num-bound max $c-item.max
+          ; set $cmax-el card-refs.max-el
+          !card-wrap.appendChild [ !make-constraint-field Max $cmax-el ]
+         ) }
+         { true (
+          ; to cmin-el !make-num-bound min $c-item.min
+          ; to cmax-el !make-num-bound max $c-item.max
+          ; set $cmin-el card-refs.min-el
+          ; set $cmax-el card-refs.max-el
+          !card-wrap.appendChild [ !make-constraint-field Min $cmin-el ]
+          !card-wrap.appendChild [ !make-constraint-field Max $cmax-el ]
+         ) }
+        ]
+        ; set [ !describeColumnConstraint $c-item $col $view.tables null ] chint-el.textContent
+       ) }
+       { [ match { [ propertyIs step c-item.type ] : true } { [ propertyIs min_length c-item.type ] : true } { [ propertyIs max_length c-item.type ] : true } { true : false } ] (
+        ; to is-step [ propertyIs step c-item.type ]
+        ; to is-minl [ propertyIs min_length c-item.type ]
+        ; to min-allowed [ ternary $is-step 1 0 ]
+        ; to cur-num [ match
+         { $is-step : $c-item.step }
+         { $is-minl : $c-item.min }
+         { true : $c-item.max }
+        ]
+        ; to init-num [ match
+         { [ propertyIs null cur-num ] : '' }
+         { [ propertyIs undefined cur-num ] : '' }
+         { true : ; add '' $cur-num }
+        ]
+        ; to num-inp !document.createElement input
+        ; assign $num-inp { type text } { className 'lane-data-cell-input lane-data-constraint-input' } { value $init-num } { spellcheck false } { autocomplete off } { disabled $is-ro } { readOnly $is-ro }
+        !num-inp.setAttribute inputmode numeric
+        !num-inp.setAttribute data-num-type integer
+        !num-inp.setAttribute aria-invalid 'false'
+        [ match
+         { $is-step : ; set $num-inp card-refs.step-el }
+         { $is-minl : ; set $num-inp card-refs.min-el }
+         { true : ; set $num-inp card-refs.max-el }
+        ]
+        ; to validate-step-len (
+         ; to parsed [ match
+          { $parseNumericCellInput : !parseNumericCellInput $num-inp.value integer }
+          { true : !parseCellValue $num-inp.value integer }
+         ]
+         ; to val-ok [ match
+          { [ propertyIs false parsed.ok ] : false }
+          { [ propertyIs null parsed.value ] : true }
+          { [ propertyIsLessThan $min-allowed parsed.value ] : false }
+          { true : true }
+         ]
+         ; object { parsed $parsed } { ok $val-ok }
+        )
+        !num-inp.addEventListener input (
+         ; condition { propertyIs false is-ro } (
+          ; to res !validate-step-len
+          [ match
+           { $res.ok (
+            ; set 'lane-data-cell-input lane-data-constraint-input' num-inp.className
+            ; set '' num-inp.title
+            !num-inp.setAttribute aria-invalid 'false'
+            ; to next-c [ match
+             { $is-step : ; object { type step } { step $res.parsed.value } }
+             { $is-minl : ; object { type min_length } { min $res.parsed.value } }
+             { true : ; object { type max_length } { max $res.parsed.value } }
+            ]
+            !update-constraint-at $c-idx $next-c false $chint-el
+           ) }
+           { true (
+            ; set 'lane-data-cell-input lane-data-constraint-input lane-data-cell-input--invalid' num-inp.className
+            ; to err-t [ match { $res.parsed.error : $res.parsed.error } { true : ; add 'Must be at least ' $min-allowed } ]
+            ; set $err-t num-inp.title
+            !num-inp.setAttribute aria-invalid 'true'
+           ) }
+          ]
+         )
+        )
+        ; to normalize-step-len (
+         ; condition { propertyIs false is-ro } (
+          ; to res !validate-step-len
+          ; condition { propertyIs true res.ok } (
+           ; to norm-s [ match
+            { [ propertyIs null res.parsed.value ] : '' }
+            { true : ; add '' $res.parsed.value }
+           ]
+           ; set $norm-s num-inp.value
+          )
+         )
+        )
+        !num-inp.addEventListener change $normalize-step-len
+        !num-inp.addEventListener blur $normalize-step-len
+        ; to fld-lbl [ match { $is-step : Step } { $is-minl : Min } { true : Max } ]
+        !card-wrap.appendChild [ !make-constraint-field $fld-lbl $num-inp ]
+        ; set [ !describeColumnConstraint $c-item $col $view.tables null ] chint-el.textContent
+       ) }
+       { [ match { [ propertyIs pattern c-item.type ] : true } { [ propertyIs one_of c-item.type ] : true } { [ propertyIs domain c-item.type ] : true } { [ propertyIs required_keys c-item.type ] : true } { true : false } ] (
+        ; to init-txt [ match
+         { [ propertyIs pattern c-item.type ] : $c-item.pattern }
+         { [ propertyIs one_of c-item.type ] : !c-item.values.join ', ' }
+         { [ propertyIs domain c-item.type ] : !c-item.domains.join ', ' }
+         { true : !c-item.keys.join ', ' }
+        ]
+        ; to txt-lbl [ match
+         { [ propertyIs pattern c-item.type ] : Regex }
+         { [ propertyIs one_of c-item.type ] : Values }
+         { [ propertyIs domain c-item.type ] : Domains }
+         { true : Keys }
+        ]
+        ; to txt-ph [ match
+         { [ propertyIs pattern c-item.type ] : '/^[a-z0-9-]+$/i' }
+         { [ propertyIs one_of c-item.type ] : 'a, b, c' }
+         { [ propertyIs domain c-item.type ] : 'example.com' }
+         { true : 'id, name' }
+        ]
+        ; to txt-inp !document.createElement input
+        ; assign $txt-inp { type text } { className 'lane-data-cell-input lane-data-constraint-input' } { value $init-txt } { placeholder $txt-ph } { spellcheck false } { autocomplete off } { disabled $is-ro } { readOnly $is-ro }
+        ; set $txt-inp card-refs.text-el
+        !txt-inp.addEventListener input (
+         ; condition { propertyIs false is-ro } (
+          ; to raw-v $txt-inp.value
+          ; to next-c [ match
+           { [ propertyIs pattern c-item.type ] : ; object { type pattern } { pattern $raw-v } }
+           { [ propertyIs one_of c-item.type ] : ; object { type one_of } { values $raw-v } }
+           { [ propertyIs domain c-item.type ] : ; object { type domain } { domains $raw-v } }
+           { true : ; object { type required_keys } { keys $raw-v } }
+          ]
+          !update-constraint-at $c-idx $next-c false $chint-el
+         )
+        )
+        !card-wrap.appendChild [ !make-constraint-field $txt-lbl $txt-inp ]
+        ; set [ !describeColumnConstraint $c-item $col $view.tables null ] chint-el.textContent
+       ) }
+       { [ propertyIs boolean_value c-item.type ] (
+        ; to is-exp-true [ propertyIs true c-item.expected ]
+        ; to is-exp-false [ propertyIs false c-item.expected ]
+        ; to presets-wrap !document.createElement div
+        ; set lane-data-constraint-presets presets-wrap.className
+        ; to ctrue-btn !document.createElement button
+        ; assign $ctrue-btn { type button } { className [ ternary $is-exp-true 'lane-data-constraint-preset lane-data-constraint-preset--active' lane-data-constraint-preset ] } { textContent 'Must be true' } { disabled $is-ro }
+        !ctrue-btn.setAttribute aria-pressed [ ternary $is-exp-true 'true' 'false' ]
+        ; to cfalse-btn !document.createElement button
+        ; assign $cfalse-btn { type button } { className [ ternary $is-exp-false 'lane-data-constraint-preset lane-data-constraint-preset--active' lane-data-constraint-preset ] } { textContent 'Must be false' } { disabled $is-ro }
+        !cfalse-btn.setAttribute aria-pressed [ ternary $is-exp-false 'true' 'false' ]
+        !presets-wrap.appendChild $ctrue-btn
+        !presets-wrap.appendChild $cfalse-btn
+        ; set $ctrue-btn card-refs.preset-true-btn
+        ; set $cfalse-btn card-refs.preset-false-btn
+        !ctrue-btn.addEventListener click (
+         ; condition { propertyIs false is-ro } (
+          ; to cur-c !read-latest-constraint $c-idx $c-item
+          ; to next-exp [ ternary [ propertyIs true cur-c.expected ] null true ]
+          !update-constraint-at $c-idx [ object { type boolean_value } { expected $next-exp } ] true $chint-el
+         )
+        )
+        !cfalse-btn.addEventListener click (
+         ; condition { propertyIs false is-ro } (
+          ; to cur-c !read-latest-constraint $c-idx $c-item
+          ; to next-exp [ ternary [ propertyIs false cur-c.expected ] null false ]
+          !update-constraint-at $c-idx [ object { type boolean_value } { expected $next-exp } ] true $chint-el
+         )
+        )
+        !card-wrap.appendChild $presets-wrap
+        ; set [ !describeColumnConstraint $c-item $col $view.tables null ] chint-el.textContent
+       ) }
+       { [ propertyIs json_type c-item.type ] (
+        ; to is-obj [ propertyIs object c-item.expected ]
+        ; to is-arr [ propertyIs array c-item.expected ]
+        ; to presets-wrap !document.createElement div
+        ; set lane-data-constraint-presets presets-wrap.className
+        ; to cobj-btn !document.createElement button
+        ; assign $cobj-btn { type button } { className [ ternary $is-obj 'lane-data-constraint-preset lane-data-constraint-preset--active' lane-data-constraint-preset ] } { textContent 'Must be object' } { disabled $is-ro }
+        !cobj-btn.setAttribute aria-pressed [ ternary $is-obj 'true' 'false' ]
+        ; to carr-btn !document.createElement button
+        ; assign $carr-btn { type button } { className [ ternary $is-arr 'lane-data-constraint-preset lane-data-constraint-preset--active' lane-data-constraint-preset ] } { textContent 'Must be array' } { disabled $is-ro }
+        !carr-btn.setAttribute aria-pressed [ ternary $is-arr 'true' 'false' ]
+        !presets-wrap.appendChild $cobj-btn
+        !presets-wrap.appendChild $carr-btn
+        ; set $cobj-btn card-refs.preset-object-btn
+        ; set $carr-btn card-refs.preset-array-btn
+        !cobj-btn.addEventListener click (
+         ; condition { propertyIs false is-ro } (
+          ; to cur-c !read-latest-constraint $c-idx $c-item
+          ; to next-exp [ ternary [ propertyIs object cur-c.expected ] '' object ]
+          !update-constraint-at $c-idx [ object { type json_type } { expected $next-exp } ] true $chint-el
+         )
+        )
+        !carr-btn.addEventListener click (
+         ; condition { propertyIs false is-ro } (
+          ; to cur-c !read-latest-constraint $c-idx $c-item
+          ; to next-exp [ ternary [ propertyIs array cur-c.expected ] '' array ]
+          !update-constraint-at $c-idx [ object { type json_type } { expected $next-exp } ] true $chint-el
+         )
+        )
+        !card-wrap.appendChild $presets-wrap
+        ; set [ !describeColumnConstraint $c-item $col $view.tables null ] chint-el.textContent
+       ) }
+       { true (
+        ; set [ !describeColumnConstraint $c-item $col $view.tables null ] chint-el.textContent
+       ) }
+      ]
+
+      !card-remove-btn.addEventListener click (
+       ; condition { propertyIs false is-ro } (
+        ; to latest-all !normalizeColumnConstraints $col $col.type $col.decimals
+        ; to next-all {}
+        ; each $latest-all (
+         ; to { lc lidx } $argv
+         ; to same-cidx [ propertyIs $c-idx lidx ]
+         ; condition { propertyIs false same-cidx } : !next-all.push $lc
+        )
+        !view.set-col-constraints $col $next-all
+        !view.render-schema
+        !view.render-grid
+        !view.save-schema $tbl
+       )
+      )
+      !ctype-el.addEventListener change (
+       ; condition { propertyIs false is-ro } (
+        ; to next-ctype $ctype-el.value
+        ; to cur-c !read-latest-constraint $c-idx $c-item
+        ; to next-c [ match
+         { [ and { [ propertyIs workflow next-ctype ] } { [ propertyIs workflow cur-c.type ] } ] : $cur-c }
+         { [ and { [ propertyIs range next-ctype ] } { [ propertyIs min cur-c.type ] } ] : ; object { type range } { min $cur-c.min } { max null } }
+         { [ and { [ propertyIs range next-ctype ] } { [ propertyIs max cur-c.type ] } ] : ; object { type range } { min null } { max $cur-c.max } }
+         { [ and { [ propertyIs min next-ctype ] } { [ propertyIs range cur-c.type ] } ] : ; object { type min } { min $cur-c.min } }
+         { [ and { [ propertyIs max next-ctype ] } { [ propertyIs range cur-c.type ] } ] : ; object { type max } { max $cur-c.max } }
+         { true : !createDefaultColumnConstraint $next-ctype $col.type }
+        ]
+        [ match
+         { $next-c : !update-constraint-at $c-idx $next-c true $chint-el }
+        ]
+       )
+      )
+
+      !card-wrap.appendChild $chint-el
+      !constraints-list-el.appendChild $card-wrap
+      !constraint-cards.push [ object
+       { type $c-item.type }
+       { index $c-idx }
+       { wrap-el $card-wrap }
+       { remove-btn $card-remove-btn }
+       { type-el $ctype-el }
+       { table-el $card-refs.table-el }
+       { from-el $card-refs.from-el }
+       { to-el $card-refs.to-el }
+       { min-el $card-refs.min-el }
+       { max-el $card-refs.max-el }
+       { step-el $card-refs.step-el }
+       { text-el $card-refs.text-el }
+       { preset-past-btn $card-refs.preset-past-btn }
+       { preset-future-btn $card-refs.preset-future-btn }
+       { preset-true-btn $card-refs.preset-true-btn }
+       { preset-false-btn $card-refs.preset-false-btn }
+       { preset-object-btn $card-refs.preset-object-btn }
+       { preset-array-btn $card-refs.preset-array-btn }
+       { hint-el $chint-el }
+      ]
+     )
+     !type-td.appendChild $constraints-list-el
+     ; to first-card [ match
+      { [ propertyIsGreaterThan 0 constraint-cards.length ] : [ get constraint-cards 0 ] }
+      { true : null }
+     ]
+     ; to compat-config-wrap [ match { $first-card : $first-card.wrap-el } { true : $constraints-list-el } ]
+     ; to compat-remove-btn [ match { $first-card : $first-card.remove-btn } { true : null } ]
+     ; to compat-type-el [ match { $first-card : $first-card.type-el } { true : null } ]
+     ; to compat-table-el [ match { $first-card : $first-card.table-el } { true : null } ]
+     ; to compat-from-el [ match { $first-card : $first-card.from-el } { true : null } ]
+     ; to compat-to-el [ match { $first-card : $first-card.to-el } { true : null } ]
+     ; to compat-hint-el [ match { $first-card : $first-card.hint-el } { true : null } ]
 
      ; to multi-td !document.createElement td
      ; set 'lane-input-cell lane-data-cell--multi' multi-td.className
@@ -4624,13 +7157,15 @@
       { decimals-wrap $decimals-wrap }
       { decimals-el $decimals-el }
       { constraint-add-el $constraint-add-el }
-      { constraint-config-wrap $constraint-config-wrap }
-      { constraint-remove-btn $constraint-remove-btn }
-      { constraint-type-el $constraint-type-el }
-      { constraint-table-el $constraint-table-el }
-      { constraint-from-el $constraint-from-el }
-      { constraint-to-el $constraint-to-el }
-      { constraint-hint-el $constraint-hint-el }
+      { constraints-list-el $constraints-list-el }
+      { constraint-cards $constraint-cards }
+      { constraint-config-wrap $compat-config-wrap }
+      { constraint-remove-btn $compat-remove-btn }
+      { constraint-type-el $compat-type-el }
+      { constraint-table-el $compat-table-el }
+      { constraint-from-el $compat-from-el }
+      { constraint-to-el $compat-to-el }
+      { constraint-hint-el $compat-hint-el }
       { row-config-wrap $row-config-wrap }
       { ref-table-el $ref-table-el }
       { ref-col-el $ref-col-el }
@@ -4691,6 +7226,8 @@
          { type fixed }
          { multiple $col.multiple }
          { decimals !normalizeFixedDecimals $col.decimals }
+         { constraint $col.constraint }
+         { constraints $col.constraints }
         ] }
         { [ propertyIs row next-type ] [ object
          { type row }
@@ -4700,10 +7237,14 @@
          { refDisplayColumnId [ match { $col.refDisplayColumnId : $col.refDisplayColumnId } { true : '' } ] }
          { refFilterColumnId [ match { $col.refFilterColumnId : $col.refFilterColumnId } { true : '' } ] }
          { filterByColumnId [ match { $col.filterByColumnId : $col.filterByColumnId } { true : '' } ] }
+         { constraint $col.constraint }
+         { constraints $col.constraints }
         ] }
         { true [ object
          { type $next-type }
          { multiple $col.multiple }
+         { constraint $col.constraint }
+         { constraints $col.constraints }
         ] }
        ]
        ; to on-revert (
@@ -4804,17 +7345,64 @@
        !view.save-schema $tbl
       )
      )
+     ; to parse-decimals-val (
+      [ match
+       { $parseFixedDecimalsInput : !parseFixedDecimalsInput $decimals-el.value }
+       { true (
+        ; to p !parseCellValue $decimals-el.value integer
+        ; to has-int [ match
+         { [ propertyIs null p.value ] : false }
+         { [ propertyIs undefined p.value ] : false }
+         { true : $p.ok }
+        ]
+        [ match
+         { [ and { propertyIs true has-int } { propertyIsGreaterThanOrEqual 0 p.value } { propertyIsLessThanOrEqual 12 p.value } ] : ; object { ok true } { value $p.value } { error null } }
+         { true : ; object { ok false } { value null } { error 'Decimal places must be a whole integer from 0 to 12' } }
+        ]
+       ) }
+      ]
+     )
+     ; to apply-decimals-state (
+      ; to { parsed } $argv
+      [ match
+       { $parsed.ok (
+        ; set lane-data-decimals-input decimals-el.className
+        ; set 'Decimal places (0–12)' decimals-el.title
+        !decimals-el.setAttribute aria-invalid 'false'
+       ) }
+       { true (
+        ; set 'lane-data-decimals-input lane-data-decimals-input--invalid' decimals-el.className
+        ; set [ match { $parsed.error : $parsed.error } { true : 'Decimal places must be a whole integer from 0 to 12' } ] decimals-el.title
+        !decimals-el.setAttribute aria-invalid 'true'
+       ) }
+      ]
+     )
+     !decimals-el.addEventListener input (
+      ; condition { propertyIs false is-ro } (
+       ; to parsed !parse-decimals-val
+       !apply-decimals-state $parsed
+      )
+     )
      !decimals-el.addEventListener change (
       ; condition { propertyIs false is-ro } (
-       ; to next-decimals !normalizeFixedDecimals $decimals-el.value
-       ; to cur-decimals !normalizeFixedDecimals $col.decimals
+       ; to parsed !parse-decimals-val
+       !apply-decimals-state $parsed
        [ match
-        { [ propertyIs $cur-decimals next-decimals ] : ; set [ add '' $cur-decimals ] decimals-el.value }
-        { true (
-         ; to on-revert (
-          ; set [ add '' $cur-decimals ] decimals-el.value
-         )
-         !view.request-column-change $tbl $col $col.type $col.multiple $next-decimals $on-revert
+        { $parsed.ok (
+         ; to next-decimals $parsed.value
+         ; to cur-decimals !normalizeFixedDecimals $col.decimals
+         [ match
+          { [ propertyIs $cur-decimals next-decimals ] : ; set [ add '' $cur-decimals ] decimals-el.value }
+          { true (
+           ; to on-revert (
+            ; set [ add '' $cur-decimals ] decimals-el.value
+            ; set lane-data-decimals-input decimals-el.className
+            ; set 'Decimal places (0–12)' decimals-el.title
+            !decimals-el.setAttribute aria-invalid 'false'
+           )
+           !view.request-column-change $tbl $col $col.type $col.multiple $next-decimals $on-revert
+          ) }
+         ]
         ) }
        ]
       )
@@ -4823,109 +7411,15 @@
       ; condition { propertyIs false is-ro } (
        ; to picked $constraint-add-el.value
        ; set '' constraint-add-el.value
-       [ match
-        { [ propertyIs workflow picked ] (
-         ; to next-constraint [ object
-          { type workflow }
-          { tableId '' }
-          { fromColumnId '' }
-          { toColumnId '' }
-         ]
-         ; set $next-constraint col.constraint
-         !view.render-schema
-         !view.render-grid
-         !view.save-schema $tbl
-        ) }
+       ; to new-c [ match
+        { $createDefaultColumnConstraint : !createDefaultColumnConstraint $picked $col.type }
+        { true : null }
        ]
-      )
-     )
-     !constraint-remove-btn.addEventListener click (
-      ; condition { propertyIs false is-ro } (
        [ match
-        { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col constraint }
-        { true : ; set undefined col.constraint }
-       ]
-       !view.render-schema
-       !view.render-grid
-       !view.save-schema $tbl
-      )
-     )
-     !constraint-type-el.addEventListener change (
-      ; condition { propertyIs false is-ro } (
-       ; to next-ctype $constraint-type-el.value
-       [ match
-        { [ propertyIs workflow next-ctype ] (
-         ; to existing !normalizeColumnConstraint $col.constraint
-         ; to next-constraint [ object
-          { type workflow }
-          { tableId [ match { $existing : $existing.tableId } { true : '' } ] }
-          { fromColumnId [ match { $existing : $existing.fromColumnId } { true : '' } ] }
-          { toColumnId [ match { $existing : $existing.toColumnId } { true : '' } ] }
-         ]
-         ; set $next-constraint col.constraint
-         !view.render-schema
-         !view.render-grid
-         !view.save-schema $tbl
-        ) }
-       ]
-      )
-     )
-     !constraint-table-el.addEventListener change (
-      ; condition { propertyIs false is-ro } (
-       ; to next-tbl-id $constraint-table-el.value
-       ; to found-tbl ; object { table null }
-       ; each $view.tables (
-        ; to { cand } $argv
-        ; to match-cand [ match
-         { $is-rem : [ ternary [ and { $cand.remote } { [ propertyIs $tbl.remote.laneId cand.remote.laneId ] } { [ propertyIs $next-tbl-id cand.remote.tableId ] } ] true false ] }
-         { true : [ propertyIs $next-tbl-id cand.id ] }
-        ]
-        ; condition { propertyIs true match-cand } : ; set $cand found-tbl.table
-       )
-       ; to defaults !findWorkflowDefaultColumns $found-tbl.table
-       ; to next-constraint [ object
-        { type workflow }
-        { tableId $next-tbl-id }
-        { fromColumnId $defaults.fromColumnId }
-        { toColumnId $defaults.toColumnId }
-       ]
-       ; set $next-constraint col.constraint
-       !view.render-schema
-       !view.render-grid
-       !view.save-schema $tbl
-      )
-     )
-     !constraint-from-el.addEventListener change (
-      ; condition { propertyIs false is-ro } (
-       ; to existing !normalizeColumnConstraint $col.constraint
-       [ match
-        { $existing (
-         ; to next-constraint [ object
-          { type $existing.type }
-          { tableId $existing.tableId }
-          { fromColumnId $constraint-from-el.value }
-          { toColumnId $existing.toColumnId }
-         ]
-         ; set $next-constraint col.constraint
-         !view.render-schema
-         !view.render-grid
-         !view.save-schema $tbl
-        ) }
-       ]
-      )
-     )
-     !constraint-to-el.addEventListener change (
-      ; condition { propertyIs false is-ro } (
-       ; to existing !normalizeColumnConstraint $col.constraint
-       [ match
-        { $existing (
-         ; to next-constraint [ object
-          { type $existing.type }
-          { tableId $existing.tableId }
-          { fromColumnId $existing.fromColumnId }
-          { toColumnId $constraint-to-el.value }
-         ]
-         ; set $next-constraint col.constraint
+        { $new-c (
+         ; to latest-all !normalizeColumnConstraints $col $col.type $col.decimals
+         !latest-all.push $new-c
+         !view.set-col-constraints $col $latest-all
          !view.render-schema
          !view.render-grid
          !view.save-schema $tbl
@@ -4984,10 +7478,8 @@
       ; set true empty-el.hidden
       ; set false active-el.hidden
       !view.render-remote-bar
-      ; to is-ro !view.is-readonly-table $tbl
-      ; set $is-ro table-name-input.disabled
-      ; set $is-ro table-name-input.readOnly
-      ; set $tbl.name table-name-input.value
+      !view.ensure-table-views-state $tbl
+      !view.sync-view-ui
       !view.render-schema
       !view.render-updates
       !view.render-grid
@@ -4995,9 +7487,12 @@
      { true (
       ; set false empty-el.hidden
       ; set true active-el.hidden
+      ; set false view.editing-view-name
+      !edit-table-modal.close
+      !view.close-view-menu
+      !view.close-filter-menu
+      !view.sync-view-ui
       !view.render-remote-bar
-      ; set false table-name-input.disabled
-      ; set false table-name-input.readOnly
       !view.render-schema
       !view.render-updates
       !view.render-grid
@@ -5039,6 +7534,11 @@
  ; to view.select-table (
   -- Selects a table by ID, applies default schema visibility (collapsed when rows exist), renders, and updates lane URL
   ; to { id skip-url } $argv
+  ; set false view.editing-view-name
+  !edit-table-modal.close
+  !view.close-view-menu
+  !view.close-filter-menu
+  !view.clear-pinned-rows $id
   ; set $id view.active-table-id
   ; to tbl !view.get-active-table
   ; set [ match { $tbl : $tbl.name } { true : '' } ] lane.subroute
@@ -5101,16 +7601,15 @@
      { rows {} }
     ]
     !view.tables.push $tbl
+    ; set false view.editing-view-name
+    !edit-table-modal.close
+    !view.close-view-menu
+    !view.close-filter-menu
+    !view.ensure-table-views-state $tbl
     ; set $tbl.id view.active-table-id
     ; set $tbl.name lane.subroute
     ; set true view.schema-open
     !view.render
-    [ match
-     { $table-name-input.focus : !table-name-input.focus }
-    ]
-    [ match
-     { $table-name-input.select : !table-name-input.select }
-    ]
     [ match
      { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Saving…' }
     ]
@@ -5170,13 +7669,6 @@
        ]
        $row-col
       ) }
-      { $parsed.constraint [ object
-       { id !view.next-id col }
-       { name $clean-name }
-       { type $parsed.type }
-       { multiple $parsed.multiple }
-       { constraint $parsed.constraint }
-      ] }
       { true [ object
        { id !view.next-id col }
        { name $clean-name }
@@ -5184,6 +7676,7 @@
        { multiple $parsed.multiple }
       ] }
      ]
+     ; condition { and { $parsed.constraints } { [ propertyIsGreaterThan 0 parsed.constraints.length ] } } : !view.set-col-constraints $col $parsed.constraints
      ; condition { propertyIs true required } : ; set true col.required
      !tbl.columns.push $col
      ; each $tbl.rows (
@@ -5195,6 +7688,7 @@
       { [ and { [ propertyIs lane col.type ] } { $lane-control.load-catalog } ] : !lane-control.load-catalog }
      ]
      ; set true view.schema-open
+     !view.sync-view-ui
      !view.render-schema
      !view.render-grid
      ; to last-idx ; subtract $view.schema-rows.length 1
@@ -5227,14 +7721,19 @@
       { values $values }
      ]
      !tbl.rows.push $row
+     !view.pin-row-id $tbl.id $row.id
      !view.render-grid
      !view.update-table-tabs-text
-     ; to last-idx ; subtract $view.grid-rows.length 1
-     ; to last-grow [ get view.grid-rows $last-idx ]
-     ; to first-cell [ get last-grow.cells 0 ]
      [ match
-      { $first-cell.input-el.focus : !first-cell.input-el.focus }
-      { $first-cell.add-btn.focus : !first-cell.add-btn.focus }
+      { [ propertyIsGreaterThan 0 view.grid-rows.length ] (
+       ; to last-idx ; subtract $view.grid-rows.length 1
+       ; to last-grow [ get view.grid-rows $last-idx ]
+       ; to first-cell [ get last-grow.cells 0 ]
+       [ match
+        { $first-cell.input-el.focus : !first-cell.input-el.focus }
+        { $first-cell.add-btn.focus : !first-cell.add-btn.focus }
+       ]
+      ) }
      ]
      ; to row-ids !collect-ids $tbl.rows
      !addTableRow $data $view.lane.data $view.lane.id $tbl $row $row-ids
@@ -5251,53 +7750,134 @@
  !remote-edit-btn.addEventListener click : !view.open-edit-import null
  !jump-owner-btn.addEventListener click : !view.jump-to-owner-table
  !edit-import-btn.addEventListener click : !view.open-edit-import null
- !table-name-input.addEventListener input (
-  ; to tbl !view.get-active-table
+ !edit-table-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match { $ev.stopPropagation : !ev.stopPropagation } ]
+  !view.open-edit-table-modal
+ )
+ !edit-table-close-btn.addEventListener click $edit-table-modal.close
+ !edit-table-cancel-btn.addEventListener click $edit-table-modal.close
+ !edit-table-save-btn.addEventListener click $edit-table-modal.save
+ !edit-table-form.addEventListener submit (
+  ; to { ev } $argv
+  [ match { $ev.preventDefault : !ev.preventDefault } ]
+  !edit-table-modal.save
+ )
+ !edit-table-backdrop.addEventListener click (
+  ; to { ev } $argv
+  ; condition { propertyIs $edit-table-backdrop ev.target } : !edit-table-modal.close
+ )
+ !edit-table-name-input.addEventListener input (
+  ; set '' edit-table-error-el.textContent
+  ; set true edit-table-error-el.hidden
+ )
+ !edit-table-name-input.addEventListener keydown (
+  ; to { ev } $argv
   [ match
-   { $tbl (
-    ; to is-ro !view.is-readonly-table $tbl
-    ; condition { propertyIs false is-ro } (
-     ; to prev-name $tbl.name
-     ; set $table-name-input.value tbl.name
-     ; set $tbl.name lane.subroute
-     !view.sync-notebook-table-scope $prev-name
-     !view.update-table-tabs-text
-     ; to is-rem !view.is-remote-table $tbl
-     ; to is-custom [ match
-      { [ and { $is-rem } { [ propertyIs true tbl.remote.customName ] } ] : true }
-      { true : false }
-     ]
-     [ match
-      { $lane-control.begin-session-status-pending : !lane-control.begin-session-status-pending 'Saving…' }
-     ]
-     ; try (
-      [ match
-       { $is-custom [ match
-        { $saveImportedTableLink : !saveImportedTableLink $data $view.lane.data $view.lane.id $tbl }
-        { true : !view.save-schema $tbl }
-       ] }
-       { true (
-        [ match
-         { $is-rem (
-          ; set $tbl.name tbl.remote.tableName
-          !view.render-remote-bar
-         ) }
-        ]
-        !view.save-schema $tbl
-       ) }
-      ]
-      !view.sync-data-path
-      [ match
-       { $lane-control.update-url : !lane-control.update-url }
-      ]
-     ) : null
-     [ match
-      { $lane-control.end-session-status-pending : !lane-control.end-session-status-pending }
-     ]
-    )
+   { [ propertyIs Enter ev.key ] (
+    [ match { $ev.preventDefault : !ev.preventDefault } ]
+    [ match { $ev.stopPropagation : !ev.stopPropagation } ]
+    !edit-table-modal.save
+   ) }
+   { [ propertyIs Escape ev.key ] (
+    [ match { $ev.preventDefault : !ev.preventDefault } ]
+    [ match { $ev.stopPropagation : !ev.stopPropagation } ]
+    !edit-table-modal.close
    ) }
   ]
  )
+ !view-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match { $ev.stopPropagation : !ev.stopPropagation } ]
+  !view.toggle-view-menu
+ )
+ !view-menu.addEventListener click (
+  ; to { ev } $argv
+  [ match { $ev.stopPropagation : !ev.stopPropagation } ]
+ )
+ !view-title-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match { $ev.stopPropagation : !ev.stopPropagation } ]
+  !view.open-edit-view-name
+ )
+ !view-save-btn.addEventListener click : !view.save-active-view
+ !view-fork-btn.addEventListener click : !view.fork-active-view
+ !view-abandon-btn.addEventListener click : !view.abandon-view-changes
+ !view-new-btn.addEventListener click : !view.create-new-view
+ !view-duplicate-btn.addEventListener click : !view.duplicate-active-view
+ !view-reset-btn.addEventListener click : !view.reset-active-view
+ !view-delete-btn.addEventListener click : !view.request-delete-view
+ !view-rename-btn.addEventListener click : !view.rename-active-view
+ !view-rename-cancel-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match { $ev.stopPropagation : !ev.stopPropagation } ]
+  !view.cancel-edit-view-name
+ )
+ !view-rename-input.addEventListener keydown (
+  ; to { ev } $argv
+  [ match
+   { [ propertyIs Enter ev.key ] (
+    [ match { $ev.preventDefault : !ev.preventDefault } ]
+    !view.rename-active-view
+   ) }
+   { [ propertyIs Escape ev.key ] (
+    [ match { $ev.stopPropagation : !ev.stopPropagation } ]
+    !view.cancel-edit-view-name
+   ) }
+  ]
+ )
+ !filter-menu.addEventListener click (
+  ; to { ev } $argv
+  [ match { $ev.stopPropagation : !ev.stopPropagation } ]
+ )
+ !filter-op-select.addEventListener change (
+  ; to tbl !view.get-active-table
+  ; to col-box ; object { col null }
+  [ match
+   { $tbl (
+    ; each $tbl.columns (
+     ; to { candidate } $argv
+     ; condition { propertyIs $view.filter-editor.column-id candidate.id } : ; set $candidate col-box.col
+    )
+   ) }
+  ]
+  ; to col $col-box.col
+  [ match
+   { [ and { $tbl } { $col } ] (
+    ; to next-op $filter-op-select.value
+    ; to prev-kind $view.filter-editor.input-kind
+    ; to ops [ match
+     { $getFilterOperatorsForColumn : !getFilterOperatorsForColumn $col $view.tables }
+     { true : {} }
+    ]
+    ; to desc-box ; object { desc null }
+    ; each $ops (
+     ; to { item } $argv
+     ; condition { propertyIs $next-op item.op } : ; set $item desc-box.desc
+    )
+    ; to next-desc $desc-box.desc
+    ; to same-kind [ match
+     { [ and { $next-desc } { [ propertyIs $prev-kind next-desc.inputKind ] } ] : true }
+     { true : false }
+    ]
+    ; to keep1 [ match
+     { [ and { [ propertyIs true same-kind ] } { $view.filter-val-el } ] : $view.filter-val-el.value }
+     { true : '' }
+    ]
+    ; to keep2 [ match
+     { [ and { [ propertyIs true same-kind ] } { $view.filter-val-to-el } ] : $view.filter-val-to-el.value }
+     { true : '' }
+    ]
+    !view.render-filter-value-inputs $tbl $col $next-op $keep1 $keep2
+    [ match
+     { [ and { $view.filter-val-el } { $view.filter-val-el.focus } ] : !view.filter-val-el.focus }
+    ]
+   ) }
+  ]
+ )
+ !filter-apply-btn.addEventListener click : !view.apply-filter-editor
+ !filter-cancel-btn.addEventListener click : !view.close-filter-menu
+ !filter-delete-btn.addEventListener click : !view.delete-editing-filter
  !schema-toggle-btn.addEventListener click (
   !view.close-table-menu
   ; set [ ternary $view.schema-open false true ] view.schema-open
@@ -5318,13 +7898,14 @@
   { $document.addEventListener (
    !document.addEventListener click (
     ; to { ev } $argv
+    ; to target [ match { $ev.target : $ev.target } { true : null } ]
     ; condition { propertyIs true view.table-menu-open } (
-     ; to target [ match { $ev.target : $ev.target } { true : null } ]
-     ; to inside [ match
+     ; to inside-tmenu [ match
       { [ propertyIs null target ] : false }
       { [ propertyIs $table-menu-wrap target ] : true }
       { [ propertyIs $table-menu-btn target ] : true }
       { [ propertyIs $table-menu target ] : true }
+      { [ propertyIs $edit-table-btn target ] : true }
       { [ propertyIs $jump-owner-btn target ] : true }
       { [ propertyIs $edit-import-btn target ] : true }
       { [ propertyIs $clear-rows-btn target ] : true }
@@ -5332,7 +7913,44 @@
       { $table-menu-wrap.contains : !table-menu-wrap.contains $target }
       { true : false }
      ]
-     ; condition { propertyIs false inside } : !view.close-table-menu
+     ; condition { propertyIs false inside-tmenu } : !view.close-table-menu
+    )
+    ; condition { propertyIs true view.view-menu-open } (
+     ; to inside-vmenu [ match
+      { [ propertyIs null target ] : false }
+      { [ propertyIs $view-wrap target ] : true }
+      { [ propertyIs $view-btn target ] : true }
+      { [ propertyIs $view-menu target ] : true }
+      { [ propertyIs $view-title-btn target ] : true }
+      { [ propertyIs $view-title-text target ] : true }
+      { [ propertyIs $view-title-hint target ] : true }
+      { [ propertyIs $view-rename-input target ] : true }
+      { [ propertyIs $view-rename-btn target ] : true }
+      { [ propertyIs $view-rename-cancel-btn target ] : true }
+      { [ propertyIs $view-save-btn target ] : true }
+      { [ propertyIs $view-fork-btn target ] : true }
+      { [ propertyIs $view-abandon-btn target ] : true }
+      { [ propertyIs $view-new-btn target ] : true }
+      { [ propertyIs $view-duplicate-btn target ] : true }
+      { [ propertyIs $view-reset-btn target ] : true }
+      { [ propertyIs $view-delete-btn target ] : true }
+      { $view-wrap.contains : !view-wrap.contains $target }
+      { true : false }
+     ]
+     ; condition { propertyIs false inside-vmenu } : !view.close-view-menu
+    )
+    ; condition { propertyIs true view.filter-editor.open } (
+     ; to inside-fmenu [ match
+      { [ propertyIs null target ] : false }
+      { [ propertyIs $filter-menu target ] : true }
+      { [ propertyIs $filter-op-select target ] : true }
+      { [ propertyIs $filter-apply-btn target ] : true }
+      { [ propertyIs $filter-cancel-btn target ] : true }
+      { [ propertyIs $filter-delete-btn target ] : true }
+      { $filter-menu.contains : !filter-menu.contains $target }
+      { true : false }
+     ]
+     ; condition { propertyIs false inside-fmenu } : !view.close-filter-menu
     )
    )
   ) }
@@ -5341,7 +7959,17 @@
   { $window.addEventListener (
    !window.addEventListener keydown (
     ; to { ev } $argv
-    ; condition { propertyIs true view.table-menu-open } : ; condition { propertyIs Escape ev.key } : !view.close-table-menu
+    ; condition { propertyIs Escape ev.key } (
+     [ match
+      { [ propertyIs true edit-table-modal.is-open ] : !edit-table-modal.close }
+      { [ propertyIs true view.filter-editor.open ] : !view.close-filter-menu }
+      { [ propertyIs true view.view-menu-open ] [ match
+       { [ propertyIs true view.editing-view-name ] : !view.cancel-edit-view-name }
+       { true : !view.close-view-menu }
+      ] }
+      { [ propertyIs true view.table-menu-open ] : !view.close-table-menu }
+     ]
+    )
    )
   ) }
  ]
@@ -5371,6 +7999,27 @@
     { $loadTableUpdates (
      ; to loaded-upds !loadTableUpdates $data $lane.data $lane.id $tbl.id
      ; to view.table-updates $tbl.id $loaded-upds
+    ) }
+   ]
+   [ match
+    { $loadTableViews (
+     ; to loaded-views !loadTableViews $data $lane.data $lane.id $tbl.id $tbl.columns $initial-tables
+     ; to active-box ; object { v null }
+     ; each $loaded-views.views (
+      ; to { lv } $argv
+      ; condition { propertyIs $loaded-views.activeViewId lv.id } : ; set $lv active-box.v
+     )
+     [ match
+      { [ and { [ propertyIs null active-box.v ] } { [ propertyIsGreaterThan 0 loaded-views.views.length ] } ] : ; set [ get loaded-views.views 0 ] active-box.v }
+     ]
+     ; to wf !clone-plain-data [ match { $active-box.v.filters : $active-box.v.filters } { true : {} } ] {}
+     ; to view-st [ object
+      { activeViewId $loaded-views.activeViewId }
+      { views $loaded-views.views }
+      { workingFilters $wf }
+     ]
+     !view.register-views-used-ids $view-st
+     ; to view.table-views $tbl.id $view-st
     ) }
    ]
    !view.tables.push $tbl

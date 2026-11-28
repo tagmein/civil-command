@@ -8,29 +8,38 @@ import {
  DATA_RUNTIME_ENV,
  DEFAULT_FIXED_DECIMALS,
  DEFAULT_PACKAGE_ID,
+ DEFAULT_TABLE_VIEW_ID,
  PRIMITIVE_TYPES,
  TABLE_IMPORT_MODES,
+ WORKFLOW_COLUMN_TYPES,
  addLaneTable,
  agentCreateLane,
  agentGetLane,
  agentMutateLaneTable,
  buildTablesScope,
+ buildUniqueTableViewName,
  checkColumnChangeImpact,
  coerceDataValue,
  collectLaneSyncBundle,
+ columnSupportsWorkflow,
  createAgentEventHub,
+ createDefaultColumnConstraint,
  createIdleTracker,
  createNewSession,
  createSourceWorkerRunner,
  dataValuesEqual,
  defaultDataValue,
  defaultValueForType,
+ describeAllColumnConstraints,
+ describeColumnConstraint,
  dirModalSource,
+ evaluateTableFilter,
  exportDeployModalSource,
  exportModalSource,
  fetchRowOptionsPage,
  field,
  filterRowOptions,
+ filterTableRows,
  findWorkflowDefaultColumns,
  formatCellInputValue,
  formatColumnType,
@@ -38,50 +47,71 @@ import {
  formatLaneRouteSegment,
  formatLaneRoutes,
  formatRowDisplayTemplate,
+ formatTableFilterBubbleLabel,
+ formatTableFilterInputValues,
+ getColumnWorkflowConstraint,
+ getFilterOperatorsForColumn,
  getInboundSubtableRowsForParent,
+ getSupportedColumnConstraints,
  getWorkflowCellState,
  hasImportCycle,
  isDataCellValueEmpty,
  isReadOnlyRemoteTable,
  isRemoteTable,
+ isTriggerExcludedKey,
  laneServerSource,
  laneServersModalSource,
  laneStorySource,
  laneTerminalModalSource,
  lineInfoModalSource,
  loadLaneTables,
+ loadTableViews,
  lookupRowDisplay,
  normalizeColumnConstraint,
+ normalizeColumnConstraints,
  normalizeColumnWidth,
  normalizeDataColumnType,
  normalizeDataDir,
  normalizeFixedDecimals,
  normalizePrimitiveType,
+ normalizeTableFilter,
  normalizeTableImportMode,
  normalizeTableRemoteSpec,
+ normalizeTableViewsRecord,
  packageModalSource,
  parse,
  parseCellValue,
  parseColumnType,
  parseDisplayTemplate,
+ parseFixedDecimalsInput,
  parseImportLine,
  parseLaneRouteSegment,
  parseLaneRoutes,
+ parseNumericCellInput,
  parseStoredTables,
+ parseTableFilterInput,
+ parseWorkflowOptionValue,
  registerLaneInPackage,
  resolveImportValue,
  resolveInboundSubtables,
+ resolveMatchingTriggerTargets,
  resolveRowTarget,
  resolveRowValueSpec,
  resolveScopeColumns,
+ resolveTableViewDisplayName,
  resolveWorkflowTarget,
  rowFilterValuesMatch,
  runLines,
  runTransportedScripts,
+ sanitizeTableViewsForColumns,
  saveImportedTableLink,
  saveLaneTables,
+ saveTableViews,
  sessionModalSource,
  syncTableRowsInMemory,
+ tableViewFiltersEqual,
+ tableViewsKey,
+ validateColumnConstraints,
 } from './field.fixtures.mjs'
 
 test('DATA_COLUMN_TYPES, cell parsing/coercion, change impact detection, stored table parsing, and scope export', () => {
@@ -473,9 +503,12 @@ test('Data tab supports tables, typed & multiple columns, editable rows, destruc
   assert.equal(dataView['active-el'].hidden, false)
   assert.equal(dataView['add-row-btn'].disabled, true)
 
-  dataView['table-name-input'].value = 'expenses'
-  await dataView['table-name-input'].listeners.input()
+  await dataView['table-menu-btn'].listeners.click({})
+  await dataView['edit-table-btn'].listeners.click({})
+  dataView['edit-table-modal']['name-input'].value = 'expenses'
+  await dataView['edit-table-modal']['save-btn'].listeners.click({})
   assert.equal(dataView['table-tabs'][0]['label-el'].textContent, 'expenses')
+  assert.equal(dataView['view-name-el'].textContent, 'expenses')
 
   // Define typed columns: label (text), qty (integer), price (decimal), paid (boolean), scores (integer[]), due (date)
   await dataView['add-col-btn'].listeners.click()
@@ -632,7 +665,7 @@ test('Data tab supports tables, typed & multiple columns, editable rows, destruc
   await dataView['add-row-btn'].listeners.click()
   assert.equal(dataView.tables[1].rows.length, 1)
 
-  // Clear rows and Delete table live inside the "..." (⋯) table actions dropdown menu
+  // Edit table, Clear rows and Delete table live inside the "..." (⋯) table actions dropdown menu
   assert.equal(dataView['table-menu-btn'].textContent, '⋯')
   assert.equal(dataView['table-menu'].hidden, true)
   assert.equal(dataView['table-menu-open'], false)
@@ -641,6 +674,7 @@ test('Data tab supports tables, typed & multiple columns, editable rows, destruc
    dataView['table-menu-wrap'],
   ])
   assert.deepEqual(dataView['table-menu'].children, [
+   dataView['edit-table-btn'],
    dataView['clear-rows-btn'],
    dataView['delete-table-btn'],
   ])
@@ -973,8 +1007,9 @@ test('Data tab Fixed column edits as xxx.xx, stores scaled integer xxxxx, config
 
   await nb.tabs.data.listeners.click()
   await dataView['add-table-btn'].listeners.click()
-  dataView['table-name-input'].value = 'invoices'
-  await dataView['table-name-input'].listeners.input()
+  await dataView['open-edit-table-modal']()
+  dataView['edit-table-modal']['name-input'].value = 'invoices'
+  await dataView['edit-table-modal']['save-btn'].listeners.click({})
 
   // Column 0: amount (fixed, defaults to 2 decimal places)
   await dataView['add-col-btn'].listeners.click()
@@ -1793,8 +1828,9 @@ test('Data tab row type: stacked schema config, joined table display, and on-dem
 
   // Table 1: `customers` with 7 rows across 3 pages (pageSize = 3)
   await dataView['add-table-btn'].listeners.click()
-  dataView['table-name-input'].value = 'customers'
-  await dataView['table-name-input'].listeners.input()
+  await dataView['open-edit-table-modal']()
+  dataView['edit-table-modal']['name-input'].value = 'customers'
+  await dataView['edit-table-modal']['save-btn'].listeners.click({})
   const custTableId = dataView.tables[0].id
 
   await dataView['add-col-btn'].listeners.click()
@@ -1829,8 +1865,9 @@ test('Data tab row type: stacked schema config, joined table display, and on-dem
 
   // Table 2: `orders` with `customer` (row) and `watchers` (row[])
   await dataView['add-table-btn'].listeners.click()
-  dataView['table-name-input'].value = 'orders'
-  await dataView['table-name-input'].listeners.input()
+  await dataView['open-edit-table-modal']()
+  dataView['edit-table-modal']['name-input'].value = 'orders'
+  await dataView['edit-table-modal']['save-btn'].listeners.click({})
 
   await dataView['add-col-btn'].listeners.click()
   dataView['schema-rows'][0]['name-el'].value = 'customer'
@@ -2313,7 +2350,7 @@ test('data|tablename sub-routing parses, formats, selects known tables, falls ba
   await r2.f.run(parse(mainSource, '/src/main.fs'))
   const dv2 = r2.f.state.lanes[0].notebook['data-view']
   assert.equal(dv2['get-active-table']().name, 'orders')
-  assert.equal(dv2['table-name-input'].value, 'orders')
+  assert.equal(dv2['view-name-el'].textContent, 'orders')
 
   // Popstate to /<id>;data|users switches to users
   r2.location.pathname = `/${lane.id};data|users`
@@ -2332,7 +2369,24 @@ test('data|tablename sub-routing parses, formats, selects known tables, falls ba
 })
 
 test('workflow constraint helpers: normalization, default from/to detection, transition graph, cell states, and stored persistence', () => {
- assert.deepEqual(DATA_CONSTRAINT_TYPES, ['workflow'])
+ assert.deepEqual(DATA_CONSTRAINT_TYPES, [
+  'workflow',
+  'min',
+  'max',
+  'range',
+  'step',
+  'date_range',
+  'min_length',
+  'max_length',
+  'pattern',
+  'one_of',
+  'boolean_value',
+  'https_only',
+  'domain',
+  'json_type',
+  'required_keys',
+  'unique',
+ ])
  assert.equal(normalizeColumnConstraint(null), null)
  assert.equal(normalizeColumnConstraint({ type: 'unknown' }), null)
  assert.deepEqual(
@@ -2356,18 +2410,32 @@ test('workflow constraint helpers: normalization, default from/to detection, tra
   { fromColumnId: '', toColumnId: '' }
  )
 
- // parseColumnType & formatColumnType keep workflow constraint only on text columns
+ // parseColumnType & formatColumnType keep workflow constraint on text, integer, and boolean columns, and strip on unsupported types
  const wfSpec = {
   type: 'text',
   multiple: false,
   constraint: { type: 'workflow', tableId: 't-wf', fromColumnId: 'c-from', toColumnId: 'c-to' },
  }
- assert.deepEqual(parseColumnType(wfSpec), wfSpec)
+ assert.deepEqual(parseColumnType(wfSpec), { ...wfSpec, constraints: [wfSpec.constraint] })
  assert.deepEqual(parseColumnType({ type: 'integer', multiple: false, constraint: wfSpec.constraint }), {
   type: 'integer',
   multiple: false,
+  constraint: wfSpec.constraint,
+  constraints: [wfSpec.constraint],
+ })
+ assert.deepEqual(parseColumnType({ type: 'boolean', multiple: false, constraint: wfSpec.constraint }), {
+  type: 'boolean',
+  multiple: false,
+  constraint: wfSpec.constraint,
+  constraints: [wfSpec.constraint],
+ })
+ assert.deepEqual(parseColumnType({ type: 'date', multiple: false, constraint: wfSpec.constraint }), {
+  type: 'date',
+  multiple: false,
  })
  assert.equal(formatColumnType(wfSpec), 'text(workflow)')
+ assert.equal(formatColumnType({ ...wfSpec, type: 'integer' }), 'integer(workflow)')
+ assert.equal(formatColumnType({ ...wfSpec, type: 'boolean' }), 'boolean(workflow)')
  assert.equal(formatColumnType({ ...wfSpec, multiple: true }), 'text(workflow)[]')
 
  const tables = [
@@ -2668,7 +2736,7 @@ test('Data tab workflow constraint: + constraint on text only, auto from/to, tra
   dataView['grid-rows'][2].cells[0]['input-el'].value = 'Gamma'
   await dataView['grid-rows'][2].cells[0]['input-el'].listeners.input()
 
-  // Verify `+ constraint` dropdown is visible ONLY on text columns, and Constraint section starts hidden
+  // Verify `+ constraint` dropdown exposes supported constraints per column type, and Constraint section starts hidden
   const titleSrow = dataView['schema-rows'][0]
   const statusSrow = dataView['schema-rows'][1]
   const prioritySrow = dataView['schema-rows'][2]
@@ -2679,7 +2747,11 @@ test('Data tab workflow constraint: + constraint on text only, auto from/to, tra
   assert.equal(titleSrow['constraint-config-wrap'].hidden, true)
   assert.equal(statusSrow['constraint-add-el'].hidden, false)
   assert.equal(statusSrow['constraint-config-wrap'].hidden, true)
-  assert.equal(prioritySrow['constraint-add-el'].hidden, true)
+  assert.equal(prioritySrow['constraint-add-el'].hidden, false)
+  assert.deepEqual(
+   prioritySrow['constraint-add-el'].children.slice(1).map(o => o.value),
+   ['workflow', 'min', 'max', 'range', 'step', 'unique']
+  )
   assert.equal(prioritySrow['constraint-config-wrap'].hidden, true)
 
   // 3. Add Workflow constraint to `status` via `+ constraint` dropdown
@@ -2687,11 +2759,23 @@ test('Data tab workflow constraint: + constraint on text only, auto from/to, tra
   await statusSrow['constraint-add-el'].listeners.change()
 
   const statusSrowOpen = dataView['schema-rows'][1]
-  assert.equal(statusSrowOpen['constraint-add-el'].hidden, true)
+  assert.equal(statusSrowOpen['constraint-add-el'].hidden, false)
+  assert.deepEqual(
+   statusSrowOpen['constraint-add-el'].children.slice(1).map(o => o.value),
+   ['min_length', 'max_length', 'pattern', 'one_of', 'unique']
+  )
   assert.equal(statusSrowOpen['constraint-config-wrap'].hidden, false)
+  assert.equal(statusSrowOpen['constraint-type-el'].value, 'workflow')
   assert.deepEqual(
    statusSrowOpen['constraint-type-el'].children.map(o => ({ v: o.value, t: o.textContent })),
-   [{ v: 'workflow', t: 'Workflow' }]
+   [
+    { v: 'workflow', t: 'Workflow' },
+    { v: 'min_length', t: 'Min Length' },
+    { v: 'max_length', t: 'Max Length' },
+    { v: 'pattern', t: 'Pattern' },
+    { v: 'one_of', t: 'One Of' },
+    { v: 'unique', t: 'Unique' },
+   ]
   )
   assert.deepEqual(
    statusSrowOpen['constraint-table-el'].children.map(o => o.value),
@@ -3467,8 +3551,9 @@ test('Data tab: dimmed unset date, Required schema column with red highlight on 
 
   // Create `countries` table with `code` (text) and `name` (text)
   await dataView['add-table-btn'].listeners.click()
-  dataView['table-name-input'].value = 'countries'
-  await dataView['table-name-input'].listeners.input()
+  await dataView['open-edit-table-modal']()
+  dataView['edit-table-modal']['name-input'].value = 'countries'
+  await dataView['edit-table-modal']['save-btn'].listeners.click({})
   const countriesTblId = dataView.tables[0].id
 
   await dataView['add-col-btn'].listeners.click()
@@ -3492,8 +3577,9 @@ test('Data tab: dimmed unset date, Required schema column with red highlight on 
 
   // Create `shipments` table with `title` (text), `ship_date` (date), and `country` (starts as text, then changed to row)
   await dataView['add-table-btn'].listeners.click()
-  dataView['table-name-input'].value = 'shipments'
-  await dataView['table-name-input'].listeners.input()
+  await dataView['open-edit-table-modal']()
+  dataView['edit-table-modal']['name-input'].value = 'shipments'
+  await dataView['edit-table-modal']['save-btn'].listeners.click({})
 
   // Column 0: title (text)
   await dataView['add-col-btn'].listeners.click()
@@ -3912,14 +3998,16 @@ test('Data tab row Filter: "Filter where <state.country> is <person.country>" sc
 
   // Table 1 = people (columns: name, country, state)
   await dataView['add-table-btn'].listeners.click()
-  dataView['table-name-input'].value = 'people'
-  await dataView['table-name-input'].listeners.input()
+  await dataView['open-edit-table-modal']()
+  dataView['edit-table-modal']['name-input'].value = 'people'
+  await dataView['edit-table-modal']['save-btn'].listeners.click({})
   const peopleTableId = dataView.tables[0].id
 
   // Table 2 = countries (columns: name)
   await dataView['add-table-btn'].listeners.click()
-  dataView['table-name-input'].value = 'countries'
-  await dataView['table-name-input'].listeners.input()
+  await dataView['open-edit-table-modal']()
+  dataView['edit-table-modal']['name-input'].value = 'countries'
+  await dataView['edit-table-modal']['save-btn'].listeners.click({})
   const countriesTableId = dataView.tables[1].id
 
   await dataView['add-col-btn'].listeners.click()
@@ -3936,8 +4024,9 @@ test('Data tab row Filter: "Filter where <state.country> is <person.country>" sc
 
   // Table 3 = states (columns: name, country -> row(countries.name))
   await dataView['add-table-btn'].listeners.click()
-  dataView['table-name-input'].value = 'states'
-  await dataView['table-name-input'].listeners.input()
+  await dataView['open-edit-table-modal']()
+  dataView['edit-table-modal']['name-input'].value = 'states'
+  await dataView['edit-table-modal']['save-btn'].listeners.click({})
   const statesTableId = dataView.tables[2].id
 
   await dataView['add-col-btn'].listeners.click()
@@ -4316,8 +4405,9 @@ test('Data tab Multiple ([]) columns: full-width resizable chips, filter input a
 
   // Create a table with a text[] column and a row[] column
   await dataView['add-table-btn'].listeners.click()
-  dataView['table-name-input'].value = 'inventory'
-  await dataView['table-name-input'].listeners.input()
+  await dataView['open-edit-table-modal']()
+  dataView['edit-table-modal']['name-input'].value = 'inventory'
+  await dataView['edit-table-modal']['save-btn'].listeners.click({})
 
   await dataView['add-col-btn'].listeners.click()
   dataView['schema-rows'][0]['name-el'].value = 'tags'
@@ -5565,9 +5655,9 @@ test('Data tab Import button, Table Import modal, remote badges, Jump-to-Owner n
   sLocalRow.values[orderSkuCol.id] = 'ORD-1'
   await sDv['save-row'](localInv, sLocalRow)
 
-  // Local table keeps standard menu children [clear-rows-btn, delete-table-btn] and hidden remote banner
+  // Local table keeps menu children [edit-table-btn, clear-rows-btn, delete-table-btn] and hidden remote banner
   assert.equal(sDv['remote-bar-el'].hidden, true)
-  assert.deepEqual(sDv['table-menu'].children, [sDv['clear-rows-btn'], sDv['delete-table-btn']])
+  assert.deepEqual(sDv['table-menu'].children, [sDv['edit-table-btn'], sDv['clear-rows-btn'], sDv['delete-table-btn']])
 
   // Click Import next to + Table -> opens Import Table modal
   const importModal = lc['table-import-modal']
@@ -5630,8 +5720,8 @@ test('Data tab Import button, Table Import modal, remote badges, Jump-to-Owner n
   assert.equal(sDv['delete-table-btn'].textContent, 'Remove import')
 
   // Read-only enforcement in UI
-  assert.equal(sDv['table-name-input'].disabled, true)
-  assert.equal(sDv['table-name-input'].readOnly, true)
+  await sDv['open-edit-table-modal']()
+  assert.equal(sDv['edit-table-modal']['is-open'], false)
   assert.equal(sDv['add-row-btn'].hidden, true)
   assert.equal(sDv['add-row-btn'].disabled, true)
   assert.equal(sDv['add-col-btn'].hidden, true)
@@ -6116,6 +6206,1774 @@ test('lane-data mount shows in-flight loading state and disables table actions u
   assert.equal(view['empty-el'].textContent, 'No tables yet. Create a table to define columns and add rows.')
   assert.equal(view['add-table-btn'].disabled, false)
   assert.equal(view['import-table-btn'].disabled, false)
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('table view & column filter helpers: operators across all column types, parsing, evaluation, bubble labels, view normalization, sanitization, and KV trigger exclusion', async () => {
+ for (const colType of DATA_COLUMN_TYPES) {
+  const scalarOps = getFilterOperatorsForColumn({ id: `col-${colType}`, name: colType, type: colType, multiple: false })
+  assert.ok(scalarOps.some(o => o.op === 'has_value'), `${colType} missing has_value`)
+  assert.ok(scalarOps.some(o => o.op === 'is_empty'), `${colType} missing is_empty`)
+  const multiOps = getFilterOperatorsForColumn({ id: `col-${colType}-m`, name: colType, type: colType, multiple: true })
+  assert.ok(multiOps.some(o => o.op === 'contains_item'), `${colType}[] missing contains_item`)
+  assert.ok(multiOps.some(o => o.op === 'contains_all_of'), `${colType}[] missing contains_all_of`)
+  assert.ok(multiOps.some(o => o.op === 'count_gte'), `${colType}[] missing count_gte`)
+  assert.ok(multiOps.some(o => o.op === 'has_value'), `${colType}[] missing has_value`)
+  assert.ok(multiOps.some(o => o.op === 'is_empty'), `${colType}[] missing is_empty`)
+ }
+
+ const wfTable = {
+  id: 'tbl-wf',
+  name: 'wf_transitions',
+  columns: [
+   { id: 'c-from', name: 'from', type: 'text', multiple: false },
+   { id: 'c-to', name: 'to', type: 'text', multiple: false },
+  ],
+  rows: [
+   { id: 'w1', values: { 'c-from': 'open', 'c-to': 'triage' } },
+   { id: 'w2', values: { 'c-from': 'triage', 'c-to': 'closed' } },
+  ],
+ }
+ const teamsTable = {
+  id: 'tbl-teams',
+  name: 'teams',
+  columns: [
+   { id: 'c-tkey', name: 'code', type: 'text', multiple: false },
+   { id: 'c-tname', name: 'label', type: 'text', multiple: false },
+  ],
+  rows: [
+   { id: 'tm1', values: { 'c-tkey': 'core', 'c-tname': 'Core Platform' } },
+   { id: 'tm2', values: { 'c-tkey': 'ui', 'c-tname': 'Design Systems' } },
+  ],
+ }
+ const issuesTable = {
+  id: 'tbl-issues',
+  name: 'issues',
+  columns: [
+   { id: 'c-title', name: 'title', type: 'text', multiple: false },
+   { id: 'c-status', name: 'status', type: 'text', multiple: false, constraint: { type: 'workflow', tableId: 'tbl-wf', fromColumnId: 'c-from', toColumnId: 'c-to' } },
+   { id: 'c-prio', name: 'priority', type: 'integer', multiple: false },
+   { id: 'c-budget', name: 'budget', type: 'fixed', decimals: 2, multiple: false },
+   { id: 'c-weight', name: 'weight', type: 'decimal', multiple: false },
+   { id: 'c-done', name: 'done', type: 'boolean', multiple: false },
+   { id: 'c-due', name: 'due', type: 'date', multiple: false },
+   { id: 'c-ts', name: 'created', type: 'datetime', multiple: false },
+   { id: 'c-url', name: 'link', type: 'url', multiple: false },
+   { id: 'c-mail', name: 'contact', type: 'email', multiple: false },
+   { id: 'c-meta', name: 'meta', type: 'json', multiple: false },
+   { id: 'c-team', name: 'team', type: 'row', multiple: false, refTableId: 'tbl-teams', refColumnId: 'c-tkey', refDisplayColumnId: 'c-tname' },
+   { id: 'c-parent', name: 'parent', type: 'row', multiple: false, refTableId: '$self', refColumnId: 'c-title', refDisplayColumnId: 'c-title' },
+   { id: 'c-owner', name: 'owner', type: 'lane', multiple: false },
+   { id: 'c-tags', name: 'tags', type: 'text', multiple: true },
+  ],
+  rows: [
+   {
+    id: 'r1',
+    values: {
+     'c-title': 'Auth token leak',
+     'c-status': 'open',
+     'c-prio': 0,
+     'c-budget': 1250,
+     'c-weight': 3.5,
+     'c-done': false,
+     'c-due': '2026-05-08',
+     'c-ts': '2026-05-08T10:00:00.000Z',
+     'c-url': 'https://sec.example.com/1',
+     'c-mail': 'sec@example.com',
+     'c-meta': { severity: 'sev1', owner: 'ops' },
+     'c-team': 'core',
+     'c-parent': '',
+     'c-owner': 'lane-a',
+     'c-tags': ['security', 'urgent'],
+    },
+   },
+   {
+    id: 'r2',
+    values: {
+     'c-title': 'Button alignment',
+     'c-status': 'triage',
+     'c-prio': 3,
+     'c-budget': 5000,
+     'c-weight': 1.25,
+     'c-done': true,
+     'c-due': '2026-05-10',
+     'c-ts': '2026-05-10T12:00:00.000Z',
+     'c-url': 'https://ui.example.com/2',
+     'c-mail': 'ui@example.com',
+     'c-meta': { component: 'button' },
+     'c-team': 'ui',
+     'c-parent': 'Auth token leak',
+     'c-owner': 'lane-b',
+     'c-tags': ['ui'],
+    },
+   },
+   {
+    id: 'r3',
+    values: {
+     'c-title': 'Auth Audit Queue',
+     'c-status': 'closed',
+     'c-prio': null,
+     'c-budget': null,
+     'c-weight': null,
+     'c-done': false,
+     'c-due': '2026-05-13',
+     'c-ts': '2026-05-13T18:30:00.000Z',
+     'c-url': '',
+     'c-mail': '',
+     'c-meta': null,
+     'c-team': 'core',
+     'c-parent': 'Auth token leak',
+     'c-owner': 'lane-a',
+     'c-tags': [],
+    },
+   },
+  ],
+ }
+ const allTables = [wfTable, teamsTable, issuesTable]
+ const colById = Object.fromEntries(issuesTable.columns.map(c => [c.id, c]))
+ const nowMs = Date.UTC(2026, 4, 10, 14, 0, 0) // 2026-05-10T14:00:00Z
+ const evalOpts = {
+  tables: allTables,
+  ownerTable: issuesTable,
+  displayOpts: { timeZone: 'UTC', hourFormat: '24h' },
+  lookupLaneTitle: id => (id === 'lane-a' ? 'Security Lane' : id),
+  nowMs,
+ }
+
+ // Parsing, validation, reversed bounds normalization, and round-trip edit formatting
+ assert.equal(parseTableFilterInput(colById['c-title'], 'matches_regex', '[bad').ok, false)
+ const regexParsed = parseTableFilterInput(colById['c-title'], 'matches_regex', '/^auth/i')
+ assert.equal(regexParsed.ok, true)
+ const numRangeParsed = parseTableFilterInput(colById['c-budget'], 'between', '50.00', '10.00')
+ assert.deepEqual(numRangeParsed, { ok: true, operator: 'between', value: 1000, valueTo: 5000, hasValue: true, error: null })
+ assert.deepEqual(formatTableFilterInputValues({ operator: 'between', value: 1000, valueTo: 5000 }, colById['c-budget']), {
+  value: '10.00',
+  valueTo: '50.00',
+ })
+ const dateRangeParsed = parseTableFilterInput(colById['c-due'], 'between', '2026-05-12', '2026-05-07')
+ assert.deepEqual(dateRangeParsed, { ok: true, operator: 'between', value: '2026-05-07', valueTo: '2026-05-12', hasValue: true, error: null })
+ const selfParentParsed = parseTableFilterInput(colById['c-parent'], 'is', 'Auth token leak', undefined, evalOpts)
+ assert.deepEqual(selfParentParsed, { ok: true, operator: 'is', value: 'Auth token leak', valueTo: undefined, hasValue: true, error: null })
+
+ // Evaluate every operator category
+ const filterIds = filters => filterTableRows(issuesTable, filters, evalOpts).matchedEntries.map(e => ({ id: e.row.id, num: e.rowNumber }))
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-title', operator: 'contains', value: 'auth' }]), [
+  { id: 'r1', num: 1 },
+  { id: 'r3', num: 3 },
+ ])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-title', operator: 'matches_regex', value: '/queue$/i' }]), [{ id: 'r3', num: 3 }])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-status', operator: 'is_any_of', value: ['open', 'closed'] }]), [
+  { id: 'r1', num: 1 },
+  { id: 'r3', num: 3 },
+ ])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-prio', operator: 'has_value' }]), [
+  { id: 'r1', num: 1 },
+  { id: 'r2', num: 2 },
+ ])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-prio', operator: 'is_empty' }]), [{ id: 'r3', num: 3 }])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-done', operator: 'is_true' }]), [{ id: 'r2', num: 2 }])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-done', operator: 'is_false' }]), [
+  { id: 'r1', num: 1 },
+  { id: 'r3', num: 3 },
+ ])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-due', operator: 'between', value: '2026-05-07', valueTo: '2026-05-10' }]), [
+  { id: 'r1', num: 1 },
+  { id: 'r2', num: 2 },
+ ])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-due', operator: 'after', value: '2026-05-10' }]), [{ id: 'r3', num: 3 }])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-due', operator: 'before', value: '2026-05-10' }]), [{ id: 'r1', num: 1 }])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-due', operator: 'is_today' }]), [{ id: 'r2', num: 2 }])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-due', operator: 'in_last_days', value: 2 }]), [
+  { id: 'r1', num: 1 },
+  { id: 'r2', num: 2 },
+ ])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-due', operator: 'in_next_days', value: 3 }]), [
+  { id: 'r2', num: 2 },
+  { id: 'r3', num: 3 },
+ ])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-ts', operator: 'after', value: '2026-05-10T11:00:00.000Z' }]), [
+  { id: 'r2', num: 2 },
+  { id: 'r3', num: 3 },
+ ])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-meta', operator: 'has_key', value: 'severity' }]), [{ id: 'r1', num: 1 }])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-team', operator: 'is', value: 'core' }]), [
+  { id: 'r1', num: 1 },
+  { id: 'r3', num: 3 },
+ ])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-parent', operator: 'is', value: 'Auth token leak' }]), [
+  { id: 'r2', num: 2 },
+  { id: 'r3', num: 3 },
+ ])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-owner', operator: 'contains', value: 'Security Lane' }]), [
+  { id: 'r1', num: 1 },
+  { id: 'r3', num: 3 },
+ ])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-tags', operator: 'contains_all_of', value: ['security', 'urgent'] }]), [{ id: 'r1', num: 1 }])
+ assert.deepEqual(filterIds([{ id: 'f1', columnId: 'c-tags', operator: 'count_gte', value: 1 }]), [
+  { id: 'r1', num: 1 },
+  { id: 'r2', num: 2 },
+ ])
+
+ // Pinned row remains visible even when filter wouldn't match it
+ const pinnedRes = filterTableRows(issuesTable, [{ id: 'f1', columnId: 'c-prio', operator: 'eq', value: 3 }], {
+  ...evalOpts,
+  pinnedRowIds: ['r1'],
+ })
+ assert.deepEqual(pinnedRes.matchedEntries.map(e => ({ id: e.row.id, num: e.rowNumber })), [
+  { id: 'r1', num: 1 },
+  { id: 'r2', num: 2 },
+ ])
+
+ // Bubble formatting
+ assert.equal(formatTableFilterBubbleLabel({ operator: 'contains', value: 'auth' }, colById['c-title'], evalOpts), 'contains "auth"')
+ assert.equal(formatTableFilterBubbleLabel({ operator: 'between', value: '2026-05-07', valueTo: '2026-05-12' }, colById['c-due'], evalOpts), '2026-05-07 – 2026-05-12')
+ assert.equal(formatTableFilterBubbleLabel({ operator: 'in_last_days', value: 7 }, colById['c-due'], evalOpts), 'last 7d')
+ assert.equal(formatTableFilterBubbleLabel({ operator: 'has_value' }, colById['c-due'], evalOpts), 'has value')
+ assert.equal(formatTableFilterBubbleLabel({ operator: 'is', value: 'core' }, colById['c-team'], evalOpts), 'is Core Platform')
+ assert.equal(formatTableFilterBubbleLabel({ operator: 'is', value: 'lane-a' }, colById['c-owner'], evalOpts), 'is Security Lane')
+
+ // View record normalization, display naming, sanitization & KV round-trip without triggers
+ const normRec = normalizeTableViewsRecord({
+  activeViewId: 'v-sec',
+  views: [
+   { id: DEFAULT_TABLE_VIEW_ID, isDefault: true, filters: [{ id: 'f0', columnId: 'c-title', operator: 'has_value' }] },
+   { id: 'v-sec', name: 'Security', filters: [{ id: 'f1', columnId: 'c-team', operator: 'is', value: 'core' }] },
+  ],
+ }, issuesTable.columns, allTables)
+ assert.equal(resolveTableViewDisplayName(normRec.views[0], issuesTable, 0), 'issues')
+ assert.equal(resolveTableViewDisplayName(normRec.views[1], issuesTable, 0), 'Security')
+ assert.equal(buildUniqueTableViewName(normRec.views, 'issues', issuesTable, 0), 'issues 2')
+
+ const sanitized = sanitizeTableViewsForColumns({
+  activeViewId: 'v-sec',
+  views: [
+   { id: DEFAULT_TABLE_VIEW_ID, isDefault: true, filters: [{ id: 'f-dead', columnId: 'c-deleted', operator: 'has_value' }] },
+   { id: 'v-sec', name: 'Security', filters: [{ id: 'f1', columnId: 'c-team', operator: 'is', value: 'core' }] },
+  ],
+  workingFilters: [{ id: 'f-dead', columnId: 'c-deleted', operator: 'has_value' }],
+ }, issuesTable.columns, allTables)
+ assert.equal(sanitized.savedChanged, true)
+ assert.equal(sanitized.views[0].filters.length, 0)
+ assert.equal(sanitized.views[1].filters.length, 1)
+ assert.equal(sanitized.workingFilters.length, 0)
+ assert.equal(tableViewFiltersEqual(normRec.views[1].filters, sanitized.views[1].filters), true)
+
+ const kvMap = new Map()
+ const kv = {
+  namespace() { return kv },
+  async get(k) { return kvMap.has(k) ? kvMap.get(k) : null },
+  async set(k, v) { kvMap.set(k, String(v)) },
+  async delete(k) { kvMap.delete(k) },
+ }
+ const viewsKey = tableViewsKey('lane-1', 'tbl-issues')
+ assert.equal(viewsKey, 'lanes#lane-1/tables/tbl-issues/views')
+ assert.equal(isTriggerExcludedKey(viewsKey), true)
+ assert.deepEqual(resolveMatchingTriggerTargets(viewsKey), [])
+
+ await saveTableViews(kv, kv, 'lane-1', 'tbl-issues', normRec, issuesTable.columns, allTables)
+ assert.equal(kvMap.has(viewsKey), true)
+ const loadedViews = await loadTableViews(kv, kv, 'lane-1', 'tbl-issues', issuesTable.columns, allTables)
+ assert.deepEqual(loadedViews, normRec)
+
+ // Saving default clean view with no filters removes the KV key cleanly
+ await saveTableViews(kv, kv, 'lane-1', 'tbl-issues', { activeViewId: DEFAULT_TABLE_VIEW_ID, views: [{ id: DEFAULT_TABLE_VIEW_ID, isDefault: true, filters: [] }] }, issuesTable.columns, allTables)
+ assert.equal(kvMap.has(viewsKey), false)
+})
+
+test('Data tab table views & column filters UI: View selector popover, Edit table rename, Filters row funnel + dotted + + wrapping bubbles, Unsaved filters Save/Fork/Abandon, and reload persistence', async () => {
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tagName) {
+  return {
+   tag: tagName,
+   tagName: String(tagName || '').toLowerCase(),
+   nodeType: 1,
+   style: { setProperty() {}, removeProperty() {}, getPropertyValue() { return '' } },
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   checked: false,
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   readOnly: false,
+   focused: false,
+   removed: false,
+   rect: { top: 24, left: 0, width: 640, height: 480 },
+   getBoundingClientRect() { return this.rect },
+   setAttribute(name, value) { this.attributes[name] = value },
+   getAttribute(name) { return this.attributes[name] ?? null },
+   removeAttribute(name) { delete this.attributes[name] },
+   contains(target) {
+    if (target === this) return true
+    return this.children.some(c => c === target || (c && typeof c.contains === 'function' && c.contains(target)))
+   },
+   appendChild(child) {
+    if (child && child.parentNode && child.parentNode.children) {
+     const idx = child.parentNode.children.indexOf(child)
+     if (idx !== -1) child.parentNode.children.splice(idx, 1)
+    }
+    this.children.push(child)
+    if (child && typeof child === 'object') {
+     child.parentNode = this
+     child.removed = false
+    }
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child && child.parentNode && child.parentNode.children) {
+     const oldIdx = child.parentNode.children.indexOf(child)
+     if (oldIdx !== -1) child.parentNode.children.splice(oldIdx, 1)
+    }
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) this.children.push(child)
+    else this.children.splice(idx, 0, child)
+    if (child && typeof child === 'object') {
+     child.parentNode = this
+     child.removed = false
+    }
+    return child
+   },
+   replaceChildren(...nodes) {
+    this.children = []
+    for (const n of nodes) this.appendChild(n)
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode && this.parentNode.children) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) this.parentNode.children.splice(idx, 1)
+    }
+    this.parentNode = null
+   },
+  }
+ }
+
+ const stores = new Map()
+ function getStore(dirKey) {
+  if (!stores.has(dirKey)) stores.set(dirKey, new Map())
+  return stores.get(dirKey)
+ }
+ function makeKv(dirKey, prefix = '', rootRef = null, defaultRootRef = null) {
+  const store = getStore(dirKey)
+  const q = k => (prefix ? `${prefix}/${k}` : k)
+  const kv = {
+   get basePath() { return dirKey === '__default__' ? null : dirKey },
+   get root() { return rootRef || kv },
+   get defaultRoot() { return defaultRootRef || rootRef || kv },
+   withBasePath(bp) {
+    const clean = normalizeDataDir(bp)
+    const k = clean === null ? '__default__' : clean
+    return makeKv(k, '', null, kv.defaultRoot)
+   },
+   namespace(name) { return makeKv(dirKey, q(name), kv.root, kv.defaultRoot) },
+   hashNamespace(name) { return makeKv(dirKey, q(name), kv.root, kv.defaultRoot) },
+   async get(k) { return store.has(q(k)) ? store.get(q(k)) : null },
+   async set(k, v) { store.set(q(k), String(v)) },
+   async delete(k) { store.delete(q(k)) },
+  }
+  return kv
+ }
+ const defaultRootKv = makeKv('__default__')
+ const localStore = new Map()
+ const sessionStore = new Map()
+ const makeStorage = m => ({
+  getItem: k => (m.has(k) ? m.get(k) : null),
+  setItem: (k, v) => m.set(k, String(v)),
+  removeItem: k => m.delete(k),
+ })
+
+ let uuid = 0
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/main.fs') return { text: async () => mainSource }
+  if (url === '/src/lane-control.fs') return { text: async () => laneSource }
+  if (url === '/src/lane-notebook.fs') return { text: async () => notebookSource }
+  if (url === '/src/lane-inputs.fs') return { text: async () => inputsSource }
+  if (url === '/src/lane-scope.fs') return { text: async () => scopeSource }
+  if (url === '/src/lane-data.fs') return { text: async () => dataSource }
+  if (url === '/src/confirm-modal.fs') return { text: async () => confirmModalSource }
+  if (url === '/src/lane-row-picker-modal.fs') return { text: async () => rowPickerModalSource }
+  if (url === '/src/lane-output.fs') return { text: async () => outputSource }
+  if (url === '/src/lane-modal.fs') return { text: async () => modalSource }
+  if (url === '/src/lane-config-modal.fs') return { text: async () => configModalSource }
+  if (url === '/src/lane-import-modal.fs') return { text: async () => importModalSource }
+  if (url === '/src/lane-export-modal.fs') return { text: async () => exportModalSource }
+  if (url === '/src/lane-export-deploy-modal.fs') return { text: async () => exportDeployModalSource }
+  if (url === '/src/lane-rails.fs') return { text: async () => railsSource }
+  if (url === '/src/lane-line-info-modal.fs') return { text: async () => lineInfoModalSource }
+  if (url === '/src/lane-session-modal.fs') return { text: async () => sessionModalSource }
+  if (url === '/src/lane-package-modal.fs') return { text: async () => packageModalSource }
+  if (url === '/src/lane-dir-modal.fs') return { text: async () => dirModalSource }
+  if (url === '/src/lane-server.fs') return { text: async () => laneServerSource }
+  if (url === '/src/lane-story.fs') return { text: async () => laneStorySource }
+  if (url === '/src/lane-terminal-modal.fs') return { text: async () => laneTerminalModalSource }
+  if (url === '/src/lane-servers-modal.fs') return { text: async () => laneServersModalSource }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ const bootApp = async (initialPathname = '/') => {
+  const windowListeners = {}
+  const documentListeners = {}
+  const mockWindow = {
+   Array,
+   Boolean,
+   Date,
+   Intl,
+   JSON,
+   Math,
+   Number,
+   Object,
+   Reflect,
+   String,
+   decodeURIComponent,
+   encodeURIComponent,
+   innerHeight: 900,
+   innerWidth: 1440,
+   localStorage: makeStorage(localStore),
+   sessionStorage: makeStorage(sessionStore),
+   location: { pathname: initialPathname, search: '', hash: '' },
+   history: {
+    pushState(_s, _t, url) {
+     if (typeof url === 'string') mockWindow.location.pathname = url.split('?')[0].split('#')[0] || '/'
+    },
+    replaceState(_s, _t, url) {
+     if (typeof url === 'string') mockWindow.location.pathname = url.split('?')[0].split('#')[0] || '/'
+    },
+   },
+   crypto: { randomUUID: () => `vw-uuid-${++uuid}` },
+   setTimeout: () => 1,
+   clearTimeout() {},
+   addEventListener(event, handler) {
+    windowListeners[event] ||= []
+    windowListeners[event].push(handler)
+   },
+   removeEventListener() {},
+  }
+  const mockDocument = {
+   body: createMockElement('body'),
+   documentElement: createMockElement('html'),
+   defaultView: mockWindow,
+   activeElement: null,
+   createElement: createMockElement,
+   addEventListener(event, handler) {
+    documentListeners[event] ||= []
+    documentListeners[event].push(handler)
+   },
+  }
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: defaultRootKv,
+   defaultValueForType,
+   document: mockDocument,
+   formatImportLine,
+   hasImportCycle,
+   history: mockWindow.history,
+   location: mockWindow.location,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+   window: mockWindow,
+  })
+  await f.run(parse(mainSource, '/src/main.fs'))
+  return {
+   f,
+   mockWindow,
+   mockDocument,
+   async dispatchWindow(event, ev) {
+    for (const h of windowListeners[event] || []) await h(ev)
+   },
+   async dispatchDocument(event, ev) {
+    for (const h of documentListeners[event] || []) await h(ev)
+   },
+  }
+ }
+
+ try {
+  const app1 = await bootApp('/')
+  const lc1 = app1.f.state['lane-control']
+  await lc1['confirm-session-data-dir'](null)
+  const lane1 = await lc1.add()
+  await lane1.notebook['set-tab']('data')
+  const dv = lane1.notebook['data-view']
+
+  // Create "issues" table: header defaults to View selector showing table name ("issues")
+  const issuesTbl = await dv['add-table']('issues')
+  assert.equal(dv['view-wrap'].hidden, false)
+  assert.equal(dv['edit-table-modal']['is-open'], false)
+  assert.equal(dv['view-name-el'].textContent, 'issues')
+  assert.equal(dv['view-count-badge'].hidden, true)
+  assert.equal(dv['view-dirty-badge'].hidden, true)
+
+  // Open ⋯ -> Edit table opens dedicated Edit Table modal without hiding View selector; Cancel discards edits
+  await dv['table-menu-btn'].listeners.click({})
+  assert.equal(dv['table-menu'].hidden, false)
+  assert.equal(dv['edit-table-btn'].textContent, 'Edit table')
+  await dv['edit-table-btn'].listeners.click({})
+  assert.equal(dv['table-menu'].hidden, true)
+  assert.equal(dv['view-wrap'].hidden, false)
+  assert.equal(dv['edit-table-modal']['is-open'], true)
+  assert.equal(dv['edit-table-modal'].heading.textContent, 'Edit Table')
+  assert.equal(dv['edit-table-modal']['name-input'].value, 'issues')
+  dv['edit-table-modal']['name-input'].value = 'discard_me'
+  await dv['edit-table-modal']['cancel-btn'].listeners.click({})
+  assert.equal(dv['edit-table-modal']['is-open'], false)
+  assert.equal(dv.tables[0].name, 'issues')
+  assert.equal(dv['view-name-el'].textContent, 'issues')
+
+  // Open Edit Table modal, validate empty guard, then rename to "bugs" -> Save changes -> rename back to "issues"
+  await dv['open-edit-table-modal']()
+  assert.equal(dv['view-wrap'].hidden, false)
+  dv['edit-table-modal']['name-input'].value = '   '
+  await dv['edit-table-modal']['save-btn'].listeners.click({})
+  assert.equal(dv['edit-table-modal']['is-open'], true)
+  assert.equal(dv['edit-table-modal']['error-el'].hidden, false)
+  dv['edit-table-modal']['name-input'].value = 'bugs'
+  await dv['edit-table-modal']['name-input'].listeners.input()
+  assert.equal(dv['edit-table-modal']['error-el'].hidden, true)
+  await dv['edit-table-modal']['save-btn'].listeners.click({})
+  assert.equal(dv['edit-table-modal']['is-open'], false)
+  assert.equal(dv['view-wrap'].hidden, false)
+  assert.equal(dv['table-tabs'][0]['label-el'].textContent, 'bugs')
+  assert.equal(dv['view-name-el'].textContent, 'bugs')
+
+  await dv['open-edit-table-modal']()
+  dv['edit-table-modal']['name-input'].value = 'issues'
+  await dv['edit-table-modal']['save-btn'].listeners.click({})
+  assert.equal(dv['view-name-el'].textContent, 'issues')
+
+  // Add typed columns: title (text), priority (integer), opened (date), tags (text[]), triaged (boolean)
+  await dv['add-col-btn'].listeners.click()
+  dv['schema-rows'][0]['name-el'].value = 'title'
+  await dv['schema-rows'][0]['name-el'].listeners.input()
+
+  await dv['add-col-btn'].listeners.click()
+  dv['schema-rows'][1]['name-el'].value = 'priority'
+  await dv['schema-rows'][1]['name-el'].listeners.input()
+  dv['schema-rows'][1]['type-el'].value = 'integer'
+  await dv['schema-rows'][1]['type-el'].listeners.change()
+
+  await dv['add-col-btn'].listeners.click()
+  dv['schema-rows'][2]['name-el'].value = 'opened'
+  await dv['schema-rows'][2]['name-el'].listeners.input()
+  dv['schema-rows'][2]['type-el'].value = 'date'
+  await dv['schema-rows'][2]['type-el'].listeners.change()
+
+  await dv['add-col-btn'].listeners.click()
+  dv['schema-rows'][3]['name-el'].value = 'tags'
+  await dv['schema-rows'][3]['name-el'].listeners.input()
+  await dv['schema-rows'][3]['multi-btn'].listeners.click()
+
+  await dv['add-col-btn'].listeners.click()
+  dv['schema-rows'][4]['name-el'].value = 'triaged'
+  await dv['schema-rows'][4]['name-el'].listeners.input()
+  dv['schema-rows'][4]['type-el'].value = 'boolean'
+  await dv['schema-rows'][4]['type-el'].listeners.change()
+
+  // Seed 4 rows
+  const seedRows = [
+   { title: 'Auth token expiry', prio: '1', opened: '2026-01-15', tags: ['auth', 'p0'], triaged: true },
+   { title: 'Button spacing', prio: '3', opened: '2026-02-10', tags: ['ui'], triaged: false },
+   { title: 'Auth redirect loop', prio: '2', opened: '2026-03-05', tags: ['auth', 'backend'], triaged: true },
+   { title: 'Footer alignment', prio: '4', opened: '2026-04-20', tags: ['ui'], triaged: true },
+  ]
+  for (let i = 0; i < seedRows.length; i++) {
+   const spec = seedRows[i]
+   const rObj = await dv['add-row']()
+   const grow = dv['grid-rows'][i]
+   grow.cells[0]['input-el'].value = spec.title
+   await grow.cells[0]['input-el'].listeners.input()
+   grow.cells[1]['input-el'].value = spec.prio
+   await grow.cells[1]['input-el'].listeners.input()
+   grow.cells[2]['input-el'].value = spec.opened
+   await grow.cells[2]['input-el'].listeners.change()
+   for (let ti = 0; ti < spec.tags.length; ti++) {
+    await grow.cells[3]['add-btn'].listeners.click()
+    const itemInput = dv['grid-rows'][i].cells[3].items[ti]['input-el']
+    itemInput.value = spec.tags[ti]
+    await itemInput.listeners.input()
+   }
+   grow.cells[4]['input-el'].checked = spec.triaged
+   await grow.cells[4]['input-el'].listeners.change()
+   assert.equal(rObj.id.length > 0, true)
+  }
+
+  // Verify grid-frow directly under grid-hrow with funnel SVG and dotted '+' buttons
+  assert.equal(dv['grid-hrow'].parentNode.children[1], dv['grid-frow'])
+  assert.equal(dv['grid-filter-cells'].length, 7) // num + 5 cols + actions
+  assert.equal(dv['grid-filter-cells'][0].kind, 'num')
+  assert.match(dv['grid-filter-cells'][0].el.innerHTML, /<svg class="lane-data-filter-funnel-icon"/)
+  assert.equal(dv['grid-filter-cells'][1]['wrap-el'].className, 'lane-data-filter-cell')
+  assert.equal(dv['grid-filter-cells'][1]['add-btn'].className, 'lane-data-filter-add-btn')
+  assert.equal(dv['grid-filter-cells'][1]['add-btn'].textContent, '+')
+
+  // Add filter via '+' under title column ("contains auth")
+  await dv['grid-filter-cells'][1]['add-btn'].listeners.click({})
+  assert.equal(dv['filter-editor'].open, true)
+  assert.equal(dv['filter-menu'].hidden, false)
+  assert.equal(dv['filter-menu-col-name'].textContent, 'title')
+  assert.equal(dv['filter-op-select'].value, 'contains')
+  dv['filter-val-el'].value = 'auth'
+  await dv['filter-apply-btn'].listeners.click()
+  assert.equal(dv['filter-editor'].open, false)
+  assert.equal(dv['filter-menu'].hidden, true)
+
+  // View shows 2 matching rows with real row numbers 1 & 3, and notebook scope still sees all 4 rows
+  assert.equal(dv['rows-title'].textContent, 'Rows (2 of 4)')
+  assert.equal(dv['grid-rows'].length, 2)
+  assert.deepEqual(dv['grid-rows'].map(gr => gr['num-el'].textContent), [1, 3])
+  assert.equal(dv['grid-filter-cells'][1].chips.length, 1)
+  assert.equal(dv['grid-filter-cells'][1].chips[0]['label-el'].textContent, 'contains "auth"')
+  const nbScope = dv['seed-env'](Object.create(null))
+  assert.equal(nbScope.issues.length, 4)
+
+  // Unsaved filters state surfaced on button + View popover (with Save / Fork / Abandon, New view disabled)
+  assert.equal(dv['view-count-badge'].hidden, false)
+  assert.equal(dv['view-count-badge'].textContent, '1')
+  assert.equal(dv['view-dirty-badge'].hidden, false)
+  assert.equal(dv['view-dirty-badge'].textContent, 'Unsaved filters')
+  await dv['view-btn'].listeners.click({})
+  assert.equal(dv['view-menu-open'], true)
+  assert.equal(dv['view-menu'].hidden, false)
+  assert.equal(dv['view-draft-row'].hidden, false)
+  assert.equal(dv['view-new-btn'].disabled, true)
+  assert.equal(dv['view-delete-btn'].disabled, true)
+
+  // Click filter bubble to edit operator/value -> Invalid input shows inline error, valid Update updates filter
+  await dv['grid-filter-cells'][1].chips[0]['label-el'].listeners.click({})
+  assert.equal(dv['filter-editor'].mode, 'edit')
+  assert.equal(dv['filter-apply-btn'].textContent, 'Update filter')
+  assert.equal(dv['filter-delete-btn'].hidden, false)
+  dv['filter-op-select'].value = 'matches_regex'
+  await dv['filter-op-select'].listeners.change()
+  dv['filter-val-el'].value = '[unclosed'
+  await dv['filter-apply-btn'].listeners.click()
+  assert.equal(dv['filter-error-el'].hidden, false)
+  assert.equal(dv['filter-editor'].open, true)
+  dv['filter-val-el'].value = 'expiry'
+  dv['filter-op-select'].value = 'contains'
+  await dv['filter-op-select'].listeners.change()
+  await dv['filter-apply-btn'].listeners.click()
+  assert.equal(dv['filter-editor'].open, false)
+  assert.equal(dv['rows-title'].textContent, 'Rows (1 of 4)')
+
+  // Adding a new row while filtered pins it visible in grid-rows
+  const pinnedAdded = await dv['add-row']()
+  assert.equal(dv['grid-rows'].length, 2)
+  assert.equal(dv['grid-rows'][1].row.id, pinnedAdded.id)
+
+  // Delete newly pinned empty row so counts stay clean, then Abandon changes
+  await dv['grid-rows'][1]['remove-btn'].listeners.click()
+  await dv['confirm-modal']['confirm-btn'].listeners.click()
+  assert.equal(dv['tables'][0].rows.length, 4)
+
+  await dv['view-btn'].listeners.click({})
+  await dv['view-abandon-btn'].listeners.click()
+  assert.equal(dv['view-dirty-badge'].hidden, true)
+  assert.equal(dv['view-count-badge'].hidden, true)
+  assert.equal(dv['rows-title'].textContent, 'Rows (4)')
+  assert.equal(dv['grid-rows'].length, 4)
+
+  // Add multiple column filters (text + date range + boolean has_value) and Save view on default view
+  await dv['grid-filter-cells'][1]['add-btn'].listeners.click({})
+  dv['filter-val-el'].value = 'auth'
+  await dv['filter-apply-btn'].listeners.click()
+  await dv['grid-filter-cells'][3]['add-btn'].listeners.click({})
+  dv['filter-op-select'].value = 'between'
+  await dv['filter-op-select'].listeners.change()
+  dv['filter-val-el'].value = '2026-01-01'
+  dv['filter-val-to-el'].value = '2026-02-28'
+  await dv['filter-apply-btn'].listeners.click()
+  await dv['grid-filter-cells'][5]['add-btn'].listeners.click({})
+  dv['filter-op-select'].value = 'is_true'
+  await dv['filter-op-select'].listeners.change()
+  assert.equal(dv['filter-value-wrap'].hidden, true)
+  await dv['filter-apply-btn'].listeners.click()
+  assert.equal(dv['rows-title'].textContent, 'Rows (1 of 4)')
+  assert.equal(dv['grid-rows'].map(r => r.row.id).length, 1)
+
+  await dv['view-btn'].listeners.click({})
+  await dv['view-save-btn'].listeners.click()
+  assert.equal(dv['view-dirty-badge'].hidden, true)
+  assert.equal(dv['view-draft-row'].hidden, true)
+  assert.equal(dv['view-new-btn'].disabled, false)
+
+  // Modify filters (remove date range via quick '×' remove button) -> dirty again -> Fork view
+  await dv['grid-filter-cells'][3].chips[0]['remove-el'].listeners.click({})
+  assert.equal(dv['rows-title'].textContent, 'Rows (2 of 4)')
+  assert.equal(dv['view-dirty-badge'].hidden, false)
+  await dv['view-btn'].listeners.click({})
+  // Switching back to original saved view is locked while Unsaved filters exist
+  assert.equal(dv['view-option-els'].length, 1)
+  await dv['view-fork-btn'].listeners.click()
+  assert.equal(dv['view-dirty-badge'].hidden, true)
+  assert.equal(dv['view-name-el'].textContent, 'issues copy')
+  assert.equal(dv['view-option-els'].length, 2)
+  assert.equal(dv['view-title-btn'].hidden, false)
+  assert.equal(dv['view-title-text'].textContent, 'issues copy')
+  assert.equal(dv['view-rename-row'].hidden, true)
+
+  // Click custom view header -> swaps to input/Save/Cancel; Cancel exits without renaming
+  await dv['view-title-btn'].listeners.click({})
+  assert.equal(dv['view-title-btn'].hidden, true)
+  assert.equal(dv['view-rename-row'].hidden, false)
+  assert.equal(dv['editing-view-name'], true)
+  dv['view-rename-input'].value = 'Temporary'
+  await dv['view-rename-cancel-btn'].listeners.click({})
+  assert.equal(dv['editing-view-name'], false)
+  assert.equal(dv['view-title-btn'].hidden, false)
+  assert.equal(dv['view-rename-row'].hidden, true)
+  assert.equal(dv['view-name-el'].textContent, 'issues copy')
+
+  // Click header again, rename forked custom view to "Auth all dates", Save, then test Duplicate, Reset, Delete
+  await dv['view-title-btn'].listeners.click({})
+  dv['view-rename-input'].value = 'Auth all dates'
+  await dv['view-rename-btn'].listeners.click()
+  assert.equal(dv['editing-view-name'], false)
+  assert.equal(dv['view-title-btn'].hidden, false)
+  assert.equal(dv['view-title-text'].textContent, 'Auth all dates')
+  assert.equal(dv['view-rename-row'].hidden, true)
+  assert.equal(dv['view-name-el'].textContent, 'Auth all dates')
+
+  // Duplicate -> "Auth all dates copy", Reset -> clears filters -> Abandon restores, then Delete custom view
+  await dv['view-duplicate-btn'].listeners.click()
+  assert.equal(dv['view-name-el'].textContent, 'Auth all dates copy')
+  assert.equal(dv['view-option-els'].length, 3)
+  await dv['view-reset-btn'].listeners.click()
+  assert.equal(dv['rows-title'].textContent, 'Rows (4)')
+  assert.equal(dv['view-dirty-badge'].hidden, false)
+  // While 2+ views exist and working filters are dirty, switching to another view is disabled
+  assert.equal(dv['view-option-els'][0].el.disabled, true)
+  assert.equal(dv['view-new-btn'].disabled, true)
+  await dv['view-abandon-btn'].listeners.click()
+  assert.equal(dv['rows-title'].textContent, 'Rows (2 of 4)')
+  await dv['view-delete-btn'].listeners.click()
+  assert.equal(dv['confirm-modal']['is-open'], true)
+  await dv['confirm-modal']['confirm-btn'].listeners.click()
+  assert.equal(dv['view-option-els'].length, 2)
+
+  // New view creates a blank custom view; Escape closes open popovers
+  await dv['view-btn'].listeners.click({})
+  assert.equal(dv['view-new-btn'].disabled, false)
+  await dv['view-new-btn'].listeners.click()
+  assert.equal(dv['view-name-el'].textContent, 'View')
+  assert.equal(dv['rows-title'].textContent, 'Rows (4)')
+  await app1.dispatchWindow('keydown', { key: 'Escape' })
+  assert.equal(dv['view-menu-open'], false)
+  assert.equal(dv['view-menu'].hidden, true)
+  await dv['view-delete-btn'].listeners.click()
+  await dv['confirm-modal']['confirm-btn'].listeners.click()
+  assert.equal(dv['view-option-els'].length, 2)
+
+  // Select "Auth all dates" and verify original default view retained all 3 filters untouched
+  await dv['view-btn'].listeners.click({})
+  const authOpt = dv['view-option-els'].find(o => o.el.children[0].textContent === 'Auth all dates')
+  assert.ok(authOpt)
+  await authOpt.el.listeners.click({})
+  assert.equal(dv['view-name-el'].textContent, 'Auth all dates')
+  assert.equal(dv['rows-title'].textContent, 'Rows (2 of 4)')
+
+  // Reload fresh browser instance against same defaultRootKv and verify saved views & filters persist
+  const savedPathname = app1.mockWindow.location.pathname
+  const app2 = await bootApp(savedPathname)
+  const laneReloaded = app2.f.state.lanes[0]
+  const dv2 = laneReloaded.notebook['data-view']
+  assert.equal(dv2.tables[0].id, issuesTbl.id)
+  assert.equal(dv2['view-name-el'].textContent, 'Auth all dates')
+  assert.equal(dv2['view-dirty-badge'].hidden, true)
+  assert.equal(dv2['view-count-badge'].textContent, '2')
+  assert.equal(dv2['rows-title'].textContent, 'Rows (2 of 4)')
+  assert.deepEqual(dv2['grid-rows'].map(gr => gr['num-el'].textContent), [1, 3])
+  await dv2['view-btn'].listeners.click({})
+  assert.equal(dv2['view-option-els'].length, 2)
+  await dv2['view-option-els'][0].el.listeners.click({})
+  assert.equal(dv2['view-name-el'].textContent, 'issues')
+  assert.equal(dv2['rows-title'].textContent, 'Rows (1 of 4)')
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('Custom numeric cell inputs: zero type="number" spin arrows, strict format validation, dark-mode error highlighting, blur normalization, and Schema/RowPicker coverage', async () => {
+ // 1. Unit tests for parseNumericCellInput & parseFixedDecimalsInput
+ assert.deepEqual(parseNumericCellInput('0', 'integer'), { ok: true, value: 0, error: null })
+ assert.deepEqual(parseNumericCellInput('42', 'integer'), { ok: true, value: 42, error: null })
+ assert.deepEqual(parseNumericCellInput('-7', 'integer'), { ok: true, value: -7, error: null })
+ assert.deepEqual(parseNumericCellInput('+12', 'integer'), { ok: true, value: 12, error: null })
+ assert.strictEqual(Object.is(parseNumericCellInput('-0', 'integer').value, 0), true)
+ assert.deepEqual(parseNumericCellInput('', 'integer'), { ok: true, value: null, error: null })
+ for (const badInt of ['2.5', '2.', '.5', '1e3', '1e', '0x10', 'abc', '12a', '-', '+', '--5', '1,000', ' 42', '42 ', '   ', '9007199254740992']) {
+  assert.equal(parseNumericCellInput(badInt, 'integer').ok, false, `integer should reject ${JSON.stringify(badInt)}`)
+ }
+
+ assert.deepEqual(parseNumericCellInput('0', 'decimal'), { ok: true, value: 0, error: null })
+ assert.deepEqual(parseNumericCellInput('234.55', 'decimal'), { ok: true, value: 234.55, error: null })
+ assert.deepEqual(parseNumericCellInput('-0.25', 'decimal'), { ok: true, value: -0.25, error: null })
+ assert.deepEqual(parseNumericCellInput('.5', 'decimal'), { ok: true, value: 0.5, error: null })
+ assert.deepEqual(parseNumericCellInput('5.', 'decimal'), { ok: true, value: 5, error: null })
+ assert.strictEqual(Object.is(parseNumericCellInput('-0.0', 'decimal').value, 0), true)
+ assert.deepEqual(parseNumericCellInput('', 'decimal'), { ok: true, value: null, error: null })
+ for (const badDec of ['1e5', '1e-2', '0x10', '0b10', '0o10', 'Infinity', 'NaN', '1.2.3', '.', '-', '-.', '12abc', ' 1.5', '1.5 ', '   ']) {
+  assert.equal(parseNumericCellInput(badDec, 'decimal').ok, false, `decimal should reject ${JSON.stringify(badDec)}`)
+  assert.equal(parseCellValue(badDec, 'decimal').ok, [' 1.5', '1.5 ', '   '].includes(badDec), `parseCellValue decimal check for ${JSON.stringify(badDec)}`)
+ }
+
+ assert.deepEqual(parseNumericCellInput('12.34', 'fixed'), { ok: true, value: 1234, error: null })
+ assert.deepEqual(parseNumericCellInput('5', 'fixed'), { ok: true, value: 500, error: null })
+ assert.deepEqual(parseNumericCellInput('-0.05', 'fixed'), { ok: true, value: -5, error: null })
+ assert.deepEqual(parseNumericCellInput('', 'fixed'), { ok: true, value: null, error: null })
+ for (const badFix of ['12.345', '1e2', ' 12.34', '12.34 ', 'abc']) {
+  assert.equal(parseNumericCellInput(badFix, 'fixed').ok, false, `fixed should reject ${JSON.stringify(badFix)}`)
+ }
+
+ assert.deepEqual(parseFixedDecimalsInput('0'), { ok: true, value: 0, error: null })
+ assert.deepEqual(parseFixedDecimalsInput('2'), { ok: true, value: 2, error: null })
+ assert.deepEqual(parseFixedDecimalsInput('12'), { ok: true, value: 12, error: null })
+ for (const badDp of ['', '-1', '13', '2.5', ' 2', '2 ', 'abc']) {
+  assert.equal(parseFixedDecimalsInput(badDp).ok, false, `parseFixedDecimalsInput should reject ${JSON.stringify(badDp)}`)
+ }
+
+ // 2. Static CSS & source checks
+ const indexHtml = await fs.readFile(new URL('./index.html', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ assert.match(indexHtml, /input\[type="number"\]\s*\{[^}]*appearance:\s*textfield;/s)
+ assert.match(indexHtml, /input\[type="number"\]::-webkit-inner-spin-button,\s*input\[type="number"\]::-webkit-outer-spin-button\s*\{[^}]*-webkit-appearance:\s*none;/s)
+ assert.match(indexHtml, /\.lane-data-cell-input--invalid,\s*\.lane-data-cell-input--invalid:focus\s*\{[^}]*background-color:\s*#3a1216;[^}]*border-color:\s*#ff5555cc;/s)
+ assert.match(indexHtml, /\.lane-data-decimals-input--invalid,\s*\.lane-data-decimals-input--invalid:focus\s*\{[^}]*background-color:\s*#3a1216;[^}]*border-color:\s*#ff5555cc;/s)
+ assert.match(indexHtml, /\.lane-data-multi-item\s+\.lane-data-cell-input--invalid,\s*\.lane-data-multi-item\s+\.lane-data-cell-input--invalid:focus\s*\{[^}]*background-color:\s*#3a1216;[^}]*border-color:\s*#ff5555cc;/s)
+ assert.match(indexHtml, /\.lane-row-picker-add-control\s+\.lane-data-cell-input--invalid,\s*\.lane-row-picker-add-control\s+\.lane-data-cell-input--invalid:focus\s*\{[^}]*background-color:\s*#3a1216;[^}]*border-color:\s*#ff5555cc;/s)
+ assert.match(indexHtml, /\.lane-data-td:has\(\.lane-data-cell-input--invalid\)/)
+
+ assert.doesNotMatch(dataSource, /\{\s*\[ propertyIs integer col\.type \]\s*:\s*number\s*\}/)
+ assert.doesNotMatch(dataSource, /\{\s*\[ propertyIs decimal col\.type \]\s*:\s*number\s*\}/)
+ assert.doesNotMatch(dataSource, /\$decimals-el\s+\{\s*type number\s*\}/)
+ assert.doesNotMatch(rowPickerModalSource, /\{\s*\[ propertyIs integer col\.type \]\s*:\s*number\s*\}/)
+ assert.doesNotMatch(rowPickerModalSource, /\{\s*\[ propertyIs decimal col\.type \]\s*:\s*number\s*\}/)
+
+ // 3. UI integration: Data grid cells, integer[], Schema dp input, and Row Picker "+ Add"
+ function createMockElement(tag) {
+  return {
+   tag,
+   nodeType: 1,
+   style: {},
+   attributes: {},
+   children: [],
+   listeners: {},
+   textContent: '',
+   value: '',
+   checked: false,
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   readOnly: false,
+   focused: false,
+   removed: false,
+   scrollWidth: 0,
+   scrollLeft: 0,
+   setAttribute(name, value) { this.attributes[name] = value },
+   getAttribute(name) { return this.attributes[name] ?? null },
+   appendChild(child) { this.children.push(child); return child },
+   insertBefore(child, ref) {
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) { this.children.push(child) }
+    else { this.children.splice(idx, 0, child) }
+    return child
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() { this.removed = true },
+  }
+ }
+
+ const kv = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { kv.set(qualify(key), value) },
+   async delete(key) { kv.delete(qualify(key)) },
+  }
+ }
+
+ let uuid = 0
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  JSON,
+  Math,
+  Object,
+  Reflect,
+  decodeURIComponent,
+  crypto: { randomUUID: () => `num-uuid-${++uuid}` },
+  history: { pushState(_s, _t, url) { mockWindow.location.pathname = url } },
+  location: { pathname: '/' },
+  addEventListener() {},
+ }
+
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-story.fs') { return { text: async () => laneStorySource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: createMockKV(),
+   defaultValueForType,
+   document: {
+    body: createMockElement('body'),
+    defaultView: mockWindow,
+    createElement: createMockElement,
+   },
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  await f.run(parse(mainSource, '/src/main.fs'))
+  await f.state.tableHeadRowAddButton.listeners.click()
+  const lane = f.state.lanes[0]
+  const nb = lane.notebook
+  const dataView = nb['data-view']
+  const rowPicker = dataView['row-picker']
+  await nb.tabs.data.listeners.click()
+
+  // Table 1 (`metrics`): qty (integer), scores (integer[]), ratio (decimal), total (fixed(2))
+  await dataView['add-table-btn'].listeners.click()
+  const metricsTableId = dataView.tables[0].id
+  await dataView['add-col-btn'].listeners.click()
+  dataView['schema-rows'][0]['name-el'].value = 'qty'
+  await dataView['schema-rows'][0]['name-el'].listeners.input()
+  dataView['schema-rows'][0]['type-el'].value = 'integer'
+  await dataView['schema-rows'][0]['type-el'].listeners.change()
+
+  await dataView['add-col-btn'].listeners.click()
+  dataView['schema-rows'][1]['name-el'].value = 'scores'
+  await dataView['schema-rows'][1]['name-el'].listeners.input()
+  dataView['schema-rows'][1]['type-el'].value = 'integer'
+  await dataView['schema-rows'][1]['type-el'].listeners.change()
+  await dataView['schema-rows'][1]['multi-btn'].listeners.click()
+
+  await dataView['add-col-btn'].listeners.click()
+  dataView['schema-rows'][2]['name-el'].value = 'ratio'
+  await dataView['schema-rows'][2]['name-el'].listeners.input()
+  dataView['schema-rows'][2]['type-el'].value = 'decimal'
+  await dataView['schema-rows'][2]['type-el'].listeners.change()
+
+  await dataView['add-col-btn'].listeners.click()
+  dataView['schema-rows'][3]['name-el'].value = 'total'
+  await dataView['schema-rows'][3]['name-el'].listeners.input()
+  dataView['schema-rows'][3]['type-el'].value = 'fixed'
+  await dataView['schema-rows'][3]['type-el'].listeners.change()
+
+  // Schema `dp` input uses type="text" with inputmode="numeric", highlights invalid input, and blocks invalid change
+  const decEl = dataView['schema-rows'][3]['decimals-el']
+  assert.equal(decEl.type, 'text')
+  assert.equal(decEl.attributes.inputmode, 'numeric')
+  assert.equal(decEl.attributes.step, undefined)
+  decEl.value = '99'
+  await decEl.listeners.input()
+  assert.match(decEl.className, /lane-data-decimals-input--invalid/)
+  assert.equal(decEl.attributes['aria-invalid'], 'true')
+  await decEl.listeners.change()
+  assert.equal(dataView.tables[0].columns[3].decimals, 2)
+  decEl.value = '2'
+  await decEl.listeners.input()
+  assert.doesNotMatch(decEl.className, /lane-data-decimals-input--invalid/)
+  assert.equal(decEl.attributes['aria-invalid'], 'false')
+
+  await dataView['add-row-btn'].listeners.click()
+  const row0 = dataView['grid-rows'][0]
+  const qtyColId = dataView.tables[0].columns[0].id
+  const ratioColId = dataView.tables[0].columns[2].id
+  const qtyInput = row0.cells[0]['input-el']
+  const ratioInput = row0.cells[2]['input-el']
+  const totalInput = row0.cells[3]['input-el']
+
+  // Verify NO type="number" and NO step attributes on grid cells
+  assert.equal(qtyInput.type, 'text')
+  assert.equal(qtyInput.attributes.inputmode, 'numeric')
+  assert.equal(qtyInput.attributes['data-num-type'], 'integer')
+  assert.equal(qtyInput.attributes.step, undefined)
+  assert.equal(ratioInput.type, 'text')
+  assert.equal(ratioInput.attributes.inputmode, 'decimal')
+  assert.equal(ratioInput.attributes['data-num-type'], 'decimal')
+  assert.equal(ratioInput.attributes.step, undefined)
+  assert.equal(totalInput.type, 'text')
+  assert.equal(totalInput.attributes.inputmode, 'decimal')
+  assert.equal(totalInput.attributes['data-num-type'], 'fixed')
+
+  // Multiple integer[] item input also uses type="text"
+  await row0.cells[1]['add-btn'].listeners.click()
+  const score0Input = row0.cells[1].items[0]['input-el']
+  assert.equal(score0Input.type, 'text')
+  assert.equal(score0Input.attributes.inputmode, 'numeric')
+  assert.equal(score0Input.attributes.step, undefined)
+
+  // Every invalid integer string triggers invalid styling, preserves typed text on blur, and leaves stored integer untouched
+  for (const bad of ['2.5', '12abc', '1e2', '--3', '-', '42 ', '   ', '9007199254740992']) {
+   qtyInput.value = bad
+   await qtyInput.listeners.input()
+   assert.match(qtyInput.className, /lane-data-cell-input--invalid/)
+   assert.equal(qtyInput.attributes['aria-invalid'], 'true')
+   assert.ok(qtyInput.title.length > 0)
+   await qtyInput.listeners.blur()
+   assert.equal(qtyInput.value, bad)
+   assert.strictEqual(dataView.tables[0].rows[0].values[qtyColId], 0)
+  }
+
+  // Valid integer input clears invalid state, updates stored value, and normalizes on blur
+  qtyInput.value = '007'
+  await qtyInput.listeners.input()
+  assert.doesNotMatch(qtyInput.className, /lane-data-cell-input--invalid/)
+  assert.equal(qtyInput.attributes['aria-invalid'], 'false')
+  assert.strictEqual(dataView.tables[0].rows[0].values[qtyColId], 7)
+  await qtyInput.listeners.blur()
+  assert.equal(qtyInput.value, '7')
+
+  qtyInput.value = '-0'
+  await qtyInput.listeners.input()
+  assert.strictEqual(Object.is(dataView.tables[0].rows[0].values[qtyColId], 0), true)
+  await qtyInput.listeners.blur()
+  assert.equal(qtyInput.value, '0')
+
+  // Decimal rejects '1e5' / '0x10', highlights invalid, then accepts '.5' -> normalizes to '0.5' on blur
+  ratioInput.value = '1e5'
+  await ratioInput.listeners.input()
+  assert.match(ratioInput.className, /lane-data-cell-input--invalid/)
+  ratioInput.value = '.5'
+  await ratioInput.listeners.input()
+  assert.doesNotMatch(ratioInput.className, /lane-data-cell-input--invalid/)
+  assert.strictEqual(dataView.tables[0].rows[0].values[ratioColId], 0.5)
+  await ratioInput.listeners.blur()
+  assert.equal(ratioInput.value, '0.5')
+
+  // Table 2 (`refs`) with a `row` column pointing to `metrics.qty` to test Row Picker "+ Add" numeric inputs
+  await dataView['add-table-btn'].listeners.click()
+  await dataView['add-col-btn'].listeners.click()
+  dataView['schema-rows'][0]['name-el'].value = 'metric'
+  await dataView['schema-rows'][0]['name-el'].listeners.input()
+  dataView['schema-rows'][0]['type-el'].value = 'row'
+  await dataView['schema-rows'][0]['type-el'].listeners.change()
+  dataView['schema-rows'][0]['ref-table-el'].value = metricsTableId
+  await dataView['schema-rows'][0]['ref-table-el'].listeners.change()
+  dataView['schema-rows'][0]['ref-col-el'].value = qtyColId
+  await dataView['schema-rows'][0]['ref-col-el'].listeners.change()
+  await dataView['add-row-btn'].listeners.click()
+
+  await dataView['grid-rows'][0].cells[0]['trigger-el'].listeners.click()
+  await rowPicker['add-trigger-btn'].listeners.click()
+  const addQtyInput = rowPicker['add-fields'][0]['input-el']
+  const addRatioInput = rowPicker['add-fields'][2]['input-el']
+  assert.equal(addQtyInput.type, 'text')
+  assert.equal(addQtyInput.attributes.inputmode, 'numeric')
+  assert.equal(addQtyInput.attributes.step, undefined)
+  assert.equal(addRatioInput.type, 'text')
+  assert.equal(addRatioInput.attributes.inputmode, 'decimal')
+  assert.equal(addRatioInput.attributes.step, undefined)
+
+  addQtyInput.value = '12.5'
+  await addQtyInput.listeners.input()
+  assert.match(addQtyInput.className, /lane-data-cell-input--invalid/)
+  assert.equal(addQtyInput.attributes['aria-invalid'], 'true')
+  addQtyInput.value = '009'
+  await addQtyInput.listeners.input()
+  assert.doesNotMatch(addQtyInput.className, /lane-data-cell-input--invalid/)
+  await addQtyInput.listeners.blur()
+  assert.equal(addQtyInput.value, '9')
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('Multi-type workflow & all-column constraint helpers: type matching, stacking, date_range timezone/ms bounds, fixed rescaling, and validation', () => {
+ // 1. WORKFLOW_COLUMN_TYPES, columnSupportsWorkflow, getSupportedColumnConstraints across all 12 column types
+ assert.deepEqual(WORKFLOW_COLUMN_TYPES, ['text', 'integer', 'boolean'])
+ assert.equal(columnSupportsWorkflow('text'), true)
+ assert.equal(columnSupportsWorkflow('integer[]'), true)
+ assert.equal(columnSupportsWorkflow('boolean'), true)
+ assert.equal(columnSupportsWorkflow('decimal'), false)
+ assert.equal(columnSupportsWorkflow('date'), false)
+
+ assert.deepEqual(getSupportedColumnConstraints('integer').map(c => c.type), ['workflow', 'min', 'max', 'range', 'step', 'unique'])
+ assert.deepEqual(getSupportedColumnConstraints('decimal').map(c => c.type), ['min', 'max', 'range', 'unique'])
+ assert.deepEqual(getSupportedColumnConstraints('fixed').map(c => c.type), ['min', 'max', 'range', 'unique'])
+ assert.deepEqual(getSupportedColumnConstraints('text').map(c => c.type), ['workflow', 'min_length', 'max_length', 'pattern', 'one_of', 'unique'])
+ assert.deepEqual(getSupportedColumnConstraints('boolean').map(c => c.type), ['workflow', 'boolean_value'])
+ assert.deepEqual(getSupportedColumnConstraints('date').map(c => c.type), ['date_range', 'unique'])
+ assert.deepEqual(getSupportedColumnConstraints('datetime').map(c => c.type), ['date_range', 'unique'])
+ assert.deepEqual(getSupportedColumnConstraints('url').map(c => c.type), ['https_only', 'domain', 'pattern', 'max_length', 'unique'])
+ assert.deepEqual(getSupportedColumnConstraints('email').map(c => c.type), ['domain', 'pattern', 'max_length', 'unique'])
+ assert.deepEqual(getSupportedColumnConstraints('json').map(c => c.type), ['json_type', 'required_keys'])
+ assert.deepEqual(getSupportedColumnConstraints('row').map(c => c.type), ['unique'])
+ assert.deepEqual(getSupportedColumnConstraints('lane').map(c => c.type), ['unique'])
+
+ // 2. findWorkflowDefaultColumns filters strictly to matching scalar type
+ const wfTable = {
+  id: 't-wf',
+  name: 'transitions',
+  columns: [
+   { id: 'c-from-txt', name: 'from', type: 'text', multiple: false },
+   { id: 'c-to-arr', name: 'to', type: 'integer', multiple: true },
+   { id: 'c-from-int', name: 'From', type: 'integer', multiple: false },
+   { id: 'c-to-int', name: 'To', type: 'integer', multiple: false },
+   { id: 'c-from-bool', name: 'from', type: 'boolean', multiple: false },
+   { id: 'c-to-bool', name: 'to', type: 'boolean', multiple: false },
+  ],
+  rows: [
+   { id: 'w1', values: { 'c-from-int': 0, 'c-to-int': 1, 'c-from-bool': false, 'c-to-bool': true } },
+   { id: 'w2', values: { 'c-from-int': 1, 'c-to-int': 2 } },
+  ],
+ }
+ assert.deepEqual(findWorkflowDefaultColumns(wfTable, 'integer'), { fromColumnId: 'c-from-int', toColumnId: 'c-to-int' })
+ assert.deepEqual(findWorkflowDefaultColumns(wfTable, 'boolean'), { fromColumnId: 'c-from-bool', toColumnId: 'c-to-bool' })
+ assert.deepEqual(findWorkflowDefaultColumns(wfTable, 'text'), { fromColumnId: 'c-from-txt', toColumnId: '' })
+
+ // 3. Integer & Boolean resolveWorkflowTarget / getWorkflowCellState & mismatch rejection
+ const intCol = {
+  id: 'c-stage',
+  name: 'stage',
+  type: 'integer',
+  multiple: false,
+  constraints: [{ type: 'workflow', tableId: 't-wf', fromColumnId: 'c-from-int', toColumnId: 'c-to-int' }],
+ }
+ const boolCol = {
+  id: 'c-done',
+  name: 'done',
+  type: 'boolean',
+  multiple: false,
+  constraint: { type: 'workflow', tableId: 't-wf', fromColumnId: 'c-from-bool', toColumnId: 'c-to-bool' },
+ }
+ const mismatchCol = {
+  id: 'c-bad',
+  name: 'bad',
+  type: 'integer',
+  multiple: false,
+  constraint: { type: 'workflow', tableId: 't-wf', fromColumnId: 'c-from-txt', toColumnId: 'c-to-arr' },
+ }
+ const intTables = [wfTable]
+
+ const int0 = getWorkflowCellState(intTables, intCol, 0)
+ assert.equal(int0.valid, true)
+ assert.equal(int0.isValueValid, true)
+ assert.deepEqual(int0.options.map(o => ({ v: o.value, t: o.typedValue })), [
+  { v: '0', t: 0 },
+  { v: '1', t: 1 },
+ ])
+ const int2 = getWorkflowCellState(intTables, intCol, 2)
+ assert.equal(int2.isValueValid, true)
+ assert.deepEqual(int2.options.map(o => o.typedValue), [2])
+ const intInvalid = getWorkflowCellState(intTables, intCol, 99)
+ assert.equal(intInvalid.isValueValid, false)
+ assert.deepEqual(intInvalid.options.map(o => ({ t: o.typedValue, inv: o.isInvalid })), [
+  { t: 99, inv: true },
+  { t: 0, inv: false },
+  { t: 1, inv: false },
+ ])
+ const intNull = getWorkflowCellState(intTables, intCol, null)
+ assert.equal(intNull.isValueValid, false)
+ assert.equal(intNull.options[0].typedValue, null)
+
+ const boolFalse = getWorkflowCellState(intTables, boolCol, false)
+ assert.equal(boolFalse.valid, true)
+ assert.equal(boolFalse.isValueValid, true)
+ assert.deepEqual(boolFalse.options.map(o => o.typedValue), [false, true])
+ const boolTrue = getWorkflowCellState(intTables, boolCol, true)
+ assert.equal(boolTrue.isValueValid, true)
+ assert.deepEqual(boolTrue.options.map(o => o.typedValue), [true])
+
+ const mismatchTarget = resolveWorkflowTarget(intTables, mismatchCol)
+ assert.equal(mismatchTarget.active, true)
+ assert.equal(mismatchTarget.valid, false)
+ assert.equal(mismatchTarget.typeMismatch, true)
+ assert.equal(mismatchTarget.fromMatchesType, false)
+ assert.equal(mismatchTarget.toMatchesType, false)
+ const mismatchState = getWorkflowCellState(intTables, mismatchCol, 0)
+ assert.equal(mismatchState.valid, false)
+ assert.equal(mismatchState.error, 'Workflow From and To columns must be integer')
+
+ assert.equal(parseWorkflowOptionValue('0', intCol), 0)
+ assert.equal(parseWorkflowOptionValue('', intCol), null)
+ assert.equal(parseWorkflowOptionValue('false', boolCol), false)
+ assert.equal(parseWorkflowOptionValue('true', boolCol), true)
+ assert.deepEqual(getColumnWorkflowConstraint(intCol), intCol.constraints[0])
+
+ // 4. Stacking normalization, formatColumnType, fixed decimal rescaling, and stored table persistence
+ const stackedIntCol = {
+  id: 'c-st',
+  name: 'stage',
+  type: 'integer',
+  multiple: false,
+  constraints: [
+   intCol.constraints[0],
+   { type: 'min', min: '0' },
+   { type: 'max', max: 10 },
+   { type: 'range', min: 1, max: 9 },
+   { type: 'step', step: 2 },
+   { type: 'unique' },
+  ],
+ }
+ assert.equal(formatColumnType(stackedIntCol), 'integer(workflow, min, max, range, step, unique)')
+ assert.deepEqual(normalizeColumnConstraints([
+  { type: 'min', min: 1 },
+  { type: 'min', min: 5 },
+  { type: 'https_only' },
+ ], 'integer'), [{ type: 'min', min: 1 }])
+
+ const fixedCol2 = {
+  id: 'c-amt',
+  name: 'amount',
+  type: 'fixed',
+  multiple: false,
+  decimals: 2,
+  constraints: [
+   { type: 'min', min: 1000 },
+   { type: 'max', max: 5000 },
+   { type: 'range', min: 500, max: 9500 },
+  ],
+ }
+ const rescaledFixed = parseColumnType(fixedCol2, false, 3)
+ assert.deepEqual(rescaledFixed.constraints, [
+  { type: 'min', min: 10000 },
+  { type: 'max', max: 50000 },
+  { type: 'range', min: 5000, max: 95000 },
+ ])
+ assert.equal(formatColumnType(fixedCol2), 'fixed(2, min, max, range)')
+ assert.equal(formatColumnType({ type: 'date', multiple: false, constraint: { type: 'date_range', relative: 'today_or_future' } }), 'date(range)')
+ assert.equal(formatColumnType({ type: 'datetime', multiple: false, constraint: { type: 'date_range', relative: 'past' } }), 'datetime(range)')
+ assert.equal(formatColumnType({ type: 'boolean', multiple: false, constraint: { type: 'boolean_value', expected: false } }), 'boolean(=false)')
+ assert.equal(formatColumnType({ type: 'json', multiple: false, constraint: { type: 'json_type', expected: 'object' } }), 'json(object)')
+ const rowUniqTable = [
+  { id: 't-u', name: 'users', columns: [{ id: 'c-uid', name: 'id', type: 'integer', multiple: false }], rows: [] },
+  {
+   id: 't-o',
+   name: 'orders',
+   columns: [{ id: 'c-ou', name: 'user', type: 'row', multiple: false, refTableId: 't-u', refColumnId: 'c-uid', constraints: [{ type: 'unique' }] }],
+   rows: [],
+  },
+ ]
+ assert.equal(formatColumnType(rowUniqTable[1].columns[0], undefined, undefined, rowUniqTable), 'row(users.id, unique)')
+
+ const reparsedStacked = parseStoredTables(JSON.stringify([{ id: 't-s', name: 's', columns: [stackedIntCol], rows: [] }]))
+ assert.equal(reparsedStacked[0].columns[0].constraints.length, 6)
+ assert.equal(reparsedStacked[0].columns[0].constraint.type, 'workflow')
+
+ // 5. validateColumnConstraints across numeric, date_range, text, boolean_value, url, email, json, and unique
+ assert.equal(validateColumnConstraints({ type: 'integer', constraints: [{ type: 'min', min: 10 }] }, 10).ok, true)
+ assert.equal(validateColumnConstraints({ type: 'integer', constraints: [{ type: 'min', min: 10 }] }, 9).error, 'Must be at least 10')
+ assert.equal(validateColumnConstraints({ type: 'decimal', constraints: [{ type: 'max', max: 2.5 }] }, 2.6).error, 'Must be at most 2.5')
+ assert.equal(validateColumnConstraints({ type: 'fixed', decimals: 2, constraints: [{ type: 'range', min: 1000, max: 500 }] }, 700).error, 'Invalid range constraint (min 10.00 > max 5.00)')
+ assert.equal(validateColumnConstraints({ type: 'integer', constraints: [{ type: 'step', step: 5 }] }, -15).ok, true)
+ assert.equal(validateColumnConstraints({ type: 'integer', constraints: [{ type: 'step', step: 5 }] }, 0).ok, true)
+ assert.equal(validateColumnConstraints({ type: 'integer', constraints: [{ type: 'step', step: 5 }] }, 7).error, 'Must be a multiple of 5')
+
+ // Date Range (`date`) at 1-day resolution in specified timezone (2026-11-27T02:00:00Z is 2026-11-26 in America/New_York)
+ const nyNowMs = Date.parse('2026-11-27T02:00:00Z')
+ const nyOpts = { timeZone: 'America/New_York' }
+ const datePastCol = { type: 'date', constraints: [{ type: 'date_range', relative: 'today_or_past' }] }
+ const dateFutureCol = { type: 'date', constraints: [{ type: 'date_range', relative: 'today_or_future' }] }
+ assert.equal(validateColumnConstraints(datePastCol, '2026-11-26', { nowMs: nyNowMs, displayOpts: nyOpts }).ok, true)
+ assert.equal(validateColumnConstraints(datePastCol, '2026-11-27', { nowMs: nyNowMs, displayOpts: nyOpts }).ok, false)
+ assert.equal(validateColumnConstraints(dateFutureCol, '2026-11-26', { nowMs: nyNowMs, displayOpts: nyOpts }).ok, true)
+ assert.equal(validateColumnConstraints(dateFutureCol, '2026-11-25', { nowMs: nyNowMs, displayOpts: nyOpts }).ok, false)
+ const dateBoundsCol = { type: 'date', constraints: [{ type: 'date_range', min: '2026-01-01', max: '2026-12-31' }] }
+ assert.equal(validateColumnConstraints(dateBoundsCol, '2026-06-01', { nowMs: nyNowMs }).ok, true)
+ assert.equal(validateColumnConstraints(dateBoundsCol, '2025-12-31', { nowMs: nyNowMs }).error, 'Date must be on or after 2026-01-01')
+
+ // Date Range (`datetime`) relative to exact `nowMs` + min/max
+ const dtNowMs = Date.parse('2026-11-27T15:00:00Z')
+ const dtPastCol = { type: 'datetime', constraints: [{ type: 'date_range', relative: 'past' }] }
+ const dtFutureCol = { type: 'datetime', constraints: [{ type: 'date_range', relative: 'future' }] }
+ assert.equal(validateColumnConstraints(dtPastCol, '2026-11-27T14:59:59Z', { nowMs: dtNowMs }).ok, true)
+ assert.equal(validateColumnConstraints(dtPastCol, '2026-11-27T15:00:00Z', { nowMs: dtNowMs }).ok, false)
+ assert.equal(validateColumnConstraints(dtPastCol, '2026-11-27T15:00:01Z', { nowMs: dtNowMs }).error, 'Date/time must be in the past')
+ assert.equal(validateColumnConstraints(dtFutureCol, '2026-11-27T15:00:01Z', { nowMs: dtNowMs }).ok, true)
+ assert.equal(validateColumnConstraints(dtFutureCol, '2026-11-27T15:00:00Z', { nowMs: dtNowMs }).ok, false)
+ assert.equal(validateColumnConstraints(dtFutureCol, '2026-11-27T14:59:59Z', { nowMs: dtNowMs }).error, 'Date/time must be in the future')
+ assert.equal(validateColumnConstraints({ type: 'datetime', constraints: [{ type: 'date_range', min: '2026-11-27T10:00:00Z', max: '2026-11-27T20:00:00Z' }] }, '2026-11-27T21:00:00Z', { nowMs: dtNowMs }).ok, false)
+
+ // Text, Boolean Expected, URL, Email, JSON, Unique
+ const txtCol = { type: 'text', constraints: [{ type: 'min_length', min: 3 }, { type: 'max_length', max: 6 }, { type: 'pattern', pattern: '/^[A-Z0-9]+$/' }, { type: 'one_of', values: ['ABC1', 'XYZ2'] }] }
+ assert.equal(validateColumnConstraints(txtCol, 'ABC1').ok, true)
+ assert.equal(validateColumnConstraints(txtCol, 'ab').errors.length, 3)
+ assert.equal(validateColumnConstraints(txtCol, 'abcdef!').errors.length, 3)
+
+ assert.equal(validateColumnConstraints({ type: 'boolean', constraints: [{ type: 'boolean_value', expected: true }] }, false).error, 'Must be true')
+ assert.equal(validateColumnConstraints({ type: 'boolean', constraints: [{ type: 'boolean_value', expected: false }] }, false).ok, true)
+ assert.equal(validateColumnConstraints({ type: 'boolean', constraints: [{ type: 'boolean_value', expected: false }] }, true).error, 'Must be false')
+
+ const urlCol = { type: 'url', constraints: [{ type: 'https_only' }, { type: 'domain', domains: ['example.com'] }] }
+ assert.equal(validateColumnConstraints(urlCol, 'https://api.example.com/v1').ok, true)
+ assert.equal(validateColumnConstraints(urlCol, 'http://example.com').error, 'URL must use https://')
+ assert.equal(validateColumnConstraints(urlCol, 'https://evil-example.com').error, 'URL domain must match: example.com')
+
+ const emailCol = { type: 'email', constraints: [{ type: 'domain', domains: ['acme.com'] }] }
+ assert.equal(validateColumnConstraints(emailCol, 'ada@acme.com').ok, true)
+ assert.equal(validateColumnConstraints(emailCol, 'ada@sub.acme.com').error, 'Email domain must be one of: acme.com')
+
+ const jsonCol = { type: 'json', constraints: [{ type: 'json_type', expected: 'object' }, { type: 'required_keys', keys: ['id', 'ok'] }] }
+ assert.equal(validateColumnConstraints(jsonCol, { id: 1, ok: true }).ok, true)
+ assert.equal(validateColumnConstraints(jsonCol, [1, 2]).errors[0], 'Must be a JSON object ({...})')
+ assert.equal(validateColumnConstraints(jsonCol, { id: 1 }).error, 'Missing required JSON key: ok')
+
+ const uniqTable = {
+  id: 't-uniq',
+  name: 'uniq',
+  columns: [{ id: 'c-code', name: 'code', type: 'text', multiple: false, constraints: [{ type: 'unique' }] }],
+  rows: [
+   { id: 'r1', values: { 'c-code': 'ALPHA' } },
+   { id: 'r2', values: { 'c-code': 'ALPHA' } },
+   { id: 'r3', values: { 'c-code': 'BETA' } },
+  ],
+ }
+ assert.equal(validateColumnConstraints(uniqTable.columns[0], 'ALPHA', { table: uniqTable, rowId: 'r1' }).error, 'Duplicate value — must be unique')
+ assert.equal(validateColumnConstraints(uniqTable.columns[0], 'BETA', { table: uniqTable, rowId: 'r3' }).ok, true)
+ assert.match(describeAllColumnConstraints(datePastCol, null, nyOpts), /Date Range: Must be today or past/)
+})
+
+test('Data tab multi-type constraints UI: integer/boolean workflow & matching From/To, integer[] multiselect, stacked integer bounds, Date/Datetime Date Range presets, Unique, and persistence', async () => {
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tag) {
+  return {
+   tag,
+   nodeType: 1,
+   style: {},
+   attributes: {},
+   children: [],
+   listeners: {},
+   textContent: '',
+   value: '',
+   checked: false,
+   selected: false,
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   readOnly: false,
+   focused: false,
+   removed: false,
+   scrollWidth: 0,
+   scrollLeft: 0,
+   setAttribute(name, value) { this.attributes[name] = value },
+   getAttribute(name) { return this.attributes[name] ?? null },
+   appendChild(child) { this.children.push(child); return child },
+   insertBefore(child, ref) {
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) { this.children.push(child) }
+    else { this.children.splice(idx, 0, child) }
+    return child
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() { this.removed = true },
+  }
+ }
+
+ const kv = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { kv.set(qualify(key), value) },
+   async delete(key) { kv.delete(qualify(key)) },
+  }
+ }
+
+ let uuid = 0
+ function createRuntime(pathname = '/') {
+  const mockWindow = {
+   Array,
+   Boolean,
+   Date,
+   JSON,
+   Math,
+   Number,
+   Object,
+   Reflect,
+   decodeURIComponent,
+   crypto: { randomUUID: () => `mc-uuid-${++uuid}` },
+   history: {
+    pushState(_s, _t, url) { mockWindow.location.pathname = url },
+    replaceState(_s, _t, url) { mockWindow.location.pathname = url },
+   },
+   location: { pathname, hash: '' },
+   addEventListener() {},
+   removeEventListener() {},
+  }
+  const mockDocument = {
+   body: createMockElement('body'),
+   documentElement: createMockElement('html'),
+   defaultView: mockWindow,
+   createElement: createMockElement,
+  }
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {} },
+   createIdleTracker,
+   data: createMockKV(),
+   defaultValueForType,
+   document: mockDocument,
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  return { f, mockWindow }
+ }
+
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') { return { text: async () => laneSource } }
+  if (url === '/src/lane-notebook.fs') { return { text: async () => notebookSource } }
+  if (url === '/src/lane-inputs.fs') { return { text: async () => inputsSource } }
+  if (url === '/src/lane-scope.fs') { return { text: async () => scopeSource } }
+  if (url === '/src/lane-data.fs') { return { text: async () => dataSource } }
+  if (url === '/src/confirm-modal.fs') { return { text: async () => confirmModalSource } }
+  if (url === '/src/lane-row-picker-modal.fs') { return { text: async () => rowPickerModalSource } }
+  if (url === '/src/lane-output.fs') { return { text: async () => outputSource } }
+  if (url === '/src/lane-modal.fs') { return { text: async () => modalSource } }
+  if (url === '/src/lane-config-modal.fs') { return { text: async () => configModalSource } }
+  if (url === '/src/lane-import-modal.fs') { return { text: async () => importModalSource } }
+  if (url === '/src/lane-rails.fs') { return { text: async () => railsSource } }
+  if (url === '/src/lane-line-info-modal.fs') { return { text: async () => lineInfoModalSource } }
+  if (url === '/src/lane-export-modal.fs') { return { text: async () => exportModalSource } }
+  if (url === '/src/lane-export-deploy-modal.fs') { return { text: async () => exportDeployModalSource } }
+  if (url === '/src/lane-server.fs') { return { text: async () => laneServerSource } }
+  if (url === '/src/lane-story.fs') { return { text: async () => laneStorySource } }
+  if (url === '/src/lane-servers-modal.fs') { return { text: async () => laneServersModalSource } }
+  if (url === '/src/lane-terminal-modal.fs') { return { text: async () => laneTerminalModalSource } }
+  if (url === '/src/lane-session-modal.fs') { return { text: async () => sessionModalSource } }
+  if (url === '/src/lane-package-modal.fs') { return { text: async () => packageModalSource } }
+  if (url === '/src/lane-dir-modal.fs') { return { text: async () => dirModalSource } }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const { f, mockWindow } = createRuntime()
+  await f.run(parse(mainSource, '/src/main.fs'))
+  await f.state.tableHeadRowAddButton.listeners.click()
+  const lane = f.state.lanes[0]
+  await lane.notebook.tabs.data.listeners.click()
+  const dataView = lane.notebook['data-view']
+  const rowPicker = dataView['row-picker']
+
+  // 1. Mixed workflow table: text `label_from`, integer `from`, integer `to` with 0->1, 1->2, 2->10
+  const mixedWf = await dataView['add-table']('mixed_wf')
+  await dataView['add-column']('label_from', 'text', false)
+  const mwFromCol = await dataView['add-column']('from', 'integer', false)
+  const mwToCol = await dataView['add-column']('to', 'integer', false)
+  for (const [fVal, tVal] of [['0', '1'], ['1', '2'], ['2', '10']]) {
+   await dataView['add-row']()
+   const r = dataView['grid-rows'][dataView['grid-rows'].length - 1]
+   r.cells[1]['input-el'].value = fVal
+   await r.cells[1]['input-el'].listeners.input()
+   r.cells[2]['input-el'].value = tVal
+   await r.cells[2]['input-el'].listeners.input()
+  }
+
+  // 2. Boolean workflow table: `from` (boolean) -> `to` (boolean) false -> true
+  const boolWf = await dataView['add-table']('bool_wf')
+  const bwFromCol = await dataView['add-column']('from', 'boolean', false)
+  const bwToCol = await dataView['add-column']('to', 'boolean', false)
+  await dataView['add-row']()
+  dataView['grid-rows'][0].cells[0]['input-el'].checked = false
+  await dataView['grid-rows'][0].cells[0]['input-el'].listeners.change()
+  dataView['grid-rows'][0].cells[1]['input-el'].checked = true
+  await dataView['grid-rows'][0].cells[1]['input-el'].listeners.change()
+
+  // 3. Target table `items` with stage (int), stages (int[]), locked (bool), due_date (date), event_at (datetime), code (text)
+  const itemsTbl = await dataView['add-table']('items')
+  const stageCol = await dataView['add-column']('stage', 'integer', false)
+  const stagesCol = await dataView['add-column']('stages', 'integer', true)
+  const lockedCol = await dataView['add-column']('locked', 'boolean', false)
+  await dataView['add-column']('due_date', 'date', false)
+  await dataView['add-column']('event_at', 'datetime', false)
+  await dataView['add-column']('code', 'text', false)
+
+  await dataView['add-row']()
+  await dataView['add-row']()
+
+  // 4. Configure `stage` (integer) Workflow + stacked Minimum / Maximum / Range
+  const stageAdd = dataView['schema-rows'][0]['constraint-add-el']
+  stageAdd.value = 'workflow'
+  await stageAdd.listeners.change()
+  dataView['schema-rows'][0]['constraint-table-el'].value = mixedWf.id
+  await dataView['schema-rows'][0]['constraint-table-el'].listeners.change()
+
+  // Verify From and To dropdowns ONLY list matching integer columns (never text `label_from`)
+  const stageWfCard = dataView['schema-rows'][0]['constraint-cards'][0]
+  assert.deepEqual(stageWfCard['from-el'].children.slice(1).map(o => o.textContent), ['from (integer)', 'to (integer)'])
+  assert.deepEqual(stageWfCard['to-el'].children.slice(1).map(o => o.textContent), ['from (integer)', 'to (integer)'])
+  assert.equal(stageWfCard['from-el'].value, mwFromCol.id)
+  assert.equal(stageWfCard['to-el'].value, mwToCol.id)
+
+  // Verify integer transitions store real JS numbers: 0 -> 1 -> 2 -> 10
+  assert.equal(dataView['grid-rows'][0].cells[0]['select-el'].tag, 'select')
+  assert.strictEqual(itemsTbl.rows[0].values[stageCol.id], 0)
+  assert.deepEqual(dataView['grid-rows'][0].cells[0]['option-els'].map(o => o.value), ['0', '1'])
+  dataView['grid-rows'][0].cells[0]['select-el'].value = '1'
+  await dataView['grid-rows'][0].cells[0]['select-el'].listeners.change()
+  assert.strictEqual(itemsTbl.rows[0].values[stageCol.id], 1)
+  dataView['grid-rows'][0].cells[0]['select-el'].value = '2'
+  await dataView['grid-rows'][0].cells[0]['select-el'].listeners.change()
+  assert.strictEqual(itemsTbl.rows[0].values[stageCol.id], 2)
+
+  // Stack Minimum (>= 1), Maximum (<= 5), and Range (0..3) on `stage` alongside Workflow!
+  dataView['schema-rows'][0]['constraint-add-el'].value = 'min'
+  await dataView['schema-rows'][0]['constraint-add-el'].listeners.change()
+  dataView['schema-rows'][0]['constraint-add-el'].value = 'max'
+  await dataView['schema-rows'][0]['constraint-add-el'].listeners.change()
+  dataView['schema-rows'][0]['constraint-add-el'].value = 'range'
+  await dataView['schema-rows'][0]['constraint-add-el'].listeners.change()
+
+  const stageCards = dataView['schema-rows'][0]['constraint-cards']
+  assert.equal(stageCards.length, 4)
+  assert.equal(dataView['grid-head-cells'][1]['type-el'].textContent, 'integer(workflow, min, max, range)')
+  assert.equal(stageCards[1]['min-el'].type, 'text')
+  assert.equal(stageCards[1]['min-el'].attributes.inputmode, 'numeric')
+  assert.equal(stageCards[1]['min-el'].attributes.step, undefined)
+
+  stageCards[1]['min-el'].value = '2.5'
+  await stageCards[1]['min-el'].listeners.input()
+  assert.match(stageCards[1]['min-el'].className, /lane-data-cell-input--invalid/)
+  assert.equal(stageCards[1]['min-el'].attributes['aria-invalid'], 'true')
+  stageCards[1]['min-el'].value = '01'
+  await stageCards[1]['min-el'].listeners.input()
+  assert.doesNotMatch(stageCards[1]['min-el'].className, /lane-data-cell-input--invalid/)
+  await stageCards[1]['min-el'].listeners.blur()
+  assert.equal(stageCards[1]['min-el'].value, '1')
+  stageCards[2]['max-el'].value = '5'
+  await stageCards[2]['max-el'].listeners.input()
+  stageCards[3]['min-el'].value = '0'
+  await stageCards[3]['min-el'].listeners.input()
+  stageCards[3]['max-el'].value = '3'
+  await stageCards[3]['max-el'].listeners.input()
+
+  // Row 0 is at 2 -> satisfies workflow + all 3 bounds -> valid; Row 1 is at 0 -> valid in workflow yet fails Minimum (>= 1)!
+  assert.equal(dataView['grid-rows'][0].cells[0]['select-el'].attributes['aria-invalid'], 'false')
+  assert.match(dataView['grid-rows'][1].cells[0]['select-el'].className, /lane-data-cell-select--invalid/)
+  assert.equal(dataView['grid-rows'][1].cells[0]['select-el'].attributes['aria-invalid'], 'true')
+
+  // Transition Row 0 to 10 (allowed in workflow 2->10) -> highlights invalid because > Maximum (5) / Range (3)
+  dataView['grid-rows'][0].cells[0]['select-el'].value = '10'
+  await dataView['grid-rows'][0].cells[0]['select-el'].listeners.change()
+  assert.strictEqual(itemsTbl.rows[0].values[stageCol.id], 10)
+  assert.match(dataView['grid-rows'][0].cells[0]['select-el'].className, /lane-data-cell-select--invalid/)
+
+  // Remove ONLY Range card via its `×` button -> Workflow, Minimum, and Maximum stay intact
+  await dataView['schema-rows'][0]['constraint-cards'][3]['remove-btn'].listeners.click()
+  assert.equal(dataView['schema-rows'][0]['constraint-cards'].length, 3)
+  assert.equal(dataView['grid-head-cells'][1]['type-el'].textContent, 'integer(workflow, min, max)')
+
+  // 5. `stages` (integer(workflow)[]) multiselect opens rowPicker and stores JS numbers [0, 1]
+  dataView['schema-rows'][1]['constraint-add-el'].value = 'workflow'
+  await dataView['schema-rows'][1]['constraint-add-el'].listeners.change()
+  dataView['schema-rows'][1]['constraint-table-el'].value = mixedWf.id
+  await dataView['schema-rows'][1]['constraint-table-el'].listeners.change()
+  await dataView['grid-rows'][0].cells[1]['add-btn'].listeners.click()
+  assert.equal(rowPicker['is-open'], true)
+  assert.equal(rowPicker.multiple, true)
+  await rowPicker['option-items'][0].el.listeners.click() // '0'
+  await rowPicker['option-items'][1].el.listeners.click() // '1'
+  await rowPicker['apply-btn'].listeners.click()
+  assert.deepEqual(itemsTbl.rows[0].values[stagesCol.id], [0, 1])
+
+  // 6. `locked` (boolean) Workflow renders <select> instead of checkbox and stores real JS booleans
+  dataView['schema-rows'][2]['constraint-add-el'].value = 'workflow'
+  await dataView['schema-rows'][2]['constraint-add-el'].listeners.change()
+  dataView['schema-rows'][2]['constraint-table-el'].value = boolWf.id
+  await dataView['schema-rows'][2]['constraint-table-el'].listeners.change()
+  const lockedCard = dataView['schema-rows'][2]['constraint-cards'][0]
+  assert.equal(lockedCard['from-el'].value, bwFromCol.id)
+  assert.equal(lockedCard['to-el'].value, bwToCol.id)
+  assert.equal(dataView['grid-rows'][0].cells[2]['select-el'].tag, 'select')
+  assert.deepEqual(dataView['grid-rows'][0].cells[2]['option-els'].map(o => o.value), ['false', 'true'])
+  dataView['grid-rows'][0].cells[2]['select-el'].value = 'true'
+  await dataView['grid-rows'][0].cells[2]['select-el'].listeners.change()
+  assert.strictEqual(itemsTbl.rows[0].values[lockedCol.id], true)
+  assert.deepEqual(dataView['grid-rows'][0].cells[2]['option-els'].map(o => o.value), ['true'])
+
+  // 7. `due_date` (date) Date Range presets: Must be today or past / Must be today or future
+  dataView['schema-rows'][3]['constraint-add-el'].value = 'date_range'
+  await dataView['schema-rows'][3]['constraint-add-el'].listeners.change()
+  const dueCard = dataView['schema-rows'][3]['constraint-cards'][0]
+  assert.equal(dueCard['preset-past-btn'].textContent, 'Must be today or past')
+  assert.equal(dueCard['preset-future-btn'].textContent, 'Must be today or future')
+
+  await dueCard['preset-future-btn'].listeners.click()
+  assert.equal(dataView['schema-rows'][3]['constraint-cards'][0]['preset-future-btn'].attributes['aria-pressed'], 'true')
+  const dueInput0 = dataView['grid-rows'][0].cells[3]['input-el']
+  dueInput0.value = '2000-01-01'
+  await dueInput0.listeners.input()
+  assert.match(dueInput0.className, /lane-data-cell-input--invalid/)
+  dueInput0.value = '2099-12-31'
+  await dueInput0.listeners.input()
+  assert.doesNotMatch(dueInput0.className, /lane-data-cell-input--invalid/)
+
+  await dataView['schema-rows'][3]['constraint-cards'][0]['preset-past-btn'].listeners.click()
+  assert.match(dataView['grid-rows'][0].cells[3]['input-el'].className, /lane-data-cell-input--invalid/)
+  dataView['grid-rows'][0].cells[3]['input-el'].value = '2000-01-01'
+  await dataView['grid-rows'][0].cells[3]['input-el'].listeners.input()
+  assert.doesNotMatch(dataView['grid-rows'][0].cells[3]['input-el'].className, /lane-data-cell-input--invalid/)
+
+  // 8. `event_at` (datetime) Date Range presets: Must be in the past / Must be in the future
+  dataView['schema-rows'][4]['constraint-add-el'].value = 'date_range'
+  await dataView['schema-rows'][4]['constraint-add-el'].listeners.change()
+  const evCard = dataView['schema-rows'][4]['constraint-cards'][0]
+  assert.equal(evCard['preset-past-btn'].textContent, 'Must be in the past')
+  assert.equal(evCard['preset-future-btn'].textContent, 'Must be in the future')
+
+  await evCard['preset-past-btn'].listeners.click()
+  dataView['grid-rows'][0].cells[4]['input-el'].value = '2099-12-31T12:00'
+  await dataView['grid-rows'][0].cells[4]['input-el'].listeners.input()
+  assert.match(dataView['grid-rows'][0].cells[4]['input-el'].className, /lane-data-cell-input--invalid/)
+  dataView['grid-rows'][0].cells[4]['input-el'].value = '2000-01-01T12:00'
+  await dataView['grid-rows'][0].cells[4]['input-el'].listeners.input()
+  assert.doesNotMatch(dataView['grid-rows'][0].cells[4]['input-el'].className, /lane-data-cell-input--invalid/)
+
+  await dataView['schema-rows'][4]['constraint-cards'][0]['preset-future-btn'].listeners.click()
+  assert.match(dataView['grid-rows'][0].cells[4]['input-el'].className, /lane-data-cell-input--invalid/)
+  dataView['grid-rows'][0].cells[4]['input-el'].value = '2099-12-31T12:00'
+  await dataView['grid-rows'][0].cells[4]['input-el'].listeners.input()
+  assert.doesNotMatch(dataView['grid-rows'][0].cells[4]['input-el'].className, /lane-data-cell-input--invalid/)
+
+  // 9. `code` (text) Unique + Pattern: live cross-row duplicate highlight & clear
+  dataView['schema-rows'][5]['constraint-add-el'].value = 'unique'
+  await dataView['schema-rows'][5]['constraint-add-el'].listeners.change()
+  dataView['schema-rows'][5]['constraint-add-el'].value = 'pattern'
+  await dataView['schema-rows'][5]['constraint-add-el'].listeners.change()
+  dataView['schema-rows'][5]['constraint-cards'][1]['text-el'].value = '/^[A-Z]+$/'
+  await dataView['schema-rows'][5]['constraint-cards'][1]['text-el'].listeners.input()
+
+  dataView['grid-rows'][0].cells[5]['input-el'].value = 'abc'
+  await dataView['grid-rows'][0].cells[5]['input-el'].listeners.input()
+  assert.match(dataView['grid-rows'][0].cells[5]['input-el'].className, /lane-data-cell-input--invalid/)
+
+  dataView['grid-rows'][0].cells[5]['input-el'].value = 'ALPHA'
+  await dataView['grid-rows'][0].cells[5]['input-el'].listeners.input()
+  assert.doesNotMatch(dataView['grid-rows'][0].cells[5]['input-el'].className, /lane-data-cell-input--invalid/)
+
+  dataView['grid-rows'][1].cells[5]['input-el'].value = 'ALPHA'
+  await dataView['grid-rows'][1].cells[5]['input-el'].listeners.input()
+  assert.match(dataView['grid-rows'][0].cells[5]['input-el'].className, /lane-data-cell-input--invalid/)
+  assert.match(dataView['grid-rows'][1].cells[5]['input-el'].className, /lane-data-cell-input--invalid/)
+
+  dataView['grid-rows'][1].cells[5]['input-el'].value = 'BETA'
+  await dataView['grid-rows'][1].cells[5]['input-el'].listeners.input()
+  assert.doesNotMatch(dataView['grid-rows'][0].cells[5]['input-el'].className, /lane-data-cell-input--invalid/)
+  assert.doesNotMatch(dataView['grid-rows'][1].cells[5]['input-el'].className, /lane-data-cell-input--invalid/)
+
+  // 10. Reload runtime and verify all stacked constraints & typed values persist cleanly
+  const reloaded = createRuntime(mockWindow.location.pathname)
+  await reloaded.f.run(parse(mainSource, '/src/main.fs'))
+  const rDataView = reloaded.f.state.lanes[0].notebook['data-view']
+  const rItems = rDataView.tables.find(t => t.name === 'items')
+  assert.deepEqual(rItems.columns[0].constraints.map(c => c.type), ['workflow', 'min', 'max'])
+  assert.deepEqual(rItems.columns[2].constraints, [{ type: 'workflow', tableId: boolWf.id, fromColumnId: bwFromCol.id, toColumnId: bwToCol.id }])
+  assert.equal(rItems.columns[3].constraints[0].relative, 'today_or_past')
+  assert.equal(rItems.columns[4].constraints[0].relative, 'future')
+  assert.deepEqual(rItems.columns[5].constraints.map(c => c.type), ['unique', 'pattern'])
+  assert.strictEqual(rItems.rows[0].values[stageCol.id], 10)
+  assert.deepEqual(rItems.rows[0].values[stagesCol.id], [0, 1])
+  assert.strictEqual(rItems.rows[0].values[lockedCol.id], true)
+  assert.equal(rDataView['grid-rows'][0].cells[2]['select-el'].tag, 'select')
  }
  finally {
   globalThis.fetch = origFetch

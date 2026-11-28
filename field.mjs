@@ -3156,7 +3156,72 @@ export const DATA_COLUMN_TYPES = [
 
 export const DATA_CONSTRAINT_TYPES = [
  'workflow',
+ 'min',
+ 'max',
+ 'range',
+ 'step',
+ 'date_range',
+ 'min_length',
+ 'max_length',
+ 'pattern',
+ 'one_of',
+ 'boolean_value',
+ 'https_only',
+ 'domain',
+ 'json_type',
+ 'required_keys',
+ 'unique',
 ]
+
+export const WORKFLOW_COLUMN_TYPES = [
+ 'text',
+ 'integer',
+ 'boolean',
+]
+
+const DATA_CONSTRAINT_META = Object.freeze({
+ workflow: Object.freeze({ type: 'workflow', label: 'Workflow', shortTag: 'workflow' }),
+ min: Object.freeze({ type: 'min', label: 'Minimum', shortTag: 'min' }),
+ max: Object.freeze({ type: 'max', label: 'Maximum', shortTag: 'max' }),
+ range: Object.freeze({ type: 'range', label: 'Range', shortTag: 'range' }),
+ step: Object.freeze({ type: 'step', label: 'Multiple Of', shortTag: 'step' }),
+ date_range: Object.freeze({ type: 'date_range', label: 'Date Range', shortTag: 'range' }),
+ min_length: Object.freeze({ type: 'min_length', label: 'Min Length', shortTag: 'min-len' }),
+ max_length: Object.freeze({ type: 'max_length', label: 'Max Length', shortTag: 'max-len' }),
+ pattern: Object.freeze({ type: 'pattern', label: 'Pattern', shortTag: 'pattern' }),
+ one_of: Object.freeze({ type: 'one_of', label: 'One Of', shortTag: 'one-of' }),
+ boolean_value: Object.freeze({ type: 'boolean_value', label: 'Expected Value', shortTag: 'expected' }),
+ https_only: Object.freeze({ type: 'https_only', label: 'HTTPS Only', shortTag: 'https' }),
+ domain: Object.freeze({ type: 'domain', label: 'Allowed Domains', shortTag: 'domain' }),
+ json_type: Object.freeze({ type: 'json_type', label: 'JSON Type', shortTag: 'shape' }),
+ required_keys: Object.freeze({ type: 'required_keys', label: 'Required Keys', shortTag: 'keys' }),
+ unique: Object.freeze({ type: 'unique', label: 'Unique', shortTag: 'unique' }),
+})
+
+const COLUMN_SUPPORTED_CONSTRAINT_MAP = Object.freeze({
+ integer: Object.freeze(['workflow', 'min', 'max', 'range', 'step', 'unique']),
+ decimal: Object.freeze(['min', 'max', 'range', 'unique']),
+ fixed: Object.freeze(['min', 'max', 'range', 'unique']),
+ text: Object.freeze(['workflow', 'min_length', 'max_length', 'pattern', 'one_of', 'unique']),
+ boolean: Object.freeze(['workflow', 'boolean_value']),
+ date: Object.freeze(['date_range', 'unique']),
+ datetime: Object.freeze(['date_range', 'unique']),
+ url: Object.freeze(['https_only', 'domain', 'pattern', 'max_length', 'unique']),
+ email: Object.freeze(['domain', 'pattern', 'max_length', 'unique']),
+ json: Object.freeze(['json_type', 'required_keys']),
+ row: Object.freeze(['unique']),
+ lane: Object.freeze(['unique']),
+})
+
+export function columnSupportsWorkflow(colOrType) {
+ return WORKFLOW_COLUMN_TYPES.includes(normalizeDataColumnType(colOrType))
+}
+
+export function getSupportedColumnConstraints(colOrType) {
+ const baseType = normalizeDataColumnType(colOrType)
+ const keys = COLUMN_SUPPORTED_CONSTRAINT_MAP[baseType] || []
+ return keys.map(key => DATA_CONSTRAINT_META[key]).filter(Boolean)
+}
 
 export const TABLE_IMPORT_MODES = Object.freeze(['read-only', 'read-write'])
 
@@ -3363,6 +3428,231 @@ export function computeLaneScrollTop(
   target = Math.max(0, Math.round(absTop - visibleTop))
  }
  return target === Math.round(cur) ? null : target
+}
+
+export const DEFAULT_MINIMAP_SCALE = 1
+export const MIN_MINIMAP_SCALE = 0.5
+export const MAX_MINIMAP_SCALE = 2.5
+export const MINIMAP_SCALE_STEP = 0.25
+export const DEFAULT_MINIMAP_WIDTH = 220
+export const DEFAULT_MINIMAP_HEIGHT = 132
+
+/**
+ * Normalizes a minimap scale factor (or percentage string) into [MIN_MINIMAP_SCALE, MAX_MINIMAP_SCALE].
+ */
+export function normalizeMinimapScale(value, fallback = DEFAULT_MINIMAP_SCALE) {
+ const clampedFallback = (() => {
+  const fbNum = Number(fallback)
+  if (!Number.isFinite(fbNum) || fbNum <= 0) {
+   return DEFAULT_MINIMAP_SCALE
+  }
+  const c = Math.max(MIN_MINIMAP_SCALE, Math.min(MAX_MINIMAP_SCALE, fbNum))
+  return Math.round(c * 100) / 100
+ })()
+ if (value === null || value === undefined) {
+  return clampedFallback
+ }
+ let num
+ if (typeof value === 'number') {
+  num = value
+ }
+ else {
+  const trimmed = String(value).trim()
+  if (trimmed.length === 0) {
+   return clampedFallback
+  }
+  if (trimmed.endsWith('%')) {
+   const pct = Number(trimmed.slice(0, -1).trim())
+   num = Number.isFinite(pct) ? pct / 100 : NaN
+  }
+  else {
+   num = Number(trimmed)
+  }
+ }
+ if (!Number.isFinite(num) || num <= 0) {
+  return clampedFallback
+ }
+ const clamped = Math.max(MIN_MINIMAP_SCALE, Math.min(MAX_MINIMAP_SCALE, num))
+ return Math.round(clamped * 100) / 100
+}
+
+/**
+ * Formats a normalized minimap scale factor as a percentage label (e.g. "125%").
+ */
+export function formatMinimapScalePercent(scale) {
+ return `${Math.round(normalizeMinimapScale(scale) * 100)}%`
+}
+
+/**
+ * Steps a minimap scale factor by deltaSteps * MINIMAP_SCALE_STEP within valid bounds.
+ */
+export function stepMinimapScale(currentScale, deltaSteps = 1) {
+ const base = normalizeMinimapScale(currentScale)
+ const steps = Number.isFinite(Number(deltaSteps)) ? Number(deltaSteps) : 1
+ const raw = Math.max(MIN_MINIMAP_SCALE, Math.min(MAX_MINIMAP_SCALE, base + steps * MINIMAP_SCALE_STEP))
+ return normalizeMinimapScale(raw)
+}
+
+/**
+ * Computes the next minimap scale when dragging the bottom-right minimap's top-left corner handle.
+ */
+export function computeMinimapDraggedScale(startScale, startMapWidth, startMapHeight, deltaClientX, deltaClientY) {
+ const base = normalizeMinimapScale(startScale)
+ const dx = (-(Number(deltaClientX) || 0)) / DEFAULT_MINIMAP_WIDTH
+ const dy = (-(Number(deltaClientY) || 0)) / DEFAULT_MINIMAP_HEIGHT
+ const dScale = Math.abs(dx) >= Math.abs(dy) ? dx : dy
+ const raw = Math.max(MIN_MINIMAP_SCALE, Math.min(MAX_MINIMAP_SCALE, base + dScale))
+ return normalizeMinimapScale(raw)
+}
+
+/**
+ * Computes scaled minimap stage, lane rectangles, and viewport indicator bounds from workspace dimensions.
+ */
+export function computeMinimapLayout(options = {}) {
+ const opts = options && typeof options === 'object' ? options : {}
+ const normScale = normalizeMinimapScale(opts.scale)
+ const vw = Math.max(1, Number.isFinite(Number(opts.viewportWidth)) && Number(opts.viewportWidth) > 0 ? Number(opts.viewportWidth) : 1280)
+ const vh = Math.max(1, Number.isFinite(Number(opts.viewportHeight)) && Number(opts.viewportHeight) > 0 ? Number(opts.viewportHeight) : 720)
+ const sx = Math.max(0, Number.isFinite(Number(opts.scrollX)) ? Number(opts.scrollX) : 0)
+ const sy = Math.max(0, Number.isFinite(Number(opts.scrollY)) ? Number(opts.scrollY) : 0)
+ const sw = Math.max(0, Number.isFinite(Number(opts.scrollWidth)) ? Number(opts.scrollWidth) : 0)
+ const sh = Math.max(0, Number.isFinite(Number(opts.scrollHeight)) ? Number(opts.scrollHeight) : 0)
+ const rawLanes = Array.isArray(opts.lanes) ? opts.lanes : []
+
+ const normalizedLanes = []
+ let maxLaneRight = 0
+ let maxLaneBottom = 0
+ for (let i = 0; i < rawLanes.length; i++) {
+  const lane = rawLanes[i]
+  if (!lane || typeof lane !== 'object') {
+   continue
+  }
+  const id = lane.id !== undefined && lane.id !== null ? String(lane.id) : ''
+  const title = lane.title !== undefined && lane.title !== null ? String(lane.title) : ''
+  const isMinimized = Boolean(lane.isMinimized)
+  const isLocked = Boolean(lane.isLocked)
+  const isHighlighted = Boolean(lane.isHighlighted)
+  const x = Math.max(0, Number.isFinite(Number(lane.x)) ? Number(lane.x) : 0)
+  const y = Math.max(0, Number.isFinite(Number(lane.y)) ? Number(lane.y) : 0)
+  const width = Math.max(1, Number.isFinite(Number(lane.width)) && Number(lane.width) > 0 ? Number(lane.width) : (isMinimized ? 34 : 320))
+  const height = Math.max(1, Number.isFinite(Number(lane.height)) && Number(lane.height) > 0 ? Number(lane.height) : 200)
+  if (x + width > maxLaneRight) {
+   maxLaneRight = x + width
+  }
+  if (y + height > maxLaneBottom) {
+   maxLaneBottom = y + height
+  }
+  normalizedLanes.push({
+   id,
+   title,
+   x,
+   y,
+   width,
+   height,
+   isMinimized,
+   isLocked,
+   isHighlighted,
+  })
+ }
+
+ const lanesMaxRight = normalizedLanes.length > 0 ? maxLaneRight + 64 : 0
+ const lanesMaxBottom = normalizedLanes.length > 0 ? maxLaneBottom + 32 : 0
+ const worldWidth = Math.max(vw, sw, sx + vw, lanesMaxRight, 1)
+ const worldHeight = Math.max(vh, sh, sy + vh, lanesMaxBottom, 1)
+ const maxScrollX = Math.max(0, worldWidth - vw)
+ const maxScrollY = Math.max(0, worldHeight - vh)
+
+ const availMaxW = Math.max(96, vw - 96)
+ const availMaxH = Math.max(64, vh - 80)
+ const maxMapWidth = Math.min(availMaxW, Math.round(DEFAULT_MINIMAP_WIDTH * normScale))
+ const maxMapHeight = Math.min(availMaxH, Math.round(DEFAULT_MINIMAP_HEIGHT * normScale))
+ const minMapWidth = Math.min(maxMapWidth, Math.max(72, Math.round(116 * normScale)))
+ const minMapHeight = Math.min(maxMapHeight, Math.max(44, Math.round(56 * normScale)))
+
+ const fitRatio = Math.min(maxMapWidth / worldWidth, maxMapHeight / worldHeight)
+ const mapWidth = Math.max(1, Math.round(Math.min(maxMapWidth, Math.max(minMapWidth, worldWidth * fitRatio))))
+ const mapHeight = Math.max(1, Math.round(Math.min(maxMapHeight, Math.max(minMapHeight, worldHeight * fitRatio))))
+ const scaleX = mapWidth / worldWidth
+ const scaleY = mapHeight / worldHeight
+
+ const lanes = normalizedLanes.map(lane => {
+  const minW = lane.isMinimized ? 2 : 4
+  const minH = 6
+  const laneW = Math.min(mapWidth, Math.max(minW, Math.round(lane.width * scaleX * 10) / 10))
+  const laneH = Math.min(mapHeight, Math.max(minH, Math.round(lane.height * scaleY * 10) / 10))
+  const laneLeft = Math.max(0, Math.min(Math.max(0, mapWidth - laneW), Math.round(lane.x * scaleX * 10) / 10))
+  const laneTop = Math.max(0, Math.min(Math.max(0, mapHeight - laneH), Math.round(lane.y * scaleY * 10) / 10))
+  return {
+   id: lane.id,
+   title: lane.title,
+   initial: getLaneInitial(lane.title, lane.id),
+   left: laneLeft,
+   top: laneTop,
+   width: laneW,
+   height: laneH,
+   isMinimized: lane.isMinimized,
+   isLocked: lane.isLocked,
+   isHighlighted: lane.isHighlighted,
+  }
+ })
+
+ const vpWidth = Math.min(mapWidth, Math.max(10, Math.round(vw * scaleX * 10) / 10))
+ const vpHeight = Math.min(mapHeight, Math.max(8, Math.round(vh * scaleY * 10) / 10))
+ const clampedScrollX = Math.max(0, Math.min(maxScrollX, sx))
+ const clampedScrollY = Math.max(0, Math.min(maxScrollY, sy))
+ const vpLeft = maxScrollX > 0
+  ? Math.round(((clampedScrollX / maxScrollX) * Math.max(0, mapWidth - vpWidth)) * 10) / 10
+  : 0
+ const vpTop = maxScrollY > 0
+  ? Math.round(((clampedScrollY / maxScrollY) * Math.max(0, mapHeight - vpHeight)) * 10) / 10
+  : 0
+
+ return {
+  scale: normScale,
+  scalePercent: formatMinimapScalePercent(normScale),
+  worldWidth,
+  worldHeight,
+  maxScrollX,
+  maxScrollY,
+  mapWidth,
+  mapHeight,
+  scaleX,
+  scaleY,
+  viewport: {
+   left: vpLeft,
+   top: vpTop,
+   width: vpWidth,
+   height: vpHeight,
+  },
+  lanes,
+ }
+}
+
+/**
+ * Maps a target minimap viewport top-left coordinate back into workspace scrollLeft/scrollTop targets.
+ */
+export function computeMinimapScrollTarget(layout, targetViewportLeft, targetViewportTop) {
+ if (!layout || typeof layout !== 'object') {
+  return { left: 0, top: 0 }
+ }
+ const mapW = Number(layout.mapWidth) || 0
+ const mapH = Number(layout.mapHeight) || 0
+ const vp = layout.viewport && typeof layout.viewport === 'object' ? layout.viewport : {}
+ const vpW = Number(vp.width) || 0
+ const vpH = Number(vp.height) || 0
+ const maxSX = Math.max(0, Number(layout.maxScrollX) || 0)
+ const maxSY = Math.max(0, Number(layout.maxScrollY) || 0)
+ const trackX = Math.max(0, mapW - vpW)
+ const trackY = Math.max(0, mapH - vpH)
+ const rawLeft = Number.isFinite(Number(targetViewportLeft)) ? Number(targetViewportLeft) : 0
+ const rawTop = Number.isFinite(Number(targetViewportTop)) ? Number(targetViewportTop) : 0
+ const left = trackX > 0 && maxSX > 0
+  ? Math.round(Math.max(0, Math.min(1, rawLeft / trackX)) * maxSX)
+  : 0
+ const top = trackY > 0 && maxSY > 0
+  ? Math.round(Math.max(0, Math.min(1, rawTop / trackY)) * maxSY)
+  : 0
+ return { left, top }
 }
 
 export const DEFAULT_SCROLLBAR_COLOR = '#383838'
@@ -3712,6 +4002,21 @@ export function normalizeFixedDecimals(decimals) {
  return Math.min(MAX_FIXED_DECIMALS, Math.max(0, n))
 }
 
+/**
+ * Strictly validates a Schema fixed decimal-places input string ("0" through "12").
+ */
+export function parseFixedDecimalsInput(raw) {
+ const text = raw === null || raw === undefined ? '' : String(raw)
+ if (!/^\d+$/.test(text)) {
+  return { ok: false, value: null, error: 'Decimal places must be a whole integer from 0 to 12' }
+ }
+ const num = Number(text)
+ if (!Number.isSafeInteger(num) || num < 0 || num > MAX_FIXED_DECIMALS) {
+  return { ok: false, value: null, error: 'Decimal places must be a whole integer from 0 to 12' }
+ }
+ return { ok: true, value: num === 0 ? 0 : num, error: null }
+}
+
 function parseTypeString(raw) {
  const str = typeof raw === 'string' ? raw.trim() : ''
  const isArr = str.endsWith('[]')
@@ -3862,7 +4167,75 @@ export function normalizeDataColumnType(type) {
  return 'text'
 }
 
-export function normalizeColumnConstraint(constraint) {
+function normalizeConstraintNumericBound(raw, colType = null, colDecimals = undefined) {
+ if (raw === null || raw === undefined || raw === '') {
+  return null
+ }
+ const resolvedType = colType ? normalizeDataColumnType(colType) : ''
+ if (typeof raw === 'number') {
+  if (!Number.isFinite(raw)) {
+   return null
+  }
+  if (resolvedType === 'decimal') {
+   return raw === 0 ? 0 : raw
+  }
+  const intVal = Math.trunc(raw)
+  return Number.isSafeInteger(intVal) ? (intVal === 0 ? 0 : intVal) : null
+ }
+ const trimmed = String(raw).trim()
+ if (trimmed === '') {
+  return null
+ }
+ if (resolvedType === 'fixed') {
+  const p = parseCellValue(trimmed, { type: 'fixed', decimals: normalizeFixedDecimals(colDecimals), multiple: false })
+  return p.ok ? p.value : null
+ }
+ if (resolvedType === 'decimal') {
+  const p = parseCellValue(trimmed, 'decimal')
+  return p.ok ? p.value : null
+ }
+ const p = parseCellValue(trimmed, 'integer')
+ return p.ok ? p.value : null
+}
+
+function normalizeConstraintNonNegInt(raw, minVal = 0) {
+ if (raw === null || raw === undefined || raw === '') {
+  return null
+ }
+ const p = parseCellValue(raw, 'integer')
+ if (!p.ok || p.value === null || p.value < minVal) {
+  return null
+ }
+ return p.value
+}
+
+function normalizeConstraintStringList(raw, { lowercase = false, stripAt = false } = {}) {
+ const parts = Array.isArray(raw)
+  ? raw
+  : (typeof raw === 'string' ? raw.split(',') : [])
+ const out = []
+ const seen = new Set()
+ for (const item of parts) {
+  if (item === null || item === undefined) {
+   continue
+  }
+  let text = String(item).trim()
+  if (stripAt && text.startsWith('@')) {
+   text = text.slice(1).trim()
+  }
+  if (lowercase) {
+   text = text.toLowerCase()
+  }
+  if (!text || seen.has(text)) {
+   continue
+  }
+  seen.add(text)
+  out.push(text)
+ }
+ return out
+}
+
+export function normalizeColumnConstraint(constraint, colType = null, colDecimals = undefined) {
  if (!constraint || typeof constraint !== 'object') {
   return null
  }
@@ -3870,22 +4243,206 @@ export function normalizeColumnConstraint(constraint) {
  if (!DATA_CONSTRAINT_TYPES.includes(type)) {
   return null
  }
- return {
-  type,
-  tableId: typeof constraint.tableId === 'string' ? constraint.tableId : '',
-  fromColumnId: typeof constraint.fromColumnId === 'string' ? constraint.fromColumnId : '',
-  toColumnId: typeof constraint.toColumnId === 'string' ? constraint.toColumnId : '',
+ const resolvedType = colType !== null && colType !== undefined && String(colType).trim() !== ''
+  ? normalizeDataColumnType(colType)
+  : ''
+ if (resolvedType) {
+  const supported = COLUMN_SUPPORTED_CONSTRAINT_MAP[resolvedType] || []
+  if (!supported.includes(type)) {
+   return null
+  }
+ }
+ switch (type) {
+  case 'workflow':
+   return {
+    type: 'workflow',
+    tableId: typeof constraint.tableId === 'string' ? constraint.tableId : '',
+    fromColumnId: typeof constraint.fromColumnId === 'string' ? constraint.fromColumnId : '',
+    toColumnId: typeof constraint.toColumnId === 'string' ? constraint.toColumnId : '',
+   }
+  case 'min':
+   return {
+    type: 'min',
+    min: normalizeConstraintNumericBound(constraint.min, resolvedType || null, colDecimals),
+   }
+  case 'max':
+   return {
+    type: 'max',
+    max: normalizeConstraintNumericBound(constraint.max, resolvedType || null, colDecimals),
+   }
+  case 'range':
+   return {
+    type: 'range',
+    min: normalizeConstraintNumericBound(constraint.min, resolvedType || null, colDecimals),
+    max: normalizeConstraintNumericBound(constraint.max, resolvedType || null, colDecimals),
+   }
+  case 'step':
+   return {
+    type: 'step',
+    step: normalizeConstraintNonNegInt(constraint.step, 1),
+   }
+  case 'date_range': {
+   const rawRel = typeof constraint.relative === 'string' ? constraint.relative.trim().toLowerCase() : ''
+   let relative = ''
+   if (resolvedType === 'date') {
+    if (rawRel === 'today_or_past' || rawRel === 'past') {
+     relative = 'today_or_past'
+    }
+    else if (rawRel === 'today_or_future' || rawRel === 'future') {
+     relative = 'today_or_future'
+    }
+   }
+   else if (resolvedType === 'datetime') {
+    if (rawRel === 'past' || rawRel === 'today_or_past') {
+     relative = 'past'
+    }
+    else if (rawRel === 'future' || rawRel === 'today_or_future') {
+     relative = 'future'
+    }
+   }
+   else if (rawRel === 'today_or_past' || rawRel === 'today_or_future' || rawRel === 'past' || rawRel === 'future') {
+    relative = rawRel
+   }
+   let min = typeof constraint.min === 'string' ? constraint.min.trim() : ''
+   let max = typeof constraint.max === 'string' ? constraint.max.trim() : ''
+   if (resolvedType === 'date') {
+    if (min) {
+     const pm = parseCellValue(min, 'date')
+     min = pm.ok ? pm.value : ''
+    }
+    if (max) {
+     const px = parseCellValue(max, 'date')
+     max = px.ok ? px.value : ''
+    }
+   }
+   return {
+    type: 'date_range',
+    relative,
+    min,
+    max,
+   }
+  }
+  case 'min_length':
+   return {
+    type: 'min_length',
+    min: normalizeConstraintNonNegInt(constraint.min, 0),
+   }
+  case 'max_length':
+   return {
+    type: 'max_length',
+    max: normalizeConstraintNonNegInt(constraint.max, 0),
+   }
+  case 'pattern':
+   return {
+    type: 'pattern',
+    pattern: typeof constraint.pattern === 'string' ? constraint.pattern : '',
+   }
+  case 'one_of':
+   return {
+    type: 'one_of',
+    values: normalizeConstraintStringList(constraint.values),
+   }
+  case 'boolean_value': {
+   let expected = null
+   if (typeof constraint.expected === 'boolean') {
+    expected = constraint.expected
+   }
+   else if (typeof constraint.expected === 'string') {
+    const lower = constraint.expected.trim().toLowerCase()
+    if (lower === 'true') {
+     expected = true
+    }
+    else if (lower === 'false') {
+     expected = false
+    }
+   }
+   return {
+    type: 'boolean_value',
+    expected,
+   }
+  }
+  case 'https_only':
+   return { type: 'https_only' }
+  case 'domain':
+   return {
+    type: 'domain',
+    domains: normalizeConstraintStringList(constraint.domains, { lowercase: true, stripAt: true }),
+   }
+  case 'json_type': {
+   const rawExp = typeof constraint.expected === 'string' ? constraint.expected.trim().toLowerCase() : ''
+   return {
+    type: 'json_type',
+    expected: rawExp === 'object' || rawExp === 'array' ? rawExp : '',
+   }
+  }
+  case 'required_keys':
+   return {
+    type: 'required_keys',
+    keys: normalizeConstraintStringList(constraint.keys),
+   }
+  case 'unique':
+   return { type: 'unique' }
+  default:
+   return null
  }
 }
 
-export function findWorkflowDefaultColumns(table) {
+export function normalizeColumnConstraints(specOrList, colType = null, colDecimals = undefined) {
+ const rawList = []
+ if (Array.isArray(specOrList)) {
+  for (let i = 0; i < specOrList.length; i++) {
+   rawList.push(specOrList[i])
+  }
+ }
+ else if (specOrList && typeof specOrList === 'object') {
+  if (Array.isArray(specOrList.constraints)) {
+   for (let i = 0; i < specOrList.constraints.length; i++) {
+    rawList.push(specOrList.constraints[i])
+   }
+  }
+  if (specOrList.constraint && typeof specOrList.constraint === 'object') {
+   rawList.push(specOrList.constraint)
+  }
+ }
+ const out = []
+ const seen = new Set()
+ for (let i = 0; i < rawList.length; i++) {
+  const norm = normalizeColumnConstraint(rawList[i], colType, colDecimals)
+  if (!norm || seen.has(norm.type)) {
+   continue
+  }
+  seen.add(norm.type)
+  out.push(norm)
+ }
+ return out
+}
+
+export function createDefaultColumnConstraint(constraintType, colType = 'text') {
+ const normType = typeof constraintType === 'string' ? constraintType.trim().toLowerCase() : ''
+ return normalizeColumnConstraint({ type: normType }, colType)
+}
+
+export function getColumnWorkflowConstraint(col) {
+ if (!col || typeof col !== 'object' || !columnSupportsWorkflow(col)) {
+  return null
+ }
+ const list = normalizeColumnConstraints(col, normalizeDataColumnType(col))
+ return list.find(c => c.type === 'workflow') || null
+}
+
+export function findWorkflowDefaultColumns(table, expectedColumnType = null) {
  const cols = table && Array.isArray(table.columns) ? table.columns : []
+ const hasExpected = expectedColumnType !== null && expectedColumnType !== undefined && String(expectedColumnType).trim() !== ''
+ const expectedType = hasExpected ? normalizeDataColumnType(expectedColumnType) : ''
  let exactFrom = ''
  let ciFrom = ''
  let exactTo = ''
  let ciTo = ''
  for (const col of cols) {
   if (!col || typeof col !== 'object' || typeof col.id !== 'string' || col.id.length === 0) {
+   continue
+  }
+  if (hasExpected && (Boolean(col.multiple) || normalizeDataColumnType(col) !== expectedType)) {
    continue
   }
   const trimmed = typeof col.name === 'string' ? col.name.trim() : ''
@@ -3973,19 +4530,43 @@ export function parseColumnType(spec, multiple, decimals) {
   const parsed = parseTypeString(typeof spec.type === 'string' ? spec.type : 'text')
   const resolvedMultiple = multiple !== undefined ? Boolean(multiple) : Boolean(spec.multiple || parsed.multiple)
   if (parsed.type === 'fixed') {
+   const specDecimals = spec.decimals !== undefined
+    ? normalizeFixedDecimals(spec.decimals)
+    : (parsed.hasDecimals ? parsed.decimals : DEFAULT_FIXED_DECIMALS)
    const resolvedDecimals = decimals !== undefined
     ? normalizeFixedDecimals(decimals)
-    : spec.decimals !== undefined
-     ? normalizeFixedDecimals(spec.decimals)
-     : parsed.hasDecimals
-      ? parsed.decimals
-      : DEFAULT_FIXED_DECIMALS
-   return {
+    : specDecimals
+   let constraints = normalizeColumnConstraints(spec, 'fixed', specDecimals)
+   if (constraints.length > 0 && specDecimals !== resolvedDecimals) {
+    constraints = constraints.map(c => {
+     if (c.type === 'min') {
+      return { type: 'min', min: rescaleFixedInteger(c.min, specDecimals, resolvedDecimals) }
+     }
+     if (c.type === 'max') {
+      return { type: 'max', max: rescaleFixedInteger(c.max, specDecimals, resolvedDecimals) }
+     }
+     if (c.type === 'range') {
+      return {
+       type: 'range',
+       min: rescaleFixedInteger(c.min, specDecimals, resolvedDecimals),
+       max: rescaleFixedInteger(c.max, specDecimals, resolvedDecimals),
+      }
+     }
+     return c
+    })
+   }
+   const out = {
     type: 'fixed',
     multiple: resolvedMultiple,
     decimals: resolvedDecimals,
    }
+   if (constraints.length > 0) {
+    out.constraint = constraints[0]
+    out.constraints = constraints
+   }
+   return out
   }
+  const constraints = normalizeColumnConstraints(spec, parsed.type)
   if (parsed.type === 'row') {
    const rowSpec = {
     type: 'row',
@@ -4004,22 +4585,21 @@ export function parseColumnType(spec, multiple, decimals) {
    if (typeof spec.filterByColumnId === 'string' && spec.filterByColumnId.length > 0) {
     rowSpec.filterByColumnId = spec.filterByColumnId
    }
+   if (constraints.length > 0) {
+    rowSpec.constraint = constraints[0]
+    rowSpec.constraints = constraints
+   }
    return rowSpec
   }
-  if (parsed.type === 'text') {
-   const constraint = normalizeColumnConstraint(spec.constraint)
-   if (constraint) {
-    return {
-     type: 'text',
-     multiple: resolvedMultiple,
-     constraint,
-    }
-   }
-  }
-  return {
+  const out = {
    type: parsed.type,
    multiple: resolvedMultiple,
   }
+  if (constraints.length > 0) {
+   out.constraint = constraints[0]
+   out.constraints = constraints
+  }
+  return out
  }
  const parsed = parseTypeString(spec)
  const resolvedMultiple = Boolean(multiple || parsed.multiple)
@@ -4375,11 +4955,33 @@ export function formatRowDisplayTemplate(tables, table, row, template, displayOp
  return { ok: true, text, unresolved, error: null }
 }
 
+function formatConstraintShortTag(constraint) {
+ if (!constraint || typeof constraint !== 'object') {
+  return ''
+ }
+ if (constraint.type === 'boolean_value') {
+  if (constraint.expected === true) {
+   return '=true'
+  }
+  if (constraint.expected === false) {
+   return '=false'
+  }
+  return 'expected'
+ }
+ if (constraint.type === 'json_type') {
+  return constraint.expected || 'shape'
+ }
+ const meta = DATA_CONSTRAINT_META[constraint.type]
+ return meta ? meta.shortTag : constraint.type
+}
+
 export function formatColumnType(type, multiple, decimals, tables = null) {
  const parsed = parseColumnType(type, multiple, decimals)
+ const constraints = Array.isArray(parsed.constraints) ? parsed.constraints : []
+ const tags = constraints.map(formatConstraintShortTag).filter(Boolean).join(', ')
  let base
  if (parsed.type === 'fixed') {
-  base = `fixed(${parsed.decimals})`
+  base = tags ? `fixed(${parsed.decimals}, ${tags})` : `fixed(${parsed.decimals})`
  }
  else if (parsed.type === 'row') {
   const ownerTable = Array.isArray(tables) && type && typeof type === 'object' ? resolveOwnerTableForCol(tables, type) : null
@@ -4391,17 +4993,14 @@ export function formatColumnType(type, multiple, decimals, tables = null) {
    const cLabel = typeof target.linkCol.name === 'string' && target.linkCol.name.trim().length > 0
     ? target.linkCol.name.trim()
     : target.linkCol.id
-   base = `row(${tLabel}.${cLabel})`
+   base = tags ? `row(${tLabel}.${cLabel}, ${tags})` : `row(${tLabel}.${cLabel})`
   }
   else {
-   base = 'row'
+   base = tags ? `row(${tags})` : 'row'
   }
  }
- else if (parsed.type === 'text' && parsed.constraint && parsed.constraint.type === 'workflow') {
-  base = 'text(workflow)'
- }
  else {
-  base = parsed.type
+  base = tags ? `${parsed.type}(${tags})` : parsed.type
  }
  return parsed.multiple ? `${base}[]` : base
 }
@@ -4432,6 +5031,28 @@ export function defaultDataValue(type, multiple, decimals) {
  }
 }
 
+function parseStrictIntegerString(str) {
+ if (!/^[+-]?\d+$/.test(str)) {
+  return { ok: false, value: null, error: 'Must be a whole integer' }
+ }
+ const num = Number(str)
+ if (!Number.isSafeInteger(num)) {
+  return { ok: false, value: null, error: 'Integer out of safe range' }
+ }
+ return { ok: true, value: num === 0 ? 0 : num, error: null }
+}
+
+function parseStrictDecimalString(str) {
+ if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(str)) {
+  return { ok: false, value: null, error: 'Must be a decimal number' }
+ }
+ const num = Number(str)
+ if (!Number.isFinite(num)) {
+  return { ok: false, value: null, error: 'Must be a decimal number' }
+ }
+ return { ok: true, value: num === 0 ? 0 : num, error: null }
+}
+
 export function parseCellValue(raw, type, decimals, tables = null, displayOpts = null) {
  const parsed = parseColumnType(type, false, decimals)
  const base = parsed.type
@@ -4443,21 +5064,14 @@ export function parseCellValue(raw, type, decimals, tables = null, displayOpts =
    }
    if (typeof raw === 'number') {
     return Number.isSafeInteger(raw)
-     ? { ok: true, value: raw, error: null }
+     ? { ok: true, value: raw === 0 ? 0 : raw, error: null }
      : { ok: false, value: null, error: 'Must be a whole integer' }
    }
    const trimmed = String(raw).trim()
    if (trimmed === '') {
     return { ok: true, value: null, error: null }
    }
-   if (!/^[+-]?\d+$/.test(trimmed)) {
-    return { ok: false, value: null, error: 'Must be a whole integer' }
-   }
-   const num = Number(trimmed)
-   if (!Number.isSafeInteger(num)) {
-    return { ok: false, value: null, error: 'Integer out of safe range' }
-   }
-   return { ok: true, value: num, error: null }
+   return parseStrictIntegerString(trimmed)
   }
   case 'decimal': {
    if (raw === null || raw === undefined) {
@@ -4465,18 +5079,14 @@ export function parseCellValue(raw, type, decimals, tables = null, displayOpts =
    }
    if (typeof raw === 'number') {
     return Number.isFinite(raw)
-     ? { ok: true, value: raw, error: null }
+     ? { ok: true, value: raw === 0 ? 0 : raw, error: null }
      : { ok: false, value: null, error: 'Must be a decimal number' }
    }
    const trimmed = String(raw).trim()
    if (trimmed === '') {
     return { ok: true, value: null, error: null }
    }
-   const num = Number(trimmed)
-   if (!Number.isFinite(num)) {
-    return { ok: false, value: null, error: 'Must be a decimal number' }
-   }
-   return { ok: true, value: num, error: null }
+   return parseStrictDecimalString(trimmed)
   }
   case 'fixed': {
    if (raw === null || raw === undefined) {
@@ -4600,6 +5210,39 @@ export function parseCellValue(raw, type, decimals, tables = null, displayOpts =
   default:
    return { ok: true, value: raw === null || raw === undefined ? '' : String(raw), error: null }
  }
+}
+
+/**
+ * Strictly validates raw UI text for integer, decimal, and fixed Data cells without trimming whitespace.
+ */
+export function parseNumericCellInput(raw, type, decimals) {
+ if (raw === null || raw === undefined || raw === '') {
+  return { ok: true, value: null, error: null }
+ }
+ if (typeof raw === 'number') {
+  return parseCellValue(raw, type, decimals)
+ }
+ const text = String(raw)
+ const parsed = parseColumnType(type, false, decimals)
+ const base = parsed.type
+ if (base === 'integer') {
+  return parseStrictIntegerString(text)
+ }
+ if (base === 'decimal') {
+  return parseStrictDecimalString(text)
+ }
+ if (base === 'fixed') {
+  if (/\s/.test(text)) {
+   const unit = parsed.decimals === 1 ? 'place' : 'places'
+   return {
+    ok: false,
+    value: null,
+    error: parsed.decimals === 0 ? 'Must be a whole number (0 decimal places)' : `Must be a fixed-point number (up to ${parsed.decimals} decimal ${unit})`,
+   }
+  }
+  return scaleDecimalStringToFixed(text, parsed.decimals, { allowRounding: false })
+ }
+ return parseCellValue(raw, type, decimals)
 }
 
 export function formatCellInputValue(value, type, decimals, tables = null, displayOpts = null) {
@@ -4999,8 +5642,9 @@ export function parseStoredTables(stored) {
      normalizedCol.filterByColumnId = parsedType.filterByColumnId
     }
    }
-   else if (parsedType.type === 'text' && parsedType.constraint) {
-    normalizedCol.constraint = parsedType.constraint
+   if (Array.isArray(parsedType.constraints) && parsedType.constraints.length > 0) {
+    normalizedCol.constraint = parsedType.constraints[0]
+    normalizedCol.constraints = parsedType.constraints
    }
    const width = normalizeColumnWidth(col.width)
    if (width !== null) {
@@ -5364,14 +6008,47 @@ function formatWorkflowCellText(value, col, tables) {
  return String(formatCellInputValue(value, parsed, undefined, tables))
 }
 
+export function parseWorkflowOptionValue(rawOptionValue, col) {
+ const colType = normalizeDataColumnType(col)
+ if (colType === 'integer') {
+  if (rawOptionValue === null || rawOptionValue === undefined) {
+   return null
+  }
+  const str = String(rawOptionValue).trim()
+  if (str === '') {
+   return null
+  }
+  const p = parseCellValue(str, 'integer')
+  return p.ok ? p.value : null
+ }
+ if (colType === 'boolean') {
+  if (typeof rawOptionValue === 'boolean') {
+   return rawOptionValue
+  }
+  const lower = String(rawOptionValue ?? '').trim().toLowerCase()
+  if (lower === 'true' || lower === '1') {
+   return true
+  }
+  if (lower === 'false' || lower === '0') {
+   return false
+  }
+  return Boolean(rawOptionValue)
+ }
+ return rawOptionValue === null || rawOptionValue === undefined ? '' : String(rawOptionValue)
+}
+
 export function resolveWorkflowTarget(tables, col) {
- const isText = Boolean(col && typeof col === 'object' && normalizeDataColumnType(col) === 'text')
- const constraint = isText ? normalizeColumnConstraint(col.constraint) : null
+ const colType = col && typeof col === 'object' ? normalizeDataColumnType(col) : ''
+ const constraint = col && typeof col === 'object' ? getColumnWorkflowConstraint(col) : null
  if (!constraint || constraint.type !== 'workflow') {
   return {
    active: false,
    configured: false,
    valid: false,
+   typeMismatch: false,
+   fromMatchesType: false,
+   toMatchesType: false,
+   colType,
    type: '',
    tableId: '',
    fromColumnId: '',
@@ -5395,7 +6072,10 @@ export function resolveWorkflowTarget(tables, col) {
  const cols = table && Array.isArray(table.columns) ? table.columns : []
  const fromCol = fromColumnId ? cols.find(c => c && c.id === fromColumnId) || null : null
  const toCol = toColumnId ? cols.find(c => c && c.id === toColumnId) || null : null
- const valid = Boolean(table && fromCol && toCol)
+ const fromMatchesType = Boolean(fromCol && !fromCol.multiple && normalizeDataColumnType(fromCol) === colType)
+ const toMatchesType = Boolean(toCol && !toCol.multiple && normalizeDataColumnType(toCol) === colType)
+ const typeMismatch = Boolean(table && fromCol && toCol && (!fromMatchesType || !toMatchesType))
+ const valid = Boolean(table && fromCol && toCol && fromMatchesType && toMatchesType)
  const tableName = table ? (String(table.name || '').trim() || table.id) : ''
  const fromColName = fromCol ? (String(fromCol.name || '').trim() || fromCol.id) : ''
  const toColName = toCol ? (String(toCol.name || '').trim() || toCol.id) : ''
@@ -5412,8 +6092,8 @@ export function resolveWorkflowTarget(tables, col) {
    if (!row || !row.values || typeof row.values !== 'object') {
     continue
    }
-   const rawFrom = Object.hasOwn(row.values, fromCol.id) ? row.values[fromCol.id] : ''
-   const rawTo = Object.hasOwn(row.values, toCol.id) ? row.values[toCol.id] : ''
+   const rawFrom = Object.hasOwn(row.values, fromCol.id) ? row.values[fromCol.id] : null
+   const rawTo = Object.hasOwn(row.values, toCol.id) ? row.values[toCol.id] : null
    const fromText = formatWorkflowCellText(rawFrom, fromCol, tables)
    const toText = formatWorkflowCellText(rawTo, toCol, tables)
    if (fromText === '' && toText === '') {
@@ -5442,6 +6122,10 @@ export function resolveWorkflowTarget(tables, col) {
   active: true,
   configured,
   valid,
+  typeMismatch,
+  fromMatchesType,
+  toMatchesType,
+  colType,
   type: constraint.type,
   tableId,
   fromColumnId,
@@ -5461,7 +6145,8 @@ export function resolveWorkflowTarget(tables, col) {
 
 export function getWorkflowCellState(tables, col, value) {
  const target = resolveWorkflowTarget(tables, col)
- const currentValue = value === null || value === undefined ? '' : String(value)
+ const singleSpec = { type: normalizeDataColumnType(col), multiple: false }
+ const currentValue = formatWorkflowCellText(value, singleSpec, tables)
  if (!target.active) {
   return {
    active: false,
@@ -5475,9 +6160,11 @@ export function getWorkflowCellState(tables, col, value) {
   }
  }
  if (!target.valid) {
-  const error = target.configured
-   ? 'Workflow table or columns not found'
-   : 'Configure workflow table, From, and To columns in Schema'
+  const error = target.typeMismatch
+   ? `Workflow From and To columns must be ${target.colType}`
+   : (target.configured
+    ? 'Workflow table or columns not found'
+    : 'Configure workflow table, From, and To columns in Schema')
   return {
    active: true,
    configured: target.configured,
@@ -5489,6 +6176,7 @@ export function getWorkflowCellState(tables, col, value) {
    options: [
     {
      value: currentValue,
+     typedValue: parseWorkflowOptionValue(currentValue, col),
      label: currentValue === '' ? 'Configure workflow…' : currentValue,
      isCurrent: true,
      isInvalid: false,
@@ -5504,6 +6192,7 @@ export function getWorkflowCellState(tables, col, value) {
   const options = [
    {
     value: currentValue,
+    typedValue: parseWorkflowOptionValue(currentValue, col),
     label: currentValue === '' ? '(empty)' : currentValue,
     isCurrent: true,
     isInvalid: false,
@@ -5514,6 +6203,7 @@ export function getWorkflowCellState(tables, col, value) {
    if (nextVal !== currentValue) {
     options.push({
      value: nextVal,
+     typedValue: parseWorkflowOptionValue(nextVal, col),
      label: nextVal,
      isCurrent: false,
      isInvalid: false,
@@ -5545,6 +6235,7 @@ export function getWorkflowCellState(tables, col, value) {
  const options = [
   {
    value: currentValue,
+   typedValue: parseWorkflowOptionValue(currentValue, col),
    label: currentValue === '' ? '(empty — invalid)' : `${currentValue} (invalid)`,
    isCurrent: true,
    isInvalid: true,
@@ -5555,6 +6246,7 @@ export function getWorkflowCellState(tables, col, value) {
   if (startVal !== currentValue) {
    options.push({
     value: startVal,
+    typedValue: parseWorkflowOptionValue(startVal, col),
     label: startVal,
     isCurrent: false,
     isInvalid: false,
@@ -5571,6 +6263,414 @@ export function getWorkflowCellState(tables, col, value) {
   hint: error,
   options,
  }
+}
+
+export function validateColumnConstraints(col, value, options = {}) {
+ if (!col || typeof col !== 'object') {
+  return { ok: true, error: null, errors: [] }
+ }
+ const singleSpec = parseColumnType(col, false)
+ const constraints = Array.isArray(singleSpec.constraints) ? singleSpec.constraints : []
+ const errors = []
+ const tables = Array.isArray(options && options.tables) ? options.tables : null
+ const table = options && options.table && typeof options.table === 'object' ? options.table : null
+ const row = options && options.row && typeof options.row === 'object' ? options.row : null
+ const curRowId = typeof (options && options.rowId) === 'string'
+  ? options.rowId
+  : (row && typeof row.id === 'string' ? row.id : '')
+ const displayOpts = options && options.displayOpts && typeof options.displayOpts === 'object' ? options.displayOpts : null
+ const nowMs = typeof (options && options.nowMs) === 'number' && Number.isFinite(options.nowMs)
+  ? options.nowMs
+  : Date.now()
+ const includeWorkflow = Boolean(options && options.includeWorkflow)
+ const isEmpty = isDataCellValueEmpty(value, singleSpec)
+
+ for (let i = 0; i < constraints.length; i++) {
+  const c = constraints[i]
+  if (c.type === 'workflow') {
+   if (includeWorkflow && tables) {
+    const wfState = getWorkflowCellState(tables, col, value)
+    if (wfState.active && wfState.valid && !wfState.isValueValid && wfState.error) {
+     errors.push(wfState.error)
+    }
+   }
+   continue
+  }
+  if (c.type === 'boolean_value') {
+   if (typeof c.expected === 'boolean' && Boolean(value) !== c.expected) {
+    errors.push(`Must be ${c.expected ? 'true' : 'false'}`)
+   }
+   continue
+  }
+  if (isEmpty) {
+   continue
+  }
+  switch (c.type) {
+   case 'min': {
+    if (typeof c.min === 'number' && Number.isFinite(c.min) && typeof value === 'number' && Number.isFinite(value) && value < c.min) {
+     errors.push(`Must be at least ${formatCellInputValue(c.min, singleSpec)}`)
+    }
+    break
+   }
+   case 'max': {
+    if (typeof c.max === 'number' && Number.isFinite(c.max) && typeof value === 'number' && Number.isFinite(value) && value > c.max) {
+     errors.push(`Must be at most ${formatCellInputValue(c.max, singleSpec)}`)
+    }
+    break
+   }
+   case 'range': {
+    const hasMin = typeof c.min === 'number' && Number.isFinite(c.min)
+    const hasMax = typeof c.max === 'number' && Number.isFinite(c.max)
+    const minTxt = hasMin ? String(formatCellInputValue(c.min, singleSpec)) : ''
+    const maxTxt = hasMax ? String(formatCellInputValue(c.max, singleSpec)) : ''
+    if (hasMin && hasMax && c.min > c.max) {
+     errors.push(`Invalid range constraint (min ${minTxt} > max ${maxTxt})`)
+    }
+    else if (typeof value === 'number' && Number.isFinite(value)) {
+     if (hasMin && hasMax && (value < c.min || value > c.max)) {
+      errors.push(`Must be between ${minTxt} and ${maxTxt}`)
+     }
+     else if (hasMin && value < c.min) {
+      errors.push(`Must be at least ${minTxt}`)
+     }
+     else if (hasMax && value > c.max) {
+      errors.push(`Must be at most ${maxTxt}`)
+     }
+    }
+    break
+   }
+   case 'step': {
+    if (typeof c.step === 'number' && Number.isSafeInteger(c.step) && c.step >= 1 && typeof value === 'number' && Number.isFinite(value)) {
+     if (value % c.step !== 0) {
+      errors.push(`Must be a multiple of ${c.step}`)
+     }
+    }
+    break
+   }
+   case 'date_range': {
+    if (singleSpec.type === 'date') {
+     const valStr = String(value).trim()
+     const todayYmd = getCalendarDayInTimeZone(nowMs, displayOpts)
+     if (c.relative === 'today_or_past' && todayYmd && valStr > todayYmd) {
+      errors.push('Date must be today or in the past')
+     }
+     else if (c.relative === 'today_or_future' && todayYmd && valStr < todayYmd) {
+      errors.push('Date must be today or in the future')
+     }
+     if (c.min && c.max && c.min > c.max) {
+      errors.push(`Invalid date range (min ${c.min} > max ${c.max})`)
+     }
+     else {
+      if (c.min && valStr < c.min) {
+       errors.push(`Date must be on or after ${c.min}`)
+      }
+      if (c.max && valStr > c.max) {
+       errors.push(`Date must be on or before ${c.max}`)
+      }
+     }
+    }
+    else if (singleSpec.type === 'datetime') {
+     const valMs = parseFilterDatetimeMs(value, displayOpts)
+     if (Number.isFinite(valMs)) {
+      if (c.relative === 'past' && valMs >= nowMs) {
+       errors.push('Date/time must be in the past')
+      }
+      else if (c.relative === 'future' && valMs <= nowMs) {
+       errors.push('Date/time must be in the future')
+      }
+      const minMs = c.min ? parseFilterDatetimeMs(c.min, displayOpts) : NaN
+      const maxMs = c.max ? parseFilterDatetimeMs(c.max, displayOpts) : NaN
+      if (Number.isFinite(minMs) && Number.isFinite(maxMs) && minMs > maxMs) {
+       errors.push('Invalid date/time range (min is after max)')
+      }
+      else {
+       if (Number.isFinite(minMs) && valMs < minMs) {
+        const dispMin = formatCellInputValue(c.min, singleSpec, undefined, null, displayOpts) || c.min
+        errors.push(`Date/time must be on or after ${dispMin}`)
+       }
+       if (Number.isFinite(maxMs) && valMs > maxMs) {
+        const dispMax = formatCellInputValue(c.max, singleSpec, undefined, null, displayOpts) || c.max
+        errors.push(`Date/time must be on or before ${dispMax}`)
+       }
+      }
+     }
+    }
+    break
+   }
+   case 'min_length': {
+    if (typeof c.min === 'number' && Number.isSafeInteger(c.min) && String(value).length < c.min) {
+     errors.push(`Must be at least ${c.min} character${c.min === 1 ? '' : 's'}`)
+    }
+    break
+   }
+   case 'max_length': {
+    if (typeof c.max === 'number' && Number.isSafeInteger(c.max) && String(value).length > c.max) {
+     errors.push(`Must be at most ${c.max} character${c.max === 1 ? '' : 's'}`)
+    }
+    break
+   }
+   case 'pattern': {
+    if (c.pattern) {
+     const re = compileFilterRegex(c.pattern)
+     if (!re) {
+      errors.push('Invalid constraint regex pattern')
+     }
+     else if (!re.test(String(value))) {
+      errors.push(`Must match pattern ${c.pattern}`)
+     }
+    }
+    break
+   }
+   case 'one_of': {
+    if (Array.isArray(c.values) && c.values.length > 0 && !c.values.includes(String(value))) {
+     errors.push(`Must be one of: ${c.values.join(', ')}`)
+    }
+    break
+   }
+   case 'https_only': {
+    let parsedUrl = null
+    try {
+     parsedUrl = new URL(String(value).trim())
+    }
+    catch {
+     parsedUrl = null
+    }
+    if (!parsedUrl || parsedUrl.protocol !== 'https:') {
+     errors.push('URL must use https://')
+    }
+    break
+   }
+   case 'domain': {
+    if (Array.isArray(c.domains) && c.domains.length > 0) {
+     if (singleSpec.type === 'email') {
+      const str = String(value).trim()
+      const atIdx = str.lastIndexOf('@')
+      const host = atIdx >= 0 ? str.slice(atIdx + 1).toLowerCase() : ''
+      if (!host || !c.domains.includes(host)) {
+       errors.push(`Email domain must be one of: ${c.domains.join(', ')}`)
+      }
+     }
+     else {
+      let parsedUrl = null
+      try {
+       parsedUrl = new URL(String(value).trim())
+      }
+      catch {
+       parsedUrl = null
+      }
+      const host = parsedUrl ? parsedUrl.hostname.toLowerCase() : ''
+      if (!host || !c.domains.some(d => host === d || host.endsWith(`.${d}`))) {
+       errors.push(`URL domain must match: ${c.domains.join(', ')}`)
+      }
+     }
+    }
+    break
+   }
+   case 'json_type':
+   case 'required_keys': {
+    let jsonVal = value
+    if (typeof jsonVal === 'string') {
+     try {
+      jsonVal = JSON.parse(jsonVal.trim())
+     }
+     catch {
+      break
+     }
+    }
+    if (c.type === 'json_type') {
+     if (c.expected === 'object' && (jsonVal === null || typeof jsonVal !== 'object' || Array.isArray(jsonVal))) {
+      errors.push('Must be a JSON object ({...})')
+     }
+     else if (c.expected === 'array' && !Array.isArray(jsonVal)) {
+      errors.push('Must be a JSON array ([...])')
+     }
+    }
+    else if (Array.isArray(c.keys) && c.keys.length > 0) {
+     if (jsonVal === null || typeof jsonVal !== 'object' || Array.isArray(jsonVal)) {
+      errors.push(`Must be a JSON object with keys: ${c.keys.join(', ')}`)
+     }
+     else {
+      const missing = c.keys.filter(k => !Object.hasOwn(jsonVal, k))
+      if (missing.length > 0) {
+       errors.push(`Missing required JSON key${missing.length === 1 ? '' : 's'}: ${missing.join(', ')}`)
+      }
+     }
+    }
+    break
+   }
+   case 'unique': {
+    let isDup = false
+    if (Array.isArray(options && options.rowValuesArray)) {
+     const hasIdx = options.itemIndex !== undefined && options.itemIndex !== null
+     let matchCount = 0
+     for (let idx = 0; idx < options.rowValuesArray.length; idx++) {
+      if (hasIdx && idx === options.itemIndex) {
+       continue
+      }
+      const sibling = options.rowValuesArray[idx]
+      if (!isDataCellValueEmpty(sibling, singleSpec) && dataValuesEqual(sibling, value)) {
+       matchCount += 1
+       if (hasIdx || matchCount > 1) {
+        isDup = true
+        break
+       }
+      }
+     }
+    }
+    if (!isDup && table && Array.isArray(table.rows)) {
+     for (let r = 0; r < table.rows.length; r++) {
+      const otherRow = table.rows[r]
+      if (!otherRow || !otherRow.values || (curRowId && otherRow.id === curRowId)) {
+       continue
+      }
+      if (!Object.hasOwn(otherRow.values, col.id)) {
+       continue
+      }
+      const otherVal = otherRow.values[col.id]
+      if (col.multiple && Array.isArray(otherVal)) {
+       if (otherVal.some(v => !isDataCellValueEmpty(v, singleSpec) && dataValuesEqual(v, value))) {
+        isDup = true
+        break
+       }
+      }
+      else if (!isDataCellValueEmpty(otherVal, singleSpec) && dataValuesEqual(otherVal, value)) {
+       isDup = true
+       break
+      }
+     }
+    }
+    if (isDup) {
+     errors.push('Duplicate value — must be unique')
+    }
+    break
+   }
+   default:
+    break
+  }
+ }
+ return {
+  ok: errors.length === 0,
+  error: errors[0] || null,
+  errors,
+ }
+}
+
+export function describeColumnConstraint(constraint, col, tables = null, displayOpts = null) {
+ const singleSpec = col && typeof col === 'object' ? parseColumnType(col, false) : { type: 'text', multiple: false }
+ const norm = normalizeColumnConstraint(constraint, singleSpec.type, singleSpec.decimals)
+ if (!norm) {
+  return ''
+ }
+ switch (norm.type) {
+  case 'workflow': {
+   if (!tables || !col) {
+    return 'Workflow'
+   }
+   const wfTarget = resolveWorkflowTarget(tables, { ...singleSpec, id: col.id, name: col.name, constraint: norm, constraints: [norm] })
+   if (!wfTarget.table) {
+    return 'Select workflow table (required)'
+   }
+   if (!wfTarget.fromCol && !wfTarget.toCol) {
+    return `Select ${singleSpec.type} From and To columns (required)`
+   }
+   if (!wfTarget.fromCol) {
+    return `Select ${singleSpec.type} From column (required)`
+   }
+   if (!wfTarget.toCol) {
+    return `Select ${singleSpec.type} To column (required)`
+   }
+   if (wfTarget.typeMismatch) {
+    return `From and To columns must match ${singleSpec.type}`
+   }
+   const unit = wfTarget.transitionCount === 1 ? 'transition' : 'transitions'
+   return `${wfTarget.tableName} (${wfTarget.fromColName} → ${wfTarget.toColName}) · ${wfTarget.transitionCount} ${unit}`
+  }
+  case 'min':
+   return norm.min === null ? 'Enter minimum value' : `Minimum: ≥ ${formatCellInputValue(norm.min, singleSpec)}`
+  case 'max':
+   return norm.max === null ? 'Enter maximum value' : `Maximum: ≤ ${formatCellInputValue(norm.max, singleSpec)}`
+  case 'range': {
+   const hasMin = norm.min !== null
+   const hasMax = norm.max !== null
+   if (!hasMin && !hasMax) {
+    return 'Enter min and/or max bounds'
+   }
+   const minTxt = hasMin ? formatCellInputValue(norm.min, singleSpec) : '−∞'
+   const maxTxt = hasMax ? formatCellInputValue(norm.max, singleSpec) : '+∞'
+   if (hasMin && hasMax && norm.min > norm.max) {
+    return `Invalid range: ${minTxt} > ${maxTxt}`
+   }
+   return `Range: ${minTxt} .. ${maxTxt}`
+  }
+  case 'step':
+   return norm.step === null ? 'Enter step divisor (≥ 1)' : `Multiple of ${norm.step}`
+  case 'date_range': {
+   const parts = []
+   if (norm.relative === 'today_or_past') parts.push('Must be today or past')
+   else if (norm.relative === 'today_or_future') parts.push('Must be today or future')
+   else if (norm.relative === 'past') parts.push('Must be in the past')
+   else if (norm.relative === 'future') parts.push('Must be in the future')
+   const fmtBound = raw => {
+    if (!raw) return ''
+    if (singleSpec.type === 'datetime') {
+     return formatCellInputValue(raw, singleSpec, undefined, null, displayOpts) || raw
+    }
+    return raw
+   }
+   if (norm.min && norm.max) {
+    parts.push(`${fmtBound(norm.min)} .. ${fmtBound(norm.max)}`)
+   }
+   else if (norm.min) {
+    parts.push(`On or after ${fmtBound(norm.min)}`)
+   }
+   else if (norm.max) {
+    parts.push(`On or before ${fmtBound(norm.max)}`)
+   }
+   return parts.length > 0 ? parts.join(' · ') : 'Select a relative rule or min/max bounds'
+  }
+  case 'min_length':
+   return norm.min === null ? 'Enter minimum length (≥ 0)' : `Min length: ${norm.min} char${norm.min === 1 ? '' : 's'}`
+  case 'max_length':
+   return norm.max === null ? 'Enter maximum length (≥ 0)' : `Max length: ${norm.max} char${norm.max === 1 ? '' : 's'}`
+  case 'pattern':
+   return norm.pattern ? (compileFilterRegex(norm.pattern) ? `Matches ${norm.pattern}` : 'Invalid regular expression') : 'Enter a regular expression'
+  case 'one_of':
+   return norm.values.length > 0 ? `Allowed: ${norm.values.join(', ')}` : 'Enter comma-separated allowed values'
+  case 'boolean_value':
+   return typeof norm.expected === 'boolean' ? `Must be ${norm.expected ? 'true' : 'false'}` : 'Select Must be true or Must be false'
+  case 'https_only':
+   return 'Requires https:// URL'
+  case 'domain':
+   return norm.domains.length > 0 ? `Domains: ${norm.domains.join(', ')}` : 'Enter comma-separated domain names'
+  case 'json_type':
+   return norm.expected ? `Must be JSON ${norm.expected}` : 'Select Must be object or Must be array'
+  case 'required_keys':
+   return norm.keys.length > 0 ? `Required keys: ${norm.keys.join(', ')}` : 'Enter comma-separated object keys'
+  case 'unique':
+   return 'Values must be unique across rows'
+  default:
+   return ''
+ }
+}
+
+export function describeAllColumnConstraints(col, tables = null, displayOpts = null) {
+ if (!col || typeof col !== 'object') {
+  return ''
+ }
+ const singleSpec = parseColumnType(col, false)
+ const list = Array.isArray(singleSpec.constraints) ? singleSpec.constraints : []
+ if (list.length === 0) {
+  return ''
+ }
+ return list.map(c => {
+  const meta = DATA_CONSTRAINT_META[c.type]
+  const label = meta ? meta.label : c.type
+  const desc = describeColumnConstraint(c, col, tables, displayOpts)
+  if (c.type === 'workflow') {
+   return `${label}: ${desc}`
+  }
+  return desc ? `${label}: ${desc}` : label
+ }).join(' · ')
 }
 
 export function buildTablesScope(tables) {
@@ -5892,6 +6992,1260 @@ export function syncTableRowsInMemory(tables, tableNameOrId, rawRecords, keyColu
   removed,
   changed,
  }
+}
+
+export const DEFAULT_TABLE_VIEW_ID = 'default'
+
+const FILTER_OP_HAS_VALUE = Object.freeze({
+ op: 'has_value',
+ label: 'has value',
+ shortLabel: 'has value',
+ arity: 0,
+ inputKind: 'none',
+})
+
+const FILTER_OP_IS_EMPTY = Object.freeze({
+ op: 'is_empty',
+ label: 'is empty',
+ shortLabel: 'is empty',
+ arity: 0,
+ inputKind: 'none',
+})
+
+function buildScalarFilterOperators(parsed, col, tables) {
+ switch (parsed.type) {
+  case 'integer':
+  case 'decimal':
+  case 'fixed': {
+   const kind = parsed.type
+   return [
+    { op: 'eq', label: 'is (=)', shortLabel: '=', arity: 1, inputKind: kind },
+    { op: 'neq', label: 'is not (≠)', shortLabel: '≠', arity: 1, inputKind: kind },
+    { op: 'gt', label: 'greater than (>)', shortLabel: '>', arity: 1, inputKind: kind },
+    { op: 'gte', label: 'at least (≥)', shortLabel: '≥', arity: 1, inputKind: kind },
+    { op: 'lt', label: 'less than (<)', shortLabel: '<', arity: 1, inputKind: kind },
+    { op: 'lte', label: 'at most (≤)', shortLabel: '≤', arity: 1, inputKind: kind },
+    { op: 'between', label: 'between', shortLabel: 'between', arity: 2, inputKind: kind },
+    { op: 'not_between', label: 'not between', shortLabel: 'not between', arity: 2, inputKind: kind },
+    FILTER_OP_HAS_VALUE,
+    FILTER_OP_IS_EMPTY,
+   ]
+  }
+  case 'boolean':
+   return [
+    { op: 'is_true', label: 'is true', shortLabel: 'is true', arity: 0, inputKind: 'none' },
+    { op: 'is_false', label: 'is false', shortLabel: 'is false', arity: 0, inputKind: 'none' },
+    FILTER_OP_HAS_VALUE,
+    FILTER_OP_IS_EMPTY,
+   ]
+  case 'date':
+   return [
+    { op: 'is', label: 'is', shortLabel: 'is', arity: 1, inputKind: 'date' },
+    { op: 'after', label: 'after', shortLabel: 'after', arity: 1, inputKind: 'date' },
+    { op: 'on_or_after', label: 'on or after', shortLabel: '≥', arity: 1, inputKind: 'date' },
+    { op: 'before', label: 'before', shortLabel: 'before', arity: 1, inputKind: 'date' },
+    { op: 'on_or_before', label: 'on or before', shortLabel: '≤', arity: 1, inputKind: 'date' },
+    { op: 'between', label: 'between', shortLabel: 'between', arity: 2, inputKind: 'date' },
+    { op: 'not_between', label: 'not between', shortLabel: 'not between', arity: 2, inputKind: 'date' },
+    { op: 'is_not', label: 'is not', shortLabel: 'is not', arity: 1, inputKind: 'date' },
+    { op: 'is_today', label: 'is today', shortLabel: 'is today', arity: 0, inputKind: 'none' },
+    { op: 'in_last_days', label: 'in the last N days', shortLabel: 'last', arity: 1, inputKind: 'integer' },
+    { op: 'in_next_days', label: 'in the next N days', shortLabel: 'next', arity: 1, inputKind: 'integer' },
+    FILTER_OP_HAS_VALUE,
+    FILTER_OP_IS_EMPTY,
+   ]
+  case 'datetime':
+   return [
+    { op: 'after', label: 'after', shortLabel: 'after', arity: 1, inputKind: 'datetime' },
+    { op: 'on_or_after', label: 'on or after', shortLabel: '≥', arity: 1, inputKind: 'datetime' },
+    { op: 'before', label: 'before', shortLabel: 'before', arity: 1, inputKind: 'datetime' },
+    { op: 'on_or_before', label: 'on or before', shortLabel: '≤', arity: 1, inputKind: 'datetime' },
+    { op: 'between', label: 'between', shortLabel: 'between', arity: 2, inputKind: 'datetime' },
+    { op: 'not_between', label: 'not between', shortLabel: 'not between', arity: 2, inputKind: 'datetime' },
+    { op: 'is', label: 'is', shortLabel: 'is', arity: 1, inputKind: 'datetime' },
+    { op: 'is_not', label: 'is not', shortLabel: 'is not', arity: 1, inputKind: 'datetime' },
+    { op: 'is_today', label: 'is today', shortLabel: 'is today', arity: 0, inputKind: 'none' },
+    { op: 'in_last_days', label: 'in the last N days', shortLabel: 'last', arity: 1, inputKind: 'integer' },
+    { op: 'in_next_days', label: 'in the next N days', shortLabel: 'next', arity: 1, inputKind: 'integer' },
+    FILTER_OP_HAS_VALUE,
+    FILTER_OP_IS_EMPTY,
+   ]
+  case 'json':
+   return [
+    { op: 'contains', label: 'contains', shortLabel: 'contains', arity: 1, inputKind: 'text' },
+    { op: 'not_contains', label: 'does not contain', shortLabel: '!contains', arity: 1, inputKind: 'text' },
+    { op: 'has_key', label: 'has key', shortLabel: 'has key', arity: 1, inputKind: 'text' },
+    { op: 'is', label: 'is', shortLabel: 'is', arity: 1, inputKind: 'text' },
+    { op: 'is_not', label: 'is not', shortLabel: 'is not', arity: 1, inputKind: 'text' },
+    FILTER_OP_HAS_VALUE,
+    FILTER_OP_IS_EMPTY,
+   ]
+  case 'row': {
+   const target = Array.isArray(tables) ? resolveRowTarget(tables, col) : null
+   const rowKind = target && target.valid ? 'row' : 'text'
+   return [
+    { op: 'is', label: 'is', shortLabel: 'is', arity: 1, inputKind: rowKind },
+    { op: 'is_not', label: 'is not', shortLabel: 'is not', arity: 1, inputKind: rowKind },
+    { op: 'contains', label: 'contains', shortLabel: 'contains', arity: 1, inputKind: 'text' },
+    { op: 'not_contains', label: 'does not contain', shortLabel: '!contains', arity: 1, inputKind: 'text' },
+    { op: 'is_any_of', label: 'is any of', shortLabel: 'any of', arity: 1, inputKind: 'list' },
+    FILTER_OP_HAS_VALUE,
+    FILTER_OP_IS_EMPTY,
+   ]
+  }
+  case 'lane':
+   return [
+    { op: 'is', label: 'is', shortLabel: 'is', arity: 1, inputKind: 'lane' },
+    { op: 'is_not', label: 'is not', shortLabel: 'is not', arity: 1, inputKind: 'lane' },
+    { op: 'contains', label: 'contains', shortLabel: 'contains', arity: 1, inputKind: 'text' },
+    { op: 'not_contains', label: 'does not contain', shortLabel: '!contains', arity: 1, inputKind: 'text' },
+    { op: 'is_any_of', label: 'is any of', shortLabel: 'any of', arity: 1, inputKind: 'list' },
+    FILTER_OP_HAS_VALUE,
+    FILTER_OP_IS_EMPTY,
+   ]
+  case 'url':
+  case 'email':
+  case 'text':
+  default: {
+   const hasValidWorkflow = parsed.type === 'text' && Array.isArray(tables) && resolveWorkflowTarget(tables, col).valid
+   if (hasValidWorkflow) {
+    return [
+     { op: 'is', label: 'is', shortLabel: 'is', arity: 1, inputKind: 'workflow' },
+     { op: 'is_not', label: 'is not', shortLabel: 'is not', arity: 1, inputKind: 'workflow' },
+     { op: 'is_any_of', label: 'is any of', shortLabel: 'any of', arity: 1, inputKind: 'list' },
+     { op: 'contains', label: 'contains', shortLabel: 'contains', arity: 1, inputKind: 'text' },
+     { op: 'not_contains', label: 'does not contain', shortLabel: '!contains', arity: 1, inputKind: 'text' },
+     { op: 'starts_with', label: 'starts with', shortLabel: 'starts with', arity: 1, inputKind: 'text' },
+     { op: 'ends_with', label: 'ends with', shortLabel: 'ends with', arity: 1, inputKind: 'text' },
+     { op: 'matches_regex', label: 'matches regex', shortLabel: '~', arity: 1, inputKind: 'text' },
+     FILTER_OP_HAS_VALUE,
+     FILTER_OP_IS_EMPTY,
+    ]
+   }
+   return [
+    { op: 'contains', label: 'contains', shortLabel: 'contains', arity: 1, inputKind: 'text' },
+    { op: 'not_contains', label: 'does not contain', shortLabel: '!contains', arity: 1, inputKind: 'text' },
+    { op: 'is', label: 'is', shortLabel: 'is', arity: 1, inputKind: 'text' },
+    { op: 'is_not', label: 'is not', shortLabel: 'is not', arity: 1, inputKind: 'text' },
+    { op: 'starts_with', label: 'starts with', shortLabel: 'starts with', arity: 1, inputKind: 'text' },
+    { op: 'ends_with', label: 'ends with', shortLabel: 'ends with', arity: 1, inputKind: 'text' },
+    { op: 'is_any_of', label: 'is any of', shortLabel: 'any of', arity: 1, inputKind: 'list' },
+    { op: 'matches_regex', label: 'matches regex', shortLabel: '~', arity: 1, inputKind: 'text' },
+    FILTER_OP_HAS_VALUE,
+    FILTER_OP_IS_EMPTY,
+   ]
+  }
+ }
+}
+
+function resolveMultiElementInputKind(parsed, col, tables) {
+ if (parsed.type === 'text' && Array.isArray(tables) && resolveWorkflowTarget(tables, col).valid) {
+  return 'workflow'
+ }
+ if (parsed.type === 'row') {
+  const target = Array.isArray(tables) ? resolveRowTarget(tables, col) : null
+  return target && target.valid ? 'row' : 'text'
+ }
+ if (parsed.type === 'lane' || parsed.type === 'boolean' || parsed.type === 'integer' || parsed.type === 'decimal' || parsed.type === 'fixed' || parsed.type === 'date' || parsed.type === 'datetime') {
+  return parsed.type
+ }
+ return 'text'
+}
+
+export function getFilterOperatorsForColumn(col, tables = null) {
+ const parsed = parseColumnType(col)
+ if (!parsed.multiple) {
+  return buildScalarFilterOperators(parsed, col, tables)
+ }
+ const elemKind = resolveMultiElementInputKind(parsed, col, tables)
+ const ops = [
+  { op: 'contains_item', label: 'contains item', shortLabel: 'contains', arity: 1, inputKind: elemKind },
+  { op: 'not_contains_item', label: 'does not contain item', shortLabel: '!contains', arity: 1, inputKind: elemKind },
+ ]
+ if (parsed.type === 'text' || parsed.type === 'url' || parsed.type === 'email' || parsed.type === 'json' || parsed.type === 'row' || parsed.type === 'lane') {
+  ops.push(
+   { op: 'contains', label: 'any item contains', shortLabel: 'any contains', arity: 1, inputKind: 'text' },
+   { op: 'not_contains', label: 'no item contains', shortLabel: 'none contains', arity: 1, inputKind: 'text' }
+  )
+ }
+ else if (parsed.type === 'integer' || parsed.type === 'decimal' || parsed.type === 'fixed') {
+  ops.push(
+   { op: 'gt', label: 'any item >', shortLabel: 'any >', arity: 1, inputKind: parsed.type },
+   { op: 'gte', label: 'any item ≥', shortLabel: 'any ≥', arity: 1, inputKind: parsed.type },
+   { op: 'lt', label: 'any item <', shortLabel: 'any <', arity: 1, inputKind: parsed.type },
+   { op: 'lte', label: 'any item ≤', shortLabel: 'any ≤', arity: 1, inputKind: parsed.type },
+   { op: 'between', label: 'any item between', shortLabel: 'any between', arity: 2, inputKind: parsed.type }
+  )
+ }
+ else if (parsed.type === 'date' || parsed.type === 'datetime') {
+  ops.push(
+   { op: 'after', label: 'any item after', shortLabel: 'any after', arity: 1, inputKind: parsed.type },
+   { op: 'before', label: 'any item before', shortLabel: 'any before', arity: 1, inputKind: parsed.type },
+   { op: 'between', label: 'any item between', shortLabel: 'any between', arity: 2, inputKind: parsed.type },
+   { op: 'is_today', label: 'any item is today', shortLabel: 'any today', arity: 0, inputKind: 'none' }
+  )
+ }
+ ops.push(
+  { op: 'contains_any_of', label: 'contains any of', shortLabel: 'any of', arity: 1, inputKind: 'list' },
+  { op: 'contains_all_of', label: 'contains all of', shortLabel: 'all of', arity: 1, inputKind: 'list' },
+  { op: 'count_eq', label: 'item count =', shortLabel: 'count =', arity: 1, inputKind: 'integer' },
+  { op: 'count_gte', label: 'item count ≥', shortLabel: 'count ≥', arity: 1, inputKind: 'integer' },
+  { op: 'count_lte', label: 'item count ≤', shortLabel: 'count ≤', arity: 1, inputKind: 'integer' },
+  FILTER_OP_HAS_VALUE,
+  FILTER_OP_IS_EMPTY
+ )
+ return ops
+}
+
+function findFilterOpDescriptor(col, operator, tables = null) {
+ const ops = getFilterOperatorsForColumn(col, tables)
+ return ops.find(o => o.op === operator) || null
+}
+
+function resolveFilterTimeZone(displayOpts) {
+ const safeIntl = displayOpts && displayOpts.intl && typeof displayOpts.intl.DateTimeFormat === 'function'
+  ? displayOpts.intl
+  : globalThis.Intl
+ return resolveDisplayTimeZone(displayOpts && displayOpts.timeZone, safeIntl)
+}
+
+function getCalendarDayInTimeZone(dateOrMs, displayOpts = null) {
+ const safeIntl = displayOpts && displayOpts.intl && typeof displayOpts.intl.DateTimeFormat === 'function'
+  ? displayOpts.intl
+  : globalThis.Intl
+ const tz = resolveFilterTimeZone(displayOpts)
+ const formatted = formatDatetimeLocalInTimeZone(dateOrMs, tz, safeIntl)
+ return formatted && formatted.length >= 10 ? formatted.slice(0, 10) : ''
+}
+
+function parseYmdUtcMs(ymd) {
+ if (typeof ymd !== 'string') {
+  return NaN
+ }
+ const m = ymd.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/)
+ if (!m) {
+  return NaN
+ }
+ const y = Number(m[1])
+ const mon = Number(m[2])
+ const d = Number(m[3])
+ const ms = Date.UTC(y, mon - 1, d)
+ const dt = new Date(ms)
+ if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mon - 1 || dt.getUTCDate() !== d) {
+  return NaN
+ }
+ return ms
+}
+
+function parseFilterDatetimeValue(raw, displayOpts = null) {
+ if (raw instanceof Date) {
+  return Number.isNaN(raw.getTime())
+   ? { ok: false, value: '', error: 'Expected date & time' }
+   : { ok: true, value: raw.toISOString(), error: null }
+ }
+ const trimmed = raw === null || raw === undefined ? '' : String(raw).trim()
+ if (trimmed === '') {
+  return { ok: false, value: '', error: 'Enter a date and time' }
+ }
+ const dateOnly = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+ if (dateOnly) {
+  const safeIntl = displayOpts && displayOpts.intl && typeof displayOpts.intl.DateTimeFormat === 'function'
+   ? displayOpts.intl
+   : globalThis.Intl
+  const tz = resolveFilterTimeZone(displayOpts)
+  const ms = zonedWallClockToUtcMs({
+   year: Number(dateOnly[1]),
+   month: Number(dateOnly[2]),
+   day: Number(dateOnly[3]),
+   hour: 0,
+   minute: 0,
+   second: 0,
+  }, tz, safeIntl)
+  if (!Number.isNaN(ms)) {
+   return { ok: true, value: new Date(ms).toISOString(), error: null }
+  }
+  return { ok: false, value: '', error: 'Invalid date' }
+ }
+ return parseCellValue(trimmed, 'datetime', undefined, null, displayOpts)
+}
+
+function parseFilterDatetimeMs(value, displayOpts = null) {
+ if (value instanceof Date) {
+  const ms = value.getTime()
+  return Number.isNaN(ms) ? NaN : ms
+ }
+ if (typeof value === 'number') {
+  return Number.isFinite(value) ? value : NaN
+ }
+ const trimmed = value === null || value === undefined ? '' : String(value).trim()
+ if (!trimmed) {
+  return NaN
+ }
+ if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(trimmed)) {
+  const ms = Date.parse(trimmed)
+  return Number.isNaN(ms) ? NaN : ms
+ }
+ if (displayOpts && typeof displayOpts === 'object' && (displayOpts.timeZone || displayOpts.intl)) {
+  const parsed = parseDatetimeInTimeZone(trimmed, displayOpts)
+  if (parsed.ok && parsed.value) {
+   const ms = Date.parse(parsed.value)
+   return Number.isNaN(ms) ? NaN : ms
+  }
+ }
+ const fallbackMs = Date.parse(trimmed)
+ return Number.isNaN(fallbackMs) ? NaN : fallbackMs
+}
+
+function parseRegexFilterInput(raw) {
+ const str = raw === null || raw === undefined ? '' : String(raw)
+ if (str === '') {
+  return { ok: false, value: '', error: 'Enter a regular expression' }
+ }
+ const slashMatch = str.match(/^\/(.+)\/([a-z]*)$/i)
+ try {
+  if (slashMatch) {
+   new RegExp(slashMatch[1], slashMatch[2])
+   return { ok: true, value: str, error: null }
+  }
+  new RegExp(str)
+  return { ok: true, value: str, error: null }
+ }
+ catch {
+  return { ok: false, value: '', error: 'Invalid regular expression' }
+ }
+}
+
+function compileFilterRegex(pattern) {
+ if (typeof pattern !== 'string' || pattern.length === 0) {
+  return null
+ }
+ const slashMatch = pattern.match(/^\/(.+)\/([a-z]*)$/i)
+ try {
+  if (slashMatch) {
+   return new RegExp(slashMatch[1], slashMatch[2].replace(/[gy]/g, ''))
+  }
+  return new RegExp(pattern)
+ }
+ catch {
+  return null
+ }
+}
+
+function parseSingleFilterInput(col, opDesc, rawValue, options = {}) {
+ const tables = Array.isArray(options.tables) ? options.tables : null
+ const displayOpts = options.displayOpts && typeof options.displayOpts === 'object' ? options.displayOpts : null
+ const kind = opDesc.inputKind
+ switch (kind) {
+  case 'integer': {
+   if (rawValue === null || rawValue === undefined || String(rawValue).trim() === '') {
+    return { ok: false, value: null, error: 'Enter a whole integer' }
+   }
+   const parsed = parseCellValue(rawValue, 'integer')
+   if (!parsed.ok || parsed.value === null) {
+    return { ok: false, value: null, error: parsed.error || 'Must be a whole integer' }
+   }
+   if ((opDesc.op === 'in_last_days' || opDesc.op === 'in_next_days' || opDesc.op.startsWith('count_')) && parsed.value < 0) {
+    return { ok: false, value: null, error: 'Must be 0 or greater' }
+   }
+   return { ok: true, value: parsed.value, error: null }
+  }
+  case 'decimal': {
+   if (rawValue === null || rawValue === undefined || String(rawValue).trim() === '') {
+    return { ok: false, value: null, error: 'Enter a number' }
+   }
+   const parsed = parseCellValue(rawValue, 'decimal')
+   if (!parsed.ok || parsed.value === null) {
+    return { ok: false, value: null, error: parsed.error || 'Must be a decimal number' }
+   }
+   return { ok: true, value: parsed.value, error: null }
+  }
+  case 'fixed': {
+   if (rawValue === null || rawValue === undefined || String(rawValue).trim() === '') {
+    return { ok: false, value: null, error: 'Enter a number' }
+   }
+   const parsed = parseCellValue(rawValue, { type: 'fixed', decimals: normalizeFixedDecimals(col && col.decimals), multiple: false })
+   if (!parsed.ok || parsed.value === null) {
+    return { ok: false, value: null, error: parsed.error || 'Must be a fixed-point number' }
+   }
+   return { ok: true, value: parsed.value, error: null }
+  }
+  case 'date': {
+   const str = rawValue === null || rawValue === undefined ? '' : String(rawValue).trim()
+   if (str === '') {
+    return { ok: false, value: '', error: 'Select or enter a date (YYYY-MM-DD)' }
+   }
+   const parsed = parseCellValue(str, 'date')
+   if (!parsed.ok || !parsed.value) {
+    return { ok: false, value: '', error: parsed.error || 'Expected YYYY-MM-DD date' }
+   }
+   return { ok: true, value: parsed.value, error: null }
+  }
+  case 'datetime': {
+   return parseFilterDatetimeValue(rawValue, displayOpts)
+  }
+  case 'boolean': {
+   if (rawValue === null || rawValue === undefined || String(rawValue).trim() === '') {
+    return { ok: false, value: false, error: 'Select true or false' }
+   }
+   const parsed = parseCellValue(rawValue, 'boolean')
+   if (!parsed.ok) {
+    return { ok: false, value: false, error: parsed.error || 'Must be true or false' }
+   }
+   return { ok: true, value: Boolean(parsed.value), error: null }
+  }
+  case 'row': {
+   if (rawValue === null || rawValue === undefined || String(rawValue).trim() === '') {
+    return { ok: false, value: null, error: 'Select a row value' }
+   }
+   const singleCol = col && typeof col === 'object' ? { ...col, multiple: false } : parseColumnType(col, false)
+   const parsed = parseCellValue(rawValue, singleCol, undefined, tables, displayOpts)
+   if (!parsed.ok || parsed.value === null || (typeof parsed.value === 'string' && parsed.value.trim() === '')) {
+    return { ok: false, value: null, error: parsed.error || 'Select a row value' }
+   }
+   return { ok: true, value: parsed.value, error: null }
+  }
+  case 'lane': {
+   const str = rawValue === null || rawValue === undefined ? '' : String(rawValue).trim()
+   if (str === '') {
+    return { ok: false, value: '', error: 'Select or enter a lane' }
+   }
+   return { ok: true, value: str, error: null }
+  }
+  case 'workflow': {
+   const str = rawValue === null || rawValue === undefined ? '' : String(rawValue)
+   if (str.trim() === '') {
+    return { ok: false, value: '', error: 'Select a value' }
+   }
+   return { ok: true, value: str, error: null }
+  }
+  case 'list': {
+   const rawParts = Array.isArray(rawValue)
+    ? rawValue
+    : String(rawValue === null || rawValue === undefined ? '' : rawValue).split(',')
+   const items = []
+   const colType = parseColumnType(col, false)
+   const rowSpec = colType.type === 'row' && tables ? resolveRowValueSpec(tables, col) : null
+   for (const part of rawParts) {
+    const trimmed = part === null || part === undefined ? '' : String(part).trim()
+    if (!trimmed) {
+     continue
+    }
+    if (rowSpec) {
+     const p = parseCellValue(trimmed, rowSpec, undefined, tables, displayOpts)
+     if (!p.ok) {
+      return { ok: false, value: [], error: p.error }
+     }
+     items.push(p.value)
+    }
+    else if (colType.type === 'integer' || colType.type === 'decimal' || colType.type === 'fixed' || colType.type === 'boolean' || colType.type === 'date') {
+     const p = parseCellValue(trimmed, colType, undefined, tables, displayOpts)
+     if (!p.ok) {
+      return { ok: false, value: [], error: p.error }
+     }
+     items.push(p.value)
+    }
+    else if (colType.type === 'datetime') {
+     const p = parseFilterDatetimeValue(trimmed, displayOpts)
+     if (!p.ok) {
+      return { ok: false, value: [], error: p.error }
+     }
+     items.push(p.value)
+    }
+    else {
+     items.push(trimmed)
+    }
+   }
+   if (items.length === 0) {
+    return { ok: false, value: [], error: 'Enter at least one value (comma-separated)' }
+   }
+   return { ok: true, value: items, error: null }
+  }
+  case 'text':
+  default: {
+   if (opDesc.op === 'matches_regex') {
+    return parseRegexFilterInput(rawValue)
+   }
+   const str = rawValue === null || rawValue === undefined ? '' : String(rawValue)
+   if (str.trim() === '') {
+    return { ok: false, value: '', error: 'Enter a filter value' }
+   }
+   return { ok: true, value: str, error: null }
+  }
+ }
+}
+
+export function parseTableFilterInput(col, operator, rawValue, rawValueTo = undefined, options = {}) {
+ const tables = Array.isArray(options && options.tables) ? options.tables : null
+ const displayOpts = options && options.displayOpts && typeof options.displayOpts === 'object' ? options.displayOpts : null
+ const opDesc = findFilterOpDescriptor(col, operator, tables)
+ if (!opDesc) {
+  return { ok: false, operator: '', value: undefined, valueTo: undefined, hasValue: false, error: 'Unsupported filter operator' }
+ }
+ if (opDesc.arity === 0) {
+  return { ok: true, operator: opDesc.op, value: undefined, valueTo: undefined, hasValue: false, error: null }
+ }
+ const first = parseSingleFilterInput(col, opDesc, rawValue, { tables, displayOpts })
+ if (!first.ok) {
+  return { ok: false, operator: opDesc.op, value: undefined, valueTo: undefined, hasValue: false, error: first.error }
+ }
+ if (opDesc.arity === 1) {
+  return { ok: true, operator: opDesc.op, value: first.value, valueTo: undefined, hasValue: true, error: null }
+ }
+ const second = parseSingleFilterInput(col, opDesc, rawValueTo, { tables, displayOpts })
+ if (!second.ok) {
+  return { ok: false, operator: opDesc.op, value: undefined, valueTo: undefined, hasValue: false, error: second.error }
+ }
+ let v1 = first.value
+ let v2 = second.value
+ if (opDesc.inputKind === 'integer' || opDesc.inputKind === 'decimal' || opDesc.inputKind === 'fixed') {
+  if (Number(v1) > Number(v2)) {
+   ;[v1, v2] = [v2, v1]
+  }
+ }
+ else if (opDesc.inputKind === 'date') {
+  if (String(v1) > String(v2)) {
+   ;[v1, v2] = [v2, v1]
+  }
+ }
+ else if (opDesc.inputKind === 'datetime') {
+  const m1 = parseFilterDatetimeMs(v1, displayOpts)
+  const m2 = parseFilterDatetimeMs(v2, displayOpts)
+  if (Number.isFinite(m1) && Number.isFinite(m2) && m1 > m2) {
+   ;[v1, v2] = [v2, v1]
+  }
+ }
+ return { ok: true, operator: opDesc.op, value: v1, valueTo: v2, hasValue: true, error: null }
+}
+
+function formatSingleFilterEditInputValue(val, opDesc, col, tables, displayOpts) {
+ if (val === null || val === undefined) {
+  return ''
+ }
+ if (opDesc.inputKind === 'list') {
+  const arr = Array.isArray(val) ? val : [val]
+  const colType = parseColumnType(col, false)
+  return arr.map(item => {
+   if (colType.type === 'fixed') {
+    return formatCellInputValue(item, colType)
+   }
+   if (colType.type === 'datetime') {
+    return formatCellInputValue(item, colType, undefined, tables, displayOpts)
+   }
+   return item === null || item === undefined ? '' : String(item)
+  }).filter(s => s !== '').join(', ')
+ }
+ if (opDesc.inputKind === 'datetime') {
+  const safeIntl = displayOpts && displayOpts.intl && typeof displayOpts.intl.DateTimeFormat === 'function'
+   ? displayOpts.intl
+   : globalThis.Intl
+  const tz = resolveFilterTimeZone(displayOpts)
+  return formatDatetimeLocalInTimeZone(val, tz, safeIntl) || String(val)
+ }
+ if (opDesc.inputKind === 'fixed') {
+  return String(formatCellInputValue(val, { type: 'fixed', decimals: normalizeFixedDecimals(col && col.decimals), multiple: false }))
+ }
+ if (opDesc.inputKind === 'boolean') {
+  return val ? 'true' : 'false'
+ }
+ return String(val)
+}
+
+export function formatTableFilterInputValues(filter, col, options = {}) {
+ const tables = Array.isArray(options && options.tables) ? options.tables : null
+ const displayOpts = options && options.displayOpts && typeof options.displayOpts === 'object' ? options.displayOpts : null
+ const opDesc = filter ? findFilterOpDescriptor(col, filter.operator, tables) : null
+ if (!opDesc || opDesc.arity === 0) {
+  return { value: '', valueTo: '' }
+ }
+ const value = formatSingleFilterEditInputValue(filter.value, opDesc, col, tables, displayOpts)
+ const valueTo = opDesc.arity === 2
+  ? formatSingleFilterEditInputValue(filter.valueTo, opDesc, col, tables, displayOpts)
+  : ''
+ return { value, valueTo }
+}
+
+function formatFilterSingleDisplayValue(val, opDesc, col, options = {}) {
+ const tables = Array.isArray(options.tables) ? options.tables : null
+ const ownerTable = options.ownerTable || null
+ const displayOpts = options.displayOpts && typeof options.displayOpts === 'object' ? options.displayOpts : null
+ const lookupLaneTitle = typeof options.lookupLaneTitle === 'function' ? options.lookupLaneTitle : null
+ if (val === null || val === undefined) {
+  return ''
+ }
+ const colType = parseColumnType(col, false)
+ if (opDesc.inputKind === 'row' || (opDesc.inputKind === 'list' && colType.type === 'row')) {
+  if (Array.isArray(tables)) {
+   const info = lookupRowDisplay(tables, col, val, null, ownerTable, displayOpts)
+   if (info && !info.isEmpty) {
+    if (info.hasSeparateDisplay && info.displayText) {
+     return info.displayText
+    }
+    if (info.valueText) {
+     return info.valueText
+    }
+   }
+  }
+  return String(val)
+ }
+ if (opDesc.inputKind === 'lane' || (opDesc.inputKind === 'list' && colType.type === 'lane')) {
+  const idStr = String(val)
+  const title = lookupLaneTitle ? String(lookupLaneTitle(idStr) || '').trim() : ''
+  return title && title !== idStr ? title : idStr
+ }
+ if (opDesc.inputKind === 'fixed' || (opDesc.inputKind === 'list' && colType.type === 'fixed')) {
+  return String(formatCellInputValue(val, { type: 'fixed', decimals: normalizeFixedDecimals(col && col.decimals), multiple: false }))
+ }
+ if (opDesc.inputKind === 'datetime' || (opDesc.inputKind === 'list' && colType.type === 'datetime')) {
+  const safeIntl = displayOpts && displayOpts.intl && typeof displayOpts.intl.DateTimeFormat === 'function'
+   ? displayOpts.intl
+   : globalThis.Intl
+  const tz = resolveFilterTimeZone(displayOpts)
+  const fmt = formatTimestampWithZone(val, {
+   timeZone: tz,
+   hourFormat: displayOpts && displayOpts.hourFormat,
+   showTimeZone: true,
+   intl: safeIntl,
+  })
+  return fmt && fmt.known ? fmt.display : String(val)
+ }
+ if (opDesc.inputKind === 'boolean' || (opDesc.inputKind === 'list' && colType.type === 'boolean')) {
+  return val ? 'true' : 'false'
+ }
+ return String(val)
+}
+
+function truncateFilterLabelPart(text, maxLen = 28) {
+ const str = String(text ?? '')
+ return str.length > maxLen ? `${str.slice(0, maxLen - 1)}…` : str
+}
+
+export function formatTableFilterBubbleLabel(filter, col, options = {}) {
+ const tables = Array.isArray(options && options.tables) ? options.tables : null
+ const opDesc = filter ? findFilterOpDescriptor(col, filter.operator, tables) : null
+ if (!opDesc) {
+  return filter && filter.operator ? String(filter.operator) : 'filter'
+ }
+ if (opDesc.arity === 0) {
+  return opDesc.shortLabel
+ }
+ if (opDesc.op === 'in_last_days') {
+  return `last ${filter.value}d`
+ }
+ if (opDesc.op === 'in_next_days') {
+  return `next ${filter.value}d`
+ }
+ if (opDesc.arity === 2) {
+  const a = truncateFilterLabelPart(formatFilterSingleDisplayValue(filter.value, opDesc, col, options), 20)
+  const b = truncateFilterLabelPart(formatFilterSingleDisplayValue(filter.valueTo, opDesc, col, options), 20)
+  if (opDesc.op === 'not_between') {
+   return `!between ${a} – ${b}`
+  }
+  const prefix = col && col.multiple ? 'any ' : ''
+  return `${prefix}${a} – ${b}`
+ }
+ if (opDesc.inputKind === 'list') {
+  const arr = Array.isArray(filter.value) ? filter.value : [filter.value]
+  const joined = arr.map(v => formatFilterSingleDisplayValue(v, opDesc, col, options)).filter(Boolean).join(', ')
+  return `${opDesc.shortLabel} ${truncateFilterLabelPart(joined, 30)}`
+ }
+ const disp = formatFilterSingleDisplayValue(filter.value, opDesc, col, options)
+ const formatted = opDesc.inputKind === 'text'
+  ? `"${truncateFilterLabelPart(disp, 24)}"`
+  : truncateFilterLabelPart(disp, 26)
+ return `${opDesc.shortLabel} ${formatted}`
+}
+
+function getRowCellSearchText(rawVal, col, row, options) {
+ const tables = Array.isArray(options.tables) ? options.tables : null
+ const ownerTable = options.ownerTable || null
+ const displayOpts = options.displayOpts && typeof options.displayOpts === 'object' ? options.displayOpts : null
+ const lookupLaneTitle = typeof options.lookupLaneTitle === 'function' ? options.lookupLaneTitle : null
+ const colType = parseColumnType(col, false)
+ if (rawVal === null || rawVal === undefined) {
+  return ''
+ }
+ if (colType.type === 'row') {
+  if (Array.isArray(tables)) {
+   const info = lookupRowDisplay(tables, col, rawVal, row, ownerTable, displayOpts)
+   if (info && !info.isEmpty) {
+    return `${info.displayText || ''} ${info.valueText || ''} ${info.label || ''}`.trim()
+   }
+  }
+  return String(rawVal)
+ }
+ if (colType.type === 'lane') {
+  const idStr = String(rawVal)
+  const title = lookupLaneTitle ? String(lookupLaneTitle(idStr) || '').trim() : ''
+  return title ? `${title} ${idStr}` : idStr
+ }
+ if (colType.type === 'json') {
+  if (typeof rawVal === 'string') {
+   return rawVal
+  }
+  try {
+   return JSON.stringify(rawVal)
+  }
+  catch {
+   return String(rawVal)
+  }
+ }
+ if (colType.type === 'fixed') {
+  return String(formatCellInputValue(rawVal, colType))
+ }
+ if (colType.type === 'datetime') {
+  const formatted = formatCellInputValue(rawVal, colType, undefined, tables, displayOpts)
+  return `${formatted || ''} ${String(rawVal)}`.trim()
+ }
+ if (colType.type === 'boolean') {
+  return rawVal ? 'true' : 'false'
+ }
+ return String(rawVal)
+}
+
+function scalarValuesEqualForFilter(cellVal, targetVal, col, options = {}) {
+ const singleSpec = parseColumnType(col, false)
+ if (singleSpec.type === 'row' || singleSpec.type === 'lane') {
+  if (dataValuesEqual(cellVal, targetVal)) {
+   return true
+  }
+  if (cellVal === null || cellVal === undefined || targetVal === null || targetVal === undefined) {
+   return false
+  }
+  return String(cellVal).trim() === String(targetVal).trim()
+ }
+ if (singleSpec.type === 'integer' || singleSpec.type === 'decimal' || singleSpec.type === 'fixed') {
+  if (cellVal === null || cellVal === undefined || typeof cellVal === 'boolean') {
+   return false
+  }
+  const numCell = typeof cellVal === 'number' ? cellVal : Number(String(cellVal).trim())
+  const numTarget = typeof targetVal === 'number' ? targetVal : Number(String(targetVal).trim())
+  return Number.isFinite(numCell) && Number.isFinite(numTarget) && numCell === numTarget
+ }
+ if (singleSpec.type === 'boolean') {
+  return Boolean(cellVal) === Boolean(targetVal)
+ }
+ if (singleSpec.type === 'date') {
+  return String(cellVal ?? '').trim() === String(targetVal ?? '').trim()
+ }
+ if (singleSpec.type === 'datetime') {
+  const mCell = parseFilterDatetimeMs(cellVal, options.displayOpts)
+  const mTarget = parseFilterDatetimeMs(targetVal, options.displayOpts)
+  if (Number.isFinite(mCell) && Number.isFinite(mTarget)) {
+   return mCell === mTarget
+  }
+  return String(cellVal ?? '').trim() === String(targetVal ?? '').trim()
+ }
+ if (singleSpec.type === 'json') {
+  let parsedTarget = targetVal
+  if (typeof targetVal === 'string') {
+   try {
+    parsedTarget = JSON.parse(targetVal)
+   }
+   catch {
+    return getRowCellSearchText(cellVal, singleSpec, null, options).toLowerCase() === targetVal.trim().toLowerCase()
+   }
+  }
+  return dataValuesEqual(cellVal, parsedTarget)
+ }
+ const cStr = cellVal === null || cellVal === undefined ? '' : String(cellVal).toLowerCase()
+ const tStr = targetVal === null || targetVal === undefined ? '' : String(targetVal).toLowerCase()
+ return cStr === tStr
+}
+
+function evaluateScalarFilter(cellVal, filter, col, row, options = {}) {
+ const singleSpec = parseColumnType(col, false)
+ const op = filter.operator
+ const displayOpts = options.displayOpts && typeof options.displayOpts === 'object' ? options.displayOpts : null
+ const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now()
+ const empty = isDataCellValueEmpty(cellVal, singleSpec)
+
+ if (op === 'has_value') {
+  return !empty
+ }
+ if (op === 'is_empty') {
+  return empty
+ }
+ if (singleSpec.type === 'boolean') {
+  if (op === 'is_true') {
+   return cellVal === true
+  }
+  if (op === 'is_false') {
+   return cellVal === false
+  }
+ }
+ if (singleSpec.type === 'integer' || singleSpec.type === 'decimal' || singleSpec.type === 'fixed') {
+  const numCell = !empty && typeof cellVal === 'number'
+   ? cellVal
+   : (!empty ? Number(String(cellVal).trim()) : NaN)
+  const hasNum = Number.isFinite(numCell)
+  const target = Number(filter.value)
+  const targetTo = Number(filter.valueTo)
+  if (op === 'eq') return hasNum && numCell === target
+  if (op === 'neq') return !hasNum || numCell !== target
+  if (op === 'gt') return hasNum && numCell > target
+  if (op === 'gte') return hasNum && numCell >= target
+  if (op === 'lt') return hasNum && numCell < target
+  if (op === 'lte') return hasNum && numCell <= target
+  if (op === 'between') return hasNum && numCell >= Math.min(target, targetTo) && numCell <= Math.max(target, targetTo)
+  if (op === 'not_between') return hasNum && (numCell < Math.min(target, targetTo) || numCell > Math.max(target, targetTo))
+  return true
+ }
+ if (singleSpec.type === 'date') {
+  const cellYmd = empty ? '' : String(cellVal).trim()
+  const cellDayMs = parseYmdUtcMs(cellYmd)
+  const hasDate = Number.isFinite(cellDayMs)
+  if (op === 'is') return hasDate && cellYmd === String(filter.value || '').trim()
+  if (op === 'is_not') return !hasDate || cellYmd !== String(filter.value || '').trim()
+  if (op === 'after') return hasDate && cellYmd > String(filter.value || '').trim()
+  if (op === 'on_or_after') return hasDate && cellYmd >= String(filter.value || '').trim()
+  if (op === 'before') return hasDate && cellYmd < String(filter.value || '').trim()
+  if (op === 'on_or_before') return hasDate && cellYmd <= String(filter.value || '').trim()
+  if (op === 'between') {
+   const a = String(filter.value || '').trim()
+   const b = String(filter.valueTo || '').trim()
+   const lo = a <= b ? a : b
+   const hi = a <= b ? b : a
+   return hasDate && cellYmd >= lo && cellYmd <= hi
+  }
+  if (op === 'not_between') {
+   const a = String(filter.value || '').trim()
+   const b = String(filter.valueTo || '').trim()
+   const lo = a <= b ? a : b
+   const hi = a <= b ? b : a
+   return hasDate && (cellYmd < lo || cellYmd > hi)
+  }
+  const todayYmd = getCalendarDayInTimeZone(nowMs, displayOpts)
+  if (op === 'is_today') {
+   return hasDate && Boolean(todayYmd) && cellYmd === todayYmd
+  }
+  if (op === 'in_last_days') {
+   const todayMs = parseYmdUtcMs(todayYmd)
+   const days = Math.max(0, Math.trunc(Number(filter.value) || 0))
+   return hasDate && Number.isFinite(todayMs) && cellDayMs >= (todayMs - days * 86400000) && cellDayMs <= todayMs
+  }
+  if (op === 'in_next_days') {
+   const todayMs = parseYmdUtcMs(todayYmd)
+   const days = Math.max(0, Math.trunc(Number(filter.value) || 0))
+   return hasDate && Number.isFinite(todayMs) && cellDayMs >= todayMs && cellDayMs <= (todayMs + days * 86400000)
+  }
+  return true
+ }
+ if (singleSpec.type === 'datetime') {
+  const cellMs = empty ? NaN : parseFilterDatetimeMs(cellVal, displayOpts)
+  const hasDt = Number.isFinite(cellMs)
+  const targetMs = parseFilterDatetimeMs(filter.value, displayOpts)
+  const targetToMs = parseFilterDatetimeMs(filter.valueTo, displayOpts)
+  if (op === 'is') return hasDt && Number.isFinite(targetMs) && cellMs === targetMs
+  if (op === 'is_not') return !hasDt || !Number.isFinite(targetMs) || cellMs !== targetMs
+  if (op === 'after') return hasDt && Number.isFinite(targetMs) && cellMs > targetMs
+  if (op === 'on_or_after') return hasDt && Number.isFinite(targetMs) && cellMs >= targetMs
+  if (op === 'before') return hasDt && Number.isFinite(targetMs) && cellMs < targetMs
+  if (op === 'on_or_before') return hasDt && Number.isFinite(targetMs) && cellMs <= targetMs
+  if (op === 'between') {
+   if (!hasDt || !Number.isFinite(targetMs) || !Number.isFinite(targetToMs)) return false
+   return cellMs >= Math.min(targetMs, targetToMs) && cellMs <= Math.max(targetMs, targetToMs)
+  }
+  if (op === 'not_between') {
+   if (!hasDt || !Number.isFinite(targetMs) || !Number.isFinite(targetToMs)) return false
+   return cellMs < Math.min(targetMs, targetToMs) || cellMs > Math.max(targetMs, targetToMs)
+  }
+  if (op === 'is_today') {
+   if (!hasDt) return false
+   const todayYmd = getCalendarDayInTimeZone(nowMs, displayOpts)
+   const cellYmd = getCalendarDayInTimeZone(cellMs, displayOpts)
+   return Boolean(todayYmd) && cellYmd === todayYmd
+  }
+  if (op === 'in_last_days') {
+   const days = Math.max(0, Math.trunc(Number(filter.value) || 0))
+   return hasDt && cellMs >= (nowMs - days * 86400000) && cellMs <= nowMs
+  }
+  if (op === 'in_next_days') {
+   const days = Math.max(0, Math.trunc(Number(filter.value) || 0))
+   return hasDt && cellMs >= nowMs && cellMs <= (nowMs + days * 86400000)
+  }
+  return true
+ }
+ if (singleSpec.type === 'json' && op === 'has_key') {
+  if (empty) {
+   return false
+  }
+  const keyName = String(filter.value ?? '').trim()
+  if (!keyName) {
+   return false
+  }
+  let obj = cellVal
+  if (typeof obj === 'string') {
+   try {
+    obj = JSON.parse(obj)
+   }
+   catch {
+    return false
+   }
+  }
+  return Boolean(obj && typeof obj === 'object' && !Array.isArray(obj) && Object.hasOwn(obj, keyName))
+ }
+ if (op === 'is') {
+  return !empty && scalarValuesEqualForFilter(cellVal, filter.value, singleSpec, options)
+ }
+ if (op === 'is_not') {
+  return empty || !scalarValuesEqualForFilter(cellVal, filter.value, singleSpec, options)
+ }
+ if (op === 'is_any_of') {
+  if (empty) {
+   return false
+  }
+  const list = Array.isArray(filter.value) ? filter.value : [filter.value]
+  return list.some(candidate => scalarValuesEqualForFilter(cellVal, candidate, singleSpec, options))
+ }
+
+ const cellText = empty ? '' : getRowCellSearchText(cellVal, singleSpec, row, options)
+ const lowerCell = cellText.toLowerCase()
+ const targetStr = filter.value === null || filter.value === undefined ? '' : String(filter.value)
+ const lowerTarget = targetStr.toLowerCase()
+ if (op === 'contains') {
+  return !empty && lowerCell.includes(lowerTarget)
+ }
+ if (op === 'not_contains') {
+  return empty || !lowerCell.includes(lowerTarget)
+ }
+ if (op === 'starts_with') {
+  return !empty && lowerCell.startsWith(lowerTarget)
+ }
+ if (op === 'ends_with') {
+  return !empty && lowerCell.endsWith(lowerTarget)
+ }
+ if (op === 'matches_regex') {
+  if (empty) {
+   return false
+  }
+  const re = compileFilterRegex(targetStr)
+  return re ? re.test(cellText) : false
+ }
+ return true
+}
+
+export function evaluateTableFilter(row, filter, col, options = {}) {
+ if (!filter || typeof filter !== 'object' || !col || typeof col !== 'object') {
+  return true
+ }
+ const values = row && row.values && typeof row.values === 'object' ? row.values : {}
+ const rawVal = Object.hasOwn(values, col.id) ? values[col.id] : undefined
+ const parsed = parseColumnType(col)
+ const op = filter.operator
+
+ if (op === 'has_value') {
+  return !isDataCellValueEmpty(rawVal, parsed)
+ }
+ if (op === 'is_empty') {
+  return isDataCellValueEmpty(rawVal, parsed)
+ }
+ if (!parsed.multiple) {
+  return evaluateScalarFilter(rawVal, filter, parsed, row, options)
+ }
+
+ const arr = Array.isArray(rawVal) ? rawVal : []
+ const singleCol = { ...col, multiple: false }
+ const nonEmptyItems = arr.filter(item => !isDataCellValueEmpty(item, singleCol))
+ if (op === 'count_eq') {
+  return nonEmptyItems.length === Number(filter.value)
+ }
+ if (op === 'count_gte') {
+  return nonEmptyItems.length >= Number(filter.value)
+ }
+ if (op === 'count_lte') {
+  return nonEmptyItems.length <= Number(filter.value)
+ }
+ if (op === 'contains_item') {
+  return nonEmptyItems.some(item => scalarValuesEqualForFilter(item, filter.value, singleCol, options))
+ }
+ if (op === 'not_contains_item') {
+  return !nonEmptyItems.some(item => scalarValuesEqualForFilter(item, filter.value, singleCol, options))
+ }
+ if (op === 'contains_any_of') {
+  const list = Array.isArray(filter.value) ? filter.value : [filter.value]
+  return list.some(target => nonEmptyItems.some(item => scalarValuesEqualForFilter(item, target, singleCol, options)))
+ }
+ if (op === 'contains_all_of') {
+  const list = Array.isArray(filter.value) ? filter.value : [filter.value]
+  return list.length > 0 && list.every(target => nonEmptyItems.some(item => scalarValuesEqualForFilter(item, target, singleCol, options)))
+ }
+ if (op === 'not_contains') {
+  return !nonEmptyItems.some(item => {
+   const txt = getRowCellSearchText(item, singleCol, row, options).toLowerCase()
+   return txt.includes(String(filter.value ?? '').toLowerCase())
+  })
+ }
+ return nonEmptyItems.some(item => evaluateScalarFilter(item, filter, singleCol, row, options))
+}
+
+export function filterTableRows(table, filters, options = {}) {
+ const rows = table && Array.isArray(table.rows) ? table.rows : []
+ const cols = table && Array.isArray(table.columns) ? table.columns : []
+ const colById = new Map()
+ for (const col of cols) {
+  if (col && col.id) {
+   colById.set(col.id, col)
+  }
+ }
+ const activeFilters = (Array.isArray(filters) ? filters : []).filter(f => f && typeof f === 'object' && colById.has(f.columnId))
+ const pinnedRaw = options && options.pinnedRowIds
+ const pinnedSet = pinnedRaw instanceof Set
+  ? pinnedRaw
+  : (Array.isArray(pinnedRaw) ? new Set(pinnedRaw.map(String)) : null)
+
+ if (activeFilters.length === 0) {
+  const matchedEntries = rows.map((row, idx) => ({ row, rowIndex: idx, rowNumber: idx + 1 }))
+  return {
+   matchedEntries,
+   totalCount: rows.length,
+   matchedCount: matchedEntries.length,
+   hasActiveFilters: false,
+  }
+ }
+
+ const evalOpts = {
+  tables: Array.isArray(options && options.tables) ? options.tables : null,
+  ownerTable: table,
+  displayOpts: options && options.displayOpts ? options.displayOpts : null,
+  lookupLaneTitle: options && options.lookupLaneTitle ? options.lookupLaneTitle : null,
+  nowMs: options && options.nowMs,
+ }
+ const matchedEntries = []
+ for (let i = 0; i < rows.length; i++) {
+  const row = rows[i]
+  if (!row || typeof row !== 'object') {
+   continue
+  }
+  if (pinnedSet && pinnedSet.has(String(row.id || ''))) {
+   matchedEntries.push({ row, rowIndex: i, rowNumber: i + 1 })
+   continue
+  }
+  let ok = true
+  for (let fIdx = 0; fIdx < activeFilters.length; fIdx++) {
+   const flt = activeFilters[fIdx]
+   const col = colById.get(flt.columnId)
+   if (!evaluateTableFilter(row, flt, col, evalOpts)) {
+    ok = false
+    break
+   }
+  }
+  if (ok) {
+   matchedEntries.push({ row, rowIndex: i, rowNumber: i + 1 })
+  }
+ }
+ return {
+  matchedEntries,
+  totalCount: rows.length,
+  matchedCount: matchedEntries.length,
+  hasActiveFilters: true,
+ }
+}
+
+export function normalizeTableFilter(rawFilter, columns = null, tables = null) {
+ if (!rawFilter || typeof rawFilter !== 'object') {
+  return null
+ }
+ const columnId = typeof rawFilter.columnId === 'string' ? rawFilter.columnId.trim() : ''
+ const operator = typeof rawFilter.operator === 'string' ? rawFilter.operator.trim() : ''
+ if (!columnId || !operator) {
+  return null
+ }
+ let col = null
+ if (Array.isArray(columns)) {
+  col = columns.find(c => c && c.id === columnId) || null
+  if (!col) {
+   return null
+  }
+ }
+ const id = typeof rawFilter.id === 'string' && rawFilter.id.trim().length > 0
+  ? rawFilter.id.trim()
+  : `flt-${columnId}-${operator}`
+ if (col) {
+  const opDesc = findFilterOpDescriptor(col, operator, tables)
+  if (!opDesc) {
+   return null
+  }
+  if (opDesc.arity === 0) {
+   return { id, columnId, operator: opDesc.op }
+  }
+  const parsed = parseTableFilterInput(col, opDesc.op, rawFilter.value, rawFilter.valueTo, { tables })
+  if (!parsed.ok) {
+   return null
+  }
+  const out = { id, columnId, operator: opDesc.op, value: cloneDataValue(parsed.value) }
+  if (opDesc.arity === 2) {
+   out.valueTo = cloneDataValue(parsed.valueTo)
+  }
+  return out
+ }
+ const out = { id, columnId, operator }
+ if (Object.hasOwn(rawFilter, 'value') && rawFilter.value !== undefined) {
+  out.value = cloneDataValue(rawFilter.value)
+ }
+ if (Object.hasOwn(rawFilter, 'valueTo') && rawFilter.valueTo !== undefined) {
+  out.valueTo = cloneDataValue(rawFilter.valueTo)
+ }
+ return out
+}
+
+export function normalizeTableViewsRecord(rawRecord, columns = null, tables = null) {
+ const raw = rawRecord && typeof rawRecord === 'object' ? rawRecord : {}
+ const rawViews = Array.isArray(raw.views) ? raw.views : []
+ let defaultFilters = []
+ const customViews = []
+ const seenIds = new Set([DEFAULT_TABLE_VIEW_ID])
+
+ for (let i = 0; i < rawViews.length; i++) {
+  const item = rawViews[i]
+  if (!item || typeof item !== 'object') {
+   continue
+  }
+  const rawId = typeof item.id === 'string' ? item.id.trim() : ''
+  const isDefault = item.isDefault === true || rawId === DEFAULT_TABLE_VIEW_ID
+  const rawFilters = Array.isArray(item.filters) ? item.filters : []
+  const normFilters = []
+  for (const rf of rawFilters) {
+   const nf = normalizeTableFilter(rf, columns, tables)
+   if (nf) {
+    normFilters.push(nf)
+   }
+  }
+  if (isDefault) {
+   defaultFilters = normFilters
+   continue
+  }
+  const viewId = rawId && !seenIds.has(rawId) ? rawId : `view-${i + 1}`
+  if (seenIds.has(viewId)) {
+   continue
+  }
+  seenIds.add(viewId)
+  const cleanName = item.name === null || item.name === undefined ? '' : String(item.name).trim()
+  customViews.push({
+   id: viewId,
+   name: cleanName || `View ${customViews.length + 2}`,
+   isDefault: false,
+   filters: normFilters,
+  })
+ }
+
+ const views = [
+  {
+   id: DEFAULT_TABLE_VIEW_ID,
+   name: '',
+   isDefault: true,
+   filters: defaultFilters,
+  },
+  ...customViews,
+ ]
+ const requestedActiveId = typeof raw.activeViewId === 'string' ? raw.activeViewId.trim() : ''
+ const activeViewId = views.some(v => v.id === requestedActiveId) ? requestedActiveId : DEFAULT_TABLE_VIEW_ID
+ return {
+  activeViewId,
+  views,
+ }
+}
+
+export function tableViewFiltersEqual(filtersA, filtersB) {
+ const listA = Array.isArray(filtersA) ? filtersA : []
+ const listB = Array.isArray(filtersB) ? filtersB : []
+ if (listA.length !== listB.length) {
+  return false
+ }
+ for (let i = 0; i < listA.length; i++) {
+  const a = listA[i]
+  const b = listB[i]
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') {
+   return false
+  }
+  if (
+   a.id !== b.id ||
+   a.columnId !== b.columnId ||
+   a.operator !== b.operator ||
+   !dataValuesEqual(a.value, b.value) ||
+   !dataValuesEqual(a.valueTo, b.valueTo)
+  ) {
+   return false
+  }
+ }
+ return true
+}
+
+export function sanitizeTableViewsForColumns(viewsState, columns, tables = null) {
+ const state = viewsState && typeof viewsState === 'object' ? viewsState : {}
+ const normalizedSaved = normalizeTableViewsRecord({
+  activeViewId: state.activeViewId,
+  views: state.views,
+ }, columns, tables)
+ const prevNormalized = normalizeTableViewsRecord({
+  activeViewId: state.activeViewId,
+  views: state.views,
+ }, null, null)
+
+ let savedChanged = normalizedSaved.activeViewId !== prevNormalized.activeViewId ||
+  normalizedSaved.views.length !== prevNormalized.views.length
+ if (!savedChanged) {
+  for (let i = 0; i < normalizedSaved.views.length; i++) {
+   if (!tableViewFiltersEqual(normalizedSaved.views[i].filters, prevNormalized.views[i].filters)) {
+    savedChanged = true
+    break
+   }
+  }
+ }
+
+ const rawWorking = Array.isArray(state.workingFilters) ? state.workingFilters : []
+ const workingFilters = []
+ for (const rf of rawWorking) {
+  const nf = normalizeTableFilter(rf, columns, tables)
+  if (nf) {
+   workingFilters.push(nf)
+  }
+ }
+ return {
+  activeViewId: normalizedSaved.activeViewId,
+  views: normalizedSaved.views,
+  workingFilters,
+  savedChanged,
+ }
+}
+
+export function resolveTableViewDisplayName(viewObj, tableObj = null, tableIdx = 0) {
+ if (!viewObj || viewObj.isDefault === true || viewObj.id === DEFAULT_TABLE_VIEW_ID) {
+  const tName = tableObj && typeof tableObj.name === 'string' ? tableObj.name.trim() : ''
+  return tName || `Table ${Number(tableIdx || 0) + 1}`
+ }
+ const vName = typeof viewObj.name === 'string' ? viewObj.name.trim() : ''
+ return vName || 'View'
+}
+
+export function buildUniqueTableViewName(views, baseName, tableObj = null, tableIdx = 0) {
+ const list = Array.isArray(views) ? views : []
+ const used = new Set()
+ const defaultTitle = resolveTableViewDisplayName(
+  { id: DEFAULT_TABLE_VIEW_ID, isDefault: true, name: '' },
+  tableObj,
+  tableIdx
+ ).toLowerCase()
+ if (defaultTitle) {
+  used.add(defaultTitle)
+ }
+ for (const v of list) {
+  if (!v || v.isDefault || v.id === DEFAULT_TABLE_VIEW_ID) {
+   continue
+  }
+  const n = typeof v.name === 'string' ? v.name.trim().toLowerCase() : ''
+  if (n) {
+   used.add(n)
+  }
+ }
+ const cleanBase = typeof baseName === 'string' && baseName.trim().length > 0 ? baseName.trim() : 'View'
+ if (!used.has(cleanBase.toLowerCase())) {
+  return cleanBase
+ }
+ let n = 2
+ while (used.has(`${cleanBase} ${n}`.toLowerCase())) {
+  n += 1
+ }
+ return `${cleanBase} ${n}`
 }
 
 export function isExpandableValue(value) {

@@ -481,6 +481,11 @@ const DEFAULT_TRIGGER_RULES_DEF = [
    'lanes#<laneId>/tables/*/updates.chunks/**',
    'lanes#<laneId>/tables/*/updates-*',
    'lanes#<laneId>/tables/*/updates-pages/**',
+   'lanes#<laneId>/tables/*/views',
+   'lanes#<laneId>/tables/*/views/**',
+   'lanes#<laneId>/tables/*/views.chunks/**',
+   'lanes#<laneId>/tables/*/views-*',
+   'lanes#<laneId>/tables/*/views-pages/**',
   ],
   target: 'triggers#lanes/<laneId>',
   encodeTarget: false,
@@ -596,7 +601,7 @@ function loadTriggerConfig() {
 }
 
 const triggerConfig = loadTriggerConfig()
-const TABLE_UPDATES_KEY_RE = /^lanes#[^/]+\/tables\/[^/]+\/updates(?:$|\/|\.|-)/
+const TABLE_UPDATES_KEY_RE = /^lanes#[^/]+\/tables\/[^/]+\/(?:updates|views)(?:$|\/|\.|-)/
 let triggerRevSeq = 0
 const triggerWriteQueues = new Map()
 

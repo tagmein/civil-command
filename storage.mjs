@@ -21,6 +21,8 @@ import {
  setKvChunkBytes,
 } from './kv-config.mjs'
 import {
+ DEFAULT_MINIMAP_SCALE,
+ DEFAULT_TABLE_VIEW_ID,
  TABLE_IMPORT_MODES,
  coerceDataValue,
  defaultDataValue,
@@ -28,8 +30,10 @@ import {
  isReadOnlyRemoteTable,
  isRemoteTable,
  normalizeColumnWidth,
+ normalizeMinimapScale,
  normalizeTableImportMode,
  normalizeTableRemoteSpec,
+ normalizeTableViewsRecord,
  parse,
  parseColumnType,
  parseImportLine,
@@ -542,6 +546,10 @@ export function tableUpdatesKey(laneId, tableId) {
  return `lanes#${encodeKeySegment(laneId)}/tables/${encodeKeySegment(tableId)}/updates`
 }
 
+export function tableViewsKey(laneId, tableId) {
+ return `lanes#${encodeKeySegment(laneId)}/tables/${encodeKeySegment(tableId)}/views`
+}
+
 function normalizeSchemaRecord(rawSchema, tableIdFallback) {
  if (!rawSchema || typeof rawSchema !== 'object') {
   return null
@@ -581,8 +589,9 @@ function normalizeSchemaRecord(rawSchema, tableIdFallback) {
     normalizedCol.filterByColumnId = parsedType.filterByColumnId
    }
   }
-  else if (parsedType.type === 'text' && parsedType.constraint) {
-   normalizedCol.constraint = parsedType.constraint
+  if (Array.isArray(parsedType.constraints) && parsedType.constraints.length > 0) {
+   normalizedCol.constraint = parsedType.constraints[0]
+   normalizedCol.constraints = parsedType.constraints
   }
   const width = normalizeColumnWidth(col.width)
   if (width !== null) {
@@ -659,6 +668,7 @@ async function deleteTableKeys(kv, laneId, tableId, knownRowIds = null) {
  await deletePagedIds(kv, tableRowsBase(laneId, tableId))
  await kvDeleteChunked(kv, tableSchemaKey(laneId, tableId))
  await kvDeleteChunked(kv, tableUpdatesKey(laneId, tableId))
+ await kvDeleteChunked(kv, tableViewsKey(laneId, tableId))
 }
 
 async function writeSingleTableFull(kv, laneId, table) {
@@ -1208,6 +1218,48 @@ export async function recordTableDeploymentUpdate(rootKv, laneData, laneId, tabl
  const filtered = existing.filter(item => item && item.id !== norm.id)
  const next = [norm, ...filtered].slice(0, MAX_TABLE_UPDATES_HISTORY)
  return saveTableUpdates(rootKv, laneData, laneId, tableId, next)
+}
+
+export async function loadTableViews(rootKv, laneData, laneId, tableId, columns = null, tables = null) {
+ if (!laneId || !tableId) {
+  return normalizeTableViewsRecord(null, columns, tables)
+ }
+ const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
+ if (!kv) {
+  return normalizeTableViewsRecord(null, columns, tables)
+ }
+ const raw = await kvGetChunked(kv, tableViewsKey(laneId, tableId))
+ if (isMissingValue(raw)) {
+  return normalizeTableViewsRecord(null, columns, tables)
+ }
+ try {
+  const parsed = JSON.parse(raw)
+  return normalizeTableViewsRecord(parsed, columns, tables)
+ }
+ catch {
+  return normalizeTableViewsRecord(null, columns, tables)
+ }
+}
+
+export async function saveTableViews(rootKv, laneData, laneId, tableId, viewsRecord, columns = null, tables = null) {
+ const normalized = normalizeTableViewsRecord(viewsRecord, columns, tables)
+ if (!laneId || !tableId) {
+  return normalized
+ }
+ const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
+ if (!kv) {
+  return normalized
+ }
+ const isEmptyDefaultOnly =
+  normalized.activeViewId === DEFAULT_TABLE_VIEW_ID &&
+  normalized.views.length === 1 &&
+  normalized.views[0].filters.length === 0
+ if (isEmptyDefaultOnly) {
+  await kvDeleteChunked(kv, tableViewsKey(laneId, tableId))
+  return normalized
+ }
+ await kvSetChunked(kv, tableViewsKey(laneId, tableId), JSON.stringify(normalized))
+ return normalized
 }
 
 export async function addLaneTable(rootKv, laneData, laneId, table, allTableIds) {
@@ -2086,6 +2138,31 @@ export function sessionTableDisplayOptionsEqual(a, b) {
  return JSON.stringify(normA) === JSON.stringify(normB)
 }
 
+export const DEFAULT_SESSION_SETTINGS = Object.freeze({
+ minimap: false,
+ minimapScale: DEFAULT_MINIMAP_SCALE,
+})
+
+/**
+ * Normalizes a session's persistent settings object.
+ */
+export function normalizeSessionSettings(raw) {
+ const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+ return {
+  minimap: Boolean(src.minimap === true || src.minimap === 'true'),
+  minimapScale: normalizeMinimapScale(src.minimapScale, DEFAULT_MINIMAP_SCALE),
+ }
+}
+
+/**
+ * Returns true when two session settings objects are equal after normalization.
+ */
+export function sessionSettingsEqual(a, b) {
+ const normA = normalizeSessionSettings(a)
+ const normB = normalizeSessionSettings(b)
+ return normA.minimap === normB.minimap && normA.minimapScale === normB.minimapScale
+}
+
 export function normalizeSessionLinkIds(rawIds, selfSessionId = '') {
  const exclude = String(selfSessionId || '').trim()
  const list = Array.isArray(rawIds) ? rawIds : []
@@ -2426,6 +2503,7 @@ async function loadOrCreateSessionRecord(rootKv, sessionId, defaultName = '', op
    dataDirConfirmed,
    previousSessionIds: normalizeSessionLinkIds(opts && opts.previousSessionIds, cleanId),
    nextSessionIds: normalizeSessionLinkIds(opts && opts.nextSessionIds, cleanId),
+   settings: normalizeSessionSettings(opts && opts.settings),
    createdAt: now,
    updatedAt: now,
   }
@@ -2469,6 +2547,7 @@ async function loadOrCreateSessionRecord(rootKv, sessionId, defaultName = '', op
  const previousSessionIds = normalizeSessionLinkIds(meta.previousSessionIds, cleanId)
  const nextSessionIds = normalizeSessionLinkIds(meta.nextSessionIds, cleanId)
  const tableDisplayOptions = normalizeSessionTableDisplayOptions(meta.tableDisplayOptions)
+ const settings = normalizeSessionSettings(meta.settings)
 
  let activePackageId = typeof meta.activePackageId === 'string' && validIds.includes(meta.activePackageId)
   ? meta.activePackageId
@@ -2481,6 +2560,7 @@ async function loadOrCreateSessionRecord(rootKv, sessionId, defaultName = '', op
   meta.previousSessionIds = previousSessionIds
   meta.nextSessionIds = nextSessionIds
   meta.tableDisplayOptions = tableDisplayOptions
+  meta.settings = settings
   meta.updatedAt = now
   await writeSessionMeta(registryKv, sessionKv, cleanId, meta)
  }
@@ -2502,6 +2582,7 @@ async function loadOrCreateSessionRecord(rootKv, sessionId, defaultName = '', op
    previousSessionIds,
    nextSessionIds,
    tableDisplayOptions,
+   settings,
    createdAt: meta.createdAt || now,
    updatedAt: meta.updatedAt || now,
   },
@@ -2510,6 +2591,7 @@ async function loadOrCreateSessionRecord(rootKv, sessionId, defaultName = '', op
   previousSessionIds,
   nextSessionIds,
   tableDisplayOptions,
+  settings,
   openPackageIds: validIds,
   openPackages,
   activePackageId,
@@ -2611,6 +2693,7 @@ async function buildSessionState(rootKv, win, browserSessionId, activeSessionId,
   previousSessionIds: loaded.previousSessionIds,
   nextSessionIds: loaded.nextSessionIds,
   tableDisplayOptions: loaded.tableDisplayOptions,
+  settings: loaded.settings,
   openPackageIds: effectiveOpenPackageIds,
   openPackages: effectiveOpenPackages,
   activePackageId: effectiveActivePackageId,
@@ -2757,6 +2840,36 @@ export async function setSessionLinks(rootKv, win, sessionId, opts = {}) {
  }
 }
 
+/**
+ * Updates and persists per-session settings without modifying draft lane routes or version.
+ */
+export async function setSessionSettings(rootKv, win, sessionId, patch = {}) {
+ const cleanId = String(sessionId || '').trim()
+ if (!cleanId) {
+  return { ok: false, error: 'Session ID is required', meta: null, settings: normalizeSessionSettings(null) }
+ }
+ const registryKv = resolveRegistryKv(rootKv)
+ const loaded = await loadOrCreateSessionRecord(rootKv, cleanId)
+ const sessionKv = resolveSessionKv(rootKv, loaded.meta.dataDir)
+ const rawPatch = patch && typeof patch === 'object' && !Array.isArray(patch) ? patch : {}
+ const settings = normalizeSessionSettings({
+  ...loaded.settings,
+  ...rawPatch,
+ })
+ const now = new Date().toISOString()
+ const nextMeta = {
+  ...loaded.meta,
+  settings,
+  updatedAt: now,
+ }
+ await writeSessionMeta(registryKv, sessionKv, cleanId, nextMeta)
+ return {
+  ok: true,
+  meta: nextMeta,
+  settings,
+ }
+}
+
 export async function resolveSessionLinks(rootKv, win, sessionIds, excludeSessionId = '') {
  const cleanIds = normalizeSessionLinkIds(sessionIds, excludeSessionId)
  if (cleanIds.length === 0) {
@@ -2881,6 +2994,9 @@ export async function saveSessionVersion(rootKv, win, sessionId, opts = {}) {
  const nextTableDisplayOptions = opts.tableDisplayOptions !== undefined
   ? normalizeSessionTableDisplayOptions(opts.tableDisplayOptions)
   : loaded.tableDisplayOptions
+ const nextSettings = opts.settings !== undefined
+  ? normalizeSessionSettings(opts.settings)
+  : loaded.settings
  const now = new Date().toISOString()
  const nextMeta = {
   ...loaded.meta,
@@ -2889,6 +3005,7 @@ export async function saveSessionVersion(rootKv, win, sessionId, opts = {}) {
   pathname: nextPathname,
   activePackageId: nextActivePkg,
   tableDisplayOptions: nextTableDisplayOptions,
+  settings: nextSettings,
   version: nextVersion,
   updatedAt: now,
  }
@@ -3009,6 +3126,9 @@ export async function forkSession(rootKv, win, sourceSessionId, opts = {}) {
   tableDisplayOptions: opts && opts.tableDisplayOptions !== undefined
    ? normalizeSessionTableDisplayOptions(opts.tableDisplayOptions)
    : (srcLoaded ? normalizeSessionTableDisplayOptions(srcLoaded.tableDisplayOptions) : {}),
+  settings: opts && opts.settings !== undefined
+   ? normalizeSessionSettings(opts.settings)
+   : (srcLoaded ? normalizeSessionSettings(srcLoaded.settings) : normalizeSessionSettings(null)),
   createdAt: now,
   updatedAt: now,
  }
@@ -3074,6 +3194,7 @@ export async function setSessionDataDir(rootKv, win, sessionId, opts = {}) {
  let nextPathname = existing.pathname
  let nextActivePkg = existing.activePackageId || DEFAULT_PACKAGE_ID
  let nextVersion = existing.meta.version || 1
+ let nextSettings = existing.settings
 
  if (dirChanged) {
   let dirMeta = null
@@ -3098,6 +3219,9 @@ export async function setSessionDataDir(rootKv, win, sessionId, opts = {}) {
     ? dirMeta.activePackageId.trim()
     : DEFAULT_PACKAGE_ID
    nextVersion = Number.isInteger(dirMeta.version) && dirMeta.version > 0 ? dirMeta.version : nextVersion
+   if (dirMeta.settings !== undefined) {
+    nextSettings = normalizeSessionSettings(dirMeta.settings)
+   }
   }
   else {
    nextLaneIds = []
@@ -3113,6 +3237,7 @@ export async function setSessionDataDir(rootKv, win, sessionId, opts = {}) {
   pathname: nextPathname,
   activePackageId: nextActivePkg,
   version: nextVersion,
+  settings: nextSettings,
   dataDir: nextDir,
   dataDirConfirmed: true,
   updatedAt: now,

@@ -3,11 +3,20 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import {
  DATA_RUNTIME_ENV,
+ DEFAULT_MINIMAP_HEIGHT,
+ DEFAULT_MINIMAP_SCALE,
+ DEFAULT_MINIMAP_WIDTH,
  DEFAULT_SCROLLBAR_COLOR,
  LANE_MINIMIZE_SIDES,
+ MAX_MINIMAP_SCALE,
+ MINIMAP_SCALE_STEP,
+ MIN_MINIMAP_SCALE,
  PRIMITIVE_TYPES,
  appendLaneStory,
  buildTopRailTimezoneOptions,
+ computeMinimapDraggedScale,
+ computeMinimapLayout,
+ computeMinimapScrollTarget,
  createIdleTracker,
  defaultValueForType,
  dirModalSource,
@@ -23,6 +32,7 @@ import {
  formatDatetimePlaceholder,
  formatImportLine,
  formatLineTimestamp,
+ formatMinimapScalePercent,
  formatStoryEntryTime,
  formatTopRailClock,
  getBrowserTimeZone,
@@ -38,6 +48,7 @@ import {
  normalizeClockHourFormat,
  normalizeClockShowSeconds,
  normalizeLaneMinimizeSide,
+ normalizeMinimapScale,
  normalizePrimitiveType,
  normalizeTopRailHidden,
  normalizeTopRailOrder,
@@ -59,6 +70,7 @@ import {
  seedPreferencesScrollbarRecords,
  seedPreferencesScrollbarSource,
  sessionModalSource,
+ stepMinimapScale,
  zonedWallClockToUtcMs,
 } from './field.fixtures.mjs'
 
@@ -3968,6 +3980,564 @@ test('Minimized lanes mount minimized from first moment, load in background with
   assert.ok(rAlpha.body.classHistory.slice(alphaClassLenBeforeReload).every(c => c === 'lane-body lane-body--minimized'))
   assert.equal(rRails['preview-el'].hidden, true)
   assert.equal(rAlpha.notebook['has-run'](), true)
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('Minimap pure geometry and scale helpers: normalization, stepping, dragged corner scaling, layout, and scroll target mapping', () => {
+ assert.equal(DEFAULT_MINIMAP_SCALE, 1)
+ assert.equal(MIN_MINIMAP_SCALE, 0.5)
+ assert.equal(MAX_MINIMAP_SCALE, 2.5)
+ assert.equal(MINIMAP_SCALE_STEP, 0.25)
+ assert.equal(DEFAULT_MINIMAP_WIDTH, 220)
+ assert.equal(DEFAULT_MINIMAP_HEIGHT, 132)
+
+ assert.equal(normalizeMinimapScale(null), 1)
+ assert.equal(normalizeMinimapScale(undefined), 1)
+ assert.equal(normalizeMinimapScale(''), 1)
+ assert.equal(normalizeMinimapScale(0), 1)
+ assert.equal(normalizeMinimapScale(-1), 1)
+ assert.equal(normalizeMinimapScale(0.2), 0.5)
+ assert.equal(normalizeMinimapScale(4), 2.5)
+ assert.equal(normalizeMinimapScale('150%'), 1.5)
+ assert.equal(normalizeMinimapScale('1.337'), 1.34)
+ assert.equal(formatMinimapScalePercent(1.25), '125%')
+
+ assert.equal(stepMinimapScale(1, 1), 1.25)
+ assert.equal(stepMinimapScale(1, -1), 0.75)
+ assert.equal(stepMinimapScale(0.5, -1), 0.5)
+ assert.equal(stepMinimapScale(2.5, 1), 2.5)
+
+ // Dragging top-left handle up/left (negative delta) enlarges minimap; down/right shrinks it
+ assert.ok(computeMinimapDraggedScale(1, 220, 132, -110, -66) > 1.4)
+ assert.ok(computeMinimapDraggedScale(1, 220, 132, 110, 66) < 0.6)
+ assert.equal(computeMinimapDraggedScale(2.5, 220, 132, -500, -500), 2.5)
+ assert.equal(computeMinimapDraggedScale(0.5, 220, 132, 500, 500), 0.5)
+
+ const baseLayout = computeMinimapLayout({
+  scale: 1,
+  viewportWidth: 1200,
+  viewportHeight: 800,
+  scrollX: 600,
+  scrollY: 250,
+  scrollWidth: 2600,
+  scrollHeight: 1600,
+  lanes: [
+   { id: 'l1', title: 'Alpha', x: 160, y: 36, width: 420, height: 600, isMinimized: false, isLocked: false, isHighlighted: true },
+   { id: 'l2', title: 'Beta', x: 590, y: 36, width: 34, height: 300, isMinimized: true, isLocked: false, isHighlighted: false },
+   { id: 'l3', title: 'Gamma', x: 634, y: 36, width: 640, height: 900, isMinimized: false, isLocked: true, isHighlighted: false },
+  ],
+ })
+ assert.equal(baseLayout.scale, 1)
+ assert.equal(baseLayout.scalePercent, '100%')
+ assert.equal(baseLayout.worldWidth, 2600)
+ assert.equal(baseLayout.worldHeight, 1600)
+ assert.equal(baseLayout.maxScrollX, 1400)
+ assert.equal(baseLayout.maxScrollY, 800)
+ assert.equal(baseLayout.lanes.length, 3)
+ assert.equal(baseLayout.lanes[0].isHighlighted, true)
+ assert.equal(baseLayout.lanes[1].isMinimized, true)
+ assert.equal(baseLayout.lanes[2].isLocked, true)
+ assert.ok(baseLayout.lanes[0].left < baseLayout.lanes[1].left)
+ assert.ok(baseLayout.lanes[1].left < baseLayout.lanes[2].left)
+ assert.ok(baseLayout.viewport.left > 0)
+ assert.ok(baseLayout.viewport.top > 0)
+
+ // Round-trip viewport coordinate -> scroll target
+ const roundTrip = computeMinimapScrollTarget(baseLayout, baseLayout.viewport.left, baseLayout.viewport.top)
+ assert.ok(Math.abs(roundTrip.left - 600) <= 20)
+ assert.ok(Math.abs(roundTrip.top - 250) <= 20)
+
+ // Clamped edges
+ assert.deepEqual(computeMinimapScrollTarget(baseLayout, -50, -50), { left: 0, top: 0 })
+ assert.deepEqual(computeMinimapScrollTarget(baseLayout, 9999, 9999), { left: 1400, top: 800 })
+
+ // Scaling up doubles minimap canvas dimensions
+ const scaledLayout = computeMinimapLayout({
+  scale: 2,
+  viewportWidth: 1600,
+  viewportHeight: 1000,
+  scrollX: 0,
+  scrollY: 0,
+  scrollWidth: 3200,
+  scrollHeight: 2000,
+  lanes: [],
+ })
+ assert.ok(scaledLayout.mapWidth > baseLayout.mapWidth)
+ assert.ok(scaledLayout.mapHeight > baseLayout.mapHeight)
+})
+
+test('Session Settings Minimap toggle, scaling controls & corner drag, lane visualization, click-to-jump, drag-to-scroll, fullscreen hiding, and per-session isolation', async () => {
+ const indexHtml = await fs.readFile(new URL('./index.html', import.meta.url), 'utf8')
+ assert.match(indexHtml, /\.lane-session-settings\s*\{/)
+ assert.match(indexHtml, /\.lane-minimap\s*\{[^}]*bottom:\s*12px;[^}]*position:\s*fixed;[^}]*right:\s*40px;[^}]*z-index:\s*900;/s)
+ assert.match(indexHtml, /\.lane-minimap-scale-handle\s*\{[^}]*cursor:\s*nwse-resize;/s)
+ assert.match(indexHtml, /\.lane-minimap-viewport\s*\{/)
+
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ const laneBounds = new Map()
+ const winListeners = new Map()
+ const location = { pathname: '/', search: '', hash: '' }
+ const makeStorage = () => {
+  const m = new Map()
+  return {
+   getItem(k) { return m.has(k) ? m.get(k) : null },
+   setItem(k, v) { m.set(k, String(v)) },
+   removeItem(k) { m.delete(k) },
+  }
+ }
+ let uuid = 0
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  Intl,
+  JSON,
+  Math,
+  Number,
+  Object,
+  Reflect,
+  String,
+  decodeURIComponent,
+  innerWidth: 1200,
+  innerHeight: 800,
+  scrollX: 0,
+  scrollY: 0,
+  localStorage: makeStorage(),
+  sessionStorage: makeStorage(),
+  crypto: { randomUUID: () => `mm-uuid-${++uuid}` },
+  history: {
+   pushState(_s, _t, u) { location.pathname = u },
+   replaceState(_s, _t, u) { location.pathname = u },
+  },
+  location,
+  scrollTo(x, y) {
+   if (x && typeof x === 'object') {
+    if (typeof x.left === 'number') mockWindow.scrollX = x.left
+    if (typeof x.top === 'number') mockWindow.scrollY = x.top
+    return
+   }
+   mockWindow.scrollX = Number(x) || 0
+   mockWindow.scrollY = Number(y) || 0
+  },
+  addEventListener(ev, fn) {
+   if (!winListeners.has(ev)) winListeners.set(ev, new Set())
+   winListeners.get(ev).add(fn)
+  },
+  removeEventListener(ev, fn) {
+   const set = winListeners.get(ev)
+   if (set) set.delete(fn)
+  },
+  setTimeout,
+  clearTimeout,
+  setInterval: () => 0,
+  clearInterval: () => {},
+  requestAnimationFrame: fn => { fn(); return 1 },
+  cancelAnimationFrame: () => {},
+ }
+ async function emitWindow(ev, payload = {}) {
+  const handlers = Array.from(winListeners.get(ev) || [])
+  for (const fn of handlers) {
+   await fn(payload)
+  }
+ }
+
+ function createMockElement(tag) {
+  const styleProps = {}
+  const el = {
+   tag,
+   nodeType: 1,
+   style: {
+    setProperty(name, value) { styleProps[name] = value; this[name] = value },
+    removeProperty(name) { delete styleProps[name]; delete this[name] },
+    getPropertyValue(name) { return styleProps[name] || '' },
+   },
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   checked: false,
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   removed: false,
+   clientWidth: 0,
+   clientHeight: 0,
+   scrollWidth: 0,
+   scrollHeight: 0,
+   scrollLeft: 0,
+   scrollTop: 0,
+   getBoundingClientRect() {
+    const lid = this.attributes['data-lane-id']
+    if (lid && laneBounds.has(lid) && (this.tag === 'th' || this.tag === 'td')) {
+     const b = laneBounds.get(lid)
+     return {
+      left: b.x - mockWindow.scrollX,
+      right: b.x + b.width - mockWindow.scrollX,
+      top: b.y - mockWindow.scrollY,
+      bottom: b.y + b.height - mockWindow.scrollY,
+      width: b.width,
+      height: b.height,
+     }
+    }
+    return { left: 200, top: 2, right: 212, bottom: 14, width: 12, height: 12 }
+   },
+   contains(target) {
+    if (target === this) return true
+    return this.children.some(c => c && typeof c.contains === 'function' && c.contains(target))
+   },
+   setAttribute(name, value) { this.attributes[name] = String(value) },
+   getAttribute(name) { return this.attributes[name] ?? null },
+   removeAttribute(name) { delete this.attributes[name] },
+   appendChild(child) {
+    if (child && typeof child === 'object') {
+     if (child.parentNode && Array.isArray(child.parentNode.children)) {
+      const prevIdx = child.parentNode.children.indexOf(child)
+      if (prevIdx !== -1) child.parentNode.children.splice(prevIdx, 1)
+     }
+     child.parentNode = this
+     child.removed = false
+     this.children.push(child)
+    }
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child && typeof child === 'object') {
+     if (child.parentNode && Array.isArray(child.parentNode.children)) {
+      const prevIdx = child.parentNode.children.indexOf(child)
+      if (prevIdx !== -1) child.parentNode.children.splice(prevIdx, 1)
+     }
+     child.parentNode = this
+     child.removed = false
+     const idx = this.children.indexOf(ref)
+     if (idx === -1) this.children.push(child)
+     else this.children.splice(idx, 0, child)
+    }
+    return child
+   },
+   replaceChildren(...nodes) {
+    for (const c of this.children.slice()) {
+     c.parentNode = null
+     c.removed = true
+    }
+    this.children = []
+    for (const n of nodes) this.appendChild(n)
+   },
+   addEventListener(event, handler) {
+    if (!this.listeners[event]) this.listeners[event] = []
+    this.listeners[event].push(handler)
+   },
+   focus() {},
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode && Array.isArray(this.parentNode.children)) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) this.parentNode.children.splice(idx, 1)
+     this.parentNode = null
+    }
+   },
+  }
+  return el
+ }
+
+ async function fire(el, event, payload = {}) {
+  const list = el && el.listeners && el.listeners[event] ? el.listeners[event].slice() : []
+  for (const fn of list) {
+   await fn(payload)
+  }
+ }
+
+ const kvMap = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = k => (prefix ? `${prefix}.${k}` : k)
+  return {
+   namespace(name) { return createMockKV(qualify(name)) },
+   hashNamespace(h) {
+    const makeHash = cur => ({
+     namespace(seg) {
+      const next = cur.endsWith('#') ? `${cur}${seg}` : `${cur}/${seg}`
+      return makeHash(next)
+     },
+     async get(k) {
+      const full = cur.endsWith('#') ? `${cur}${k}` : `${cur}/${k}`
+      return kvMap.has(full) ? kvMap.get(full) : null
+     },
+     async set(k, v) {
+      const full = cur.endsWith('#') ? `${cur}${k}` : `${cur}/${k}`
+      kvMap.set(full, String(v))
+     },
+     async delete(k) {
+      const full = cur.endsWith('#') ? `${cur}${k}` : `${cur}/${k}`
+      kvMap.delete(full)
+     },
+    })
+    return makeHash(`${h}#`)
+   },
+   async get(k) { return kvMap.has(qualify(k)) ? kvMap.get(qualify(k)) : null },
+   async set(k, v) { kvMap.set(qualify(k), String(v)) },
+   async delete(k) { kvMap.delete(qualify(k)) },
+  }
+ }
+
+ const docEl = createMockElement('html')
+ docEl.clientWidth = 1200
+ docEl.clientHeight = 800
+ docEl.scrollWidth = 2600
+ docEl.scrollHeight = 1600
+ const bodyEl = createMockElement('body')
+ bodyEl.scrollWidth = 2600
+ bodyEl.scrollHeight = 1600
+ const mockDocument = {
+  documentElement: docEl,
+  body: bodyEl,
+  defaultView: mockWindow,
+  createElement: createMockElement,
+  addEventListener() {},
+  removeEventListener() {},
+ }
+
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  const map = {
+   '/src/lane-control.fs': laneSource,
+   '/src/lane-notebook.fs': notebookSource,
+   '/src/lane-inputs.fs': inputsSource,
+   '/src/lane-scope.fs': scopeSource,
+   '/src/lane-data.fs': dataSource,
+   '/src/confirm-modal.fs': confirmModalSource,
+   '/src/lane-row-picker-modal.fs': rowPickerModalSource,
+   '/src/lane-output.fs': outputSource,
+   '/src/lane-modal.fs': modalSource,
+   '/src/lane-config-modal.fs': configModalSource,
+   '/src/lane-import-modal.fs': importModalSource,
+   '/src/lane-rails.fs': railsSource,
+   '/src/lane-line-info-modal.fs': lineInfoModalSource,
+   '/src/lane-export-modal.fs': exportModalSource,
+   '/src/lane-export-deploy-modal.fs': exportDeployModalSource,
+   '/src/lane-server.fs': laneServerSource,
+   '/src/lane-story.fs': laneStorySource,
+   '/src/lane-servers-modal.fs': laneServersModalSource,
+   '/src/lane-terminal-modal.fs': laneTerminalModalSource,
+   '/src/lane-session-modal.fs': sessionModalSource,
+   '/src/lane-package-modal.fs': packageModalSource,
+   '/src/lane-dir-modal.fs': dirModalSource,
+  }
+  if (map[url]) return { text: async () => map[url] }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {}, warn() {}, error() {} },
+   createIdleTracker,
+   data: createMockKV(),
+   defaultValueForType,
+   document: mockDocument,
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+   window: mockWindow,
+  })
+  await f.run(parse(mainSource, '/src/main.fs'))
+
+  const lc = f.state['lane-control']
+  const rails = lc.rails
+  const sm = lc['session-modal']
+  await lc['confirm-session-data-dir']('')
+
+  // 1. Verify Session Settings section is placed directly below the session name (active-field) and starts disabled
+  await sm['open-switch-session']()
+  const bodyChildren = sm['session-body'].children
+  assert.equal(bodyChildren[0].children.includes(sm['rename-input'].parentNode), true)
+  assert.equal(bodyChildren[1], sm['settings-field'])
+  assert.equal(sm['settings-label'].textContent, 'Session Settings')
+  assert.equal(sm['minimap-check'].checked, false)
+  assert.equal(sm['minimap-scale-row'].hidden, true)
+  assert.equal(rails['minimap-el'].hidden, true)
+  assert.ok(bodyEl.children.includes(rails['minimap-el']))
+
+  // 2. Enable Minimap from Session Settings -> shows bottom-right minimap without marking session dirty
+  sm['minimap-check'].checked = true
+  await fire(sm['minimap-check'], 'change')
+  assert.equal(lc['session-minimap'], true)
+  assert.equal(lc['session-dirty'], false)
+  assert.equal(sm['minimap-scale-row'].hidden, false)
+  assert.equal(rails['minimap-el'].hidden, false)
+
+  // 3. Add and arrange 3 lanes (sized, minimized, highlighted) -> all visible on minimap
+  const l1 = await lc.add()
+  await lc.rename(l1.id, 'Alpha')
+  await lc['set-width'](l1.id, 500)
+  const l2 = await lc.add()
+  await lc.rename(l2.id, 'Beta')
+  await lc.minimize(l2.id, 'right')
+  const l3 = await lc.add()
+  await lc.rename(l3.id, 'Gamma')
+  await lc['set-width'](l3.id, 640)
+  await lc['highlight-lane'](l3.id)
+
+  laneBounds.set(l1.id, { x: 160, y: 36, width: 500, height: 600 })
+  laneBounds.set(l2.id, { x: 670, y: 36, width: 34, height: 420 })
+  laneBounds.set(l3.id, { x: 714, y: 36, width: 640, height: 900 })
+  await rails['sync-minimap']()
+
+  assert.equal(rails['minimap-title-el'].textContent, 'Minimap · 3 lanes')
+  assert.equal(rails['minimap-lane-els'].length, 3)
+  assert.equal(rails['minimap-lane-els'][0].el.attributes['data-lane-id'], l1.id)
+  assert.equal(rails['minimap-lane-els'][1].el.className, 'lane-minimap-lane lane-minimap-lane--minimized')
+  assert.equal(rails['minimap-lane-els'][2].el.className, 'lane-minimap-lane lane-minimap-lane--highlighted')
+
+  // 4. Scale via Session Settings controls (+ button, slider live preview + commit, reset button)
+  const widthAt1x = rails['minimap-layout'].mapWidth
+  await fire(sm['minimap-scale-up-btn'], 'click')
+  assert.equal(lc['session-minimap-scale'], 1.25)
+  assert.equal(sm['minimap-scale-reset-btn'].textContent, '125%')
+  assert.equal(rails['minimap-zoom-reset-btn'].textContent, '125%')
+  assert.ok(rails['minimap-layout'].mapWidth > widthAt1x)
+
+  sm['minimap-scale-range'].value = '175'
+  await fire(sm['minimap-scale-range'], 'input')
+  assert.equal(lc['session-minimap-scale'], 1.75)
+  assert.equal(rails['minimap-zoom-reset-btn'].textContent, '175%')
+  await fire(sm['minimap-scale-range'], 'change')
+  assert.equal(lc['session-minimap-scale'], 1.75)
+
+  await fire(sm['minimap-scale-reset-btn'], 'click')
+  assert.equal(lc['session-minimap-scale'], 1)
+  await sm.close()
+
+  // 5. Scale via minimap header buttons and top-left corner nwse-resize handle + dblclick reset
+  await fire(rails['minimap-zoom-in-btn'], 'click', { stopPropagation() {} })
+  assert.equal(lc['session-minimap-scale'], 1.25)
+  await fire(rails['minimap-zoom-out-btn'], 'click', { stopPropagation() {} })
+  assert.equal(lc['session-minimap-scale'], 1)
+
+  await fire(rails['minimap-scale-handle'], 'mousedown', {
+   button: 0,
+   clientX: 900,
+   clientY: 600,
+   preventDefault() {},
+   stopPropagation() {},
+  })
+  assert.equal(rails['is-minimap-scaling'], true)
+  await emitWindow('mousemove', { clientX: 790, clientY: 534 })
+  assert.ok(lc['session-minimap-scale'] >= 1.45)
+  await emitWindow('mouseup', { clientX: 790, clientY: 534 })
+  assert.equal(rails['is-minimap-scaling'], false)
+
+  await fire(rails['minimap-scale-handle'], 'dblclick', { preventDefault() {}, stopPropagation() {} })
+  assert.equal(lc['session-minimap-scale'], 1)
+
+  // Mock stage rect so click-to-jump and viewport drag map exact coordinates
+  rails['minimap-stage'].getBoundingClientRect = () => ({
+   left: 900,
+   top: 600,
+   width: rails['minimap-layout'].mapWidth,
+   height: rails['minimap-layout'].mapHeight,
+  })
+
+  // 6. Click outside viewport indicator on minimap stage -> jumps scroll toward clicked area
+  const stageW = rails['minimap-layout'].mapWidth
+  const stageH = rails['minimap-layout'].mapHeight
+  await fire(rails['minimap-stage'], 'mousedown', {
+   button: 0,
+   target: rails['minimap-stage'],
+   clientX: 900 + stageW * 0.85,
+   clientY: 600 + stageH * 0.85,
+   preventDefault() {},
+   stopPropagation() {},
+  })
+  assert.equal(rails['is-minimap-dragging'], true)
+  assert.ok(mockWindow.scrollX > 0)
+  assert.ok(mockWindow.scrollY > 0)
+  await emitWindow('mouseup', {})
+  assert.equal(rails['is-minimap-dragging'], false)
+
+  // 7. Reset scroll to (0, 0), then drag inside viewport indicator to scroll smoothly and clamp bounds
+  mockWindow.scrollTo(0, 0)
+  docEl.scrollLeft = 0
+  docEl.scrollTop = 0
+  await rails['sync-minimap']()
+  assert.equal(rails['minimap-layout'].viewport.left, 0)
+  assert.equal(rails['minimap-layout'].viewport.top, 0)
+
+  await fire(rails['minimap-stage'], 'mousedown', {
+   button: 0,
+   target: rails['minimap-viewport-el'],
+   clientX: 905,
+   clientY: 605,
+   preventDefault() {},
+   stopPropagation() {},
+  })
+  assert.equal(rails['is-minimap-dragging'], true)
+  await emitWindow('mousemove', { clientX: 945, clientY: 625 })
+  const scrolledX = mockWindow.scrollX
+  const scrolledY = mockWindow.scrollY
+  assert.ok(scrolledX > 0 && scrolledX <= rails['minimap-layout'].maxScrollX)
+  assert.ok(scrolledY > 0 && scrolledY <= rails['minimap-layout'].maxScrollY)
+
+  // Drag past bottom-right corner -> clamps cleanly to maxScrollX / maxScrollY
+  await emitWindow('mousemove', { clientX: 1500, clientY: 1200 })
+  assert.equal(mockWindow.scrollX, rails['minimap-layout'].maxScrollX)
+  assert.equal(mockWindow.scrollY, rails['minimap-layout'].maxScrollY)
+
+  await emitWindow('mouseup', {})
+  assert.equal(rails['is-minimap-dragging'], false)
+  assert.equal(rails['minimap-el'].className, 'lane-minimap')
+
+  // 8. Hides while a lane is in single-lane fullscreen and restores on exit
+  await lc['enter-lane-fullscreen'](l1.id)
+  assert.equal(rails['minimap-el'].hidden, true)
+  await lc['exit-lane-fullscreen']()
+  assert.equal(rails['minimap-el'].hidden, false)
+
+  // 9. Per-session persistence: scale to 1.5 on Session A, switch to Session B (off), switch back to Session A (1.5 & on)
+  await lc['set-session-minimap-scale'](1.5)
+  await lc['save-session-draft']()
+  const sessAId = lc['session-id']
+  const sessB = await lc['new-session']('Session B', '', true)
+  assert.equal(lc['session-minimap'], false)
+  assert.equal(lc['session-minimap-scale'], 1)
+  assert.equal(rails['minimap-el'].hidden, true)
+  assert.notEqual(sessB.sessionId, sessAId)
+
+  await lc['switch-session'](sessAId)
+  assert.equal(lc['session-minimap'], true)
+  assert.equal(lc['session-minimap-scale'], 1.5)
+  assert.equal(rails['minimap-el'].hidden, false)
+  assert.equal(rails['minimap-zoom-reset-btn'].textContent, '150%')
+
+  // 10. Minimap close button disables and persists minimap = false
+  await fire(rails['minimap-close-btn'], 'click', { stopPropagation() {} })
+  assert.equal(lc['session-minimap'], false)
+  assert.equal(rails['minimap-el'].hidden, true)
  }
  finally {
   globalThis.fetch = origFetch

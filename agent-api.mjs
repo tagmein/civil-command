@@ -1693,6 +1693,18 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
    if (parsed.type === 'fixed') {
     col.decimals = parsed.decimals
    }
+   else if (parsed.type === 'row') {
+    col.refTableId = parsed.refTableId
+    col.refColumnId = parsed.refColumnId
+    col.refDisplayColumnId = parsed.refDisplayColumnId
+    if (parsed.refDisplayTemplate) col.refDisplayTemplate = parsed.refDisplayTemplate
+    if (parsed.refFilterColumnId) col.refFilterColumnId = parsed.refFilterColumnId
+    if (parsed.filterByColumnId) col.filterByColumnId = parsed.filterByColumnId
+   }
+   if (Array.isArray(parsed.constraints) && parsed.constraints.length > 0) {
+    col.constraint = parsed.constraints[0]
+    col.constraints = parsed.constraints
+   }
    if (c && c.required === true) {
     col.required = true
    }
@@ -1777,6 +1789,18 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
   }
   if (parsed.type === 'fixed') {
    newCol.decimals = parsed.decimals
+  }
+  else if (parsed.type === 'row') {
+   newCol.refTableId = parsed.refTableId
+   newCol.refColumnId = parsed.refColumnId
+   newCol.refDisplayColumnId = parsed.refDisplayColumnId
+   if (parsed.refDisplayTemplate) newCol.refDisplayTemplate = parsed.refDisplayTemplate
+   if (parsed.refFilterColumnId) newCol.refFilterColumnId = parsed.refFilterColumnId
+   if (parsed.filterByColumnId) newCol.filterByColumnId = parsed.filterByColumnId
+  }
+  if (Array.isArray(parsed.constraints) && parsed.constraints.length > 0) {
+   newCol.constraint = parsed.constraints[0]
+   newCol.constraints = parsed.constraints
   }
   if (colSpec.required === true) {
    newCol.required = true

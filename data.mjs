@@ -10,7 +10,7 @@ export function laneTriggerKey(laneId) {
  return `${LANE_TRIGGER_KEY_PREFIX}${encodeSegment(clean)}`
 }
 
-const TABLE_UPDATES_KEY_RE = /^lanes#[^/]+\/tables\/[^/]+\/updates(?:$|\/|\.|-)/
+const TABLE_UPDATES_KEY_RE = /^lanes#[^/]+\/tables\/[^/]+\/(?:updates|views)(?:$|\/|\.|-)/
 
 export function isTriggerExcludedKey(key) {
  if (typeof key !== 'string' || key.length === 0) {
@@ -50,6 +50,11 @@ export const DEFAULT_LANE_TRIGGER_RULES = Object.freeze([
    'lanes#<laneId>/tables/*/updates.chunks/**',
    'lanes#<laneId>/tables/*/updates-*',
    'lanes#<laneId>/tables/*/updates-pages/**',
+   'lanes#<laneId>/tables/*/views',
+   'lanes#<laneId>/tables/*/views/**',
+   'lanes#<laneId>/tables/*/views.chunks/**',
+   'lanes#<laneId>/tables/*/views-*',
+   'lanes#<laneId>/tables/*/views-pages/**',
   ]),
   target: 'triggers#lanes/<laneId>',
   encodeTarget: false,

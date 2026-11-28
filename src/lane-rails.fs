@@ -432,6 +432,63 @@
  ; assign $restore-btn { type button } { className side-rail-restore } { hidden true } { title 'Restore lane' } { innerHTML $restore-right-svg }
  !restore-btn.setAttribute aria-label 'Restore lane'
 
+ ; to minimap-el !document.createElement aside
+ ; assign $minimap-el { className lane-minimap } { hidden true }
+ !minimap-el.setAttribute role region
+ !minimap-el.setAttribute aria-label 'Workspace minimap'
+
+ ; to minimap-scale-handle !document.createElement div
+ ; assign $minimap-scale-handle { className lane-minimap-scale-handle } { title 'Drag to scale minimap (double-click to reset)' }
+ !minimap-scale-handle.setAttribute role separator
+ !minimap-scale-handle.setAttribute aria-label 'Drag to scale minimap'
+
+ ; to minimap-header !document.createElement div
+ ; set lane-minimap-header minimap-header.className
+
+ ; to minimap-title-el !document.createElement span
+ ; assign $minimap-title-el { className lane-minimap-title } { textContent Minimap }
+
+ ; to minimap-controls !document.createElement div
+ ; set lane-minimap-controls minimap-controls.className
+
+ ; to minimap-zoom-out-btn !document.createElement button
+ ; assign $minimap-zoom-out-btn { type button } { className lane-minimap-btn } { textContent '−' } { title 'Scale down minimap' }
+ !minimap-zoom-out-btn.setAttribute aria-label 'Scale down minimap'
+
+ ; to minimap-zoom-reset-btn !document.createElement button
+ ; assign $minimap-zoom-reset-btn { type button } { className 'lane-minimap-btn lane-minimap-scale-readout' } { textContent '100%' } { title 'Reset minimap scale to 100%' }
+ !minimap-zoom-reset-btn.setAttribute aria-label 'Reset minimap scale'
+
+ ; to minimap-zoom-in-btn !document.createElement button
+ ; assign $minimap-zoom-in-btn { type button } { className lane-minimap-btn } { textContent '+' } { title 'Scale up minimap' }
+ !minimap-zoom-in-btn.setAttribute aria-label 'Scale up minimap'
+
+ ; to minimap-close-btn !document.createElement button
+ ; assign $minimap-close-btn { type button } { className 'lane-minimap-btn lane-minimap-btn--close' } { textContent '×' } { title 'Hide minimap' }
+ !minimap-close-btn.setAttribute aria-label 'Hide minimap'
+
+ !minimap-controls.appendChild $minimap-zoom-out-btn
+ !minimap-controls.appendChild $minimap-zoom-reset-btn
+ !minimap-controls.appendChild $minimap-zoom-in-btn
+ !minimap-controls.appendChild $minimap-close-btn
+ !minimap-header.appendChild $minimap-title-el
+ !minimap-header.appendChild $minimap-controls
+
+ ; to minimap-stage !document.createElement div
+ ; assign $minimap-stage { className lane-minimap-stage } { title 'Click or drag to scroll viewport' }
+
+ ; to minimap-lanes-layer !document.createElement div
+ ; set lane-minimap-lanes minimap-lanes-layer.className
+
+ ; to minimap-viewport-el !document.createElement div
+ ; assign $minimap-viewport-el { className lane-minimap-viewport } { title 'Drag viewport to scroll' }
+
+ !minimap-stage.appendChild $minimap-lanes-layer
+ !minimap-stage.appendChild $minimap-viewport-el
+ !minimap-el.appendChild $minimap-scale-handle
+ !minimap-el.appendChild $minimap-header
+ !minimap-el.appendChild $minimap-stage
+
  [ match
   { $document.body (
    !document.body.appendChild $top-rail
@@ -445,6 +502,7 @@
    !document.body.appendChild $preview-el
    !document.body.appendChild $preview-resizer
    !document.body.appendChild $restore-btn
+   !document.body.appendChild $minimap-el
   ) }
  ]
 
@@ -590,6 +648,23 @@
   { clock-search-query '' }
   { is-clock-open false }
   { clock-timer null }
+  { minimap-el $minimap-el }
+  { minimap-scale-handle $minimap-scale-handle }
+  { minimap-header $minimap-header }
+  { minimap-title-el $minimap-title-el }
+  { minimap-zoom-out-btn $minimap-zoom-out-btn }
+  { minimap-zoom-reset-btn $minimap-zoom-reset-btn }
+  { minimap-zoom-in-btn $minimap-zoom-in-btn }
+  { minimap-close-btn $minimap-close-btn }
+  { minimap-stage $minimap-stage }
+  { minimap-lanes-layer $minimap-lanes-layer }
+  { minimap-viewport-el $minimap-viewport-el }
+  { minimap-lane-els {} }
+  { minimap-layout null }
+  { is-minimap-dragging false }
+  { is-minimap-scaling false }
+  { active-minimap-drag-cleanup null }
+  { active-minimap-scale-cleanup null }
  ]
 
  ; to min-lane-modal-width [ match
@@ -1588,6 +1663,15 @@
    !item.icon-el.remove
   )
   ; to rails.by-id ; object
+  [ match
+   { $rails.active-minimap-drag-cleanup : !rails.active-minimap-drag-cleanup }
+  ]
+  [ match
+   { $rails.active-minimap-scale-cleanup : !rails.active-minimap-scale-cleanup false }
+  ]
+  [ match
+   { $rails.sync-minimap : !rails.sync-minimap }
+  ]
  )
 
  ; to is-fullscreen (
@@ -3104,6 +3188,685 @@
   $clean-sec
  )
 
+ ; to finish-minimap-drag (
+  -- Ends any active minimap viewport drag and cleans up window listeners
+  ; to cleanup $rails.active-minimap-drag-cleanup
+  [ match
+   { $cleanup (
+    ; set null rails.active-minimap-drag-cleanup
+    !$cleanup
+   ) }
+  ]
+ )
+
+ ; to finish-minimap-scale (
+  -- Ends any active minimap corner scale drag and cleans up window listeners
+  ; to { save-flag } $argv
+  ; to cleanup $rails.active-minimap-scale-cleanup
+  [ match
+   { $cleanup (
+    ; set null rails.active-minimap-scale-cleanup
+    !$cleanup $save-flag
+   ) }
+  ]
+ )
+
+ ; to measure-rect-box (
+  -- Reads and normalizes bounding rect coordinates on an element or returns null
+  ; to { el } $argv
+  [ match
+   { $el.getBoundingClientRect (
+    ; to rect !el.getBoundingClientRect
+    [ match
+     { $rect (
+      ; to l !resolve-num $rect.left
+      ; to t !resolve-num $rect.top
+      ; to w !resolve-num $rect.width
+      ; to h !resolve-num $rect.height
+      ; to r !resolve-num $rect.right
+      ; to b !resolve-num $rect.bottom
+      ; to has-l [ match { [ propertyIs null l ] : false } { true : true } ]
+      ; to has-t [ match { [ propertyIs null t ] : false } { true : true } ]
+      ; to has-w [ match { [ propertyIs null w ] : false } { true : true } ]
+      ; to has-h [ match { [ propertyIs null h ] : false } { true : true } ]
+      ; to has-r [ match { [ propertyIs null r ] : false } { true : true } ]
+      ; to has-b [ match { [ propertyIs null b ] : false } { true : true } ]
+      ; condition { and { propertyIs false has-r } { propertyIs true has-l } { propertyIs true has-w } } (
+       ; set [ ; add $l $w ] r
+       ; set true has-r
+      )
+      ; condition { and { propertyIs false has-w } { propertyIs true has-l } { propertyIs true has-r } } (
+       ; set [ ; subtract $r $l ] w
+       ; set true has-w
+      )
+      ; condition { and { propertyIs false has-b } { propertyIs true has-t } { propertyIs true has-h } } (
+       ; set [ ; add $t $h ] b
+       ; set true has-b
+      )
+      ; condition { and { propertyIs false has-h } { propertyIs true has-t } { propertyIs true has-b } } (
+       ; set [ ; subtract $b $t ] h
+       ; set true has-h
+      )
+      [ object { left $l } { top $t } { right $r } { bottom $b } { width $w } { height $h } { has-left $has-l } { has-top $has-t } { has-width $has-w } { has-height $has-h } { has-right $has-r } { has-bottom $has-b } ]
+     ) }
+     { true : null }
+    ]
+   ) }
+   { true : null }
+  ]
+ )
+
+ ; to apply-minimap-scroll (
+  -- Scrolls the workspace window and document root immediately to the target scroll coordinates
+  ; to { left top } $argv
+  ; to clean-l !resolve-num $left
+  ; to clean-t !resolve-num $top
+  ; to target-l [ match
+   { [ propertyIs null clean-l ] : 0 }
+   { true : !window.Math.max 0 [ !window.Math.round $clean-l ] }
+  ]
+  ; to target-t [ match
+   { [ propertyIs null clean-t ] : 0 }
+   { true : !window.Math.max 0 [ !window.Math.round $clean-t ] }
+  ]
+  [ match
+   { $window.scrollTo : !window.scrollTo $target-l $target-t }
+  ]
+  [ match
+   { $document.documentElement (
+    ; set $target-l document.documentElement.scrollLeft
+    ; set $target-t document.documentElement.scrollTop
+   ) }
+  ]
+ )
+
+ ; to read-minimap-scroll (
+  -- Reads current scroll offsets across window.scrollX/Y and documentElement.scrollLeft/Top
+  ; to vx !resolve-num $window.scrollX
+  ; to dx !resolve-num $document.documentElement.scrollLeft
+  ; to vy !resolve-num $window.scrollY
+  ; to dy !resolve-num $document.documentElement.scrollTop
+  ; to sx [ match
+   { [ propertyIsGreaterThan 0 vx ] : $vx }
+   { [ propertyIsGreaterThan 0 dx ] : $dx }
+   { true : 0 }
+  ]
+  ; to sy [ match
+   { [ propertyIsGreaterThan 0 vy ] : $vy }
+   { [ propertyIsGreaterThan 0 dy ] : $dy }
+   { true : 0 }
+  ]
+  [ object { x $sx } { y $sy } ]
+ )
+
+ ; to measure-minimap-lanes (
+  -- Collects workspace lane bounding boxes in document coordinates with left-to-right fallback for unmeasured mock DOMs
+  ; to { scroll-x scroll-y } $argv
+  ; to raw-lanes [ match
+   { $lane-control.lanes : $lane-control.lanes }
+   { true : {} }
+  ]
+  ; to entries {}
+  ; to check ; object { all-valid true } { any-distinct false } { has-first false } { first-left 0 }
+  ; each $raw-lanes (
+   ; to { lane } $argv
+   ; to is-min [ propertyIs true lane.is-minimized ]
+   ; to min-w [ ternary $is-min 24 30 ]
+   ; to h-box !measure-rect-box $lane.element
+   ; to b-box !measure-rect-box $lane.body
+   ; to h-ok [ match
+    { [ and { $h-box } { propertyIs true h-box.has-left } { propertyIs true h-box.has-width } { propertyIsGreaterThanOrEqual $min-w h-box.width } ] : true }
+    { true : false }
+   ]
+   ; to b-raw-ok [ match
+    { [ and { $b-box } { propertyIs true b-box.has-left } { propertyIs true b-box.has-width } { propertyIsGreaterThanOrEqual $min-w b-box.width } ] : true }
+    { true : false }
+   ]
+   ; to b-ok [ match
+    { [ propertyIs false b-raw-ok ] : false }
+    { [ propertyIs false h-ok ] : true }
+    { true (
+     ; to l-diff !window.Math.abs [ ; subtract $b-box.left $h-box.left ]
+     [ propertyIsLessThanOrEqual 64 l-diff ]
+    ) }
+   ]
+   ; to has-rect [ match
+    { [ propertyIs true h-ok ] : true }
+    { [ propertyIs true b-ok ] : true }
+    { true : false }
+   ]
+   ; to raw-left [ match
+    { [ and { propertyIs true h-ok } { propertyIs true b-ok } ] : !window.Math.min $h-box.left $b-box.left }
+    { [ propertyIs true h-ok ] : $h-box.left }
+    { [ propertyIs true b-ok ] : $b-box.left }
+    { true : 0 }
+   ]
+   ; to raw-right [ match
+    { [ and { propertyIs true h-ok } { propertyIs true b-ok } ] : !window.Math.max $h-box.right $b-box.right }
+    { [ propertyIs true h-ok ] : $h-box.right }
+    { [ propertyIs true b-ok ] : $b-box.right }
+    { true : 320 }
+   ]
+   ; to raw-top [ match
+    { [ and { propertyIs true h-ok } { propertyIs true h-box.has-top } { propertyIs true b-ok } { propertyIs true b-box.has-top } ] : !window.Math.min $h-box.top $b-box.top }
+    { [ and { propertyIs true h-ok } { propertyIs true h-box.has-top } ] : $h-box.top }
+    { [ and { propertyIs true b-ok } { propertyIs true b-box.has-top } ] : $b-box.top }
+    { true : 36 }
+   ]
+   ; to raw-bottom [ match
+    { [ and { propertyIs true h-ok } { propertyIs true h-box.has-bottom } { propertyIs true b-ok } { propertyIs true b-box.has-bottom } ] : !window.Math.max $h-box.bottom $b-box.bottom }
+    { [ and { propertyIs true b-ok } { propertyIs true b-box.has-bottom } ] : $b-box.bottom }
+    { [ and { propertyIs true h-ok } { propertyIs true h-box.has-bottom } ] : !window.Math.max $h-box.bottom [ ; add $raw-top 200 ] }
+    { true : ; add $raw-top 200 }
+   ]
+   ; to raw-w !window.Math.max 1 [ ; subtract $raw-right $raw-left ]
+   ; to raw-h !window.Math.max 24 [ ; subtract $raw-bottom $raw-top ]
+   ; to same-left [ propertyIs $check.first-left raw-left ]
+   [ match
+    { [ propertyIs false has-rect ] : ; set false check.all-valid }
+    { [ propertyIs false check.has-first ] (
+     ; set true check.has-first
+     ; set $raw-left check.first-left
+    ) }
+    { [ propertyIs false same-left ] : ; set true check.any-distinct }
+   ]
+   !entries.push [ object { lane $lane } { has-rect $has-rect } { left $raw-left } { top $raw-top } { width $raw-w } { height $raw-h } ]
+  )
+  ; to use-rects [ match
+   { [ propertyIs 0 entries.length ] : true }
+   { [ propertyIs false check.all-valid ] : false }
+   { [ propertyIs 1 entries.length ] : true }
+   { true : [ propertyIs true check.any-distinct ] }
+  ]
+  ; to out {}
+  ; to cursor ; object { x 160 }
+  ; each $entries (
+   ; to { entry } $argv
+   ; to lane $entry.lane
+   ; to is-min [ propertyIs true lane.is-minimized ]
+   ; to is-locked [ propertyIs true lane.is-locked ]
+   ; to is-hl [ propertyIs true lane.is-highlighted ]
+   [ match
+    { [ propertyIs true use-rects ] (
+     ; to doc-x !window.Math.max 0 [ ; add $scroll-x $entry.left ]
+     ; to doc-y !window.Math.max 0 [ ; add $scroll-y $entry.top ]
+     !out.push [ object { id $lane.id } { title $lane.title } { x $doc-x } { y $doc-y } { width $entry.width } { height $entry.height } { isMinimized $is-min } { isLocked $is-locked } { isHighlighted $is-hl } ]
+    ) }
+    { true (
+     ; to col-w [ match
+      { $is-min : 34 }
+      { [ propertyIsGreaterThan 0 lane.effective-width ] : $lane.effective-width }
+      { [ propertyIsGreaterThan 0 lane.rendered-width ] : $lane.rendered-width }
+      { [ propertyIsGreaterThan 0 lane.width ] : $lane.width }
+      { true : 380 }
+     ]
+     ; to col-h [ match
+      { [ and { propertyIs true entry.has-rect } { propertyIsGreaterThan 40 entry.height } ] : $entry.height }
+      { true : 480 }
+     ]
+     !out.push [ object { id $lane.id } { title $lane.title } { x $cursor.x } { y 36 } { width $col-w } { height $col-h } { isMinimized $is-min } { isLocked $is-locked } { isHighlighted $is-hl } ]
+     ; set [ ; add [ ; add $cursor.x $col-w ] 4 ] cursor.x
+    ) }
+   ]
+  )
+  $out
+ )
+
+ ; to reconcile-minimap-lanes (
+  -- Reconciles pooled minimap lane DOM elements against computed layout.lanes
+  ; to { layout-lanes } $argv
+  ; to items [ match { $layout-lanes : $layout-lanes } { true : {} } ]
+  ; to pool $rails.minimap-lane-els
+  ; while { propertyIsGreaterThan $items.length pool.length } (
+   ; to extra !pool.pop
+   [ match
+    { $extra.el : !extra.el.remove }
+   ]
+  )
+  ; each $items (
+   ; to { item idx } $argv
+   ; to existing [ match
+    { [ propertyIsLessThan $pool.length idx ] : [ get pool $idx ] }
+    { true : null }
+   ]
+   ; to rec [ match
+    { $existing : $existing }
+    { true (
+     ; to box !document.createElement div
+     ; set lane-minimap-lane box.className
+     ; to lbl !document.createElement span
+     ; set lane-minimap-lane-label lbl.className
+     !box.appendChild $lbl
+     !minimap-lanes-layer.appendChild $box
+     ; to created [ object { el $box } { label-el $lbl } ]
+     !pool.push $created
+     $created
+    ) }
+   ]
+   ; to box $rec.el
+   ; to lbl $rec.label-el
+   ; to base-cls lane-minimap-lane
+   ; to c1 [ ternary [ propertyIs true item.isMinimized ] [ ; add $base-cls ' lane-minimap-lane--minimized' ] $base-cls ]
+   ; to c2 [ ternary [ propertyIs true item.isLocked ] [ ; add $c1 ' lane-minimap-lane--locked' ] $c1 ]
+   ; to c3 [ ternary [ propertyIs true item.isHighlighted ] [ ; add $c2 ' lane-minimap-lane--highlighted' ] $c2 ]
+   ; set $c3 box.className
+   !box.setAttribute data-lane-id $item.id
+   ; to title-txt [ match
+    { [ propertyIs true item.isMinimized ] : ; add $item.title ' (minimized)' }
+    { true : $item.title }
+   ]
+   ; set $title-txt box.title
+   [ match
+    { $box.style (
+     ; set [ ; add $item.left px ] box.style.left
+     ; set [ ; add $item.top px ] box.style.top
+     ; set [ ; add $item.width px ] box.style.width
+     ; set [ ; add $item.height px ] box.style.height
+    ) }
+   ]
+   ; to label-txt [ match
+    { [ propertyIs true item.isMinimized ] : '' }
+    { [ propertyIsGreaterThanOrEqual 28 item.width ] : $item.title }
+    { [ propertyIsGreaterThanOrEqual 10 item.width ] : $item.initial }
+    { true : '' }
+   ]
+   ; set $label-txt lbl.textContent
+  )
+ )
+
+ ; to rails.sync-minimap (
+  -- Synchronizes the bottom-right workspace minimap visibility, scale, lane rectangles, and viewport indicator
+  ; to is-on [ propertyIs true lane-control.session-minimap ]
+  ; to is-fs [ propertyIs true lane-control.is-lane-fullscreen ]
+  ; to enabled [ ternary [ and { propertyIs true is-on } { propertyIs false is-fs } ] true false ]
+  [ match
+   { [ propertyIs false enabled ] (
+    ; set true minimap-el.hidden
+    null
+   ) }
+   { true (
+    ; set false minimap-el.hidden
+    ; set [ ternary [ propertyIs true rails.is-minimap-dragging ] 'lane-minimap lane-minimap--dragging' lane-minimap ] minimap-el.className
+    ; to scroll-pos !read-minimap-scroll
+    ; to doc-cw !resolve-num $document.documentElement.clientWidth
+    ; to win-iw !resolve-num $window.innerWidth
+    ; to vw [ match
+     { [ propertyIsGreaterThan 0 doc-cw ] : $doc-cw }
+     { [ propertyIsGreaterThan 0 win-iw ] : $win-iw }
+     { true : 1280 }
+    ]
+    ; to doc-ch !resolve-num $document.documentElement.clientHeight
+    ; to win-ih !resolve-num $window.innerHeight
+    ; to vh [ match
+     { [ propertyIsGreaterThan 0 doc-ch ] : $doc-ch }
+     { [ propertyIsGreaterThan 0 win-ih ] : $win-ih }
+     { true : 720 }
+    ]
+    ; to doc-sw [ match { [ propertyIsGreaterThan 0 document.documentElement.scrollWidth ] : $document.documentElement.scrollWidth } { true : 0 } ]
+    ; to body-sw [ match { [ propertyIsGreaterThan 0 document.body.scrollWidth ] : $document.body.scrollWidth } { true : 0 } ]
+    ; to sw !window.Math.max $doc-sw $body-sw
+    ; to doc-sh [ match { [ propertyIsGreaterThan 0 document.documentElement.scrollHeight ] : $document.documentElement.scrollHeight } { true : 0 } ]
+    ; to body-sh [ match { [ propertyIsGreaterThan 0 document.body.scrollHeight ] : $document.body.scrollHeight } { true : 0 } ]
+    ; to sh !window.Math.max $doc-sh $body-sh
+    ; to lane-rects !measure-minimap-lanes $scroll-pos.x $scroll-pos.y
+    ; to layout-opts [ object
+     { scale $lane-control.session-minimap-scale }
+     { viewportWidth $vw }
+     { viewportHeight $vh }
+     { scrollX $scroll-pos.x }
+     { scrollY $scroll-pos.y }
+     { scrollWidth $sw }
+     { scrollHeight $sh }
+     { lanes $lane-rects }
+    ]
+    ; to layout [ match
+     { $computeMinimapLayout : !computeMinimapLayout $layout-opts }
+     { true (
+      [ object
+       { scale 1 }
+       { scalePercent '100%' }
+       { worldWidth $vw }
+       { worldHeight $vh }
+       { maxScrollX 0 }
+       { maxScrollY 0 }
+       { mapWidth 220 }
+       { mapHeight 132 }
+       { scaleX 1 }
+       { scaleY 1 }
+       { viewport [ object { left 0 } { top 0 } { width 220 } { height 132 } ] }
+       { lanes {} }
+      ]
+     ) }
+    ]
+    ; set $layout rails.minimap-layout
+    ; to n-lanes $layout.lanes.length
+    ; to title-txt [ match
+     { [ propertyIs 0 n-lanes ] : Minimap }
+     { [ propertyIs 1 n-lanes ] : 'Minimap · 1 lane' }
+     { true : ; add [ ; add 'Minimap · ' $n-lanes ] ' lanes' }
+    ]
+    ; set $title-txt minimap-title-el.textContent
+    ; set $layout.scalePercent minimap-zoom-reset-btn.textContent
+    ; to min-sc [ match { [ propertyIsGreaterThan 0 MIN_MINIMAP_SCALE ] : $MIN_MINIMAP_SCALE } { true : 0.5 } ]
+    ; to max-sc [ match { [ propertyIsGreaterThan 0 MAX_MINIMAP_SCALE ] : $MAX_MINIMAP_SCALE } { true : 2.5 } ]
+    ; set [ propertyIsLessThanOrEqual $min-sc layout.scale ] minimap-zoom-out-btn.disabled
+    ; set [ propertyIsGreaterThanOrEqual $max-sc layout.scale ] minimap-zoom-in-btn.disabled
+    ; set [ propertyIs 1 layout.scale ] minimap-zoom-reset-btn.disabled
+    [ match
+     { $minimap-stage.style (
+      ; set [ ; add $layout.mapWidth px ] minimap-stage.style.width
+      ; set [ ; add $layout.mapHeight px ] minimap-stage.style.height
+     ) }
+    ]
+    !reconcile-minimap-lanes $layout.lanes
+    [ match
+     { $minimap-viewport-el.style (
+      ; set [ ; add $layout.viewport.left px ] minimap-viewport-el.style.left
+      ; set [ ; add $layout.viewport.top px ] minimap-viewport-el.style.top
+      ; set [ ; add $layout.viewport.width px ] minimap-viewport-el.style.width
+      ; set [ ; add $layout.viewport.height px ] minimap-viewport-el.style.height
+     ) }
+    ]
+    $layout
+   ) }
+  ]
+ )
+
+ !minimap-zoom-out-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  [ match
+   { $lane-control.step-session-minimap-scale : !lane-control.step-session-minimap-scale -1 }
+  ]
+ )
+ !minimap-zoom-in-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  [ match
+   { $lane-control.step-session-minimap-scale : !lane-control.step-session-minimap-scale 1 }
+  ]
+ )
+ !minimap-zoom-reset-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  [ match
+   { $lane-control.set-session-minimap-scale : !lane-control.set-session-minimap-scale 1 }
+  ]
+ )
+ !minimap-close-btn.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  [ match
+   { $lane-control.set-session-minimap : !lane-control.set-session-minimap false }
+  ]
+ )
+
+ !minimap-scale-handle.addEventListener click (
+  ; to { ev } $argv
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+ )
+ !minimap-scale-handle.addEventListener dblclick (
+  ; to { ev } $argv
+  [ match
+   { $ev.preventDefault : !ev.preventDefault }
+  ]
+  [ match
+   { $ev.stopPropagation : !ev.stopPropagation }
+  ]
+  [ match
+   { $lane-control.set-session-minimap-scale : !lane-control.set-session-minimap-scale 1 }
+  ]
+ )
+ !minimap-scale-handle.addEventListener mousedown (
+  ; to { ev } $argv
+  ; to raw-btn $ev.button
+  ; to ok-btn [ match
+   { [ propertyIs undefined raw-btn ] : true }
+   { [ propertyIs null raw-btn ] : true }
+   { [ propertyIs 0 raw-btn ] : true }
+   { true : false }
+  ]
+  ; condition { propertyIs true ok-btn } (
+   [ match
+    { $ev.preventDefault : !ev.preventDefault }
+   ]
+   [ match
+    { $ev.stopPropagation : !ev.stopPropagation }
+   ]
+   !finish-minimap-scale false
+   ; to rx !resolve-num $ev.clientX
+   ; to ry !resolve-num $ev.clientY
+   ; to start-x [ match { [ propertyIs null rx ] : 0 } { true : $rx } ]
+   ; to start-y [ match { [ propertyIs null ry ] : 0 } { true : $ry } ]
+   ; to cur-layout $rails.minimap-layout
+   ; to start-scale [ match
+    { $normalizeMinimapScale : !normalizeMinimapScale $lane-control.session-minimap-scale 1 }
+    { [ propertyIsGreaterThan 0 lane-control.session-minimap-scale ] : $lane-control.session-minimap-scale }
+    { true : 1 }
+   ]
+   ; to start-w [ match
+    { [ propertyIsGreaterThan 0 cur-layout.mapWidth ] : $cur-layout.mapWidth }
+    { true : 220 }
+   ]
+   ; to start-h [ match
+    { [ propertyIsGreaterThan 0 cur-layout.mapHeight ] : $cur-layout.mapHeight }
+    { true : 132 }
+   ]
+   ; to prev-cursor [ match
+    { $document.body.style.cursor : $document.body.style.cursor }
+    { true : '' }
+   ]
+   ; set true rails.is-minimap-scaling
+   ; set 'lane-minimap-scale-handle lane-minimap-scale-handle--active' minimap-scale-handle.className
+   [ match
+    { $document.body.style : ; set nwse-resize document.body.style.cursor }
+   ]
+   ; to drag [ object { start-x $start-x } { start-y $start-y } { start-scale $start-scale } { start-w $start-w } { start-h $start-h } { next-scale $start-scale } { moved false } ]
+   ; to on-move (
+    ; to { mev } $argv
+    ; to rmx !resolve-num $mev.clientX
+    ; to rmy !resolve-num $mev.clientY
+    ; to mx [ match { [ propertyIs null rmx ] : $drag.start-x } { true : $rmx } ]
+    ; to my [ match { [ propertyIs null rmy ] : $drag.start-y } { true : $rmy } ]
+    ; to dx ; subtract $mx $drag.start-x
+    ; to dy ; subtract $my $drag.start-y
+    ; to next-scale [ match
+     { $computeMinimapDraggedScale : !computeMinimapDraggedScale $drag.start-scale $drag.start-w $drag.start-h $dx $dy }
+     { true : $drag.start-scale }
+    ]
+    ; set true drag.moved
+    ; set $next-scale drag.next-scale
+    [ match
+     { $lane-control.preview-minimap-scale : !lane-control.preview-minimap-scale $next-scale }
+    ]
+    [ match
+     { [ and { propertyIs true lane-control.session-modal.is-open } { $lane-control.session-modal.render-session } ] : !lane-control.session-modal.render-session }
+    ]
+   )
+   ; to teardown (
+    ; to { save-flag } $argv
+    ; set false rails.is-minimap-scaling
+    ; set null rails.active-minimap-scale-cleanup
+    ; set lane-minimap-scale-handle minimap-scale-handle.className
+    [ match
+     { $document.body.style : ; set $prev-cursor document.body.style.cursor }
+    ]
+    [ match
+     { $window.removeEventListener (
+      !window.removeEventListener mousemove $on-move
+      !window.removeEventListener mouseup $on-up
+      !window.removeEventListener blur $on-blur
+     ) }
+    ]
+    [ match
+     { [ and { propertyIs true save-flag } { propertyIs true drag.moved } { $lane-control.set-session-minimap-scale } ] : !lane-control.set-session-minimap-scale $drag.next-scale }
+    ]
+   )
+   ; to on-up : !finish-minimap-scale true
+   ; to on-blur : !finish-minimap-scale true
+   ; set $teardown rails.active-minimap-scale-cleanup
+   [ match
+    { $window.addEventListener (
+     !window.addEventListener mousemove $on-move
+     !window.addEventListener mouseup $on-up
+     !window.addEventListener blur $on-blur
+    ) }
+   ]
+  )
+ )
+
+ !minimap-stage.addEventListener mousedown (
+  ; to { ev } $argv
+  ; to raw-btn $ev.button
+  ; to ok-btn [ match
+   { [ propertyIs undefined raw-btn ] : true }
+   { [ propertyIs null raw-btn ] : true }
+   { [ propertyIs 0 raw-btn ] : true }
+   { true : false }
+  ]
+  ; condition { and { propertyIs true ok-btn } { propertyIs true lane-control.session-minimap } } (
+   [ match
+    { $ev.preventDefault : !ev.preventDefault }
+   ]
+   [ match
+    { $ev.stopPropagation : !ev.stopPropagation }
+   ]
+   !finish-minimap-drag
+   !rails.sync-minimap
+   ; to layout $rails.minimap-layout
+   [ match
+    { $layout (
+    ; to rx !resolve-num $ev.clientX
+    ; to ry !resolve-num $ev.clientY
+    ; to start-x [ match { [ propertyIs null rx ] : 0 } { true : $rx } ]
+    ; to start-y [ match { [ propertyIs null ry ] : 0 } { true : $ry } ]
+    ; to sbox !measure-rect-box $minimap-stage
+    ; to off-x !resolve-num $ev.offsetX
+    ; to off-y !resolve-num $ev.offsetY
+    ; to has-sbox [ match
+     { [ and { $sbox } { propertyIs true sbox.has-left } { propertyIs true sbox.has-top } { propertyIs true sbox.has-width } { propertyIsGreaterThanOrEqual 24 sbox.width } ] : true }
+     { true : false }
+    ]
+    ; to off-x-null [ propertyIs null off-x ]
+    ; to off-y-null [ propertyIs null off-y ]
+    ; to has-off [ match
+     { [ and { propertyIs false off-x-null } { propertyIs false off-y-null } ] : true }
+     { true : false }
+    ]
+    ; to map-x [ match
+     { [ propertyIs true has-sbox ] : ; subtract $start-x $sbox.left }
+     { [ propertyIs true has-off ] : $off-x }
+     { true : null }
+    ]
+    ; to map-y [ match
+     { [ propertyIs true has-sbox ] : ; subtract $start-y $sbox.top }
+     { [ propertyIs true has-off ] : $off-y }
+     { true : null }
+    ]
+    ; to map-x-null [ propertyIs null map-x ]
+    ; to map-y-null [ propertyIs null map-y ]
+    ; to has-map-pt [ match
+     { [ and { propertyIs false map-x-null } { propertyIs false map-y-null } ] : true }
+     { true : false }
+    ]
+    ; to vp $layout.viewport
+    ; to vp-right ; add $vp.left $vp.width
+    ; to vp-bottom ; add $vp.top $vp.height
+    ; to hit-vp-el [ propertyIs $minimap-viewport-el ev.target ]
+    ; to in-vp-box [ match
+     { [ propertyIs false has-map-pt ] : false }
+     { [ and { [ propertyIsGreaterThanOrEqual $vp.left map-x ] } { [ propertyIsLessThanOrEqual $vp-right map-x ] } { [ propertyIsGreaterThanOrEqual $vp.top map-y ] } { [ propertyIsLessThanOrEqual $vp-bottom map-y ] } ] : true }
+     { true : false }
+    ]
+    ; to inside-vp [ match
+     { [ propertyIs true hit-vp-el ] : true }
+     { [ propertyIs true in-vp-box ] : true }
+     { true : false }
+    ]
+    ; to anchor-box ; object { left $vp.left } { top $vp.top }
+    [ match
+     { [ and { propertyIs false inside-vp } { propertyIs true has-map-pt } ] (
+      ; to max-vp-l !window.Math.max 0 [ ; subtract $layout.mapWidth $vp.width ]
+      ; to max-vp-t !window.Math.max 0 [ ; subtract $layout.mapHeight $vp.height ]
+      ; to raw-l ; subtract $map-x [ ; divide $vp.width 2 ]
+      ; to raw-t ; subtract $map-y [ ; divide $vp.height 2 ]
+      ; to next-l !window.Math.max 0 [ !window.Math.min $max-vp-l $raw-l ]
+      ; to next-t !window.Math.max 0 [ !window.Math.min $max-vp-t $raw-t ]
+      ; set $next-l anchor-box.left
+      ; set $next-t anchor-box.top
+      ; to jump-target [ match
+       { $computeMinimapScrollTarget : !computeMinimapScrollTarget $layout $next-l $next-t }
+       { true : ; object { left 0 } { top 0 } }
+      ]
+      !apply-minimap-scroll $jump-target.left $jump-target.top
+      !rails.sync-minimap
+     ) }
+    ]
+    ; to prev-cursor [ match
+     { $document.body.style.cursor : $document.body.style.cursor }
+     { true : '' }
+    ]
+    ; set true rails.is-minimap-dragging
+    ; set 'lane-minimap lane-minimap--dragging' minimap-el.className
+    [ match
+     { $document.body.style : ; set grabbing document.body.style.cursor }
+    ]
+    ; to drag [ object { start-x $start-x } { start-y $start-y } { anchor-left $anchor-box.left } { anchor-top $anchor-box.top } { layout $layout } ]
+    ; to on-move (
+     ; to { mev } $argv
+     ; to rmx !resolve-num $mev.clientX
+     ; to rmy !resolve-num $mev.clientY
+     ; to mx [ match { [ propertyIs null rmx ] : $drag.start-x } { true : $rmx } ]
+     ; to my [ match { [ propertyIs null rmy ] : $drag.start-y } { true : $rmy } ]
+     ; to desired-l ; add $drag.anchor-left [ ; subtract $mx $drag.start-x ]
+     ; to desired-t ; add $drag.anchor-top [ ; subtract $my $drag.start-y ]
+     ; to target [ match
+      { $computeMinimapScrollTarget : !computeMinimapScrollTarget $drag.layout $desired-l $desired-t }
+      { true : ; object { left 0 } { top 0 } }
+     ]
+     !apply-minimap-scroll $target.left $target.top
+     !rails.sync-minimap
+    )
+    ; to teardown (
+     ; set false rails.is-minimap-dragging
+     ; set null rails.active-minimap-drag-cleanup
+     [ match
+      { $document.body.style : ; set $prev-cursor document.body.style.cursor }
+     ]
+     [ match
+      { $window.removeEventListener (
+       !window.removeEventListener mousemove $on-move
+       !window.removeEventListener mouseup $on-up
+       !window.removeEventListener blur $on-blur
+      ) }
+     ]
+     !rails.sync-minimap
+    )
+    ; to on-up : !finish-minimap-drag
+    ; to on-blur : !finish-minimap-drag
+    ; set $teardown rails.active-minimap-drag-cleanup
+    [ match
+     { $window.addEventListener (
+      !window.addEventListener mousemove $on-move
+      !window.addEventListener mouseup $on-up
+      !window.addEventListener blur $on-blur
+     ) }
+    ]
+    ) }
+   ]
+  )
+ )
+
  !fullscreen-btn.addEventListener click (
   !rails.close-preferences-menu
   !rails.close-session-menu
@@ -3600,6 +4363,10 @@
    )
    !window.addEventListener resize (
     ; condition { and { $rails.preview-lane } { propertyIs true rails.is-preview-pinned } } : !rails.sync-preview-resizer
+    ; condition { propertyIs true lane-control.session-minimap } : !rails.sync-minimap
+   )
+   !window.addEventListener scroll (
+    ; condition { and { propertyIs true lane-control.session-minimap } { propertyIs false rails.is-minimap-dragging } } : !rails.sync-minimap
    )
   ) }
  ]
@@ -3608,9 +4375,13 @@
    ; try (
     ; to preview-ro !window.Reflect.construct $window.ResizeObserver { (
      ; condition { and { $rails.preview-lane } { propertyIs true rails.is-preview-pinned } } : !rails.sync-preview-resizer
+     ; condition { propertyIs true lane-control.session-minimap } : !rails.sync-minimap
     ) }
     !preview-ro.observe $preview-el
     !preview-ro.observe $preview-frame
+    [ match
+     { $document.body : !preview-ro.observe $document.body }
+    ]
    ) : null
   ) }
  ]
@@ -3628,6 +4399,7 @@
  !rails.sync-preferences-menu
  !rails.sync-session-nav
  !rails.sync-clock
+ !rails.sync-minimap
 
  $rails
 )
