@@ -955,7 +955,7 @@
  !new-folder-btn.addEventListener click (
   ; set false new-folder-row.hidden
   ; set '' new-folder-input.value
-  [ match { $new-folder-input.focus : !new-folder-input.focus } ]
+  [ match { $new-folder-input.focus : !new-folder-input.focus [ object { preventScroll true } ] } ]
  )
  !new-folder-cancel.addEventListener click (
   ; set true new-folder-row.hidden

@@ -633,7 +633,7 @@
   !modal.render-packages
   !modal.render
   [ match
-   { $search-input.focus : !search-input.focus }
+   { $search-input.focus : !search-input.focus [ object { preventScroll true } ] }
   ]
   ; to loaded-known ; object { list null }
   ; try (

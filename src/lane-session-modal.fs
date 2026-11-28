@@ -918,7 +918,7 @@
   !show-mode history 'Session History' 'Activity log of when each session was active — click Switch to jump back in'
   !modal.render-history-page
   [ match
-   { $hist-search.focus : !hist-search.focus }
+   { $hist-search.focus : !hist-search.focus [ object { preventScroll true } ] }
   ]
   $modal
  )

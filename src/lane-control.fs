@@ -78,6 +78,8 @@
  { session-history {} }
  { previous-session-ids {} }
  { next-session-ids {} }
+ { last-pointer-y null }
+ { last-pointer-ts 0 }
  { resolved-previous-sessions {} }
  { resolved-next-sessions {} }
  { available-previous-sessions {} }
@@ -1952,6 +1954,7 @@
          { $open-m.backdrop : !restore-lane-node $lane.body $open-m.backdrop $body-ref }
         ]
        )
+       !scope.sync-lane-modals-position $lane
       ) }
      ]
     ) }
@@ -2029,6 +2032,7 @@
        { $open-m.backdrop : !fullscreen-body.appendChild $open-m.backdrop }
       ]
      )
+     !scope.sync-lane-modals-position $lane
     ) }
    ]
    !fullscreen-el.setAttribute data-lane-id $lane.id
@@ -2087,13 +2091,228 @@
   ) }
  ]
 )
+; to resolve-modal-panel (
+ -- Resolves the inner dialog panel element for a lane modal
+ ; to { modal } $argv
+ [ match
+  { $modal.panel : $modal.panel }
+  { $modal.backdrop.firstElementChild : $modal.backdrop.firstElementChild }
+  { [ and { $modal.backdrop.children } { [ propertyIsGreaterThan 0 modal.backdrop.children.length ] } ] : [ get modal.backdrop.children 0 ] }
+  { true : null }
+ ]
+)
+; to disconnect-modal-position-observer (
+ -- Disconnects any ResizeObserver tracking vertical position for a mounted modal
+ ; to { modal } $argv
+ [ match
+  { [ and { $modal } { $modal.position-observer } ] (
+   [ match { $modal.position-observer.disconnect : !modal.position-observer.disconnect } ]
+   ; set null modal.position-observer
+  ) }
+ ]
+)
+; to get-lane-scroll-container-top (
+ -- Reads the current vertical scroll offset for the active scroll container without touching horizontal scroll
+ ; to { lane } $argv
+ ; to in-fullscreen [ match
+  { [ and { $lane } { $scope.fullscreen-lane } ] : [ propertyIs $lane.id scope.fullscreen-lane.id ] }
+  { true : false }
+ ]
+ ; to in-preview [ match
+  { [ and { $lane } { $rails.preview-lane } ] : [ propertyIs $lane.id rails.preview-lane.id ] }
+  { true : false }
+ ]
+ [ match
+  { [ and { [ propertyIs true in-fullscreen ] } { $fullscreen-el } ] [ match
+   { [ propertyIs undefined fullscreen-el.scrollTop ] : 0 }
+   { [ propertyIs null fullscreen-el.scrollTop ] : 0 }
+   { true : $fullscreen-el.scrollTop }
+  ] }
+  { [ and { [ propertyIs true in-preview ] } { $rails.preview-el } ] [ match
+   { [ propertyIs undefined rails.preview-el.scrollTop ] : 0 }
+   { [ propertyIs null rails.preview-el.scrollTop ] : 0 }
+   { true : $rails.preview-el.scrollTop }
+  ] }
+  { true (
+   ; to wy $window.scrollY
+   ; to dy [ match
+    { $document.documentElement : $document.documentElement.scrollTop }
+    { true : undefined }
+   ]
+   [ match
+    { [ propertyIsGreaterThan 0 wy ] : $wy }
+    { [ propertyIsGreaterThan 0 dy ] : $dy }
+    { [ propertyIs undefined wy ] [ match
+     { [ propertyIs undefined dy ] : 0 }
+     { [ propertyIs null dy ] : 0 }
+     { true : $dy }
+    ] }
+    { [ propertyIs null wy ] [ match
+     { [ propertyIs undefined dy ] : 0 }
+     { [ propertyIs null dy ] : 0 }
+     { true : $dy }
+    ] }
+    { true : $wy }
+   ]
+  ) }
+ ]
+)
+; to restore-lane-scroll-container-top (
+ -- Restores only the vertical scroll position of a lane's active scroll container when layout changes drift it
+ ; to { lane saved-top } $argv
+ ; to missing-saved [ match
+  { [ propertyIs undefined saved-top ] : true }
+  { [ propertyIs null saved-top ] : true }
+  { true : false }
+ ]
+ ; condition { propertyIs false missing-saved } (
+  ; to cur-top !get-lane-scroll-container-top $lane
+  ; to same-top [ propertyIs $saved-top cur-top ]
+  ; condition { propertyIs false same-top } (
+   ; to in-fullscreen [ match
+    { [ and { $lane } { $scope.fullscreen-lane } ] : [ propertyIs $lane.id scope.fullscreen-lane.id ] }
+    { true : false }
+   ]
+   ; to in-preview [ match
+    { [ and { $lane } { $rails.preview-lane } ] : [ propertyIs $lane.id rails.preview-lane.id ] }
+    { true : false }
+   ]
+   [ match
+    { [ and { [ propertyIs true in-fullscreen ] } { $fullscreen-el } ] : ; set $saved-top fullscreen-el.scrollTop }
+    { [ and { [ propertyIs true in-preview ] } { $rails.preview-el } ] : ; set $saved-top rails.preview-el.scrollTop }
+    { true (
+     [ match
+      { $document.documentElement : ; set $saved-top document.documentElement.scrollTop }
+     ]
+     [ match
+      { $window.scrollTo : !window.scrollTo [ object { top $saved-top } ] }
+     ]
+    ) }
+   ]
+  )
+ )
+)
+; to resolve-modal-anchor-y (
+ -- Resolves a recent pointer or active-element viewport Y coordinate within the lane modal host
+ ; to { host } $argv
+ ; to now-ms [ match { $window.Date.now : !window.Date.now } { true : 0 } ]
+ ; to age ; subtract $now-ms $scope.last-pointer-ts
+ ; to has-ptr-y [ match
+  { [ propertyIs undefined scope.last-pointer-y ] : false }
+  { [ propertyIs null scope.last-pointer-y ] : false }
+  { [ propertyIsGreaterThan 1500 age ] : false }
+  { [ propertyIsLessThan 0 age ] : false }
+  { true : true }
+ ]
+ [ match
+  { $has-ptr-y : $scope.last-pointer-y }
+  { [ and { $document.activeElement } { $host } { $host.contains } { $document.activeElement.getBoundingClientRect } ] (
+   ; to inside !host.contains $document.activeElement
+   [ match
+    { [ propertyIs true inside ] (
+     ; to ar !document.activeElement.getBoundingClientRect
+     ; to missing-ar [ match
+      { [ propertyIs undefined ar.top ] : true }
+      { [ propertyIs null ar.top ] : true }
+      { [ propertyIs undefined ar.bottom ] : true }
+      { [ propertyIs null ar.bottom ] : true }
+      { true : false }
+     ]
+     [ match
+      { [ propertyIs false missing-ar ] : ; divide [ add $ar.top $ar.bottom ] 2 }
+      { true : null }
+     ]
+    ) }
+    { true : null }
+   ]
+  ) }
+  { true : null }
+ ]
+)
+; to scope.position-lane-modal (
+ -- Floats a lane-scoped modal panel vertically into the visible viewport near the user's current scroll/interaction Y without altering horizontal position
+ ; to { lane-or-id modal } $argv
+ ; to lane !scope.resolve-lane $lane-or-id
+ ; to is-pos [ match
+  { $modal : [ propertyIs true modal.positioning ] }
+  { true : false }
+ ]
+ ; condition { and { $lane } { $modal } { [ propertyIs false is-pos ] } } (
+  ; to host !scope.get-lane-modal-host $lane
+  ; to panel !resolve-modal-panel $modal
+  [ match
+   { [ and { $host } { $panel } { $panel.style } { $host.getBoundingClientRect } { $panel.getBoundingClientRect } { $computeLaneModalTopOffset } ] (
+    ; set true modal.positioning
+    ; try (
+     ; set '0px' panel.style.marginTop
+     ; to h-rect !host.getBoundingClientRect
+     ; to p-rect !panel.getBoundingClientRect
+     ; to in-fullscreen [ match
+      { $scope.fullscreen-lane : [ propertyIs $lane.id scope.fullscreen-lane.id ] }
+      { true : false }
+     ]
+     ; to in-preview [ match
+      { $rails.preview-lane : [ propertyIs $lane.id rails.preview-lane.id ] }
+      { true : false }
+     ]
+     ; to raw-win-h [ match
+      { [ propertyIsGreaterThan 0 window.innerHeight ] : $window.innerHeight }
+      { [ and { $document.documentElement } { [ propertyIsGreaterThan 0 document.documentElement.clientHeight ] } ] : $document.documentElement.clientHeight }
+      { true : 900 }
+     ]
+     ; to vp-bounds [ match
+      { [ and { [ propertyIs true in-preview ] } { $rails.preview-el } { $rails.preview-el.getBoundingClientRect } ] (
+       ; to pr !rails.preview-el.getBoundingClientRect
+       ; to pt [ match { [ propertyIs undefined pr.top ] : 0 } { [ propertyIs null pr.top ] : 0 } { true : $pr.top } ]
+       ; to pb [ match { [ propertyIs undefined pr.bottom ] : $raw-win-h } { [ propertyIs null pr.bottom ] : $raw-win-h } { true : $pr.bottom } ]
+       ; object { top [ ; add $pt 12 ] } { bottom [ ; subtract $pb 12 ] }
+      ) }
+      { [ propertyIs true in-fullscreen ] : ; object { top 16 } { bottom [ ; subtract $raw-win-h 16 ] } }
+      { true : ; object { top 24 } { bottom [ ; subtract $raw-win-h 16 ] } }
+     ]
+     ; to offset !computeLaneModalTopOffset [ object
+      { hostTop $h-rect.top }
+      { hostHeight $h-rect.height }
+      { basePanelTop $p-rect.top }
+      { panelHeight $p-rect.height }
+      { viewportTop $vp-bounds.top }
+      { viewportBottom $vp-bounds.bottom }
+      { anchorClientY $modal.open-anchor-y }
+     ]
+     ; set [ ; add $offset px ] panel.style.marginTop
+     ; set $offset modal.top-offset
+    ) : null
+    ; set false modal.positioning
+   ) }
+  ]
+ )
+)
+; to scope.sync-lane-modals-position (
+ -- Re-centers open modals belonging to a lane after container relocation (preview/restore/fullscreen)
+ ; to { lane-or-id } $argv
+ ; to lane !scope.resolve-lane $lane-or-id
+ [ match
+  { [ and { $lane } { $lane.open-modals } ] (
+   ; to cur-y !get-lane-scroll-container-top $lane
+   ; each $lane.open-modals (
+    ; to { open-m } $argv
+    ; set null open-m.open-anchor-y
+    ; set $cur-y open-m.open-scroll-y
+    !scope.position-lane-modal $lane $open-m
+   )
+  ) }
+ ]
+)
 ; to scope.mount-lane-modal (
  -- Mounts a lane-scoped modal backdrop inside the lane's active frame and expands the lane or pinned frame to minimum modal dimensions
  ; to { lane-or-id modal min-width } $argv
  ; to lane !scope.resolve-lane $lane-or-id
  ; to backdrop $modal.backdrop
+ ; to panel !resolve-modal-panel $modal
+ !disconnect-modal-position-observer $modal
  [ match
   { $lane (
+   ; to saved-y !get-lane-scroll-container-top $lane
    [ match
     { $lane.open-modals : null }
     { true : ; set {} lane.open-modals }
@@ -2107,25 +2326,55 @@
    ]
    ; set $req-min-w modal.active-min-width
    !scope.recompute-lane-modal-bounds $lane
+   ; to host !scope.get-lane-modal-host $lane
+   ; set [ !resolve-modal-anchor-y $host ] modal.open-anchor-y
+   ; set $saved-y modal.open-scroll-y
    [ match
     { $backdrop (
      !backdrop.setAttribute data-lane-modal 'true'
      !backdrop.setAttribute data-lane-id $lane.id
      ; to base-cls !strip-lane-backdrop-class $backdrop.className
      ; set [ ; add $base-cls ' lane-modal-backdrop--lane' ] backdrop.className
-     ; to host !scope.get-lane-modal-host $lane
      [ match
       { $host.appendChild : !host.appendChild $backdrop }
      ]
     ) }
    ]
    !scope.apply-lane-width $lane $lane.width
+   !scope.position-lane-modal $lane $modal
+   !restore-lane-scroll-container-top $lane $saved-y
+   [ match
+    { [ and { $panel } { $window.ResizeObserver } { $window.Reflect.construct } ] (
+     ; try (
+      ; to pos-ro !window.Reflect.construct $window.ResizeObserver { (
+       [ match
+        { [ and { $lane.open-modals } { [ propertyIsGreaterThanOrEqual 0 [ !lane.open-modals.indexOf $modal ] ] } ] (
+         ; to cur-scroll-y !get-lane-scroll-container-top $lane
+         ; to scroll-diff [ match
+          { $window.Math.abs : !window.Math.abs [ subtract $cur-scroll-y $modal.open-scroll-y ] }
+          { true : 0 }
+         ]
+         ; condition { propertyIsLessThanOrEqual 4 scroll-diff } : !scope.position-lane-modal $lane $modal
+        ) }
+       ]
+      ) }
+      !pos-ro.observe $panel
+      ; set $pos-ro modal.position-observer
+     ) : null
+    ) }
+   ]
   ) }
   { $backdrop (
    !remove-elem-attr $backdrop data-lane-modal
    !remove-elem-attr $backdrop data-lane-id
    ; to clean-cls !strip-lane-backdrop-class $backdrop.className
    ; set $clean-cls backdrop.className
+   [ match
+    { [ and { $panel } { $panel.style } ] : ; set '' panel.style.marginTop }
+   ]
+   [ match
+    { $modal : ; set 0 modal.top-offset }
+   ]
    [ match
     { $document.body.appendChild : !document.body.appendChild $backdrop }
    ]
@@ -2137,6 +2386,18 @@
  -- Detaches a lane-scoped modal from its lane and restores the lane or pinned frame's normal dimensions when no modals remain open
  ; to { lane-or-id modal } $argv
  ; to lane !scope.resolve-lane $lane-or-id
+ ; to saved-y !get-lane-scroll-container-top $lane
+ !disconnect-modal-position-observer $modal
+ ; to panel !resolve-modal-panel $modal
+ [ match
+  { [ and { $panel } { $panel.style } ] : ; set '' panel.style.marginTop }
+ ]
+ [ match
+  { $modal (
+   ; set 0 modal.top-offset
+   ; set null modal.open-anchor-y
+  ) }
+ ]
  [ match
   { $lane (
    [ match
@@ -2147,6 +2408,7 @@
    ]
    !scope.recompute-lane-modal-bounds $lane
    !scope.apply-lane-width $lane $lane.width
+   !restore-lane-scroll-container-top $lane $saved-y
   ) }
  ]
  $modal
@@ -4950,6 +5212,7 @@
                 { [ and { $open-m.backdrop } { $modal-host.appendChild } ] : !modal-host.appendChild $open-m.backdrop }
                ]
               )
+              !scope.sync-lane-modals-position $lane
              ) }
             ]
            ) }
@@ -7189,5 +7452,32 @@
   { [ and { propertyIs false dirs-disabled } { propertyIs false scope.session-data-dir-confirmed } ] : !dir-modal.open-confirm }
  ]
 )
+; to track-pointer-y (
+ ; to { ev } $argv
+ ; to has-y [ match
+  { [ propertyIs undefined ev ] : false }
+  { [ propertyIs null ev ] : false }
+  { [ propertyIs undefined ev.clientY ] : false }
+  { [ propertyIs null ev.clientY ] : false }
+  { true : true }
+ ]
+ ; condition { propertyIs true has-y } (
+  [ match
+   { [ and { [ propertyIs click ev.type ] } { [ propertyIs 0 ev.detail ] } ] : null }
+   { true (
+    ; set $ev.clientY scope.last-pointer-y
+    ; to now-ms [ match { $window.Date.now : !window.Date.now } { true : 0 } ]
+    ; set $now-ms scope.last-pointer-ts
+   ) }
+  ]
+ )
+)
+[ match
+ { $window.addEventListener (
+  !window.addEventListener pointerdown $track-pointer-y true
+  !window.addEventListener mousedown $track-pointer-y true
+  !window.addEventListener click $track-pointer-y true
+ ) }
+]
 !console.log $scope
 $scope

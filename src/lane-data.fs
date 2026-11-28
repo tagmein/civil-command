@@ -45,6 +45,7 @@
   { table-tabs {} }
   { schema-rows {} }
   { grid-head-cells {} }
+  { grid-type-cells {} }
   { grid-filter-cells {} }
   { grid-rows {} }
   { display-options-btns {} }
@@ -52,6 +53,7 @@
   { table-updates ; object }
   { update-rows {} }
   { filter-editor ; object { open false } { mode add } { table-id '' } { column-id '' } { filter-id '' } { anchor-el null } }
+  { cell-menu-state ; object { open false } { tbl null } { row null } { row-num 0 } { col null } { cell-rec null } { anchor-el null } }
   { filter-op-els {} }
   { filter-input-els {} }
   { filter-val-el null }
@@ -365,9 +367,13 @@
  ; set lane-data-grid grid-table.className
  ; to grid-thead !document.createElement thead
  ; to grid-hrow !document.createElement tr
+ ; set lane-data-head-row grid-hrow.className
+ ; to grid-trow !document.createElement tr
+ ; set lane-data-type-row grid-trow.className
  ; to grid-frow !document.createElement tr
  ; set lane-data-filter-row grid-frow.className
  !grid-thead.appendChild $grid-hrow
+ !grid-thead.appendChild $grid-trow
  !grid-thead.appendChild $grid-frow
  ; to grid-tbody !document.createElement tbody
  ; set lane-data-grid-body grid-tbody.className
@@ -418,10 +424,72 @@
  !filter-menu.appendChild $filter-error-el
  !filter-menu.appendChild $filter-menu-actions
 
+ ; to cell-menu !document.createElement div
+ ; assign $cell-menu { className lane-data-cell-menu } { hidden true }
+ !cell-menu.setAttribute role menu
+ !cell-menu.setAttribute aria-label 'Cell menu'
+ ; to cell-menu-header !document.createElement div
+ ; set lane-data-cell-menu-header cell-menu-header.className
+ ; to cell-menu-title-el !document.createElement span
+ ; assign $cell-menu-title-el { className lane-data-cell-menu-title } { textContent 'Cell menu' }
+ ; to cell-menu-meta-el !document.createElement span
+ ; assign $cell-menu-meta-el { className lane-data-cell-menu-meta } { textContent '' }
+ !cell-menu-header.appendChild $cell-menu-title-el
+ !cell-menu-header.appendChild $cell-menu-meta-el
+ ; to cell-menu-options-el !document.createElement div
+ ; set lane-data-cell-menu-options cell-menu-options-el.className
+ ; to build-cell-menu-option (
+  ; to { flag-val mod-cls swatch-txt label-txt desc-txt } $argv
+  ; to btn !document.createElement button
+  ; to base-cls [ match
+   { [ propertyIs '' mod-cls ] : lane-data-cell-menu-item }
+   { true : ; add 'lane-data-cell-menu-item ' $mod-cls }
+  ]
+  ; assign $btn { type button } { className $base-cls }
+  !btn.setAttribute role menuitemradio
+  !btn.setAttribute aria-checked 'false'
+  !btn.setAttribute data-cell-flag-option [ match { $flag-val : $flag-val } { true : '' } ]
+  ; to swatch-el !document.createElement span
+  ; assign $swatch-el { className lane-data-cell-menu-swatch } { textContent $swatch-txt }
+  ; to body-el !document.createElement span
+  ; set lane-data-cell-menu-item-body body-el.className
+  ; to top-el !document.createElement span
+  ; set lane-data-cell-menu-item-top top-el.className
+  ; to lbl-el !document.createElement span
+  ; assign $lbl-el { className lane-data-cell-menu-item-label } { textContent $label-txt }
+  ; to check-el !document.createElement span
+  ; assign $check-el { className lane-data-cell-menu-check } { textContent '✓' } { hidden true }
+  ; to desc-el !document.createElement span
+  ; assign $desc-el { className lane-data-cell-menu-item-desc } { textContent $desc-txt }
+  !top-el.appendChild $lbl-el
+  !top-el.appendChild $check-el
+  !body-el.appendChild $top-el
+  !body-el.appendChild $desc-el
+  !btn.appendChild $swatch-el
+  !btn.appendChild $body-el
+  !btn.addEventListener click (
+   ; to { ev } $argv
+   [ match { $ev.stopPropagation : !ev.stopPropagation } ]
+   !view.set-cell-flag $view.cell-menu-state.tbl $view.cell-menu-state.row $view.cell-menu-state.col $flag-val
+  )
+  !cell-menu-options-el.appendChild $btn
+  ; object { btn $btn } { base-cls $base-cls } { flag $flag-val } { check-el $check-el } { label-el $lbl-el } { desc-el $desc-el }
+ )
+ ; to cell-flag-none-opt !build-cell-menu-option null '' '' None 'Unset / normal cell state'
+ ; to cell-flag-unknown-opt !build-cell-menu-option unknown lane-data-cell-menu-item--unknown '?' Unknown 'Mark when information is needed but missing'
+ ; to cell-flag-incorrect-opt !build-cell-menu-option incorrect lane-data-cell-menu-item--incorrect '!' Incorrect 'Mark when information entered is incomplete or wrong'
+ ; to cell-flag-none-btn $cell-flag-none-opt.btn
+ ; to cell-flag-unknown-btn $cell-flag-unknown-opt.btn
+ ; to cell-flag-incorrect-btn $cell-flag-incorrect-opt.btn
+ ; to cell-menu-options-list { $cell-flag-none-opt $cell-flag-unknown-opt $cell-flag-incorrect-opt }
+ !cell-menu.appendChild $cell-menu-header
+ !cell-menu.appendChild $cell-menu-options-el
+
  !rows-section.appendChild $rows-header
  !rows-section.appendChild $grid-wrap
  !rows-section.appendChild $rows-empty-el
  !rows-section.appendChild $filter-menu
+ !rows-section.appendChild $cell-menu
 
  ; to updates-section !document.createElement div
  ; assign $updates-section { className lane-data-updates-section } { hidden true }
@@ -459,7 +527,7 @@
  !root-el.appendChild $active-el
  !container.appendChild $root-el
 
- ; assign $view { element $root-el } { bar-el $bar-el } { tabs-el $tabs-el } { bar-actions-el $bar-actions-el } { add-table-btn $add-table-btn } { import-table-btn $import-table-btn } { loading-el $loading-el } { empty-el $empty-el } { active-el $active-el } { remote-bar-el $remote-bar-el } { remote-mode-badge $remote-mode-badge } { remote-jump-btn $remote-jump-btn } { remote-status-el $remote-status-el } { remote-edit-btn $remote-edit-btn } { table-header-el $table-header-el } { view-wrap $view-wrap } { view-btn $view-btn } { view-name-el $view-name-el } { view-count-badge $view-count-badge } { view-dirty-badge $view-dirty-badge } { view-menu $view-menu } { view-default-status $view-default-status } { view-title-btn $view-title-btn } { view-title-text $view-title-text } { view-rename-row $view-rename-row } { view-rename-input $view-rename-input } { view-rename-btn $view-rename-btn } { view-rename-cancel-btn $view-rename-cancel-btn } { view-draft-row $view-draft-row } { view-save-btn $view-save-btn } { view-fork-btn $view-fork-btn } { view-abandon-btn $view-abandon-btn } { view-list-el $view-list-el } { view-new-btn $view-new-btn } { view-duplicate-btn $view-duplicate-btn } { view-reset-btn $view-reset-btn } { view-delete-btn $view-delete-btn } { header-actions-el $header-actions-el } { schema-toggle-btn $schema-toggle-btn } { table-menu-wrap $table-menu-wrap } { table-menu-btn $table-menu-btn } { table-menu $table-menu } { edit-table-btn $edit-table-btn } { edit-table-modal $edit-table-modal } { jump-owner-btn $jump-owner-btn } { edit-import-btn $edit-import-btn } { clear-rows-btn $clear-rows-btn } { delete-table-btn $delete-table-btn } { schema-section $schema-section } { schema-tbody $schema-tbody } { schema-empty-el $schema-empty-el } { add-col-btn $add-col-btn } { updates-section $updates-section } { updates-header $updates-header } { updates-title-wrap $updates-title-wrap } { updates-title $updates-title } { updates-count-badge $updates-count-badge } { updates-status-badge $updates-status-badge } { updates-caption $updates-caption } { updates-list $updates-list } { rows-section $rows-section } { rows-title $rows-title } { add-row-btn $add-row-btn } { grid-wrap $grid-wrap } { display-options-el $display-options-el } { display-options-label $display-options-label } { display-options-list $display-options-list } { grid-hrow $grid-hrow } { grid-frow $grid-frow } { grid-tbody $grid-tbody } { rows-empty-el $rows-empty-el } { filter-menu $filter-menu } { filter-menu-col-name $filter-menu-col-name } { filter-menu-col-type $filter-menu-col-type } { filter-op-select $filter-op-select } { filter-value-wrap $filter-value-wrap } { filter-value-fields $filter-value-fields } { filter-error-el $filter-error-el } { filter-apply-btn $filter-apply-btn } { filter-cancel-btn $filter-cancel-btn } { filter-delete-btn $filter-delete-btn }
+ ; assign $view { element $root-el } { bar-el $bar-el } { tabs-el $tabs-el } { bar-actions-el $bar-actions-el } { add-table-btn $add-table-btn } { import-table-btn $import-table-btn } { loading-el $loading-el } { empty-el $empty-el } { active-el $active-el } { remote-bar-el $remote-bar-el } { remote-mode-badge $remote-mode-badge } { remote-jump-btn $remote-jump-btn } { remote-status-el $remote-status-el } { remote-edit-btn $remote-edit-btn } { table-header-el $table-header-el } { view-wrap $view-wrap } { view-btn $view-btn } { view-name-el $view-name-el } { view-count-badge $view-count-badge } { view-dirty-badge $view-dirty-badge } { view-menu $view-menu } { view-default-status $view-default-status } { view-title-btn $view-title-btn } { view-title-text $view-title-text } { view-rename-row $view-rename-row } { view-rename-input $view-rename-input } { view-rename-btn $view-rename-btn } { view-rename-cancel-btn $view-rename-cancel-btn } { view-draft-row $view-draft-row } { view-save-btn $view-save-btn } { view-fork-btn $view-fork-btn } { view-abandon-btn $view-abandon-btn } { view-list-el $view-list-el } { view-new-btn $view-new-btn } { view-duplicate-btn $view-duplicate-btn } { view-reset-btn $view-reset-btn } { view-delete-btn $view-delete-btn } { header-actions-el $header-actions-el } { schema-toggle-btn $schema-toggle-btn } { table-menu-wrap $table-menu-wrap } { table-menu-btn $table-menu-btn } { table-menu $table-menu } { edit-table-btn $edit-table-btn } { edit-table-modal $edit-table-modal } { jump-owner-btn $jump-owner-btn } { edit-import-btn $edit-import-btn } { clear-rows-btn $clear-rows-btn } { delete-table-btn $delete-table-btn } { schema-section $schema-section } { schema-tbody $schema-tbody } { schema-empty-el $schema-empty-el } { add-col-btn $add-col-btn } { updates-section $updates-section } { updates-header $updates-header } { updates-title-wrap $updates-title-wrap } { updates-title $updates-title } { updates-count-badge $updates-count-badge } { updates-status-badge $updates-status-badge } { updates-caption $updates-caption } { updates-list $updates-list } { rows-section $rows-section } { rows-title $rows-title } { add-row-btn $add-row-btn } { grid-wrap $grid-wrap } { display-options-el $display-options-el } { display-options-label $display-options-label } { display-options-list $display-options-list } { grid-hrow $grid-hrow } { grid-trow $grid-trow } { grid-frow $grid-frow } { grid-tbody $grid-tbody } { rows-empty-el $rows-empty-el } { filter-menu $filter-menu } { filter-menu-col-name $filter-menu-col-name } { filter-menu-col-type $filter-menu-col-type } { filter-op-select $filter-op-select } { filter-value-wrap $filter-value-wrap } { filter-value-fields $filter-value-fields } { filter-error-el $filter-error-el } { filter-apply-btn $filter-apply-btn } { filter-cancel-btn $filter-cancel-btn } { filter-delete-btn $filter-delete-btn } { cell-menu $cell-menu } { cell-menu-title-el $cell-menu-title-el } { cell-menu-meta-el $cell-menu-meta-el } { cell-flag-none-btn $cell-flag-none-btn } { cell-flag-unknown-btn $cell-flag-unknown-btn } { cell-flag-incorrect-btn $cell-flag-incorrect-btn }
 
  ; to clear-children (
   -- Safely removes all child nodes from an element in both browser and mock DOMs
@@ -511,8 +579,283 @@
   ; set null view.filter-val-to-el
  )
 
+ ; to view.get-cell-flag (
+  -- Returns the normalized cell flag ('unknown', 'incorrect', or null) stored on row for col-id
+  ; to { row col-id } $argv
+  [ match
+   { [ and $getRowCellFlag $row $col-id ] : !getRowCellFlag $row $col-id }
+   { [ and $row.flags $col-id ] (
+    ; to raw [ get row.flags $col-id ]
+    [ match
+     { $normalizeCellFlag : !normalizeCellFlag $raw }
+     { [ propertyIs unknown raw ] : unknown }
+     { [ propertyIs incorrect raw ] : incorrect }
+     { true : null }
+    ]
+   ) }
+   { true : null }
+  ]
+ )
+
+ ; to view.sync-cell-menu-btn (
+  -- Updates the top-right square Cell menu button text, classes, ARIA state, and tooltip for a cell
+  ; to { menu-btn row col tbl } $argv
+  [ match
+   { $menu-btn (
+    ; to flag [ match
+     { [ and $row $col ] : !view.get-cell-flag $row $col.id }
+     { true : null }
+    ]
+    ; to is-ro [ match
+     { $tbl : !view.is-readonly-table $tbl }
+     { true : false }
+    ]
+    ; to is-open [ match
+     { [ and { [ propertyIs true view.cell-menu-state.open ] } { [ propertyIs $menu-btn view.cell-menu-state.anchor-el ] } ] : true }
+     { true : false }
+    ]
+    ; to state-cls [ match
+     { [ propertyIs unknown flag ] : ' lane-data-cell-menu-btn--unknown' }
+     { [ propertyIs incorrect flag ] : ' lane-data-cell-menu-btn--incorrect' }
+     { true : '' }
+    ]
+    ; to open-cls [ ternary $is-open ' lane-data-cell-menu-btn--open' '' ]
+    ; to cls ; add lane-data-cell-menu-btn ; add $state-cls $open-cls
+    ; to circle-el [ match
+     { $menu-btn.circle-el : $menu-btn.circle-el }
+     { true (
+      ; to fresh-c !document.createElement span
+      ; set lane-data-cell-menu-circle fresh-c.className
+      !fresh-c.setAttribute aria-hidden 'true'
+      !menu-btn.appendChild $fresh-c
+      ; set $fresh-c menu-btn.circle-el
+      $fresh-c
+     ) }
+    ]
+    ; to glyph [ match
+     { [ propertyIs unknown flag ] : '?' }
+     { [ propertyIs incorrect flag ] : '!' }
+     { true : '' }
+    ]
+    ; to circle-cls [ match
+     { [ propertyIs unknown flag ] : 'lane-data-cell-menu-circle lane-data-cell-menu-circle--unknown' }
+     { [ propertyIs incorrect flag ] : 'lane-data-cell-menu-circle lane-data-cell-menu-circle--incorrect' }
+     { true : lane-data-cell-menu-circle }
+    ]
+    ; to base-ttl [ match
+     { [ propertyIs unknown flag ] : 'Cell menu · Unknown — information is needed but missing' }
+     { [ propertyIs incorrect flag ] : 'Cell menu · Incorrect — information entered is incomplete or wrong' }
+     { true : 'Cell menu' }
+    ]
+    ; to full-ttl [ ternary $is-ro [ add $base-ttl ' (read-only)' ] $base-ttl ]
+    ; assign $circle-el { className $circle-cls } { textContent $glyph }
+    ; assign $menu-btn { className $cls } { title $full-ttl } { disabled $is-ro }
+    !menu-btn.setAttribute aria-label 'Cell menu'
+    !menu-btn.setAttribute aria-haspopup menu
+    !menu-btn.setAttribute aria-expanded [ ternary $is-open 'true' 'false' ]
+    !menu-btn.setAttribute data-cell-flag [ match { $flag : $flag } { true : '' } ]
+   ) }
+  ]
+ )
+
+ ; to view.sync-cell-menu-options (
+  -- Highlights the active flag option inside the Cell menu popover
+  ; to { active-flag } $argv
+  ; each $cell-menu-options-list (
+   ; to { opt } $argv
+   ; to is-active [ match
+    { [ and [ propertyIs null opt.flag ] [ propertyIs null active-flag ] ] : true }
+    { [ propertyIs $opt.flag active-flag ] : true }
+    { true : false }
+   ]
+   ; set [ ternary $is-active [ add $opt.base-cls ' lane-data-cell-menu-item--active' ] $opt.base-cls ] opt.btn.className
+   !opt.btn.setAttribute aria-checked [ ternary $is-active 'true' 'false' ]
+   ; set [ ternary $is-active false true ] opt.check-el.hidden
+  )
+ )
+
+ ; to view.close-cell-menu (
+  -- Closes the Cell menu popover and restores the anchor square button state
+  ; to prev-anchor $view.cell-menu-state.anchor-el
+  ; to prev-row $view.cell-menu-state.row
+  ; to prev-col $view.cell-menu-state.col
+  ; to prev-tbl $view.cell-menu-state.tbl
+  ; set false view.cell-menu-state.open
+  ; set null view.cell-menu-state.tbl
+  ; set null view.cell-menu-state.row
+  ; set 0 view.cell-menu-state.row-num
+  ; set null view.cell-menu-state.col
+  ; set null view.cell-menu-state.cell-rec
+  ; set null view.cell-menu-state.anchor-el
+  ; set true cell-menu.hidden
+  [ match
+   { [ and $prev-anchor $prev-row $prev-col ] : !view.sync-cell-menu-btn $prev-anchor $prev-row $prev-col $prev-tbl }
+  ]
+ )
+
+ ; to view.open-cell-menu (
+  -- Opens the Cell menu popover anchored to a cell's top-right square button
+  ; to { tbl row row-num col cell-rec anchor-el } $argv
+  [ match
+   { [ and $tbl $row $col $anchor-el ] (
+    ; to is-ro !view.is-readonly-table $tbl
+    ; condition { propertyIs false is-ro } (
+     !view.close-cell-menu
+     !view.close-table-menu
+     !view.close-view-menu
+     !view.close-filter-menu
+     ; set true view.cell-menu-state.open
+     ; set $tbl view.cell-menu-state.tbl
+     ; set $row view.cell-menu-state.row
+     ; set $row-num view.cell-menu-state.row-num
+     ; set $col view.cell-menu-state.col
+     ; set $cell-rec view.cell-menu-state.cell-rec
+     ; set $anchor-el view.cell-menu-state.anchor-el
+     ; to col-label !view.display-col-name $col
+     ; set [ ; add $col-label ; add ' · #' $row-num ] cell-menu-meta-el.textContent
+     ; to cur-flag !view.get-cell-flag $row $col.id
+     !view.sync-cell-menu-options $cur-flag
+     !view.sync-cell-menu-btn $anchor-el $row $col $tbl
+     ; set false cell-menu.hidden
+     [ match
+      { [ and $anchor-el.getBoundingClientRect $rows-section.getBoundingClientRect ] (
+       ; to a-rect !anchor-el.getBoundingClientRect
+       ; to r-rect !rows-section.getBoundingClientRect
+       ; to a-right [ match
+        { [ propertyIs undefined a-rect.right ] [ match
+         { [ propertyIs undefined a-rect.left ] : 0 }
+         { [ propertyIs null a-rect.left ] : 0 }
+         { true : $a-rect.left }
+        ] }
+        { [ propertyIs null a-rect.right ] : 0 }
+        { true : $a-rect.right }
+       ]
+       ; to a-bottom [ match
+        { [ propertyIs undefined a-rect.bottom ] [ match
+         { [ propertyIs undefined a-rect.top ] : 20 }
+         { [ propertyIs null a-rect.top ] : 20 }
+         { true : ; add $a-rect.top 20 }
+        ] }
+        { [ propertyIs null a-rect.bottom ] : 20 }
+        { true : $a-rect.bottom }
+       ]
+       ; to r-left [ match { [ propertyIs undefined r-rect.left ] : 0 } { [ propertyIs null r-rect.left ] : 0 } { true : $r-rect.left } ]
+       ; to r-top [ match { [ propertyIs undefined r-rect.top ] : 0 } { [ propertyIs null r-rect.top ] : 0 } { true : $r-rect.top } ]
+       ; to r-width [ match { [ propertyIs undefined r-rect.width ] : 0 } { [ propertyIs null r-rect.width ] : 0 } { true : $r-rect.width } ]
+       ; to rel-right ; subtract $a-right $r-left
+       ; to raw-left ; subtract $rel-right 228
+       ; to clamp-l [ ternary [ propertyIsLessThan 0 raw-left ] 0 $raw-left ]
+       ; to max-l ; subtract $r-width 232
+       ; to final-l [ match
+        { [ and { [ propertyIsGreaterThan 0 max-l ] } { [ propertyIsLessThan $clamp-l max-l ] } ] : $max-l }
+        { true : $clamp-l }
+       ]
+       ; to raw-top ; subtract $a-bottom $r-top
+       ; to final-t ; add $raw-top 2
+       ; to l-css ; add $final-l px
+       ; to t-css ; add $final-t px
+       ; assign $cell-menu.style { left $l-css } { top $t-css }
+      ) }
+     ]
+    )
+   ) }
+  ]
+ )
+
+ ; to view.toggle-cell-menu (
+  -- Toggles the Cell menu popover for a cell
+  ; to { tbl row row-num col cell-rec anchor-el } $argv
+  ; to same-open [ and { [ propertyIs true view.cell-menu-state.open ] } { [ propertyIs $anchor-el view.cell-menu-state.anchor-el ] } ]
+  [ match
+   { $same-open : !view.close-cell-menu }
+   { true : !view.open-cell-menu $tbl $row $row-num $col $cell-rec $anchor-el }
+  ]
+ )
+
+ ; to view.set-cell-flag (
+  -- Sets or clears the mutually exclusive cell flag ('unknown', 'incorrect', or null) on a row cell, updates DOM, and saves row
+  ; to { tbl row col next-flag } $argv
+  [ match
+   { [ and $tbl $row $col ] (
+    ; to is-ro !view.is-readonly-table $tbl
+    ; condition { propertyIs false is-ro } (
+     ; to res [ match
+      { $setRowCellFlag : !setRowCellFlag $row $col.id $next-flag }
+      { true (
+       ; to prev-f !view.get-cell-flag $row $col.id
+       ; to norm-f [ match
+        { [ propertyIs unknown next-flag ] : unknown }
+        { [ propertyIs incorrect next-flag ] : incorrect }
+        { true : null }
+       ]
+       ; to cur-flags [ match { $row.flags : $row.flags } { true : ; object } ]
+       [ match
+        { $norm-f (
+         ; to cur-flags $col.id $norm-f
+         ; set $cur-flags row.flags
+        ) }
+        { true (
+         [ match
+          { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $cur-flags $col.id }
+          { true : ; to cur-flags $col.id undefined }
+         ]
+        ) }
+       ]
+       ; to eq [ propertyIs $prev-f norm-f ]
+       ; to changed [ propertyIs false eq ]
+       ; object { changed $changed } { previousFlag $prev-f } { flag $norm-f }
+      ) }
+     ]
+     !view.close-cell-menu
+     ; to sync-matching-grow (
+      ; to { target-tbl grow } $argv
+      ; condition { and { [ propertyIs $tbl.id target-tbl.id ] } { [ propertyIs $row.id grow.row.id ] } } (
+       ; each $grow.cells (
+        ; to { cell } $argv
+        ; condition { propertyIs $col.id cell.col.id } (
+         ; to val [ get grow.row.values $cell.col.id ]
+         !view.sync-td-state $cell.col $cell.td $val $cell.multi-wrap $grow.row $cell.menu-btn $target-tbl
+        )
+       )
+      )
+     )
+     ; to active-tbl !view.get-active-table
+     ; each $view.grid-rows (
+      ; to { grow } $argv
+      [ match { $active-tbl : !sync-matching-grow $active-tbl $grow } ]
+      [ match
+       { $grow.subtable-groups (
+        ; each $grow.subtable-groups (
+         ; to { sgrp } $argv
+         ; each $sgrp.rows (
+          ; to { sgrow } $argv
+          !sync-matching-grow $sgrp.table $sgrow
+         )
+        )
+       ) }
+      ]
+     )
+     ; to st !view.ensure-table-views-state $tbl
+     ; to has-flag-filter ; object { hit false }
+     ; each $st.workingFilters (
+      ; to { flt } $argv
+      [ match
+       { [ propertyIs flagged_unknown flt.operator ] : ; set true has-flag-filter.hit }
+       { [ propertyIs flagged_incorrect flt.operator ] : ; set true has-flag-filter.hit }
+       { [ propertyIs is_flagged flt.operator ] : ; set true has-flag-filter.hit }
+       { [ propertyIs not_flagged flt.operator ] : ; set true has-flag-filter.hit }
+      ]
+     )
+     ; condition { propertyIs true has-flag-filter.hit } : !view.render-grid
+     ; condition { propertyIs true res.changed } : !view.save-row $tbl $row
+    )
+   ) }
+  ]
+ )
+
  ; to view.open-table-menu (
   -- Opens the "..." table actions dropdown menu
+  !view.close-cell-menu
   !view.close-view-menu
   !view.close-filter-menu
   ; set true view.table-menu-open
@@ -616,7 +959,7 @@
      { [ propertyIs '' trimmed ] (
       ; set 'Enter a table name' edit-table-error-el.textContent
       ; set false edit-table-error-el.hidden
-      [ match { $edit-table-name-input.focus : !edit-table-name-input.focus } ]
+      [ match { $edit-table-name-input.focus : !edit-table-name-input.focus [ object { preventScroll true } ] } ]
       false
      ) }
      { true (
@@ -642,6 +985,7 @@
 
  ; to view.open-edit-table-modal (
   -- Opens the lane-scoped Edit Table modal from the "..." menu without modifying the View selector header
+  !view.close-cell-menu
   !view.close-table-menu
   !view.close-view-menu
   !view.close-filter-menu
@@ -675,7 +1019,7 @@
      ) }
      { $document.body.appendChild : !document.body.appendChild $edit-table-backdrop }
     ]
-    [ match { $edit-table-name-input.focus : !edit-table-name-input.focus } ]
+    [ match { $edit-table-name-input.focus : !edit-table-name-input.focus [ object { preventScroll true } ] } ]
     [ match { $edit-table-name-input.select : !edit-table-name-input.select } ]
     $edit-table-modal
    ) }
@@ -1048,6 +1392,7 @@
 
  ; to view.open-view-menu (
   -- Opens the table Views selector popover
+  !view.close-cell-menu
   !view.close-table-menu
   !view.close-filter-menu
   ; set true view.view-menu-open
@@ -1304,7 +1649,7 @@
      ; set true view.editing-view-name
      ; set $v-name view-rename-input.value
      !view.sync-view-ui
-     [ match { $view-rename-input.focus : !view-rename-input.focus } ]
+     [ match { $view-rename-input.focus : !view-rename-input.focus [ object { preventScroll true } ] } ]
      [ match { $view-rename-input.select : !view-rename-input.select } ]
     )
    ) }
@@ -1735,6 +2080,7 @@
  ; to view.open-filter-menu (
   -- Opens the column filter popover in add or edit mode anchored to the '+' or bubble element
   ; to { tbl col existing-flt anchor-el } $argv
+  !view.close-cell-menu
   !view.close-table-menu
   !view.close-view-menu
   ; to is-edit [ match { $existing-flt : true } { true : false } ]
@@ -1801,8 +2147,8 @@
    ) }
   ]
   [ match
-   { [ and { $view.filter-val-el } { $view.filter-val-el.focus } ] : !view.filter-val-el.focus }
-   { $filter-op-select.focus : !filter-op-select.focus }
+   { [ and { $view.filter-val-el } { $view.filter-val-el.focus } ] : !view.filter-val-el.focus [ object { preventScroll true } ] }
+   { $filter-op-select.focus : !filter-op-select.focus [ object { preventScroll true } ] }
   ]
  )
 
@@ -2890,7 +3236,7 @@
      { true (
       ; to clock-opts !view.get-clock-display-opts
       ; to rows [ match { $target.table.rows : $target.table.rows } { true : null } ]
-      ; match
+      [ match
        { $rows (
         ; each $rows (
          ; to { item } $argv
@@ -2902,15 +3248,18 @@
         )
        ) }
        { true : null }
-      ; match
+      ]
+      [ match
        { $box.unresolved (
-        ; match
-         { propertyIsGreaterThan 0 box.unresolved.length (
+        [ match
+         { [ propertyIsGreaterThan 0 box.unresolved.length ] (
           ; set [ ; add 'Unknown column: ' $box.unresolved.0 ] box.error
          ) }
          { true : null }
-        ) }
+        ]
+       ) }
        { true : null }
+      ]
      ) }
     ]
    ) }
@@ -4079,11 +4428,11 @@
       ; set $local-val native-picker.value
       [ match
        { $native-picker.showPicker : ; try ( !native-picker.showPicker ) (
-        [ match { $native-picker.focus : !native-picker.focus } ]
+        [ match { $native-picker.focus : !native-picker.focus [ object { preventScroll true } ] } ]
         [ match { $native-picker.click : !native-picker.click } ]
        ) }
        { true (
-        [ match { $native-picker.focus : !native-picker.focus } ]
+        [ match { $native-picker.focus : !native-picker.focus [ object { preventScroll true } ] } ]
         [ match { $native-picker.click : !native-picker.click } ]
        ) }
       ]
@@ -4379,6 +4728,9 @@
    ; condition { propertyIs true is-match } : ; set [ add $match-count.count 1 ] match-count.count
   )
   ; set $match-count.count cell-rec.match-count
+  [ match
+   { $cell-rec.items-el : ; set [ propertyIs 0 match-count.count ] cell-rec.items-el.hidden }
+  ]
   $match-count.count
  )
 
@@ -4703,7 +5055,7 @@
    ; to on-item-valid (
     ; to { next-val } $argv
     ; to arr $item-idx $next-val
-    !view.sync-td-state $col $cell-rec.td $arr $cell-rec.multi-wrap
+    !view.sync-td-state $col $cell-rec.td $arr $cell-rec.multi-wrap $row $cell-rec.menu-btn $tbl
     !view.apply-multi-filter $tbl $row $col $cell-rec
     !view.refresh-row-cells $row
     !view.save-row $tbl $row
@@ -4742,13 +5094,13 @@
    ]
    !cell-rec.items.push $item-rec
   )
-  !view.sync-td-state $col $cell-rec.td $arr $cell-rec.multi-wrap
+  !view.sync-td-state $col $cell-rec.td $arr $cell-rec.multi-wrap $row $cell-rec.menu-btn $tbl
   !view.apply-multi-filter $tbl $row $col $cell-rec
   [ match
    { [ propertyIsGreaterThanOrEqual 0 focus-idx ] (
     ; to target [ get cell-rec.items $focus-idx ]
     [ match
-     { $target.input-el.focus : !target.input-el.focus }
+     { $target.input-el.focus : !target.input-el.focus [ object { preventScroll true } ] }
     ]
    ) }
   ]
@@ -4811,28 +5163,51 @@
  )
 
  ; to view.td-class-for-col (
-  -- Builds the CSS class string for a data cell based on alignment, explicit column width, and required-empty state
-  ; to { col has-width is-req-empty } $argv
+  -- Builds the CSS class string for a data cell based on alignment, explicit column width, required-empty state, and cell flag
+  ; to { col has-width is-req-empty cell-flag } $argv
   ; to is-right !view.is-right-aligned-col $col
-  ; to base [ ternary $is-right 'lane-data-td lane-data-td--right' lane-data-td ]
+  ; to base [ ternary $is-right 'lane-data-td lane-data-td--cell lane-data-td--right' 'lane-data-td lane-data-td--cell' ]
   ; to sized [ ternary $has-width [ add $base ' lane-data-td--sized' ] $base ]
-  [ ternary $is-req-empty [ add $sized ' lane-data-td--required-empty' ] $sized ]
+  ; to req-cls [ ternary $is-req-empty [ add $sized ' lane-data-td--required-empty' ] $sized ]
+  [ match
+   { [ propertyIs unknown cell-flag ] : ; add $req-cls ' lane-data-td--flag-unknown' }
+   { [ propertyIs incorrect cell-flag ] : ; add $req-cls ' lane-data-td--flag-incorrect' }
+   { true : $req-cls }
+  ]
  )
 
  ; to view.sync-td-state (
-  -- Updates a cell's td (and multi-wrap if multiple) CSS class based on column width and required-empty state
-  ; to { col td val multi-wrap } $argv
+  -- Updates a cell's td (and multi-wrap and Cell menu button) classes and attributes for column width, required-empty state, and cell flag
+  ; to { col td val multi-wrap row menu-btn tbl } $argv
   ; to w !normalizeColumnWidth $col.width
   ; to has-w [ match { $w : true } { true : false } ]
   ; to is-req-empty [ match
    { $col.required : !isDataCellValueEmpty $val $col }
    { true : false }
   ]
-  [ match
-   { $td : ; set [ !view.td-class-for-col $col $has-w $is-req-empty ] td.className }
+  ; to flag [ match
+   { [ and $row $col ] : !view.get-cell-flag $row $col.id }
+   { true : null }
   ]
   [ match
-   { $multi-wrap : ; set [ ternary $is-req-empty 'lane-data-multi lane-data-multi--required-empty' lane-data-multi ] multi-wrap.className }
+   { $td (
+    ; set [ !view.td-class-for-col $col $has-w $is-req-empty $flag ] td.className
+    !td.setAttribute data-cell-flag [ match { $flag : $flag } { true : '' } ]
+   ) }
+  ]
+  [ match
+   { $multi-wrap (
+    ; to m-base [ ternary $is-req-empty 'lane-data-multi lane-data-multi--required-empty' lane-data-multi ]
+    ; to m-cls [ match
+     { [ propertyIs unknown flag ] : ; add $m-base ' lane-data-multi--flag-unknown' }
+     { [ propertyIs incorrect flag ] : ; add $m-base ' lane-data-multi--flag-incorrect' }
+     { true : $m-base }
+    ]
+    ; set $m-cls multi-wrap.className
+   ) }
+  ]
+  [ match
+   { [ and $menu-btn $row $col ] : !view.sync-cell-menu-btn $menu-btn $row $col $tbl }
   ]
  )
 
@@ -4857,6 +5232,13 @@
     ; set [ ternary $has-w 'lane-data-th lane-data-th--sized' lane-data-th ] h-cell.el.className
    ) }
   ]
+  ; to t-cell [ get view.grid-type-cells $h-idx ]
+  [ match
+   { $t-cell.el (
+    ; assign t-cell.el.style { width $px } { minWidth $px } { maxWidth $px }
+    ; set [ ternary $has-w 'lane-data-th lane-data-type-th lane-data-th--sized' 'lane-data-th lane-data-type-th' ] t-cell.el.className
+   ) }
+  ]
   ; to f-cell [ get view.grid-filter-cells $h-idx ]
   [ match
    { $f-cell.el (
@@ -4871,7 +5253,12 @@
     { $cell.td (
      ; assign cell.td.style { width $px } { minWidth $px } { maxWidth $px }
      ; to cur-val [ get grow.row.values $cell.col.id ]
-     !view.sync-td-state $cell.col $cell.td $cur-val $cell.multi-wrap
+     ; to is-req-empty [ match
+      { $cell.col.required : !isDataCellValueEmpty $cur-val $cell.col }
+      { true : false }
+     ]
+     ; to c-flag !view.get-cell-flag $grow.row $cell.col.id
+     ; set [ !view.td-class-for-col $cell.col $has-w $is-req-empty $c-flag ] cell.td.className
     ) }
    ]
   )
@@ -4989,9 +5376,17 @@
   ; each $cols-list (
    ; to { col } $argv
    ; to td !document.createElement td
+   ; to menu-btn !document.createElement button
+   ; set button menu-btn.type
+   ; to menu-circle !document.createElement span
+   ; set lane-data-cell-menu-circle menu-circle.className
+   !menu-circle.setAttribute aria-hidden 'true'
+   !menu-btn.appendChild $menu-circle
+   ; set $menu-circle menu-btn.circle-el
    ; to saved-col-w !normalizeColumnWidth $col.width
    ; to has-saved-w [ match { $saved-col-w : true } { true : false } ]
-   ; set [ !view.td-class-for-col $col $has-saved-w false ] td.className
+   ; to init-flag !view.get-cell-flag $row $col.id
+   ; set [ !view.td-class-for-col $col $has-saved-w false $init-flag ] td.className
    [ match
     { $saved-col-w (
      ; to col-px ; add $saved-col-w px
@@ -4999,10 +5394,12 @@
     ) }
    ]
    ; to cur-val [ get row.values $col.id ]
-   [ match
+   ; to built-rec [ match
     { $col.multiple (
      ; to multi-wrap !document.createElement div
      ; set lane-data-multi multi-wrap.className
+     ; to multi-bar !document.createElement div
+     ; set lane-data-multi-bar multi-bar.className
      ; to filter-input !document.createElement input
      ; assign $filter-input { type text } { className lane-data-multi-filter } { placeholder 'Filter items…' } { title 'Filter items in this cell' } { spellcheck false } { autocomplete off }
      !filter-input.setAttribute aria-label 'Filter items'
@@ -5010,15 +5407,19 @@
      ; set lane-data-multi-items items-el.className
      ; to add-item-btn !document.createElement button
      ; assign $add-item-btn { type button } { className lane-data-multi-add } { textContent '+' } { title 'Add item' }
-     !multi-wrap.appendChild $filter-input
+     !multi-bar.appendChild $filter-input
+     !multi-bar.appendChild $add-item-btn
+     !multi-wrap.appendChild $multi-bar
      !multi-wrap.appendChild $items-el
-     !multi-wrap.appendChild $add-item-btn
      !td.appendChild $multi-wrap
      ; to cell-rec [ object
       { col $col }
       { td $td }
+      { menu-btn $menu-btn }
+      { menu-circle $menu-circle }
       { multi true }
       { multi-wrap $multi-wrap }
+      { multi-bar $multi-bar }
       { filter-input $filter-input }
       { filter-el $filter-input }
       { filter-query '' }
@@ -5077,23 +5478,25 @@
       )
      )
      !view.render-multi-cell $tbl $row $row-idx $col $cell-rec -1
-     !cells.push $cell-rec
+     $cell-rec
     ) }
     { true (
      ; to on-valid (
       ; to { next-val } $argv
       ; to row.values $col.id $next-val
-      !view.sync-td-state $col $td $next-val null
+      !view.sync-td-state $col $td $next-val null $row $menu-btn $tbl
       !view.refresh-row-cells $row
       !view.save-row $tbl $row
       [ match { $on-row-edited : !$on-row-edited } ]
      )
      ; to ctrl !view.create-typed-control $col $cur-val $on-valid null $tbl $row
      !td.appendChild $ctrl.el
-     !view.sync-td-state $col $td $cur-val null
+     !view.sync-td-state $col $td $cur-val null $row $menu-btn $tbl
      ; to cell-rec [ object
       { col $col }
       { td $td }
+      { menu-btn $menu-btn }
+      { menu-circle $menu-circle }
       { multi false }
       { input-el $ctrl.input-el }
       { select-el $ctrl.select-el }
@@ -5105,19 +5508,116 @@
       { id-el $ctrl.id-el }
       { update-trigger $ctrl.update-trigger }
      ]
-     !cells.push $cell-rec
+     $cell-rec
     ) }
    ]
+   !menu-btn.addEventListener click (
+    ; to { ev } $argv
+    [ match { $ev.stopPropagation : !ev.stopPropagation } ]
+    ; to rnum ; add $row-idx 1
+    !view.toggle-cell-menu $tbl $row $rnum $col $built-rec $menu-btn
+   )
+   !td.appendChild $menu-btn
+   !cells.push $built-rec
    !tr.appendChild $td
   )
   $cells
  )
 
+ ; to view.create-col-resizer (
+  -- Creates a vertical drag-to-resize and double-click-to-reset column separator handle for a column header cell
+  ; to { tbl col col-idx measure-el is-ro } $argv
+  ; to resizer-el !document.createElement div
+  ; assign $resizer-el { className lane-data-col-resizer } { title 'Drag to resize column (double-click to reset)' } { hidden $is-ro }
+  !resizer-el.setAttribute role separator
+  !resizer-el.setAttribute aria-orientation vertical
+  !resizer-el.addEventListener mousedown (
+   ; condition { propertyIs false is-ro } (
+    ; to { ev } $argv
+    [ match
+     { $ev.preventDefault : !ev.preventDefault }
+    ]
+    [ match
+     { $ev.stopPropagation : !ev.stopPropagation }
+    ]
+    ; to start-x [ match
+     { [ propertyIs undefined ev.clientX ] : 0 }
+     { [ propertyIs null ev.clientX ] : 0 }
+     { true : $ev.clientX }
+    ]
+    ; to saved-w !normalizeColumnWidth $col.width
+    ; to measured [ match
+     { $saved-w : $saved-w }
+     { $measure-el.getBoundingClientRect (
+      ; to rect !measure-el.getBoundingClientRect
+      !window.Math.round $rect.width
+     ) }
+     { [ propertyIsGreaterThan 0 measure-el.offsetWidth ] : $measure-el.offsetWidth }
+     { true : 120 }
+    ]
+    ; to drag ; object { start-x $start-x } { start-w $measured } { moved false }
+    ; set 'lane-data-col-resizer lane-data-col-resizer--active' resizer-el.className
+    ; to on-move (
+     ; to { mev } $argv
+     ; to cur-x [ match
+      { [ propertyIs undefined mev.clientX ] : $drag.start-x }
+      { [ propertyIs null mev.clientX ] : $drag.start-x }
+      { true : $mev.clientX }
+     ]
+     ; to delta ; subtract $cur-x $drag.start-x
+     ; to raw-next ; add $drag.start-w $delta
+     ; to safe-next [ match
+      { [ propertyIsLessThan 1 raw-next ] : 1 }
+      { true : $raw-next }
+     ]
+     ; to next-w !normalizeColumnWidth $safe-next
+     [ match
+      { $next-w (
+       ; set true drag.moved
+       ; set $next-w col.width
+       !view.apply-column-width $col-idx $next-w
+      ) }
+     ]
+    )
+    ; to on-up (
+     ; set lane-data-col-resizer resizer-el.className
+     [ match
+      { $window.removeEventListener (
+       !window.removeEventListener mousemove $on-move
+       !window.removeEventListener mouseup $on-up
+      ) }
+     ]
+     [ match
+      { $drag.moved : !view.save-schema $tbl }
+     ]
+    )
+    !window.addEventListener mousemove $on-move
+    !window.addEventListener mouseup $on-up
+   )
+  )
+  !resizer-el.addEventListener dblclick (
+   ; condition { propertyIs false is-ro } (
+    [ match
+     { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col width }
+     { true : ; set undefined col.width }
+    ]
+    !view.apply-column-width $col-idx null
+    !view.save-schema $tbl
+   )
+  )
+  $resizer-el
+ )
+
  ; to view.render-grid (
-  -- Renders the editable table headers, filters row, display options bar, and rows (plus any visible inbound subtable groups) for the active table
+  -- Renders the editable table headers, column types row, filters row, display options bar, and rows (plus any visible inbound subtable groups) for the active table
+  !view.close-cell-menu
   ; while { propertyIsGreaterThan 0 view.grid-head-cells.length } (
    ; to old-h !view.grid-head-cells.pop
    !old-h.el.remove
+  )
+  ; while { propertyIsGreaterThan 0 view.grid-type-cells.length } (
+   ; to old-t !view.grid-type-cells.pop
+   !old-t.el.remove
   )
   ; while { propertyIsGreaterThan 0 view.grid-filter-cells.length } (
    ; to old-f !view.grid-filter-cells.pop
@@ -5132,6 +5632,8 @@
    [ match { $old-f.add-btn.remove : !old-f.add-btn.remove } ]
    [ match { $old-f.el.remove : !old-f.el.remove } ]
   )
+  !clear-children $grid-hrow
+  !clear-children $grid-trow
   !clear-children $grid-frow
   ; while { propertyIsGreaterThan 0 view.grid-rows.length } (
    ; to old-r !view.grid-rows.pop
@@ -5195,12 +5697,20 @@
         ; assign $subtoggle-th { className 'lane-data-th lane-data-th--subtoggle' } { textContent '' }
         !grid-hrow.appendChild $subtoggle-th
         !view.grid-head-cells.push ; object { kind subtoggle } { el $subtoggle-th }
+        ; to t-subtoggle-th !document.createElement th
+        ; assign $t-subtoggle-th { className 'lane-data-th lane-data-th--subtoggle lane-data-type-th lane-data-type-th--subtoggle' } { textContent '' }
+        !grid-trow.appendChild $t-subtoggle-th
+        !view.grid-type-cells.push ; object { kind subtoggle } { el $t-subtoggle-th }
        ) }
       ]
       ; to num-th !document.createElement th
       ; assign $num-th { className 'lane-data-th lane-data-th--num' } { textContent '#' }
       !grid-hrow.appendChild $num-th
       !view.grid-head-cells.push ; object { kind num } { el $num-th }
+      ; to t-num-th !document.createElement th
+      ; assign $t-num-th { className 'lane-data-th lane-data-th--num lane-data-type-th lane-data-type-th--num' } { textContent '' }
+      !grid-trow.appendChild $t-num-th
+      !view.grid-type-cells.push ; object { kind num } { el $t-num-th }
 
       ; each $tbl.columns (
        ; to { col col-idx } $argv
@@ -5208,8 +5718,19 @@
        ; set lane-data-th th.className
        ; to th-inner !document.createElement div
        ; set lane-data-th-inner th-inner.className
+       ; to col-display-name !view.display-col-name $col
        ; to name-span !document.createElement span
-       ; assign $name-span { className lane-data-th-name } { textContent !view.display-col-name $col }
+       ; assign $name-span { className lane-data-th-name } { textContent $col-display-name } { title $col-display-name }
+       ; to resizer-el !view.create-col-resizer $tbl $col $col-idx $th $is-ro
+       !th-inner.appendChild $name-span
+       !th.appendChild $th-inner
+       !th.appendChild $resizer-el
+       !grid-hrow.appendChild $th
+
+       ; to t-th !document.createElement th
+       ; set 'lane-data-th lane-data-type-th' t-th.className
+       ; to t-inner !document.createElement div
+       ; set 'lane-data-th-inner lane-data-type-th-inner' t-inner.className
        ; to type-text !formatColumnType $col undefined undefined $view.tables
        ; to type-span !document.createElement span
        ; assign $type-span { className lane-data-th-type } { textContent $type-text }
@@ -5221,6 +5742,7 @@
            ; to lit-fmt !formatColumnType $row-target.valueSpec
            ; to hint-title ; add $type-text ; add ' · literal ' $lit-fmt
            [ match
+            { $row-target.templateActive : ; set [ add $hint-title ; add ' · template ' $row-target.displayTemplate.text ] hint-title }
             { $row-target.displayCol (
              ; to d-name !view.display-col-name $row-target.displayCol
              ; set [ add $hint-title ; add ' · display ' $d-name ] hint-title
@@ -5249,96 +5771,24 @@
          { true : ; set [ add $type-span.title [ add ' · ' $c-desc ] ] type-span.title }
         ]
        )
-       ; to resizer-el !document.createElement div
-       ; assign $resizer-el { className lane-data-col-resizer } { title 'Drag to resize column (double-click to reset)' } { hidden $is-ro }
-       !resizer-el.setAttribute role separator
-       !resizer-el.setAttribute aria-orientation vertical
-       !resizer-el.addEventListener mousedown (
-        ; condition { propertyIs false is-ro } (
-         ; to { ev } $argv
-         [ match
-          { $ev.preventDefault : !ev.preventDefault }
-         ]
-         [ match
-          { $ev.stopPropagation : !ev.stopPropagation }
-         ]
-         ; to start-x [ match
-          { [ propertyIs undefined ev.clientX ] : 0 }
-          { [ propertyIs null ev.clientX ] : 0 }
-          { true : $ev.clientX }
-         ]
-         ; to saved-w !normalizeColumnWidth $col.width
-         ; to measured [ match
-          { $saved-w : $saved-w }
-          { $th.getBoundingClientRect (
-           ; to rect !th.getBoundingClientRect
-           !window.Math.round $rect.width
-          ) }
-          { [ propertyIsGreaterThan 0 th.offsetWidth ] : $th.offsetWidth }
-          { true : 120 }
-         ]
-         ; to drag ; object { start-x $start-x } { start-w $measured } { moved false }
-         ; set 'lane-data-col-resizer lane-data-col-resizer--active' resizer-el.className
-         ; to on-move (
-          ; to { mev } $argv
-          ; to cur-x [ match
-           { [ propertyIs undefined mev.clientX ] : $drag.start-x }
-           { [ propertyIs null mev.clientX ] : $drag.start-x }
-           { true : $mev.clientX }
-          ]
-          ; to delta ; subtract $cur-x $drag.start-x
-          ; to raw-next ; add $drag.start-w $delta
-          ; to safe-next [ match
-           { [ propertyIsLessThan 1 raw-next ] : 1 }
-           { true : $raw-next }
-          ]
-          ; to next-w !normalizeColumnWidth $safe-next
-          [ match
-           { $next-w (
-            ; set true drag.moved
-            ; set $next-w col.width
-            !view.apply-column-width $col-idx $next-w
-           ) }
-          ]
-         )
-         ; to on-up (
-          ; set lane-data-col-resizer resizer-el.className
-          [ match
-           { $window.removeEventListener (
-            !window.removeEventListener mousemove $on-move
-            !window.removeEventListener mouseup $on-up
-           ) }
-          ]
-          [ match
-           { $drag.moved : !view.save-schema $tbl }
-          ]
-         )
-         !window.addEventListener mousemove $on-move
-         !window.addEventListener mouseup $on-up
-        )
-       )
-       !resizer-el.addEventListener dblclick (
-        ; condition { propertyIs false is-ro } (
-         [ match
-          { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col width }
-          { true : ; set undefined col.width }
-         ]
-         !view.apply-column-width $col-idx null
-         !view.save-schema $tbl
-        )
-       )
-       !th-inner.appendChild $name-span
-       !th-inner.appendChild $type-span
-       !th.appendChild $th-inner
-       !th.appendChild $resizer-el
-       !grid-hrow.appendChild $th
-       !view.grid-head-cells.push ; object { kind col } { col $col } { el $th } { name-el $name-span } { type-el $type-span } { resizer-el $resizer-el }
+       ; to t-resizer-el !view.create-col-resizer $tbl $col $col-idx $t-th $is-ro
+       !t-inner.appendChild $type-span
+       !t-th.appendChild $t-inner
+       !t-th.appendChild $t-resizer-el
+       !grid-trow.appendChild $t-th
+
+       !view.grid-head-cells.push ; object { kind col } { col $col } { el $th } { name-el $name-span } { type-el $type-span } { type-th $t-th } { resizer-el $resizer-el }
+       !view.grid-type-cells.push ; object { kind col } { col $col } { el $t-th } { inner-el $t-inner } { type-el $type-span } { resizer-el $t-resizer-el }
       )
 
       ; to act-th !document.createElement th
       ; assign $act-th { className 'lane-data-th lane-data-th--actions' } { textContent '' }
       !grid-hrow.appendChild $act-th
       !view.grid-head-cells.push ; object { kind actions } { el $act-th }
+      ; to t-act-th !document.createElement th
+      ; assign $t-act-th { className 'lane-data-th lane-data-th--actions lane-data-type-th lane-data-type-th--actions' } { textContent '' }
+      !grid-trow.appendChild $t-act-th
+      !view.grid-type-cells.push ; object { kind actions } { el $t-act-th }
 
       [ match
        { $has-visible-subtables (
@@ -5509,36 +5959,55 @@
            ; set 'lane-data-grid lane-data-subtable-grid' sub-grid.className
            ; to sub-thead !document.createElement thead
            ; to sub-hrow !document.createElement tr
+           ; set lane-data-head-row sub-hrow.className
+           ; to sub-trow !document.createElement tr
+           ; set lane-data-type-row sub-trow.className
            ; to sub-num-th !document.createElement th
            ; assign $sub-num-th { className 'lane-data-th lane-data-th--num' } { textContent '#' }
            !sub-hrow.appendChild $sub-num-th
+           ; to sub-t-num-th !document.createElement th
+           ; assign $sub-t-num-th { className 'lane-data-th lane-data-th--num lane-data-type-th lane-data-type-th--num' } { textContent '' }
+           !sub-trow.appendChild $sub-t-num-th
            ; each $sub-display-cols (
             ; to { scol } $argv
             ; to sth !document.createElement th
+            ; to st-th !document.createElement th
             ; to sw !normalizeColumnWidth $scol.width
             ; to s-has-w [ match { $sw : true } { true : false } ]
             ; set [ ternary $s-has-w 'lane-data-th lane-data-th--sized' lane-data-th ] sth.className
+            ; set [ ternary $s-has-w 'lane-data-th lane-data-type-th lane-data-th--sized' 'lane-data-th lane-data-type-th' ] st-th.className
             [ match
              { $sw (
               ; to spx ; add $sw px
               ; assign sth.style { width $spx } { minWidth $spx } { maxWidth $spx }
+              ; assign st-th.style { width $spx } { minWidth $spx } { maxWidth $spx }
              ) }
             ]
             ; to sth-inner !document.createElement div
             ; set lane-data-th-inner sth-inner.className
+            ; to sname-label !view.display-col-name $scol
             ; to sname-span !document.createElement span
-            ; assign $sname-span { className lane-data-th-name } { textContent !view.display-col-name $scol }
-            ; to stype-span !document.createElement span
-            ; assign $stype-span { className lane-data-th-type } { textContent !formatColumnType $scol undefined undefined $view.tables }
+            ; assign $sname-span { className lane-data-th-name } { textContent $sname-label } { title $sname-label }
             !sth-inner.appendChild $sname-span
-            !sth-inner.appendChild $stype-span
             !sth.appendChild $sth-inner
             !sub-hrow.appendChild $sth
+
+            ; to st-inner !document.createElement div
+            ; set 'lane-data-th-inner lane-data-type-th-inner' st-inner.className
+            ; to stype-span !document.createElement span
+            ; assign $stype-span { className lane-data-th-type } { textContent !formatColumnType $scol undefined undefined $view.tables }
+            !st-inner.appendChild $stype-span
+            !st-th.appendChild $st-inner
+            !sub-trow.appendChild $st-th
            )
            ; to sub-act-th !document.createElement th
            ; assign $sub-act-th { className 'lane-data-th lane-data-th--actions' } { textContent '' }
            !sub-hrow.appendChild $sub-act-th
+           ; to sub-t-act-th !document.createElement th
+           ; assign $sub-t-act-th { className 'lane-data-th lane-data-th--actions lane-data-type-th lane-data-type-th--actions' } { textContent '' }
+           !sub-trow.appendChild $sub-t-act-th
            !sub-thead.appendChild $sub-hrow
+           !sub-thead.appendChild $sub-trow
 
            ; to sub-tbody !document.createElement tbody
            ; set lane-data-subtable-tbody sub-tbody.className
@@ -5685,6 +6154,15 @@
      ; set $next-spec.refColumnId col.refColumnId
      ; set $next-spec.refDisplayColumnId col.refDisplayColumnId
      [ match
+      { $next-spec.refDisplayTemplate : ; set $next-spec.refDisplayTemplate col.refDisplayTemplate }
+      { true (
+       [ match
+        { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col refDisplayTemplate }
+        { true : ; set undefined col.refDisplayTemplate }
+       ]
+      ) }
+     ]
+     [ match
       { $next-spec.refFilterColumnId : ; set $next-spec.refFilterColumnId col.refFilterColumnId }
       { true (
        [ match
@@ -5826,6 +6304,27 @@
          ; to next-vals $keep-col.id $keep-val
         )
         ; set $next-vals row.values
+        [ match
+         { $row.flags (
+          ; to next-flags ; object
+          ; to flag-box ; object { count 0 }
+          ; each $tbl.columns (
+           ; to { keep-col } $argv
+           ; to keep-flag !view.get-cell-flag $row $keep-col.id
+           [ match
+            { $keep-flag (
+             ; to next-flags $keep-col.id $keep-flag
+             ; set [ add $flag-box.count 1 ] flag-box.count
+            ) }
+           ]
+          )
+          [ match
+           { [ propertyIsGreaterThan 0 flag-box.count ] : ; set $next-flags row.flags }
+           { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $row flags }
+           { true : ; set undefined row.flags }
+          ]
+         ) }
+        ]
        )
        !view.sanitize-views-for-table $tbl true
        !view.sync-view-ui
@@ -6118,8 +6617,10 @@
      ; to row-config-wrap !document.createElement div
      ; assign $row-config-wrap { className lane-data-row-config } { hidden [ ternary $is-row false true ] }
 
+     ; to ref-target-line !document.createElement div
+     ; set 'lane-data-row-line lane-data-row-line--ref' ref-target-line.className
      ; to ref-table-field !document.createElement label
-     ; set lane-data-row-field ref-table-field.className
+     ; set 'lane-data-row-field lane-data-row-field--inline' ref-table-field.className
      ; to ref-table-label !document.createElement span
      ; assign $ref-table-label { className lane-data-row-label } { textContent Table }
      ; to ref-table-el !document.createElement select
@@ -6131,7 +6632,7 @@
      !ref-table-field.appendChild $ref-table-el
 
      ; to ref-col-field !document.createElement label
-     ; set lane-data-row-field ref-col-field.className
+     ; set 'lane-data-row-field lane-data-row-field--inline lane-data-row-field--secondary' ref-col-field.className
      ; to ref-col-label !document.createElement span
      ; assign $ref-col-label { className lane-data-row-label } { textContent Column }
      ; to ref-col-el !document.createElement select
@@ -6141,36 +6642,48 @@
      !ref-col-el.appendChild $ref-col-empty
      !ref-col-field.appendChild $ref-col-label
      !ref-col-field.appendChild $ref-col-el
+     !ref-target-line.appendChild $ref-table-field
+     !ref-target-line.appendChild $ref-col-field
 
+     ; to ref-disp-line !document.createElement div
+     ; set 'lane-data-row-line lane-data-row-line--display' ref-disp-line.className
      ; to ref-disp-field !document.createElement label
-     ; set lane-data-row-field ref-disp-field.className
+     ; set 'lane-data-row-field lane-data-row-field--inline' ref-disp-field.className
      ; to ref-disp-label !document.createElement span
      ; assign $ref-disp-label { className lane-data-row-label } { textContent Display }
      ; to ref-display-el !document.createElement select
      ; set 'lane-input-type lane-data-row-select' ref-display-el.className
      ; to ref-disp-empty !document.createElement option
-     ; assign $ref-disp-empty { value '' } { textContent 'None (optional)' }
+     ; assign $ref-disp-empty { value '' } { textContent None }
      !ref-display-el.appendChild $ref-disp-empty
+     ; to ref-disp-tmpl !document.createElement option
+     ; assign $ref-disp-tmpl { value '$template' } { textContent Template }
+     !ref-display-el.appendChild $ref-disp-tmpl
      !ref-disp-field.appendChild $ref-disp-label
      !ref-disp-field.appendChild $ref-display-el
 
      ; to ref-tmpl-field !document.createElement label
-     ; set 'lane-data-row-field lane-data-row-field--template' ref-tmpl-field.className
+     ; assign $ref-tmpl-field { className 'lane-data-row-field lane-data-row-field--inline lane-data-row-field--secondary lane-data-row-field--template' } { hidden true }
      ; to ref-tmpl-label !document.createElement span
      ; assign $ref-tmpl-label { className lane-data-row-label } { textContent Template }
      ; to ref-tmpl-el !document.createElement input
      ; assign $ref-tmpl-el { type text } { className 'lane-input-type lane-data-row-template' } { placeholder '; add $family \' \' $version' } { spellcheck false } { autocomplete off } { disabled $is-ro } { readOnly $is-ro }
+     !ref-tmpl-field.appendChild $ref-tmpl-label
+     !ref-tmpl-field.appendChild $ref-tmpl-el
+     !ref-disp-line.appendChild $ref-disp-field
+     !ref-disp-line.appendChild $ref-tmpl-field
+
+     ; to ref-tmpl-details !document.createElement div
+     ; assign $ref-tmpl-details { className lane-data-row-template-details } { hidden true }
      ; to ref-tmpl-tools !document.createElement div
      ; set lane-data-row-template-tools ref-tmpl-tools.className
      ; to ref-tmpl-preview !document.createElement span
-     ; set lane-data-row-template-preview ref-tmpl-preview.className
+     ; assign $ref-tmpl-preview { className lane-data-row-template-preview } { hidden true }
      ; to ref-tmpl-error !document.createElement span
-     ; set lane-data-row-template-error ref-tmpl-error.className
-     !ref-tmpl-field.appendChild $ref-tmpl-label
-     !ref-tmpl-field.appendChild $ref-tmpl-el
-     !ref-tmpl-field.appendChild $ref-tmpl-tools
-     !ref-tmpl-field.appendChild $ref-tmpl-preview
-     !ref-tmpl-field.appendChild $ref-tmpl-error
+     ; assign $ref-tmpl-error { className lane-data-row-template-error } { hidden true }
+     !ref-tmpl-details.appendChild $ref-tmpl-tools
+     !ref-tmpl-details.appendChild $ref-tmpl-preview
+     !ref-tmpl-details.appendChild $ref-tmpl-error
 
      ; to ref-filter-field !document.createElement div
      ; set 'lane-data-row-field lane-data-row-field--filter' ref-filter-field.className
@@ -6207,6 +6720,13 @@
        ; to cur-ref-table-id [ match { $col.refTableId : $col.refTableId } { true : '' } ]
        ; to cur-ref-col-id [ match { $col.refColumnId : $col.refColumnId } { true : '' } ]
        ; to cur-ref-disp-id [ match { $col.refDisplayColumnId : $col.refDisplayColumnId } { true : '' } ]
+       ; to cur-tmpl-str [ match { $col.refDisplayTemplate : $col.refDisplayTemplate } { true : '' } ]
+       ; to has-saved-tmpl [ propertyIsGreaterThan 0 cur-tmpl-str.length ]
+       ; to is-tmpl-mode [ match
+        { [ propertyIs '$template' cur-ref-disp-id ] : true }
+        { $has-saved-tmpl : true }
+        { true : false }
+       ]
        ; to cur-ref-filter-col-id [ match { $col.refFilterColumnId : $col.refFilterColumnId } { true : '' } ]
        ; to cur-filter-by-col-id [ match { $col.filterByColumnId : $col.filterByColumnId } { true : '' } ]
 
@@ -6300,12 +6820,23 @@
        ; to filter-op-word [ match { $sel-filter-col.multiple : contains } { true : is } ]
        ; set $filter-op-word ref-filter-is.textContent
        ; set [ match { $sel-col : $sel-col.id } { true : '' } ] ref-col-el.value
-       ; set [ match { $sel-disp : $sel-disp.id } { true : '' } ] ref-display-el.value
-       ; set [ match { $col.refDisplayTemplate : $col.refDisplayTemplate } { true : '' } ] ref-tmpl-el.value
+       ; set [ match
+        { $is-tmpl-mode : '$template' }
+        { $sel-disp : $sel-disp.id }
+        { true : '' }
+       ] ref-display-el.value
+       ; to show-tmpl [ match { $is-tmpl-mode : true } { true : false } ]
+       ; set [ ternary $show-tmpl false true ] ref-tmpl-field.hidden
+       ; set [ ternary $show-tmpl false true ] ref-tmpl-details.hidden
+       ; set [ ternary $show-tmpl 'lane-data-row-line lane-data-row-line--display lane-data-row-line--display-template' 'lane-data-row-line lane-data-row-line--display' ] ref-disp-line.className
+       ; set $cur-tmpl-str ref-tmpl-el.value
        ; to refresh-tmpl-preview (
         ; to pv !view.preview-display-template $tbl $col $ref-tmpl-el.value
         ; set $pv.text ref-tmpl-preview.textContent
-        ; set [ match { [ propertyIs true pv.ok ] : '' } { true : $pv.error } ] ref-tmpl-error.textContent
+        ; set [ propertyIs '' pv.text ] ref-tmpl-preview.hidden
+        ; to err-msg [ match { [ propertyIs true pv.ok ] : '' } { true : $pv.error } ]
+        ; set $err-msg ref-tmpl-error.textContent
+        ; set [ propertyIs '' err-msg ] ref-tmpl-error.hidden
         ; set [ match { [ propertyIs true pv.ok ] : 'lane-data-row-template-preview' } { true : 'lane-data-row-template-preview lane-data-row-template-preview--error' } ] ref-tmpl-preview.className
        )
        ; to apply-tmpl-change (
@@ -6315,6 +6846,7 @@
           !refresh-tmpl-preview
          ) }
          { true (
+          ; set '$template' col.refDisplayColumnId
           [ match
            { [ propertyIs '' parsed.text ] (
             [ match
@@ -6334,7 +6866,7 @@
        )
        !ref-tmpl-el.addEventListener input : !refresh-tmpl-preview
        !ref-tmpl-el.addEventListener change : !apply-tmpl-change
-       ; match
+       [ match
         { $sel-table (
          ; each $sel-table.columns (
           ; to { tc } $argv
@@ -6343,20 +6875,34 @@
           ; to chip !document.createElement button
           ; assign $chip { type button } { className lane-data-row-template-chip } { textContent $token } { title [ ; add 'Insert ' ; add $tc-name ' column' ] } { disabled $is-ro }
           !chip.addEventListener click (
-           ; to start $ref-tmpl-el.selectionStart
-           ; to end $ref-tmpl-el.selectionEnd
-           ; to before !ref-tmpl-el.value.slice 0 $start
-           ; to after !ref-tmpl-el.value.slice $end
+           ; to cur-val [ match { $ref-tmpl-el.value : $ref-tmpl-el.value } { true : '' } ]
+           ; to start [ match
+            { [ propertyIs undefined ref-tmpl-el.selectionStart ] : $cur-val.length }
+            { [ propertyIs null ref-tmpl-el.selectionStart ] : $cur-val.length }
+            { true : $ref-tmpl-el.selectionStart }
+           ]
+           ; to end [ match
+            { [ propertyIs undefined ref-tmpl-el.selectionEnd ] : $start }
+            { [ propertyIs null ref-tmpl-el.selectionEnd ] : $start }
+            { true : $ref-tmpl-el.selectionEnd }
+           ]
+           ; to before !cur-val.slice 0 $start
+           ; to after !cur-val.slice $end
            ; set [ ; add $before ; add $token $after ] ref-tmpl-el.value
            ; to caret [ ; add $start $token.length ]
-           !ref-tmpl-el.focus
-           !ref-tmpl-el.setSelectionRange $caret $caret
+           [ match
+            { $ref-tmpl-el.focus : !ref-tmpl-el.focus [ object { preventScroll true } ] }
+           ]
+           [ match
+            { $ref-tmpl-el.setSelectionRange : !ref-tmpl-el.setSelectionRange $caret $caret }
+           ]
            !apply-tmpl-change
           )
           !ref-tmpl-tools.appendChild $chip
          )
         ) }
         { true : null }
+       ]
        !refresh-tmpl-preview
        ; set [ match { $sel-filter-col : $sel-filter-col.id } { true : '' } ] ref-filter-col-el.value
        ; set [ match { $sel-filter-by : $sel-filter-by.id } { true : '' } ] filter-by-col-el.value
@@ -6376,6 +6922,12 @@
            ; to lit-fmt !formatColumnType $val-spec
            ; to base-hint ; add 'Stores ' $lit-fmt
            ; to with-disp [ match
+            { $is-tmpl-mode (
+             [ match
+              { $has-saved-tmpl : ; add $base-hint ; add ' · template ' $cur-tmpl-str }
+              { true : ; add $base-hint ' · enter display template' }
+             ]
+            ) }
             { $sel-disp [ match
              { [ propertyIs $sel-col.id sel-disp.id ] : ; add $base-hint ' · same as link column' }
              { true (
@@ -6402,19 +6954,13 @@
          ]
         ) }
        ]
-       ; match
-        { $col.refDisplayTemplate (
-         ; set [ ; add $hint-text ; add ' · template ' $col.refDisplayTemplate ] hint-text
-        ) }
-        { true : null }
        ; set $hint-text row-hint-el.textContent
       ) }
      ]
 
-     !row-config-wrap.appendChild $ref-table-field
-     !row-config-wrap.appendChild $ref-col-field
-     !row-config-wrap.appendChild $ref-disp-field
-     !row-config-wrap.appendChild $ref-tmpl-field
+     !row-config-wrap.appendChild $ref-target-line
+     !row-config-wrap.appendChild $ref-disp-line
+     !row-config-wrap.appendChild $ref-tmpl-details
      !row-config-wrap.appendChild $ref-filter-field
      !row-config-wrap.appendChild $row-hint-el
      !type-td.appendChild $row-config-wrap
@@ -7167,11 +7713,17 @@
       { constraint-to-el $compat-to-el }
       { constraint-hint-el $compat-hint-el }
       { row-config-wrap $row-config-wrap }
+      { ref-target-line $ref-target-line }
+      { ref-table-field $ref-table-field }
       { ref-table-el $ref-table-el }
+      { ref-col-field $ref-col-field }
       { ref-col-el $ref-col-el }
+      { ref-disp-line $ref-disp-line }
+      { ref-disp-field $ref-disp-field }
       { ref-display-el $ref-display-el }
       { ref-tmpl-field $ref-tmpl-field }
       { ref-tmpl-el $ref-tmpl-el }
+      { ref-tmpl-details $ref-tmpl-details }
       { ref-tmpl-tools $ref-tmpl-tools }
       { ref-tmpl-preview $ref-tmpl-preview }
       { ref-tmpl-error $ref-tmpl-error }
@@ -7201,7 +7753,11 @@
        ; to h-idx ; add $srow.index $col-head-offset
        ; to h-cell [ get view.grid-head-cells $h-idx ]
        [ match
-        { $h-cell.name-el : ; set [ !view.display-col-name $col ] h-cell.name-el.textContent }
+        { $h-cell.name-el (
+         ; to next-col-label !view.display-col-name $col
+         ; set $next-col-label h-cell.name-el.textContent
+         ; set $next-col-label h-cell.name-el.title
+        ) }
        ]
        ; condition { propertyIs row col.type } : !view.refresh-row-column-triggers $srow.index
        !view.save-schema $tbl
@@ -7235,6 +7791,7 @@
          { refTableId [ match { $col.refTableId : $col.refTableId } { true : '' } ] }
          { refColumnId [ match { $col.refColumnId : $col.refColumnId } { true : '' } ] }
          { refDisplayColumnId [ match { $col.refDisplayColumnId : $col.refDisplayColumnId } { true : '' } ] }
+         { refDisplayTemplate $col.refDisplayTemplate }
          { refFilterColumnId [ match { $col.refFilterColumnId : $col.refFilterColumnId } { true : '' } ] }
          { filterByColumnId [ match { $col.filterByColumnId : $col.filterByColumnId } { true : '' } ] }
          { constraint $col.constraint }
@@ -7292,6 +7849,7 @@
           { refTableId $cur-tbl-id }
           { refColumnId $next-col-id }
           { refDisplayColumnId $cur-disp-id }
+          { refDisplayTemplate $col.refDisplayTemplate }
           { refFilterColumnId $cur-ref-filter-id }
           { filterByColumnId $cur-filter-by-id }
          ]
@@ -7305,7 +7863,17 @@
      )
      !ref-display-el.addEventListener change (
       ; condition { propertyIs false is-ro } (
-       ; set $ref-display-el.value col.refDisplayColumnId
+       ; to next-disp-val $ref-display-el.value
+       ; set $next-disp-val col.refDisplayColumnId
+       [ match
+        { [ propertyIs '$template' next-disp-val ] : null }
+        { true (
+         [ match
+          { $window.Reflect.deleteProperty : !window.Reflect.deleteProperty $col refDisplayTemplate }
+          { true : ; set undefined col.refDisplayTemplate }
+         ]
+        ) }
+       ]
        !view.render-schema
        !view.render-grid
        !view.save-schema $tbl
@@ -7461,6 +8029,7 @@
 
  ; to view.render (
   -- Re-renders table tabs, remote origin banner, active table header, schema columns, and editable rows grid
+  !view.close-cell-menu
   !view.close-table-menu
   !view.render-table-tabs
   ; set [ ternary $view.is-loading false true ] loading-el.hidden
@@ -7536,6 +8105,7 @@
   ; to { id skip-url } $argv
   ; set false view.editing-view-name
   !edit-table-modal.close
+  !view.close-cell-menu
   !view.close-view-menu
   !view.close-filter-menu
   !view.clear-pinned-rows $id
@@ -7830,6 +8400,10 @@
   ; to { ev } $argv
   [ match { $ev.stopPropagation : !ev.stopPropagation } ]
  )
+ !cell-menu.addEventListener click (
+  ; to { ev } $argv
+  [ match { $ev.stopPropagation : !ev.stopPropagation } ]
+ )
  !filter-op-select.addEventListener change (
   ; to tbl !view.get-active-table
   ; to col-box ; object { col null }
@@ -7870,7 +8444,7 @@
     ]
     !view.render-filter-value-inputs $tbl $col $next-op $keep1 $keep2
     [ match
-     { [ and { $view.filter-val-el } { $view.filter-val-el.focus } ] : !view.filter-val-el.focus }
+     { [ and { $view.filter-val-el } { $view.filter-val-el.focus } ] : !view.filter-val-el.focus [ object { preventScroll true } ] }
     ]
    ) }
   ]
@@ -7952,6 +8526,22 @@
      ]
      ; condition { propertyIs false inside-fmenu } : !view.close-filter-menu
     )
+    ; condition { propertyIs true view.cell-menu-state.open } (
+     ; to inside-cmenu [ match
+      { [ propertyIs null target ] : false }
+      { [ propertyIs $cell-menu target ] : true }
+      { [ propertyIs $cell-menu-title-el target ] : true }
+      { [ propertyIs $cell-menu-meta-el target ] : true }
+      { [ propertyIs $cell-flag-none-btn target ] : true }
+      { [ propertyIs $cell-flag-unknown-btn target ] : true }
+      { [ propertyIs $cell-flag-incorrect-btn target ] : true }
+      { [ and $view.cell-menu-state.anchor-el [ propertyIs $view.cell-menu-state.anchor-el target ] ] : true }
+      { [ and $view.cell-menu-state.anchor-el.circle-el [ propertyIs $view.cell-menu-state.anchor-el.circle-el target ] ] : true }
+      { $cell-menu.contains : !cell-menu.contains $target }
+      { true : false }
+     ]
+     ; condition { propertyIs false inside-cmenu } : !view.close-cell-menu
+    )
    )
   ) }
  ]
@@ -7962,6 +8552,7 @@
     ; condition { propertyIs Escape ev.key } (
      [ match
       { [ propertyIs true edit-table-modal.is-open ] : !edit-table-modal.close }
+      { [ propertyIs true view.cell-menu-state.open ] : !view.close-cell-menu }
       { [ propertyIs true view.filter-editor.open ] : !view.close-filter-menu }
       { [ propertyIs true view.view-menu-open ] [ match
        { [ propertyIs true view.editing-view-name ] : !view.cancel-edit-view-name }

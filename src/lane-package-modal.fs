@@ -584,7 +584,7 @@
   ; set null modal.on-cancelled
   !show-mode create 'Create Package' 'Organize lanes into a shareable, optionally passphrase-protected package'
   [ match
-   { $create-name-input.focus : !create-name-input.focus }
+   { $create-name-input.focus : !create-name-input.focus [ object { preventScroll true } ] }
   ]
   $modal
  )
@@ -652,8 +652,8 @@
     ; set [ ternary $has-pass 'Unlock package' 'Open package' ] unlock-submit-btn.textContent
     !show-mode unlock $modal-title 'Open target package for writing in this session to apply staged exports'
     [ match
-     { $has-pass : [ match { $unlock-pass-input.focus : !unlock-pass-input.focus } ] }
-     { true : [ match { $unlock-submit-btn.focus : !unlock-submit-btn.focus } ] }
+     { $has-pass : [ match { $unlock-pass-input.focus : !unlock-pass-input.focus [ object { preventScroll true } ] } ] }
+     { true : [ match { $unlock-submit-btn.focus : !unlock-submit-btn.focus [ object { preventScroll true } ] } ] }
     ]
    ) }
    { true (
@@ -661,10 +661,10 @@
     !show-mode unlock 'Open Package' 'Enter a package ID and passphrase (if required) to open it in this session'
     [ match
      { [ propertyIs '' prefill ] (
-      [ match { $unlock-id-input.focus : !unlock-id-input.focus } ]
+      [ match { $unlock-id-input.focus : !unlock-id-input.focus [ object { preventScroll true } ] } ]
      ) }
      { true (
-      [ match { $unlock-pass-input.focus : !unlock-pass-input.focus } ]
+      [ match { $unlock-pass-input.focus : !unlock-pass-input.focus [ object { preventScroll true } ] } ]
      ) }
     ]
    ) }
@@ -699,7 +699,7 @@
     [ match
      { [ propertyIs '' raw-name ] (
       !set-error 'Please enter a package name'
-      [ match { $create-name-input.focus : !create-name-input.focus } ]
+      [ match { $create-name-input.focus : !create-name-input.focus [ object { preventScroll true } ] } ]
      ) }
      { true (
       ; set true modal.creating-pkg
@@ -744,7 +744,7 @@
     [ match
      { [ propertyIs '' pkg-id ] (
       !set-error 'Please enter a package ID'
-      [ match { $unlock-id-input.focus : !unlock-id-input.focus } ]
+      [ match { $unlock-id-input.focus : !unlock-id-input.focus [ object { preventScroll true } ] } ]
      ) }
      { true (
       ; set true modal.opening-pkg
@@ -779,10 +779,10 @@
         !set-error $res.error
         [ match
          { $res.needsPassphrase (
-          [ match { $unlock-pass-input.focus : !unlock-pass-input.focus } ]
+          [ match { $unlock-pass-input.focus : !unlock-pass-input.focus [ object { preventScroll true } ] } ]
          ) }
          { true (
-          [ match { $unlock-id-input.focus : !unlock-id-input.focus } ]
+          [ match { $unlock-id-input.focus : !unlock-id-input.focus [ object { preventScroll true } ] } ]
          ) }
         ]
        ) }

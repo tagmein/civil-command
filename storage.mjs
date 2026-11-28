@@ -31,6 +31,7 @@ import {
  isRemoteTable,
  normalizeColumnWidth,
  normalizeMinimapScale,
+ normalizeRowFlags,
  normalizeTableImportMode,
  normalizeTableRemoteSpec,
  normalizeTableViewsRecord,
@@ -616,10 +617,15 @@ export function serializeTableSchema(table) {
 }
 
 export function serializeTableRow(row) {
- return JSON.stringify({
+ const payload = {
   id: row && row.id ? String(row.id) : '',
   values: row && row.values && typeof row.values === 'object' ? row.values : {},
- })
+ }
+ const flags = normalizeRowFlags(row && row.flags)
+ if (Object.keys(flags).length > 0) {
+  payload.flags = flags
+ }
+ return JSON.stringify(payload)
 }
 
 function resolveTableMutationTarget(laneId, tableOrId) {
@@ -928,7 +934,8 @@ export async function loadLaneTables(rootKv, laneData, laneId, options = {}) {
       values[col.id] = defaultDataValue(col, col.multiple)
      }
     }
-    hydratedRows.push({ id: rowId, values })
+    const flags = normalizeRowFlags(row.flags, ownerSchema.columns)
+    hydratedRows.push(Object.keys(flags).length > 0 ? { id: rowId, values, flags } : { id: rowId, values })
    }
 
    const localName = remote.customName && entry.schema.name
@@ -1000,7 +1007,8 @@ export async function loadLaneTables(rootKv, laneData, laneId, options = {}) {
      values[col.id] = defaultDataValue(col, col.multiple)
     }
    }
-   table.rows.push({ id: rowId, values })
+   const flags = normalizeRowFlags(row.flags, table.columns)
+   table.rows.push(Object.keys(flags).length > 0 ? { id: rowId, values, flags } : { id: rowId, values })
   }
  }
  return out
@@ -4642,9 +4650,15 @@ function canonicalizeSnapshotTable(table) {
    for (const k of Object.keys(vals).sort()) {
     sortedVals[k] = vals[k]
    }
+   const flags = normalizeRowFlags(r && r.flags, cols)
+   const sortedFlags = {}
+   for (const k of Object.keys(flags).sort()) {
+    sortedFlags[k] = flags[k]
+   }
    return {
     id: r && r.id !== undefined && r.id !== null ? String(r.id) : '',
     values: sortedVals,
+    ...(Object.keys(sortedFlags).length > 0 ? { flags: sortedFlags } : {}),
    }
   }),
  }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
+ CELL_FLAGS,
  DATA_COLUMN_TYPES,
  DATA_CONSTRAINT_TYPES,
  DATA_RUNTIME_ENV,
@@ -22,6 +23,7 @@ import {
  coerceDataValue,
  collectLaneSyncBundle,
  columnSupportsWorkflow,
+ computeLaneSnapshotRevision,
  createAgentEventHub,
  createDefaultColumnConstraint,
  createIdleTracker,
@@ -52,6 +54,7 @@ import {
  getColumnWorkflowConstraint,
  getFilterOperatorsForColumn,
  getInboundSubtableRowsForParent,
+ getRowCellFlag,
  getSupportedColumnConstraints,
  getWorkflowCellState,
  hasImportCycle,
@@ -73,7 +76,9 @@ import {
  normalizeDataColumnType,
  normalizeDataDir,
  normalizeFixedDecimals,
+ normalizeCellFlag,
  normalizePrimitiveType,
+ normalizeRowFlags,
  normalizeTableFilter,
  normalizeTableImportMode,
  normalizeTableRemoteSpec,
@@ -107,7 +112,9 @@ import {
  saveImportedTableLink,
  saveLaneTables,
  saveTableViews,
+ serializeTableRow,
  sessionModalSource,
+ setRowCellFlag,
  syncTableRowsInMemory,
  tableViewFiltersEqual,
  tableViewsKey,
@@ -1352,41 +1359,49 @@ test('Data tables right-align only integer and fixed cells, resize columns horiz
 
   // Resize column 0 (`label`) by dragging +90px (140 -> 230) and column 3 (`balance`) by -40px (140 -> 100)
   const labelHead = dataView['grid-head-cells'][1]
+  const labelType = dataView['grid-type-cells'][1]
   await labelHead['resizer-el'].listeners.mousedown({ clientX: 100, preventDefault() {}, stopPropagation() {} })
   await dispatchWindowEvent('mousemove', { clientX: 190 })
   await dispatchWindowEvent('mouseup', {})
   assert.equal(dataView.tables[0].columns[0].width, 230)
   assert.equal(labelHead.el.style.width, '230px')
+  assert.equal(labelType.el.style.width, '230px')
   assert.equal(row0.cells[0].td.style.width, '230px')
   assert.match(labelHead.el.className, /lane-data-th--sized/)
+  assert.match(labelType.el.className, /lane-data-th--sized/)
   assert.match(row0.cells[0].td.className, /lane-data-td--sized/)
 
   const balHead = dataView['grid-head-cells'][4]
+  const balType = dataView['grid-type-cells'][4]
   await balHead['resizer-el'].listeners.mousedown({ clientX: 300, preventDefault() {}, stopPropagation() {} })
   await dispatchWindowEvent('mousemove', { clientX: 260 })
   await dispatchWindowEvent('mouseup', {})
   assert.equal(dataView.tables[0].columns[3].width, 100)
   assert.equal(balHead.el.style.width, '100px')
+  assert.equal(balType.el.style.width, '100px')
   assert.equal(row0.cells[3].td.style.width, '100px')
   // Preserves right-align class when sized!
   assert.match(row0.cells[3].td.className, /lane-data-td--right/)
   assert.match(row0.cells[3].td.className, /lane-data-td--sized/)
 
-  // Reload app -> persisted widths survive in schema and are applied to th & td immediately
+  // Reload app -> persisted widths survive in schema and are applied to th, type th & td immediately
   const fReload = makeRuntime()
   await fReload.run(parse(mainSource, '/src/main.fs'))
   const reloadedData = fReload.state.lanes[0].notebook['data-view']
   assert.equal(reloadedData.tables[0].columns[0].width, 230)
   assert.equal(reloadedData.tables[0].columns[3].width, 100)
   assert.equal(reloadedData['grid-head-cells'][1].el.style.width, '230px')
+  assert.equal(reloadedData['grid-type-cells'][1].el.style.width, '230px')
   assert.equal(reloadedData['grid-rows'][0].cells[0].td.style.width, '230px')
   assert.equal(reloadedData['grid-head-cells'][4].el.style.width, '100px')
+  assert.equal(reloadedData['grid-type-cells'][4].el.style.width, '100px')
   assert.equal(reloadedData['grid-rows'][0].cells[3].td.style.width, '100px')
 
   // Double-clicking resizer resets column width back to auto and persists
   await reloadedData['grid-head-cells'][1]['resizer-el'].listeners.dblclick()
   assert.equal(Object.hasOwn(reloadedData.tables[0].columns[0], 'width'), false)
   assert.equal(reloadedData['grid-head-cells'][1].el.style.width, '')
+  assert.equal(reloadedData['grid-type-cells'][1].el.style.width, '')
   assert.equal(reloadedData['grid-rows'][0].cells[0].td.style.width, '')
  }
  finally {
@@ -4087,16 +4102,32 @@ test('Data tab row Filter: "Filter where <state.country> is <person.country>" sc
   await dataView['schema-rows'][2]['type-el'].listeners.change()
   const peopleStateColId = dataView.tables[0].columns[2].id
 
-  // Verify Template then Filter fields are placed directly below Display in row-config-wrap with "where <select1> is <select2>"
+  // Verify compact row-config-wrap layout: [Table+Column], [Display+Template(hidden)], Template details(hidden), Filter "where <select1> is <select2>", Hint
   let stateSrow = dataView['schema-rows'][2]
   const rowConfigChildren = stateSrow['row-config-wrap'].children
-  assert.equal(rowConfigChildren[0].children[0].textContent, 'Table')
-  assert.equal(rowConfigChildren[1].children[0].textContent, 'Column')
-  assert.equal(rowConfigChildren[2].children[0].textContent, 'Display')
-  assert.equal(rowConfigChildren[3].children[0].textContent, 'Template')
-  assert.equal(rowConfigChildren[3], stateSrow['ref-tmpl-field'])
-  assert.equal(rowConfigChildren[4].children[0].textContent, 'Filter')
-  assert.equal(rowConfigChildren[4], stateSrow['ref-filter-field'])
+  assert.equal(rowConfigChildren[0], stateSrow['ref-target-line'])
+  assert.equal(stateSrow['ref-target-line'].children[0], stateSrow['ref-table-field'])
+  assert.equal(stateSrow['ref-target-line'].children[1], stateSrow['ref-col-field'])
+  assert.equal(stateSrow['ref-table-field'].children[0].textContent, 'Table')
+  assert.equal(stateSrow['ref-col-field'].children[0].textContent, 'Column')
+  assert.equal(rowConfigChildren[1], stateSrow['ref-disp-line'])
+  assert.equal(stateSrow['ref-disp-line'].children[0], stateSrow['ref-disp-field'])
+  assert.equal(stateSrow['ref-disp-line'].children[1], stateSrow['ref-tmpl-field'])
+  assert.equal(stateSrow['ref-disp-field'].children[0].textContent, 'Display')
+  assert.equal(stateSrow['ref-tmpl-field'].children[0].textContent, 'Template')
+  assert.equal(stateSrow['ref-tmpl-field'].hidden, true)
+  assert.equal(rowConfigChildren[2], stateSrow['ref-tmpl-details'])
+  assert.equal(stateSrow['ref-tmpl-details'].hidden, true)
+  assert.equal(rowConfigChildren[3].children[0].textContent, 'Filter')
+  assert.equal(rowConfigChildren[3], stateSrow['ref-filter-field'])
+  assert.equal(rowConfigChildren[4], stateSrow['row-hint-el'])
+  assert.deepEqual(
+   stateSrow['ref-display-el'].children.map(o => ({ v: o.value, t: o.textContent })),
+   [
+    { v: '', t: 'None' },
+    { v: '$template', t: 'Template' },
+   ]
+  )
   const filterControls = stateSrow['ref-filter-controls'].children
   assert.equal(filterControls[0].textContent, 'where')
   assert.equal(filterControls[1], stateSrow['ref-filter-col-el'])
@@ -4279,8 +4310,12 @@ test('Data tab Multiple ([]) columns: full-width resizable chips, filter input a
  assert.match(indexHtml, /\.lane-data-td\s*\{[^}]*max-height:\s*20em;[^}]*overflow-y:\s*auto;/s)
  assert.match(indexHtml, /\.lane-data-td--sized\s*\{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s)
  assert.match(indexHtml, /\.lane-data-multi\s*\{[^}]*align-items:\s*stretch;[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*max-height:\s*20em;[^}]*overflow-y:\s*auto;[^}]*width:\s*100%;/s)
+ assert.match(indexHtml, /\.lane-data-multi-bar\s*\{[^}]*display:\s*flex;[^}]*min-width:\s*0;[^}]*width:\s*100%;/s)
+ assert.match(indexHtml, /\.lane-data-multi-bar\s*>\s*\.lane-data-multi-filter\s*\{[^}]*flex:\s*1 1 auto;/s)
  assert.match(indexHtml, /\.lane-data-multi-filter\s*\{[^}]*min-width:\s*0;[^}]*width:\s*100%;/s)
  assert.match(indexHtml, /\.lane-data-multi-items\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*max-height:\s*16\.5em;[^}]*overflow-y:\s*auto;[^}]*width:\s*100%;/s)
+ assert.match(indexHtml, /\.lane-data-multi-items:empty\s*\{[^}]*display:\s*none;/s)
+ assert.match(indexHtml, /\.lane-data-multi-add\s*\{[^}]*aspect-ratio:\s*1\s*\/\s*1;[^}]*height:\s*var\(--lane-data-cell-size,\s*20px\);[^}]*width:\s*var\(--lane-data-cell-size,\s*20px\);/s)
  assert.match(indexHtml, /\.lane-data-multi-item\s*\{[^}]*display:\s*flex;[^}]*flex-shrink:\s*0;[^}]*max-width:\s*100%;[^}]*min-width:\s*0;[^}]*width:\s*100%;/s)
  assert.match(indexHtml, /\.lane-data-multi-item\s+\.lane-data-cell-input\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-width:\s*0;[^}]*width:\s*100%;/s)
  assert.match(indexHtml, /\.lane-data-multi-item\s+\.lane-data-cell-input--num\s*\{[^}]*min-width:\s*0;[^}]*width:\s*100%;/s)
@@ -4419,11 +4454,14 @@ test('Data tab Multiple ([]) columns: full-width resizable chips, filter input a
   const row0 = dataView['grid-rows'][0]
   const tagsCell = row0.cells[0]
   assert.equal(tagsCell.multi, true)
+  assert.ok(tagsCell['multi-bar'])
+  assert.equal(tagsCell['multi-bar'].className, 'lane-data-multi-bar')
   assert.ok(tagsCell['filter-input'])
   assert.equal(tagsCell['filter-input'].className, 'lane-data-multi-filter')
-  assert.equal(tagsCell['multi-wrap'].children[0], tagsCell['filter-input'])
-  assert.equal(tagsCell['multi-wrap'].children[1], tagsCell['items-el'])
-  assert.equal(tagsCell['multi-wrap'].children[2], tagsCell['add-btn'])
+  assert.deepEqual(tagsCell['multi-bar'].children, [tagsCell['filter-input'], tagsCell['add-btn']])
+  assert.deepEqual(tagsCell['multi-wrap'].children, [tagsCell['multi-bar'], tagsCell['items-el']])
+  assert.deepEqual(tagsCell.td.children, [tagsCell['multi-wrap'], tagsCell['menu-btn']])
+  assert.equal(tagsCell['items-el'].hidden, true)
 
   const sampleTags = [
    'alpha-core',
@@ -4444,6 +4482,7 @@ test('Data tab Multiple ([]) columns: full-width resizable chips, filter input a
    tagsCell.items[i]['input-el'].value = sampleTags[i]
    await tagsCell.items[i]['input-el'].listeners.input()
   }
+  assert.equal(tagsCell['items-el'].hidden, false)
   assert.equal(tagsCell.items.length, 12)
   assert.equal(tagsCell['match-count'], 12)
   assert.ok(tagsCell.items.every(item => item.el.hidden === false && item.matched === true))
@@ -6827,8 +6866,10 @@ test('Data tab table views & column filters UI: View selector popover, Edit tabl
    assert.equal(rObj.id.length > 0, true)
   }
 
-  // Verify grid-frow directly under grid-hrow with funnel SVG and dotted '+' buttons
-  assert.equal(dv['grid-hrow'].parentNode.children[1], dv['grid-frow'])
+  // Verify 3-row thead: grid-hrow (names), grid-trow (types), grid-frow (filters with funnel SVG and dotted '+' buttons)
+  assert.equal(dv['grid-hrow'].parentNode.children[0], dv['grid-hrow'])
+  assert.equal(dv['grid-hrow'].parentNode.children[1], dv['grid-trow'])
+  assert.equal(dv['grid-hrow'].parentNode.children[2], dv['grid-frow'])
   assert.equal(dv['grid-filter-cells'].length, 7) // num + 5 cols + actions
   assert.equal(dv['grid-filter-cells'][0].kind, 'num')
   assert.match(dv['grid-filter-cells'][0].el.innerHTML, /<svg class="lane-data-filter-funnel-icon"/)
@@ -7974,6 +8015,1302 @@ test('Data tab multi-type constraints UI: integer/boolean workflow & matching Fr
   assert.deepEqual(rItems.rows[0].values[stagesCol.id], [0, 1])
   assert.strictEqual(rItems.rows[0].values[lockedCol.id], true)
   assert.equal(rDataView['grid-rows'][0].cells[2]['select-el'].tag, 'select')
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('Cell flag helpers, row serialization/hydration, syncTable preservation, snapshot revision, and flag filter operators', async () => {
+ assert.deepEqual(CELL_FLAGS, ['unknown', 'incorrect'])
+ assert.equal(normalizeCellFlag('unknown'), 'unknown')
+ assert.equal(normalizeCellFlag('  UNKNOWN '), 'unknown')
+ assert.equal(normalizeCellFlag('incorrect'), 'incorrect')
+ assert.equal(normalizeCellFlag('  Incorrect '), 'incorrect')
+ assert.equal(normalizeCellFlag('none'), null)
+ assert.equal(normalizeCellFlag('unset'), null)
+ assert.equal(normalizeCellFlag('normal'), null)
+ assert.equal(normalizeCellFlag(''), null)
+ assert.equal(normalizeCellFlag(null), null)
+ assert.equal(normalizeCellFlag(undefined), null)
+ assert.equal(normalizeCellFlag(false), null)
+ assert.equal(normalizeCellFlag('bogus'), null)
+
+ const cols = [
+  { id: 'c-name', name: 'name', type: 'text', multiple: false },
+  { id: 'c-age', name: 'age', type: 'integer', multiple: false },
+ ]
+ const cleanedFlags = normalizeRowFlags({
+  'c-name': 'UNKNOWN',
+  'c-age': 'incorrect',
+  'c-missing': 'unknown',
+  __proto__: 'incorrect',
+  constructor: 'unknown',
+  prototype: 'incorrect',
+ }, cols)
+ assert.deepEqual(cleanedFlags, { 'c-name': 'unknown', 'c-age': 'incorrect' })
+
+ const row = { id: 'r1', values: { 'c-name': 'Ada', 'c-age': null } }
+ assert.equal(getRowCellFlag(row, 'c-name'), null)
+ assert.deepEqual(setRowCellFlag(row, 'c-age', 'unknown'), { changed: true, previousFlag: null, flag: 'unknown' })
+ assert.deepEqual(row.flags, { 'c-age': 'unknown' })
+ assert.equal(getRowCellFlag(row, 'c-age'), 'unknown')
+
+ // Only one flag per cell: setting incorrect replaces unknown
+ assert.deepEqual(setRowCellFlag(row, 'c-age', 'incorrect'), { changed: true, previousFlag: 'unknown', flag: 'incorrect' })
+ assert.deepEqual(row.flags, { 'c-age': 'incorrect' })
+
+ // Unsetting removes empty flags object cleanly
+ assert.deepEqual(setRowCellFlag(row, 'c-age', 'none'), { changed: true, previousFlag: 'incorrect', flag: null })
+ assert.equal(Object.hasOwn(row, 'flags'), false)
+ assert.equal(setRowCellFlag(row, '__proto__', 'incorrect').changed, false)
+
+ // serializeTableRow / parseStoredTables / loadLaneTables round-trip
+ const plainRow = { id: 'r-plain', values: { 'c-name': 'Grace' } }
+ assert.equal(Object.hasOwn(JSON.parse(serializeTableRow(plainRow)), 'flags'), false)
+ const flaggedRow = { id: 'r-flagged', values: { 'c-name': 'Ada', 'c-age': 42 }, flags: { 'c-name': 'incorrect', 'c-age': 'unknown' } }
+ assert.deepEqual(JSON.parse(serializeTableRow(flaggedRow)), flaggedRow)
+
+ const reparsed = parseStoredTables(JSON.stringify([
+  { id: 't1', name: 'people', columns: cols, rows: [plainRow, flaggedRow] },
+ ]))
+ assert.equal(Object.hasOwn(reparsed[0].rows[0], 'flags'), false)
+ assert.deepEqual(reparsed[0].rows[1].flags, { 'c-name': 'incorrect', 'c-age': 'unknown' })
+
+ const kvMap = new Map()
+ const makeKv = (prefix = '') => {
+  const qual = k => (prefix ? `${prefix}/${k}` : k)
+  return {
+   namespace(ns) { return makeKv(qual(ns)) },
+   async get(k) { return kvMap.has(qual(k)) ? kvMap.get(qual(k)) : null },
+   async set(k, v) { kvMap.set(qual(k), String(v)) },
+   async delete(k) { kvMap.delete(qual(k)) },
+  }
+ }
+ const rootKv = makeKv()
+ const laneData = rootKv.namespace('lane-flags-unit')
+ await saveLaneTables(rootKv, laneData, 'lane-flags-unit', reparsed)
+ const loadedTables = await loadLaneTables(rootKv, laneData, 'lane-flags-unit')
+ assert.equal(Object.hasOwn(loadedTables[0].rows[0], 'flags'), false)
+ assert.deepEqual(loadedTables[0].rows[1].flags, { 'c-name': 'incorrect', 'c-age': 'unknown' })
+
+ // Snapshot revision distinguishes flagged vs unflagged rows
+ const revBefore = computeLaneSnapshotRevision({ laneId: 'l1', tables: loadedTables })
+ setRowCellFlag(loadedTables[0].rows[0], 'c-name', 'unknown')
+ const revAfter = computeLaneSnapshotRevision({ laneId: 'l1', tables: loadedTables })
+ assert.notEqual(revBefore, revAfter)
+
+ // syncTableRowsInMemory preserves flags on matched rows and applies _flags updates
+ const syncRes = syncTableRowsInMemory(loadedTables, 'people', [
+  { _rowId: 'r-plain', name: 'Grace Hopper', age: 85 },
+  { _rowId: 'r-flagged', name: 'Ada Lovelace', age: 36, _flags: { name: 'none', age: 'incorrect' } },
+ ])
+ assert.equal(syncRes.ok, true)
+ assert.equal(syncRes.changed, true)
+ assert.deepEqual(loadedTables[0].rows[0].flags, { 'c-name': 'unknown' })
+ assert.deepEqual(loadedTables[0].rows[1].flags, { 'c-age': 'incorrect' })
+ const syncFlagOnly = syncTableRowsInMemory(loadedTables, 'people', [
+  { _rowId: 'r-plain', name: 'Grace Hopper', age: 85, _flags: { name: 'incorrect' } },
+  { _rowId: 'r-flagged', name: 'Ada Lovelace', age: 36, _flags: { age: 'incorrect' } },
+ ])
+ assert.equal(syncFlagOnly.changed, true)
+ assert.deepEqual(loadedTables[0].rows[0].flags, { 'c-name': 'incorrect' })
+
+ // Filter operators across scalar and multiple[] columns
+ for (const colType of DATA_COLUMN_TYPES) {
+  for (const multiple of [false, true]) {
+   const ops = getFilterOperatorsForColumn({ id: `col-${colType}`, name: colType, type: colType, multiple })
+   for (const flagOp of ['flagged_unknown', 'flagged_incorrect', 'is_flagged', 'not_flagged']) {
+    assert.ok(ops.some(o => o.op === flagOp), `${colType}${multiple ? '[]' : ''} missing ${flagOp}`)
+   }
+  }
+ }
+ const filterTbl = {
+  id: 'tf1',
+  name: 'audit',
+  columns: cols,
+  rows: [
+   { id: 'r1', values: { 'c-name': 'A', 'c-age': 1 }, flags: { 'c-name': 'unknown' } },
+   { id: 'r2', values: { 'c-name': 'B', 'c-age': 2 }, flags: { 'c-name': 'incorrect' } },
+   { id: 'r3', values: { 'c-name': 'C', 'c-age': 3 } },
+  ],
+ }
+ assert.deepEqual(filterTableRows(filterTbl, [{ id: 'f1', columnId: 'c-name', operator: 'flagged_unknown' }]).matchedEntries.map(e => e.row.id), ['r1'])
+ assert.deepEqual(filterTableRows(filterTbl, [{ id: 'f2', columnId: 'c-name', operator: 'flagged_incorrect' }]).matchedEntries.map(e => e.row.id), ['r2'])
+ assert.deepEqual(filterTableRows(filterTbl, [{ id: 'f3', columnId: 'c-name', operator: 'is_flagged' }]).matchedEntries.map(e => e.row.id), ['r1', 'r2'])
+ assert.deepEqual(filterTableRows(filterTbl, [{ id: 'f4', columnId: 'c-name', operator: 'not_flagged' }]).matchedEntries.map(e => e.row.id), ['r3'])
+})
+
+test('Data tab Cell menu & cell flags: input-matched square top-right button, blank/flag circles, Unknown (orange) / Incorrect (red) / None highlights, per-row storage, subtables, reload, remote sync, column delete, and Agent API', async () => {
+ const indexHtml = await fs.readFile(new URL('./index.html', import.meta.url), 'utf8')
+ assert.match(indexHtml, /--lane-data-cell-size:\s*20px;/)
+ assert.match(indexHtml, /\.lane-data-cell-input\s*\{[^}]*height:\s*var\(--lane-data-cell-size,\s*20px\);/)
+ assert.match(indexHtml, /\.lane-data-cell-select\s*\{[^}]*height:\s*var\(--lane-data-cell-size,\s*20px\);[^}]*line-height:\s*1\.2;[^}]*padding:\s*0 0\.25em;/s)
+ assert.match(indexHtml, /\.lane-data-row-trigger\s*\{[^}]*height:\s*var\(--lane-data-cell-size,\s*20px\);[^}]*line-height:\s*1\.2;[^}]*padding:\s*0 0\.45em;/s)
+ assert.match(indexHtml, /\.lane-data-row-cell-id\s*\{[^}]*line-height:\s*1\.2;[^}]*padding:\s*0 0\.32em;/s)
+ assert.match(indexHtml, /\.lane-data-lane-open-btn\s*\{[^}]*height:\s*var\(--lane-data-cell-size,\s*20px\);[^}]*line-height:\s*1\.2;[^}]*padding:\s*0 0\.45em;/s)
+ assert.match(indexHtml, /\.lane-data-cell-menu-btn\s*\{[^}]*aspect-ratio:\s*1\s*\/\s*1;[^}]*height:\s*var\(--lane-data-cell-size,\s*20px\);[^}]*top:\s*2px;[^}]*width:\s*var\(--lane-data-cell-size,\s*20px\);/)
+ assert.match(indexHtml, /\.lane-data-cell-menu-circle,\s*\.lane-data-cell-menu-swatch\s*\{[^}]*border-radius:\s*50%;/)
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tagName) {
+  return {
+   tag: tagName,
+   tagName: String(tagName || '').toUpperCase(),
+   nodeType: 1,
+   style: { setProperty() {}, removeProperty() {}, getPropertyValue() { return '' } },
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   checked: false,
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   readOnly: false,
+   focused: false,
+   removed: false,
+   offsetWidth: 140,
+   rect: { top: 40, left: 20, right: 320, bottom: 56, width: 640, height: 480 },
+   getBoundingClientRect() { return this.rect },
+   setAttribute(name, value) { this.attributes[name] = value },
+   getAttribute(name) { return this.attributes[name] ?? null },
+   removeAttribute(name) { delete this.attributes[name] },
+   contains(target) {
+    if (target === this) return true
+    return this.children.some(c => c === target || (c && typeof c.contains === 'function' && c.contains(target)))
+   },
+   appendChild(child) {
+    if (child && child.parentNode && child.parentNode.children) {
+     const idx = child.parentNode.children.indexOf(child)
+     if (idx !== -1) child.parentNode.children.splice(idx, 1)
+    }
+    this.children.push(child)
+    if (child && typeof child === 'object') {
+     child.parentNode = this
+     child.removed = false
+    }
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child && child.parentNode && child.parentNode.children) {
+     const oldIdx = child.parentNode.children.indexOf(child)
+     if (oldIdx !== -1) child.parentNode.children.splice(oldIdx, 1)
+    }
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) this.children.push(child)
+    else this.children.splice(idx, 0, child)
+    if (child && typeof child === 'object') {
+     child.parentNode = this
+     child.removed = false
+    }
+    return child
+   },
+   replaceChildren(...nodes) {
+    this.children = []
+    for (const n of nodes) this.appendChild(n)
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode && this.parentNode.children) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) this.parentNode.children.splice(idx, 1)
+     this.parentNode = null
+    }
+   },
+  }
+ }
+
+ const kv = new Map()
+ function createMockKV(prefix = '') {
+  const qualify = key => (prefix ? `${prefix}.${key}` : key)
+  const client = {
+   namespace(name) { return createMockKV(qualify(name)) },
+   withBasePath() { return client },
+   setBasePath() {},
+   async get(key) { return kv.has(qualify(key)) ? kv.get(qualify(key)) : null },
+   async set(key, value) { kv.set(qualify(key), value) },
+   async delete(key) { kv.delete(qualify(key)) },
+  }
+  return client
+ }
+
+ const rootKv = createMockKV()
+ await createNewSession(rootKv, { name: 'Flags Session', dataDirConfirmed: true })
+
+ let uuid = 0
+ function createRuntime(initialPathname = '/') {
+  const windowListeners = {}
+  const docListeners = {}
+  const mockWindow = {
+   Array,
+   Boolean,
+   Date,
+   JSON,
+   Math,
+   Object,
+   Reflect,
+   decodeURIComponent,
+   crypto: { randomUUID: () => `flag-uuid-${++uuid}` },
+   history: { pushState(_s, _t, url) { mockWindow.location.pathname = url } },
+   location: { pathname: initialPathname },
+   addEventListener(event, handler) {
+    windowListeners[event] ||= []
+    windowListeners[event].push(handler)
+   },
+   removeEventListener(event, handler) {
+    windowListeners[event] = (windowListeners[event] || []).filter(h => h !== handler)
+   },
+  }
+  const mockDocument = {
+   body: createMockElement('body'),
+   defaultView: mockWindow,
+   createElement: createMockElement,
+   addEventListener(event, handler) {
+    docListeners[event] ||= []
+    docListeners[event].push(handler)
+   },
+  }
+  const dispatchDocumentClick = async target => {
+   for (const handler of docListeners.click || []) {
+    await handler({ target })
+   }
+  }
+  const dispatchWindowKeydown = async ev => {
+   for (const handler of windowListeners.keydown || []) {
+    await handler(ev)
+   }
+  }
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {}, error() {} },
+   createIdleTracker,
+   data: rootKv,
+   defaultValueForType,
+   document: mockDocument,
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   createSourceWorkerRunner: opts => createSourceWorkerRunner(opts),
+   runLines,
+   runTransportedScripts,
+  })
+  return { f, dispatchDocumentClick, dispatchWindowKeydown, mockWindow }
+ }
+
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') return { text: async () => laneSource }
+  if (url === '/src/lane-notebook.fs') return { text: async () => notebookSource }
+  if (url === '/src/lane-inputs.fs') return { text: async () => inputsSource }
+  if (url === '/src/lane-scope.fs') return { text: async () => scopeSource }
+  if (url === '/src/lane-data.fs') return { text: async () => dataSource }
+  if (url === '/src/confirm-modal.fs') return { text: async () => confirmModalSource }
+  if (url === '/src/lane-row-picker-modal.fs') return { text: async () => rowPickerModalSource }
+  if (url === '/src/lane-output.fs') return { text: async () => outputSource }
+  if (url === '/src/lane-modal.fs') return { text: async () => modalSource }
+  if (url === '/src/lane-config-modal.fs') return { text: async () => configModalSource }
+  if (url === '/src/lane-import-modal.fs') return { text: async () => importModalSource }
+  if (url === '/src/lane-rails.fs') return { text: async () => railsSource }
+  if (url === '/src/lane-line-info-modal.fs') return { text: async () => lineInfoModalSource }
+  if (url === '/src/lane-export-modal.fs') return { text: async () => exportModalSource }
+  if (url === '/src/lane-export-deploy-modal.fs') return { text: async () => exportDeployModalSource }
+  if (url === '/src/lane-server.fs') return { text: async () => laneServerSource }
+  if (url === '/src/lane-story.fs') return { text: async () => laneStorySource }
+  if (url === '/src/lane-servers-modal.fs') return { text: async () => laneServersModalSource }
+  if (url === '/src/lane-terminal-modal.fs') return { text: async () => laneTerminalModalSource }
+  if (url === '/src/lane-session-modal.fs') return { text: async () => sessionModalSource }
+  if (url === '/src/lane-package-modal.fs') return { text: async () => packageModalSource }
+  if (url === '/src/lane-dir-modal.fs') return { text: async () => dirModalSource }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const { f, dispatchDocumentClick, dispatchWindowKeydown, mockWindow } = createRuntime('/')
+  await f.run(parse(mainSource, '/src/main.fs'))
+
+  // 1. Create Owner lane with contacts + inbound notes subtable
+  await f.state.tableHeadRowAddButton.listeners.click()
+  const ownerLane = f.state.lanes[0]
+  await ownerLane.notebook.tabs.data.listeners.click()
+  const dv = ownerLane.notebook['data-view']
+  const contactsTbl = await dv['add-table']('contacts')
+  const nameCol = await dv['add-column']('name', 'text', false)
+  const ageCol = await dv['add-column']('age', 'integer', false)
+  const tagsCol = await dv['add-column']('tags', 'text', true)
+  const cRow1 = await dv['add-row']()
+  const cRow2 = await dv['add-row']()
+  dv['grid-rows'][0].cells[0]['input-el'].value = 'Ada'
+  await dv['grid-rows'][0].cells[0]['input-el'].listeners.input()
+  dv['grid-rows'][0].cells[1]['input-el'].value = '36'
+  await dv['grid-rows'][0].cells[1]['input-el'].listeners.input()
+  dv['grid-rows'][1].cells[0]['input-el'].value = 'Grace'
+  await dv['grid-rows'][1].cells[0]['input-el'].listeners.input()
+
+  const notesTbl = await dv['add-table']('notes')
+  await dv['add-column']('contact', 'text', false)
+  notesTbl.columns[0].type = 'row'
+  notesTbl.columns[0].refTableId = contactsTbl.id
+  notesTbl.columns[0].refColumnId = nameCol.id
+  notesTbl.columns[0].refDisplayColumnId = nameCol.id
+  await dv['save-schema'](notesTbl)
+  const noteTextCol = await dv['add-column']('note', 'text', false)
+  const nRow1 = await dv['add-row']()
+  nRow1.values[notesTbl.columns[0].id] = 'Ada'
+  nRow1.values[noteTextCol.id] = 'Needs verification'
+  await dv['save-row'](notesTbl, nRow1)
+
+  await dv['select-table'](contactsTbl.id)
+  await dv['display-options-btns'][0].el.listeners.click()
+
+  // 2. Every data cell (scalar, multiple[], and inbound subtable) has top-right square "Cell menu" button
+  const nameCell = dv['grid-rows'][0].cells[0]
+  const ageCell = dv['grid-rows'][0].cells[1]
+  const tagsCell = dv['grid-rows'][0].cells[2]
+  const subNoteCell = dv['grid-rows'][0]['subtable-groups'][0].rows[0].cells[0]
+
+  for (const cell of [nameCell, ageCell, tagsCell, subNoteCell]) {
+   assert.ok(cell['menu-btn'], 'Expected menu-btn on cell')
+   assert.equal(cell['menu-btn'].attributes['aria-label'], 'Cell menu')
+   assert.equal(cell['menu-btn'].attributes['aria-haspopup'], 'menu')
+   assert.equal(cell['menu-btn'].attributes['aria-expanded'], 'false')
+   assert.equal(cell['menu-btn'].textContent, '')
+   assert.equal(cell['menu-btn'].className, 'lane-data-cell-menu-btn')
+   assert.ok(cell['menu-circle'], 'Expected menu-circle inside menu-btn')
+   assert.equal(cell['menu-btn']['circle-el'], cell['menu-circle'])
+   assert.equal(cell['menu-btn'].children[0], cell['menu-circle'])
+   assert.equal(cell['menu-circle'].attributes['aria-hidden'], 'true')
+   assert.equal(cell['menu-circle'].className, 'lane-data-cell-menu-circle')
+   assert.equal(cell['menu-circle'].textContent, '')
+   assert.match(cell.td.className, /lane-data-td--cell/)
+   assert.equal(cell.td.children[cell.td.children.length - 1], cell['menu-btn'])
+  }
+
+  // 3. Open Cell menu on nameCell -> check header, active None option, descriptions, circular swatches
+  const cellMenu = dv['cell-menu']
+  assert.equal(cellMenu.hidden, true)
+  await nameCell['menu-btn'].listeners.click({ stopPropagation() {} })
+  assert.equal(cellMenu.hidden, false)
+  assert.equal(dv['cell-menu-title-el'].textContent, 'Cell menu')
+  assert.equal(dv['cell-menu-meta-el'].textContent, 'name · #1')
+  assert.equal(nameCell['menu-btn'].attributes['aria-expanded'], 'true')
+  assert.match(nameCell['menu-btn'].className, /lane-data-cell-menu-btn--open/)
+  assert.equal(dv['cell-flag-none-btn'].attributes['aria-checked'], 'true')
+  assert.equal(dv['cell-flag-none-btn'].children[0].textContent, '')
+  assert.equal(dv['cell-flag-unknown-btn'].attributes['aria-checked'], 'false')
+  assert.equal(dv['cell-flag-unknown-btn'].children[0].textContent, '?')
+  assert.equal(dv['cell-flag-incorrect-btn'].attributes['aria-checked'], 'false')
+  assert.equal(dv['cell-flag-incorrect-btn'].children[0].textContent, '!')
+  assert.match(dv['cell-flag-unknown-btn'].children[1].children[1].textContent, /needed but missing/i)
+  assert.match(dv['cell-flag-incorrect-btn'].children[1].children[1].textContent, /incomplete or wrong/i)
+
+  // Clicking the inner circle element does not dismiss the menu as an outside click
+  await dispatchDocumentClick(nameCell['menu-circle'])
+  assert.equal(cellMenu.hidden, false)
+
+  // Clicking the same button again closes the menu
+  await nameCell['menu-btn'].listeners.click({ stopPropagation() {} })
+  assert.equal(cellMenu.hidden, true)
+  assert.equal(nameCell['menu-btn'].attributes['aria-expanded'], 'false')
+
+  // Outside document click closes menu
+  await nameCell['menu-btn'].listeners.click({ stopPropagation() {} })
+  assert.equal(cellMenu.hidden, false)
+  await dispatchDocumentClick(mockDocumentBodyPlaceholder())
+  function mockDocumentBodyPlaceholder() { return createMockElement('div') }
+  assert.equal(cellMenu.hidden, true)
+
+  // Escape closes menu
+  await nameCell['menu-btn'].listeners.click({ stopPropagation() {} })
+  assert.equal(cellMenu.hidden, false)
+  await dispatchWindowKeydown({ key: 'Escape' })
+  assert.equal(cellMenu.hidden, true)
+
+  // 4. Mark nameCell Unknown -> orange highlight, circle '?', stored per row
+  await nameCell['menu-btn'].listeners.click({ stopPropagation() {} })
+  await dv['cell-flag-unknown-btn'].listeners.click({ stopPropagation() {} })
+  assert.equal(cellMenu.hidden, true)
+  assert.deepEqual(cRow1.flags, { [nameCol.id]: 'unknown' })
+  assert.equal(Object.hasOwn(cRow2, 'flags'), false)
+  assert.match(nameCell.td.className, /lane-data-td--flag-unknown/)
+  assert.doesNotMatch(nameCell.td.className, /lane-data-td--flag-incorrect/)
+  assert.equal(nameCell.td.attributes['data-cell-flag'], 'unknown')
+  assert.equal(nameCell['menu-btn'].textContent, '')
+  assert.equal(nameCell['menu-circle'].textContent, '?')
+  assert.equal(nameCell['menu-circle'].className, 'lane-data-cell-menu-circle lane-data-cell-menu-circle--unknown')
+  assert.equal(nameCell['menu-btn'].attributes['aria-label'], 'Cell menu')
+  assert.match(nameCell['menu-btn'].className, /lane-data-cell-menu-btn--unknown/)
+
+  // 5. Switch directly to Incorrect -> only one flag per cell, red highlight, circle '!'
+  await nameCell['menu-btn'].listeners.click({ stopPropagation() {} })
+  assert.equal(dv['cell-flag-unknown-btn'].attributes['aria-checked'], 'true')
+  await dv['cell-flag-incorrect-btn'].listeners.click({ stopPropagation() {} })
+  assert.deepEqual(cRow1.flags, { [nameCol.id]: 'incorrect' })
+  assert.match(nameCell.td.className, /lane-data-td--flag-incorrect/)
+  assert.doesNotMatch(nameCell.td.className, /lane-data-td--flag-unknown/)
+  assert.equal(nameCell.td.attributes['data-cell-flag'], 'incorrect')
+  assert.equal(nameCell['menu-btn'].textContent, '')
+  assert.equal(nameCell['menu-circle'].textContent, '!')
+  assert.equal(nameCell['menu-circle'].className, 'lane-data-cell-menu-circle lane-data-cell-menu-circle--incorrect')
+  assert.equal(nameCell['menu-btn'].attributes['aria-label'], 'Cell menu')
+  assert.match(nameCell['menu-btn'].className, /lane-data-cell-menu-btn--incorrect/)
+
+  // Editing cell value & resizing column width preserve cell flag & highlight
+  nameCell['input-el'].value = 'Ada L.'
+  await nameCell['input-el'].listeners.input()
+  await dv['apply-column-width'](0, 210)
+  assert.equal(cRow1.flags[nameCol.id], 'incorrect')
+  assert.match(nameCell.td.className, /lane-data-td--flag-incorrect/)
+  assert.match(nameCell.td.className, /lane-data-td--sized/)
+
+  // 6. Flag multiple[] cell Unknown (orange) and subtable cell Incorrect (red)
+  await tagsCell['menu-btn'].listeners.click({ stopPropagation() {} })
+  await dv['cell-flag-unknown-btn'].listeners.click({ stopPropagation() {} })
+  assert.deepEqual(cRow1.flags, { [nameCol.id]: 'incorrect', [tagsCol.id]: 'unknown' })
+  assert.match(tagsCell.td.className, /lane-data-td--flag-unknown/)
+  assert.match(tagsCell['multi-wrap'].className, /lane-data-multi--flag-unknown/)
+
+  await subNoteCell['menu-btn'].listeners.click({ stopPropagation() {} })
+  await dv['cell-flag-incorrect-btn'].listeners.click({ stopPropagation() {} })
+  assert.deepEqual(nRow1.flags, { [noteTextCol.id]: 'incorrect' })
+  assert.match(subNoteCell.td.className, /lane-data-td--flag-incorrect/)
+
+  // 7. Flag filter updates rows and clearing via None restores normal state
+  const nameFilterCell = dv['grid-filter-cells'].find(fc => fc.col && fc.col.id === nameCol.id)
+  await nameFilterCell['add-btn'].listeners.click({ stopPropagation() {} })
+  dv['filter-op-select'].value = 'flagged_incorrect'
+  await dv['filter-op-select'].listeners.change()
+  await dv['filter-apply-btn'].listeners.click()
+  assert.equal(dv['grid-rows'].length, 1)
+  assert.equal(dv['grid-rows'][0].row.id, cRow1.id)
+
+  await dv['grid-rows'][0].cells[0]['menu-btn'].listeners.click({ stopPropagation() {} })
+  await dv['cell-flag-none-btn'].listeners.click({ stopPropagation() {} })
+  assert.deepEqual(cRow1.flags, { [tagsCol.id]: 'unknown' })
+  assert.equal(dv['grid-rows'].length, 0)
+  await dv['reset-active-view']()
+  assert.equal(dv['grid-rows'].length, 2)
+  assert.doesNotMatch(dv['grid-rows'][0].cells[0].td.className, /lane-data-td--flag-/)
+  assert.equal(dv['grid-rows'][0].cells[0]['menu-btn'].textContent, '')
+  assert.equal(dv['grid-rows'][0].cells[0]['menu-circle'].textContent, '')
+  assert.equal(dv['grid-rows'][0].cells[0]['menu-circle'].className, 'lane-data-cell-menu-circle')
+
+  // Mark ageCell Unknown so row 1 has age=unknown and tags=unknown before reload
+  await dv['grid-rows'][0].cells[1]['menu-btn'].listeners.click({ stopPropagation() {} })
+  await dv['cell-flag-unknown-btn'].listeners.click({ stopPropagation() {} })
+  assert.deepEqual(cRow1.flags, { [tagsCol.id]: 'unknown', [ageCol.id]: 'unknown' })
+
+  // 8. Reload runtime and verify flags & highlights persist across reload
+  const reloaded = createRuntime(mockWindow.location.pathname)
+  await reloaded.f.run(parse(mainSource, '/src/main.fs'))
+  const rLane = reloaded.f.state.lanes[0]
+  const rDv = rLane.notebook['data-view']
+  await rDv['select-table'](contactsTbl.id)
+  const rContacts = rDv.tables.find(t => t.id === contactsTbl.id)
+  assert.deepEqual(rContacts.rows[0].flags, { [tagsCol.id]: 'unknown', [ageCol.id]: 'unknown' })
+  assert.equal(Object.hasOwn(rContacts.rows[1], 'flags'), false)
+  assert.match(rDv['grid-rows'][0].cells[1].td.className, /lane-data-td--flag-unknown/)
+  assert.equal(rDv['grid-rows'][0].cells[1]['menu-btn'].textContent, '')
+  assert.equal(rDv['grid-rows'][0].cells[1]['menu-circle'].textContent, '?')
+  assert.equal(rDv['grid-rows'][0].cells[1]['menu-circle'].className, 'lane-data-cell-menu-circle lane-data-cell-menu-circle--unknown')
+  assert.match(rDv['grid-rows'][0].cells[2].td.className, /lane-data-td--flag-unknown/)
+
+  // 9. Remote imported tables: read-only disables Cell menu & blocks set-cell-flag; read-write propagates flags
+  await reloaded.f.state.tableHeadRowAddButton.listeners.click()
+  const roLane = reloaded.f.state.lanes[1]
+  await roLane.notebook.tabs.data.listeners.click()
+  const roDv = roLane.notebook['data-view']
+  const roTbl = await roDv['import-table']({
+   laneId: rLane.id,
+   tableId: contactsTbl.id,
+   tableName: 'contacts',
+   mode: 'read-only',
+   localName: 'ro_contacts',
+   columns: rContacts.columns,
+   rows: rContacts.rows,
+  })
+  assert.equal(roDv['grid-rows'][0].cells[1]['menu-btn'].disabled, true)
+  assert.match(roDv['grid-rows'][0].cells[1].td.className, /lane-data-td--flag-unknown/)
+  await roDv['set-cell-flag'](roTbl, roTbl.rows[0], ageCol, 'incorrect')
+  assert.equal(roTbl.rows[0].flags[ageCol.id], 'unknown')
+
+  await reloaded.f.state.tableHeadRowAddButton.listeners.click()
+  const rwLane = reloaded.f.state.lanes[2]
+  await rwLane.notebook.tabs.data.listeners.click()
+  const rwDv = rwLane.notebook['data-view']
+  const rwTbl = await rwDv['import-table']({
+   laneId: rLane.id,
+   tableId: contactsTbl.id,
+   tableName: 'contacts',
+   mode: 'read-write',
+   localName: 'rw_contacts',
+   columns: rContacts.columns,
+   rows: rContacts.rows,
+  })
+  assert.equal(rwDv['grid-rows'][0].cells[0]['menu-btn'].disabled, false)
+  await rwDv['grid-rows'][0].cells[0]['menu-btn'].listeners.click({ stopPropagation() {} })
+  await rwDv['cell-flag-incorrect-btn'].listeners.click({ stopPropagation() {} })
+  assert.equal(rContacts.rows[0].flags[nameCol.id], 'incorrect')
+  assert.match(rDv['grid-rows'][0].cells[0].td.className, /lane-data-td--flag-incorrect/)
+
+  // 10. Deleting a flagged column strips its key from row.flags
+  await rDv['request-delete-column'](rContacts, 1) // delete ageCol
+  await rDv['confirm-modal']['confirm-btn'].listeners.click()
+  assert.equal(rContacts.rows[0].flags[ageCol.id], undefined)
+  assert.deepEqual(rContacts.rows[0].flags, { [tagsCol.id]: 'unknown', [nameCol.id]: 'incorrect' })
+
+  // 11. Agent API supports flags on add-row, preserves flags on update-row, and supports set-flag
+  const agentAdded = await agentMutateLaneTable(rootKv, {
+   laneId: rLane.id,
+   action: 'add-row',
+   table: 'contacts',
+   values: { name: 'Linus' },
+   flags: { name: 'unknown' },
+  })
+  assert.equal(agentAdded.ok, true)
+  assert.deepEqual(agentAdded.row.flags, { [nameCol.id]: 'unknown' })
+  assert.deepEqual(agentAdded.table.namedRows.find(nr => nr._rowId === agentAdded.row.id)._flags, { name: 'unknown' })
+
+  const agentUpdated = await agentMutateLaneTable(rootKv, {
+   laneId: rLane.id,
+   action: 'update-row',
+   table: 'contacts',
+   rowId: agentAdded.row.id,
+   values: { name: 'Linus T.' },
+  })
+  assert.equal(agentUpdated.ok, true)
+  assert.deepEqual(agentUpdated.row.flags, { [nameCol.id]: 'unknown' })
+
+  const agentFlagged = await agentMutateLaneTable(rootKv, {
+   laneId: rLane.id,
+   action: 'set-flag',
+   table: 'contacts',
+   rowId: agentAdded.row.id,
+   column: 'name',
+   flag: 'incorrect',
+  })
+  assert.equal(agentFlagged.ok, true)
+  assert.deepEqual(agentFlagged.row.flags, { [nameCol.id]: 'incorrect' })
+
+  const agentCleared = await agentMutateLaneTable(rootKv, {
+   laneId: rLane.id,
+   action: 'set-flag',
+   table: 'contacts',
+   rowId: agentAdded.row.id,
+   column: 'name',
+   flag: 'none',
+  })
+  assert.equal(agentCleared.ok, true)
+  assert.equal(Object.hasOwn(agentCleared.row, 'flags'), false)
+
+  const agentBadFlag = await agentMutateLaneTable(rootKv, {
+   laneId: rLane.id,
+   action: 'set-flag',
+   table: 'contacts',
+   rowId: agentAdded.row.id,
+   column: 'name',
+   flag: 'invalid_flag',
+  })
+  assert.equal(agentBadFlag.ok, false)
+
+  const fetched = await agentGetLane(rootKv, { laneId: rLane.id })
+  const fetchedContacts = fetched.lane.tables.find(t => t.name === 'contacts')
+  const row0Named = fetchedContacts.namedRows.find(nr => nr._rowId === rContacts.rows[0].id)
+  assert.deepEqual(row0Named._flags, { name: 'incorrect', tags: 'unknown' })
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('Data table 3-row sticky thead (separate same-size type row), 100vh max-height, left-frozen # column only, narrow resize, and subtable header rows', async () => {
+ const indexHtml = await fs.readFile(new URL('./index.html', import.meta.url), 'utf8')
+ assert.match(indexHtml, /--lane-data-head-row-size:\s*24px;/)
+ assert.match(indexHtml, /\.lane-data-grid-wrap\s*\{[^}]*box-sizing:\s*border-box;[^}]*max-height:\s*100vh;[^}]*overflow:\s*auto;/s)
+ assert.match(indexHtml, /\.lane-data-grid\s*\{[^}]*border-collapse:\s*separate;[^}]*border-spacing:\s*0;/s)
+ assert.match(indexHtml, /\.lane-data-subtable-grid\s*\{[^}]*border-collapse:\s*separate;[^}]*border-spacing:\s*0;/s)
+ assert.match(
+  indexHtml,
+  /\.lane-data-head-row\s*>\s*\.lane-data-th,\s*\.lane-data-type-row\s*>\s*\.lane-data-th\s*\{[^}]*height:\s*var\(--lane-data-head-row-size,\s*24px\);[^}]*padding-bottom:\s*0;[^}]*padding-top:\s*0;[^}]*vertical-align:\s*middle;/s
+ )
+ assert.match(indexHtml, /\.lane-data-grid-wrap\s*>\s*\.lane-data-grid\s*>\s*thead\s*\{[^}]*position:\s*sticky;[^}]*top:\s*0;/s)
+ assert.match(indexHtml, /\.lane-data-grid-wrap\s*>\s*\.lane-data-grid\s*>\s*thead\s*>\s*\.lane-data-head-row\s*>\s*\.lane-data-th\s*\{[^}]*background:\s*#212121;/s)
+ assert.match(indexHtml, /\.lane-data-grid-wrap\s*>\s*\.lane-data-grid\s*>\s*thead\s*>\s*\.lane-data-type-row\s*>\s*\.lane-data-th\s*\{[^}]*background:\s*#1e1e1e;/s)
+ assert.match(indexHtml, /\.lane-data-grid-wrap\s*>\s*\.lane-data-grid\s*>\s*thead\s*>\s*\.lane-data-filter-row\s*>\s*\.lane-data-th\s*\{[^}]*background:\s*#1c1c1c;/s)
+ assert.match(indexHtml, /\.lane-fullscreen-body\s+\.lane-data-grid-wrap\s*>\s*\.lane-data-grid\s*>\s*thead\s*>\s*\.lane-data-head-row\s*>\s*\.lane-data-th\s*\{[^}]*background:\s*#0b0b0b;/s)
+ assert.match(indexHtml, /\.lane-fullscreen-body\s+\.lane-data-grid-wrap\s*>\s*\.lane-data-grid\s*>\s*thead\s*>\s*\.lane-data-type-row\s*>\s*\.lane-data-th\s*\{[^}]*background:\s*#080808;/s)
+ assert.match(indexHtml, /\.lane-fullscreen-body\s+\.lane-data-grid-wrap\s*>\s*\.lane-data-grid\s*>\s*thead\s*>\s*\.lane-data-filter-row\s*>\s*\.lane-data-th\s*\{[^}]*background:\s*#050505;/s)
+ assert.match(indexHtml, /\.lane-data-grid-wrap\s*>\s*\.lane-data-grid\s*>\s*thead\s*>\s*tr\s*>\s*\.lane-data-th--num\s*\{[^}]*left:\s*0;[^}]*position:\s*sticky;/s)
+ assert.match(indexHtml, /\.lane-data-grid-wrap\s*>\s*\.lane-data-grid\s*>\s*tbody\s*>\s*tr\s*>\s*\.lane-data-td--num\s*\{[^}]*background:\s*#1a1a1a;[^}]*left:\s*0;[^}]*position:\s*sticky;/s)
+ assert.match(indexHtml, /\.lane-fullscreen-body\s+\.lane-data-grid-wrap\s*>\s*\.lane-data-grid\s*>\s*tbody\s*>\s*tr\s*>\s*\.lane-data-td--num\s*\{[^}]*background:\s*#000000;/s)
+ assert.match(indexHtml, /\.lane-data-type-th\s+\.lane-data-th-type\s*\{[^}]*max-width:\s*100%;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;/s)
+
+ // Confirm only the 3-row thead and '#' column selectors declare sticky inside .lane-data-grid-wrap
+ const stickyRules = [...indexHtml.matchAll(/([^\{\}]+)\{[^}]*position:\s*sticky;[^}]*\}/gs)]
+  .map(m => m[1].trim())
+  .filter(sel => sel.includes('.lane-data-'))
+ assert.deepEqual(stickyRules, [
+  '.lane-data-grid-wrap > .lane-data-grid > thead',
+  '.lane-data-grid-wrap > .lane-data-grid > thead > tr > .lane-data-th--num',
+  '.lane-data-grid-wrap > .lane-data-grid > tbody > tr > .lane-data-td--num',
+ ])
+
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tagName) {
+  return {
+   tag: tagName,
+   tagName: String(tagName || '').toUpperCase(),
+   nodeType: 1,
+   style: { setProperty() {}, removeProperty() {}, getPropertyValue() { return '' } },
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   checked: false,
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   readOnly: false,
+   offsetWidth: 140,
+   rect: { top: 40, left: 20, right: 320, bottom: 56, width: 140, height: 24 },
+   getBoundingClientRect() { return this.rect },
+   setAttribute(name, value) { this.attributes[name] = value },
+   getAttribute(name) { return this.attributes[name] ?? null },
+   removeAttribute(name) { delete this.attributes[name] },
+   contains(target) {
+    if (target === this) return true
+    return this.children.some(c => c === target || (c && typeof c.contains === 'function' && c.contains(target)))
+   },
+   appendChild(child) {
+    if (child && child.parentNode && child.parentNode.children) {
+     const idx = child.parentNode.children.indexOf(child)
+     if (idx !== -1) child.parentNode.children.splice(idx, 1)
+    }
+    this.children.push(child)
+    if (child && typeof child === 'object') {
+     child.parentNode = this
+     child.removed = false
+    }
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child && child.parentNode && child.parentNode.children) {
+     const oldIdx = child.parentNode.children.indexOf(child)
+     if (oldIdx !== -1) child.parentNode.children.splice(oldIdx, 1)
+    }
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) this.children.push(child)
+    else this.children.splice(idx, 0, child)
+    if (child && typeof child === 'object') {
+     child.parentNode = this
+     child.removed = false
+    }
+    return child
+   },
+   replaceChildren(...nodes) {
+    this.children = []
+    for (const n of nodes) this.appendChild(n)
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode && this.parentNode.children) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) this.parentNode.children.splice(idx, 1)
+     this.parentNode = null
+    }
+   },
+  }
+ }
+
+ const kv = new Map()
+ const rootKv = {
+  namespace(name) {
+   const prefix = `${name}.`
+   const child = {
+    namespace(sub) { return rootKv.namespace(`${name}.${sub}`) },
+    withBasePath() { return child },
+    setBasePath() {},
+    async get(key) { return kv.has(prefix + key) ? kv.get(prefix + key) : null },
+    async set(key, value) { kv.set(prefix + key, value) },
+    async delete(key) { kv.delete(prefix + key) },
+   }
+   return child
+  },
+  withBasePath() { return rootKv },
+  setBasePath() {},
+  async get(key) { return kv.has(key) ? kv.get(key) : null },
+  async set(key, value) { kv.set(key, value) },
+  async delete(key) { kv.delete(key) },
+ }
+ await createNewSession(rootKv, { name: 'Sticky Head Session', dataDirConfirmed: true })
+
+ const windowListeners = {}
+ const dispatchWindowEvent = async (event, ev) => {
+  for (const handler of [...(windowListeners[event] || [])]) {
+   await handler(ev)
+  }
+ }
+ let uuid = 0
+ const mockWindow = {
+  Array,
+  Boolean,
+  Date,
+  JSON,
+  Math,
+  Object,
+  Reflect,
+  decodeURIComponent,
+  crypto: { randomUUID: () => `head-uuid-${++uuid}` },
+  history: { pushState() {} },
+  location: { pathname: '/' },
+  addEventListener(event, handler) {
+   windowListeners[event] ||= []
+   windowListeners[event].push(handler)
+  },
+  removeEventListener(event, handler) {
+   windowListeners[event] = (windowListeners[event] || []).filter(h => h !== handler)
+  },
+ }
+ const mockDocument = {
+  body: createMockElement('body'),
+  defaultView: mockWindow,
+  createElement: createMockElement,
+  addEventListener() {},
+ }
+
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') return { text: async () => laneSource }
+  if (url === '/src/lane-notebook.fs') return { text: async () => notebookSource }
+  if (url === '/src/lane-inputs.fs') return { text: async () => inputsSource }
+  if (url === '/src/lane-scope.fs') return { text: async () => scopeSource }
+  if (url === '/src/lane-data.fs') return { text: async () => dataSource }
+  if (url === '/src/confirm-modal.fs') return { text: async () => confirmModalSource }
+  if (url === '/src/lane-row-picker-modal.fs') return { text: async () => rowPickerModalSource }
+  if (url === '/src/lane-output.fs') return { text: async () => outputSource }
+  if (url === '/src/lane-modal.fs') return { text: async () => modalSource }
+  if (url === '/src/lane-config-modal.fs') return { text: async () => configModalSource }
+  if (url === '/src/lane-import-modal.fs') return { text: async () => importModalSource }
+  if (url === '/src/lane-rails.fs') return { text: async () => railsSource }
+  if (url === '/src/lane-line-info-modal.fs') return { text: async () => lineInfoModalSource }
+  if (url === '/src/lane-export-modal.fs') return { text: async () => exportModalSource }
+  if (url === '/src/lane-export-deploy-modal.fs') return { text: async () => exportDeployModalSource }
+  if (url === '/src/lane-server.fs') return { text: async () => laneServerSource }
+  if (url === '/src/lane-story.fs') return { text: async () => laneStorySource }
+  if (url === '/src/lane-servers-modal.fs') return { text: async () => laneServersModalSource }
+  if (url === '/src/lane-terminal-modal.fs') return { text: async () => laneTerminalModalSource }
+  if (url === '/src/lane-session-modal.fs') return { text: async () => sessionModalSource }
+  if (url === '/src/lane-package-modal.fs') return { text: async () => packageModalSource }
+  if (url === '/src/lane-dir-modal.fs') return { text: async () => dirModalSource }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const f = field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {}, error() {} },
+   createIdleTracker,
+   data: rootKv,
+   defaultValueForType,
+   document: mockDocument,
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+  await f.run(parse(mainSource, '/src/main.fs'))
+
+  await f.state.tableHeadRowAddButton.listeners.click()
+  const lane = f.state.lanes[0]
+  await lane.notebook.tabs.data.listeners.click()
+  const dv = lane.notebook['data-view']
+
+  // Parent table `accounts` + inbound `entries` subtable
+  const accountsTbl = await dv['add-table']('accounts')
+  await dv['add-column']('account_label', 'text', false)
+  await dv['add-column']('amount', 'fixed', false)
+  await dv['add-row']()
+  dv['grid-rows'][0].cells[0]['input-el'].value = 'Checking'
+  await dv['grid-rows'][0].cells[0]['input-el'].listeners.input()
+
+  const entriesTbl = await dv['add-table']('entries')
+  await dv['add-column']('account', 'text', false)
+  entriesTbl.columns[0].type = 'row'
+  entriesTbl.columns[0].refTableId = accountsTbl.id
+  entriesTbl.columns[0].refColumnId = accountsTbl.columns[0].id
+  await dv['save-schema'](entriesTbl)
+  await dv['add-column']('memo', 'text', false)
+  await dv['add-row']()
+  entriesTbl.rows[0].values[entriesTbl.columns[0].id] = 'Checking'
+  await dv['save-row'](entriesTbl, entriesTbl.rows[0], 0)
+
+  // Switch back to parent `accounts` table and check 3-row thead layout
+  await dv['select-table'](accountsTbl.id)
+  const thead = dv['grid-hrow'].parentNode
+  assert.equal(thead.children.length, 3)
+  assert.equal(thead.children[0], dv['grid-hrow'])
+  assert.equal(thead.children[1], dv['grid-trow'])
+  assert.equal(thead.children[2], dv['grid-frow'])
+  assert.equal(dv['grid-hrow'].className, 'lane-data-head-row')
+  assert.equal(dv['grid-trow'].className, 'lane-data-type-row')
+  assert.equal(dv['grid-frow'].className, 'lane-data-filter-row')
+
+  // Row 1 holds only column names; Row 2 holds types; Row 3 holds filters (num + 2 cols + actions = 4)
+  assert.equal(dv['grid-head-cells'].length, 4)
+  assert.equal(dv['grid-type-cells'].length, 4)
+  assert.equal(dv['grid-filter-cells'].length, 4)
+  assert.equal(dv['grid-head-cells'][0].kind, 'num')
+  assert.equal(dv['grid-head-cells'][0].el.textContent, '#')
+  assert.equal(dv['grid-type-cells'][0].kind, 'num')
+  assert.equal(dv['grid-type-cells'][0].el.className, 'lane-data-th lane-data-th--num lane-data-type-th lane-data-type-th--num')
+  assert.equal(dv['grid-type-cells'][0].el.textContent, '')
+
+  const col0Head = dv['grid-head-cells'][1]
+  const col0Type = dv['grid-type-cells'][1]
+  const col1Type = dv['grid-type-cells'][2]
+  assert.equal(col0Head.el.children[0].children.length, 1)
+  assert.equal(col0Head.el.children[0].children[0], col0Head['name-el'])
+  assert.equal(col0Head['name-el'].className, 'lane-data-th-name')
+  assert.equal(col0Head['name-el'].textContent, 'account_label')
+  assert.equal(col0Head['name-el'].title, 'account_label')
+  assert.equal(col0Head['type-el'], col0Type['type-el'])
+  assert.equal(col0Type.el.className, 'lane-data-th lane-data-type-th')
+  assert.equal(col0Type['inner-el'].className, 'lane-data-th-inner lane-data-type-th-inner')
+  assert.equal(col0Type['inner-el'].children.length, 1)
+  assert.equal(col0Type['inner-el'].children[0], col0Type['type-el'])
+  assert.equal(col0Type['type-el'].className, 'lane-data-th-type')
+  assert.equal(col0Type['type-el'].textContent, 'text')
+  assert.equal(col1Type['type-el'].textContent, 'fixed(2)')
+  assert.equal(dv['grid-type-cells'][3].kind, 'actions')
+  assert.equal(dv['grid-type-cells'][3].el.className, 'lane-data-th lane-data-th--actions lane-data-type-th lane-data-type-th--actions')
+
+  // Live schema rename updates both textContent and tooltip title on Row 1
+  dv['schema-rows'][0]['name-el'].value = 'acct_name'
+  await dv['schema-rows'][0]['name-el'].listeners.input()
+  assert.equal(col0Head['name-el'].textContent, 'acct_name')
+  assert.equal(col0Head['name-el'].title, 'acct_name')
+
+  // Dragging Row 2 type-row resizer down to narrow 48px keeps Row 1, Row 2, Row 3, and body cells synchronized
+  await col0Type['resizer-el'].listeners.mousedown({ clientX: 200, preventDefault() {}, stopPropagation() {} })
+  await dispatchWindowEvent('mousemove', { clientX: 100 })
+  await dispatchWindowEvent('mouseup', {})
+  assert.equal(accountsTbl.columns[0].width, 48)
+  assert.equal(col0Head.el.style.width, '48px')
+  assert.equal(col0Type.el.style.width, '48px')
+  assert.equal(dv['grid-filter-cells'][1].el.style.width, '48px')
+  assert.equal(dv['grid-rows'][0].cells[0].td.style.width, '48px')
+  assert.match(col0Type.el.className, /lane-data-th--sized/)
+  assert.match(dv['grid-filter-cells'][1].el.className, /lane-data-th--sized/)
+
+  await col0Type['resizer-el'].listeners.dblclick()
+  assert.equal(Object.hasOwn(accountsTbl.columns[0], 'width'), false)
+  assert.equal(col0Head.el.style.width, '')
+  assert.equal(col0Type.el.style.width, '')
+  assert.equal(dv['grid-filter-cells'][1].el.style.width, '')
+  assert.equal(dv['grid-rows'][0].cells[0].td.style.width, '')
+
+  // Toggling inbound subtable visible keeps subtoggle/num/cols/actions aligned across all 3 header rows & splits subtable thead into 2 rows
+  await dv['display-options-btns'][0].el.listeners.click()
+  assert.equal(dv['grid-head-cells'].length, 5)
+  assert.equal(dv['grid-type-cells'].length, 5)
+  assert.equal(dv['grid-filter-cells'].length, 5)
+  assert.equal(dv['grid-head-cells'][0].kind, 'subtoggle')
+  assert.equal(dv['grid-type-cells'][0].kind, 'subtoggle')
+  assert.equal(dv['grid-type-cells'][1].kind, 'num')
+  assert.equal(dv['grid-type-cells'][2]['type-el'].textContent, 'text')
+  assert.equal(dv['grid-type-cells'][3]['type-el'].textContent, 'fixed(2)')
+  assert.equal(dv['grid-type-cells'][4].kind, 'actions')
+
+  const subGroup = dv['grid-rows'][0]['subtable-groups'][0]
+  const subGrid = subGroup['body-el'].children[0]
+  const subThead = subGrid.children[0]
+  assert.equal(subThead.children.length, 2)
+  assert.equal(subThead.children[0].className, 'lane-data-head-row')
+  assert.equal(subThead.children[1].className, 'lane-data-type-row')
+  assert.equal(subThead.children[0].children[1].children[0].children.length, 1)
+  assert.equal(subThead.children[0].children[1].children[0].children[0].className, 'lane-data-th-name')
+  assert.equal(subThead.children[0].children[1].children[0].children[0].textContent, 'memo')
+  assert.equal(subThead.children[1].children[1].children[0].children[0].className, 'lane-data-th-type')
+  assert.equal(subThead.children[1].children[1].children[0].children[0].textContent, 'text')
+ }
+ finally {
+  globalThis.fetch = origFetch
+ }
+})
+
+test('Row schema compactness: Table+Column inline, Display options (None, Template, columns) + conditional Template visibility & persistence', async () => {
+ const indexHtml = await fs.readFile(new URL('./index.html', import.meta.url), 'utf8')
+ assert.match(indexHtml, /\.lane-data-row-line\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*nowrap;/s)
+ assert.match(indexHtml, /\.lane-data-row-line--display-template\s*>\s*\.lane-data-row-field--inline:first-child\s*\{/)
+
+ const mainSource = await fs.readFile(new URL('./src/main.fs', import.meta.url), 'utf8')
+ const laneSource = await fs.readFile(new URL('./src/lane-control.fs', import.meta.url), 'utf8')
+ const notebookSource = await fs.readFile(new URL('./src/lane-notebook.fs', import.meta.url), 'utf8')
+ const inputsSource = await fs.readFile(new URL('./src/lane-inputs.fs', import.meta.url), 'utf8')
+ const scopeSource = await fs.readFile(new URL('./src/lane-scope.fs', import.meta.url), 'utf8')
+ const dataSource = await fs.readFile(new URL('./src/lane-data.fs', import.meta.url), 'utf8')
+ const confirmModalSource = await fs.readFile(new URL('./src/confirm-modal.fs', import.meta.url), 'utf8')
+ const rowPickerModalSource = await fs.readFile(new URL('./src/lane-row-picker-modal.fs', import.meta.url), 'utf8')
+ const outputSource = await fs.readFile(new URL('./src/lane-output.fs', import.meta.url), 'utf8')
+ const modalSource = await fs.readFile(new URL('./src/lane-modal.fs', import.meta.url), 'utf8')
+ const configModalSource = await fs.readFile(new URL('./src/lane-config-modal.fs', import.meta.url), 'utf8')
+ const importModalSource = await fs.readFile(new URL('./src/lane-import-modal.fs', import.meta.url), 'utf8')
+ const railsSource = await fs.readFile(new URL('./src/lane-rails.fs', import.meta.url), 'utf8')
+
+ function createMockElement(tagName) {
+  return {
+   tag: tagName,
+   tagName: String(tagName || '').toUpperCase(),
+   nodeType: 1,
+   style: { setProperty() {}, removeProperty() {}, getPropertyValue() { return '' } },
+   attributes: {},
+   children: [],
+   parentNode: null,
+   listeners: {},
+   textContent: '',
+   innerHTML: '',
+   value: '',
+   checked: false,
+   className: '',
+   title: '',
+   hidden: false,
+   disabled: false,
+   readOnly: false,
+   rect: { top: 40, left: 20, right: 320, bottom: 56, width: 140, height: 24 },
+   getBoundingClientRect() { return this.rect },
+   setAttribute(name, value) { this.attributes[name] = value },
+   getAttribute(name) { return this.attributes[name] ?? null },
+   removeAttribute(name) { delete this.attributes[name] },
+   contains(target) {
+    if (target === this) return true
+    return this.children.some(c => c === target || (c && typeof c.contains === 'function' && c.contains(target)))
+   },
+   appendChild(child) {
+    if (child && child.parentNode && child.parentNode.children) {
+     const idx = child.parentNode.children.indexOf(child)
+     if (idx !== -1) child.parentNode.children.splice(idx, 1)
+    }
+    this.children.push(child)
+    if (child && typeof child === 'object') {
+     child.parentNode = this
+     child.removed = false
+    }
+    return child
+   },
+   insertBefore(child, ref) {
+    if (child && child.parentNode && child.parentNode.children) {
+     const oldIdx = child.parentNode.children.indexOf(child)
+     if (oldIdx !== -1) child.parentNode.children.splice(oldIdx, 1)
+    }
+    const idx = this.children.indexOf(ref)
+    if (idx === -1) this.children.push(child)
+    else this.children.splice(idx, 0, child)
+    if (child && typeof child === 'object') {
+     child.parentNode = this
+     child.removed = false
+    }
+    return child
+   },
+   replaceChildren(...nodes) {
+    this.children = []
+    for (const n of nodes) this.appendChild(n)
+   },
+   addEventListener(event, handler) { this.listeners[event] = handler },
+   focus() { this.focused = true },
+   select() {},
+   remove() {
+    this.removed = true
+    if (this.parentNode && this.parentNode.children) {
+     const idx = this.parentNode.children.indexOf(this)
+     if (idx !== -1) this.parentNode.children.splice(idx, 1)
+     this.parentNode = null
+    }
+   },
+  }
+ }
+
+ const kv = new Map()
+ const rootKv = {
+  namespace(name) {
+   const prefix = `${name}.`
+   const child = {
+    namespace(sub) { return rootKv.namespace(`${name}.${sub}`) },
+    withBasePath() { return child },
+    setBasePath() {},
+    async get(key) { return kv.has(prefix + key) ? kv.get(prefix + key) : null },
+    async set(key, value) { kv.set(prefix + key, value) },
+    async delete(key) { kv.delete(prefix + key) },
+   }
+   return child
+  },
+  withBasePath() { return rootKv },
+  setBasePath() {},
+  async get(key) { return kv.has(key) ? kv.get(key) : null },
+  async set(key, value) { kv.set(key, value) },
+  async delete(key) { kv.delete(key) },
+ }
+ await createNewSession(rootKv, { name: 'Row Compact Session', dataDirConfirmed: true })
+
+ let uuid = 0
+ let currentPathname = '/'
+ function createRuntime() {
+  const mockWindow = {
+   Array,
+   Boolean,
+   Date,
+   JSON,
+   Math,
+   Object,
+   Reflect,
+   decodeURIComponent,
+   crypto: { randomUUID: () => `row-compact-uuid-${++uuid}` },
+   history: { pushState(_s, _t, url) { currentPathname = url; mockWindow.location.pathname = url } },
+   location: { pathname: currentPathname },
+   addEventListener() {},
+   removeEventListener() {},
+  }
+  const mockDocument = {
+   body: createMockElement('body'),
+   defaultView: mockWindow,
+   createElement: createMockElement,
+   addEventListener() {},
+  }
+  return field({
+   ...DATA_RUNTIME_ENV,
+   console: { log() {}, error() {} },
+   createIdleTracker,
+   data: rootKv,
+   defaultValueForType,
+   document: mockDocument,
+   formatImportLine,
+   hasImportCycle,
+   normalizePrimitiveType,
+   parseImportLine,
+   primitiveTypes: PRIMITIVE_TYPES,
+   resolveImportValue,
+   resolveScopeColumns,
+   runLines,
+   runTransportedScripts,
+  })
+ }
+
+ const origFetch = globalThis.fetch
+ globalThis.fetch = async url => {
+  if (url === '/src/lane-control.fs') return { text: async () => laneSource }
+  if (url === '/src/lane-notebook.fs') return { text: async () => notebookSource }
+  if (url === '/src/lane-inputs.fs') return { text: async () => inputsSource }
+  if (url === '/src/lane-scope.fs') return { text: async () => scopeSource }
+  if (url === '/src/lane-data.fs') return { text: async () => dataSource }
+  if (url === '/src/confirm-modal.fs') return { text: async () => confirmModalSource }
+  if (url === '/src/lane-row-picker-modal.fs') return { text: async () => rowPickerModalSource }
+  if (url === '/src/lane-output.fs') return { text: async () => outputSource }
+  if (url === '/src/lane-modal.fs') return { text: async () => modalSource }
+  if (url === '/src/lane-config-modal.fs') return { text: async () => configModalSource }
+  if (url === '/src/lane-import-modal.fs') return { text: async () => importModalSource }
+  if (url === '/src/lane-rails.fs') return { text: async () => railsSource }
+  if (url === '/src/lane-line-info-modal.fs') return { text: async () => lineInfoModalSource }
+  if (url === '/src/lane-export-modal.fs') return { text: async () => exportModalSource }
+  if (url === '/src/lane-export-deploy-modal.fs') return { text: async () => exportDeployModalSource }
+  if (url === '/src/lane-server.fs') return { text: async () => laneServerSource }
+  if (url === '/src/lane-story.fs') return { text: async () => laneStorySource }
+  if (url === '/src/lane-servers-modal.fs') return { text: async () => laneServersModalSource }
+  if (url === '/src/lane-terminal-modal.fs') return { text: async () => laneTerminalModalSource }
+  if (url === '/src/lane-session-modal.fs') return { text: async () => sessionModalSource }
+  if (url === '/src/lane-package-modal.fs') return { text: async () => packageModalSource }
+  if (url === '/src/lane-dir-modal.fs') return { text: async () => dirModalSource }
+  throw new Error(`Unexpected fetch: ${url}`)
+ }
+
+ try {
+  const f = createRuntime()
+  await f.run(parse(mainSource, '/src/main.fs'))
+  await f.state.tableHeadRowAddButton.listeners.click()
+  const lane = f.state.lanes[0]
+  await lane.notebook.tabs.data.listeners.click()
+  const dv = lane.notebook['data-view']
+
+  // Table 1: `people` with id (integer), first (text), last (text) + legacy API template column test table
+  const peopleTbl = await dv['add-table']('people')
+  const pidCol = await dv['add-column']('id', 'integer', false)
+  const firstCol = await dv['add-column']('first', 'text', false)
+  const lastCol = await dv['add-column']('last', 'text', false)
+  const pRow = await dv['add-row']()
+  pRow.values[pidCol.id] = 42
+  pRow.values[firstCol.id] = 'Ada'
+  pRow.values[lastCol.id] = 'Lovelace'
+  await dv['save-row'](peopleTbl, pRow, 0)
+
+  // Table 2: `tasks` with `assignee` (row) and `legacy_ref` (row pre-populated with refDisplayTemplate)
+  const tasksTbl = await dv['add-table']('tasks')
+  const assigneeCol = await dv['add-column']('assignee', 'text', false)
+  const legacyCol = await dv['add-column']('legacy_ref', 'text', false)
+  legacyCol.type = 'row'
+  legacyCol.refTableId = peopleTbl.id
+  legacyCol.refColumnId = pidCol.id
+  legacyCol.refDisplayColumnId = ''
+  legacyCol.refDisplayTemplate = '; add $last'
+  await dv['save-schema'](tasksTbl)
+  await dv['render']()
+
+  // Legacy/API column with saved refDisplayTemplate opens directly with Display = Template and Template shown
+  let legacySrow = dv['schema-rows'][1]
+  assert.equal(legacySrow['ref-display-el'].value, '$template')
+  assert.equal(legacySrow['ref-tmpl-field'].hidden, false)
+  assert.equal(legacySrow['ref-tmpl-details'].hidden, false)
+  assert.equal(legacySrow['ref-tmpl-el'].value, '; add $last')
+  assert.match(legacySrow['ref-disp-line'].className, /lane-data-row-line--display-template/)
+
+  // Convert `assignee` to row -> verify compact single-line groupings & Display options
+  dv['schema-rows'][0]['type-el'].value = 'row'
+  await dv['schema-rows'][0]['type-el'].listeners.change()
+  let srow = dv['schema-rows'][0]
+  assert.equal(srow['row-config-wrap'].children[0], srow['ref-target-line'])
+  assert.deepEqual(srow['ref-target-line'].children, [srow['ref-table-field'], srow['ref-col-field']])
+  assert.equal(srow['row-config-wrap'].children[1], srow['ref-disp-line'])
+  assert.deepEqual(srow['ref-disp-line'].children, [srow['ref-disp-field'], srow['ref-tmpl-field']])
+  assert.equal(srow['ref-tmpl-field'].hidden, true)
+  assert.equal(srow['ref-tmpl-details'].hidden, true)
+  assert.doesNotMatch(srow['ref-disp-line'].className, /lane-data-row-line--display-template/)
+
+  // Pick Table = people and Column = id
+  srow['ref-table-el'].value = peopleTbl.id
+  await srow['ref-table-el'].listeners.change()
+  srow = dv['schema-rows'][0]
+  assert.deepEqual(
+   srow['ref-display-el'].children.map(o => ({ v: o.value, t: o.textContent })),
+   [
+    { v: '', t: 'None' },
+    { v: '$template', t: 'Template' },
+    { v: pidCol.id, t: 'id (integer)' },
+    { v: firstCol.id, t: 'first (text)' },
+    { v: lastCol.id, t: 'last (text)' },
+   ]
+  )
+  assert.equal(srow['ref-display-el'].value, '')
+  assert.equal(srow['ref-tmpl-field'].hidden, true)
+  assert.equal(srow['ref-tmpl-details'].hidden, true)
+
+  srow['ref-col-el'].value = pidCol.id
+  await srow['ref-col-el'].listeners.change()
+  srow = dv['schema-rows'][0]
+  assert.equal(srow['ref-tmpl-field'].hidden, true)
+
+  // Pick a regular column (`first`) -> Template remains hidden
+  srow['ref-display-el'].value = firstCol.id
+  await srow['ref-display-el'].listeners.change()
+  srow = dv['schema-rows'][0]
+  assert.equal(srow['ref-display-el'].value, firstCol.id)
+  assert.equal(srow['ref-tmpl-field'].hidden, true)
+  assert.equal(srow['ref-tmpl-details'].hidden, true)
+  assert.equal(srow['row-hint-el'].textContent, 'Stores integer · displays first')
+
+  // Switch Display to `Template` -> Template field & details appear on the Display line
+  srow['ref-display-el'].value = '$template'
+  await srow['ref-display-el'].listeners.change()
+  srow = dv['schema-rows'][0]
+  assert.equal(srow['ref-display-el'].value, '$template')
+  assert.equal(srow['ref-tmpl-field'].hidden, false)
+  assert.equal(srow['ref-tmpl-details'].hidden, false)
+  assert.match(srow['ref-disp-line'].className, /lane-data-row-line--display-template/)
+  assert.equal(srow['row-hint-el'].textContent, 'Stores integer · enter display template')
+
+  // Click token chips / type template and add row -> grid renders template & persists across reload
+  await srow['ref-tmpl-tools'].children[1].listeners.click() // inserts $first (ignored incomplete parse, still visible)
+  srow = dv['schema-rows'][0]
+  assert.equal(srow['ref-tmpl-el'].value, '$first')
+  srow['ref-tmpl-el'].value = "; add $first ' ' $last"
+  await srow['ref-tmpl-el'].listeners.change()
+  srow = dv['schema-rows'][0]
+  assert.equal(tasksTbl.columns[0].refDisplayTemplate, "; add $first ' ' $last")
+  assert.equal(srow['ref-tmpl-preview'].textContent, 'Ada Lovelace')
+  assert.equal(srow['row-hint-el'].textContent, "Stores integer · template ; add $first ' ' $last")
+  assert.match(dv['grid-type-cells'][1]['type-el'].title, /template ; add \$first ' ' \$last/)
+
+  const tRow = await dv['add-row']()
+  tRow.values[assigneeCol.id] = 42
+  await dv['save-row'](tasksTbl, tRow, 0)
+  await dv['render-grid']()
+  assert.equal(dv['grid-rows'][0].cells[0]['display-el'].textContent, 'Ada Lovelace')
+
+  // Clearing template text while Display = Template keeps Template selected and field visible
+  srow = dv['schema-rows'][0]
+  srow['ref-tmpl-el'].value = ''
+  await srow['ref-tmpl-el'].listeners.change()
+  srow = dv['schema-rows'][0]
+  assert.equal(srow['ref-display-el'].value, '$template')
+  assert.equal(srow['ref-tmpl-field'].hidden, false)
+  assert.equal(Object.hasOwn(tasksTbl.columns[0], 'refDisplayTemplate'), false)
+
+  // Restore template, reload runtime, verify persistence
+  srow['ref-tmpl-el'].value = "; add $first ' ' $last"
+  await srow['ref-tmpl-el'].listeners.change()
+  const fReload = createRuntime()
+  await fReload.run(parse(mainSource, '/src/main.fs'))
+  const dvReload = fReload.state.lanes[0].notebook['data-view']
+  await dvReload['select-table'](tasksTbl.id)
+  const reloadSrow = dvReload['schema-rows'][0]
+  assert.equal(reloadSrow['ref-display-el'].value, '$template')
+  assert.equal(reloadSrow['ref-tmpl-field'].hidden, false)
+  assert.equal(reloadSrow['ref-tmpl-el'].value, "; add $first ' ' $last")
+  assert.equal(dvReload['grid-rows'][0].cells[0]['display-el'].textContent, 'Ada Lovelace')
+
+  // Switching Display from Template to None hides Template & clears refDisplayTemplate
+  reloadSrow['ref-display-el'].value = ''
+  await reloadSrow['ref-display-el'].listeners.change()
+  const srowAfterNone = dvReload['schema-rows'][0]
+  assert.equal(srowAfterNone['ref-display-el'].value, '')
+  assert.equal(srowAfterNone['ref-tmpl-field'].hidden, true)
+  assert.equal(srowAfterNone['ref-tmpl-details'].hidden, true)
+  assert.equal(Object.hasOwn(dvReload.tables[1].columns[0], 'refDisplayTemplate'), false)
+  assert.equal(dvReload['grid-rows'][0].cells[0]['display-el'].textContent, '42')
  }
  finally {
   globalThis.fetch = origFetch

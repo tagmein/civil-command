@@ -1,4 +1,5 @@
 import {
+ CELL_FLAGS,
  buildTablesScope,
  coerceDataValue,
  defaultDataValue,
@@ -7,17 +8,20 @@ import {
  isReadOnlyRemoteTable,
  isRemoteTable,
  listScopeEntries,
+ normalizeCellFlag,
  normalizeLaneFeatures,
  normalizeLaneMinimizeSide,
  normalizeLanePath,
  normalizeLaneWidth,
  normalizePrimitiveType,
+ normalizeRowFlags,
  normalizeTableImportMode,
  normalizeTableRemoteSpec,
  parseCellValue,
  parseColumnType,
  parseLaneFeatures,
  resolveImportValue,
+ setRowCellFlag,
  syncTableRowsInMemory,
  validateFieldScriptLine,
  validateFieldScriptLines,
@@ -152,13 +156,24 @@ export function formatTableWithNamedRows(table) {
  const rows = Array.isArray(table.rows) ? table.rows : []
  const namedRows = rows.map(row => {
   const values = row && row.values && typeof row.values === 'object' ? row.values : {}
+  const rawFlags = row && row.flags && typeof row.flags === 'object' ? row.flags : null
   const record = { _rowId: row && row.id ? String(row.id) : '' }
+  const namedFlags = {}
   for (const col of columns) {
    if (!col || !col.id) {
     continue
    }
    const key = col.name && String(col.name).trim() ? String(col.name).trim() : String(col.id)
    record[key] = Object.hasOwn(values, col.id) ? values[col.id] : defaultDataValue(col, col.multiple)
+   if (rawFlags && Object.hasOwn(rawFlags, col.id)) {
+    const normFlag = normalizeCellFlag(rawFlags[col.id])
+    if (normFlag) {
+     namedFlags[key] = normFlag
+    }
+   }
+  }
+  if (Object.keys(namedFlags).length > 0) {
+   record._flags = namedFlags
   }
   return record
  })
@@ -1817,13 +1832,26 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
   }
  }
 
- if (action === 'add-row' || action === 'upsert-row' || action === 'update-row') {
+ if (action === 'add-row' || action === 'upsert-row' || action === 'update-row' || action === 'set-flag' || action === 'set-cell-flag') {
+  const isFlagOnlyAction = action === 'set-flag' || action === 'set-cell-flag'
   const rawValues = options.values && typeof options.values === 'object' ? options.values : {}
+  const rawFlagsInput = options.flags && typeof options.flags === 'object' && !Array.isArray(options.flags) ? options.flags : null
   const targetRowId = options.rowId ? String(options.rowId).trim() : ''
   let existingRow = targetRowId ? table.rows.find(r => r && r.id === targetRowId) : null
 
-  if (!existingRow && action === 'update-row') {
+  if (!existingRow && (action === 'update-row' || isFlagOnlyAction)) {
    return { ok: false, error: `Row "${targetRowId}" not found in table "${table.name}"` }
+  }
+
+  const isExplicitFlagInputValid = raw => {
+   if (raw === null || raw === undefined || raw === false) {
+    return true
+   }
+   if (typeof raw !== 'string') {
+    return false
+   }
+   const clean = raw.trim().toLowerCase()
+   return clean === '' || clean === 'none' || clean === 'unset' || clean === 'normal' || CELL_FLAGS.includes(clean)
   }
 
   const isNew = !existingRow
@@ -1837,21 +1865,68 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
     nextValues[col.id] = defaultDataValue(col, col.multiple)
    }
   }
-  for (const [key, val] of Object.entries(rawValues)) {
-   const col = findColumnByIdOrName(table.columns, key)
-   if (!col) {
-    continue
+  if (!isFlagOnlyAction) {
+   for (const [key, val] of Object.entries(rawValues)) {
+    const col = findColumnByIdOrName(table.columns, key)
+    if (!col) {
+     continue
+    }
+    nextValues[col.id] = coerceAgentCellValue(val, col, tables)
    }
-   nextValues[col.id] = coerceAgentCellValue(val, col, tables)
   }
 
-  const rowRecord = { id: rowId, values: nextValues }
+  const rowTarget = existingRow ? existingRow : { id: rowId, values: nextValues }
+  if (!isFlagOnlyAction) {
+   rowTarget.values = nextValues
+  }
+  if (existingRow) {
+   const preservedFlags = normalizeRowFlags(existingRow.flags, table.columns)
+   if (Object.keys(preservedFlags).length > 0) {
+    existingRow.flags = preservedFlags
+   }
+   else {
+    delete existingRow.flags
+   }
+  }
+
+  if (isFlagOnlyAction) {
+   const colQuery = options.column ?? options.columnId ?? options.columnName ?? options.col
+   const hasSingleFlag = colQuery !== undefined && colQuery !== null && String(colQuery).trim() !== ''
+   if (!hasSingleFlag && !rawFlagsInput) {
+    return { ok: false, error: 'column (or flags object) is required for set-flag' }
+   }
+   if (hasSingleFlag) {
+    const col = findColumnByIdOrName(table.columns, colQuery)
+    if (!col) {
+     return { ok: false, error: `Column "${colQuery}" not found in table "${table.name}"` }
+    }
+    const rawFlagVal = Object.hasOwn(options, 'flag') ? options.flag : options.value
+    if (!isExplicitFlagInputValid(rawFlagVal)) {
+     return { ok: false, error: 'flag must be "unknown", "incorrect", or "none"' }
+    }
+    setRowCellFlag(rowTarget, col.id, rawFlagVal)
+   }
+  }
+
+  if (rawFlagsInput) {
+   for (const [key, rawFlagVal] of Object.entries(rawFlagsInput)) {
+    const col = findColumnByIdOrName(table.columns, key)
+    if (!col) {
+     continue
+    }
+    if (!isExplicitFlagInputValid(rawFlagVal)) {
+     return { ok: false, error: `Invalid cell flag "${rawFlagVal}" for column "${key}"; expected "unknown", "incorrect", or "none"` }
+    }
+    setRowCellFlag(rowTarget, col.id, rawFlagVal)
+   }
+  }
+
+  const rowRecord = rowTarget
   if (isNew) {
    table.rows.push(rowRecord)
    await addTableRow(sessionKv, laneData, laneId, table, rowRecord, table.rows.map(r => r.id))
   }
   else {
-   existingRow.values = nextValues
    await saveTableRow(sessionKv, laneData, laneId, table, existingRow)
   }
 
@@ -1870,12 +1945,12 @@ export async function agentMutateLaneTable(rootKv, options = {}) {
      tableId: table.id,
      tableName: table.name,
      rowId,
-     action: isNew ? 'add-row' : 'update-row',
+     action: isNew ? 'add-row' : (isFlagOnlyAction ? 'set-flag' : 'update-row'),
     },
    })
   }
 
-  emitTableLaneUpdate(isNew ? 'add-row' : 'update-row', { rowId })
+  emitTableLaneUpdate(isNew ? 'add-row' : (isFlagOnlyAction ? 'set-flag' : 'update-row'), { rowId })
   const updates = await loadTableUpdates(sessionKv, laneData, laneId, table.id)
   return {
    ok: true,
@@ -2282,15 +2357,18 @@ export const MCP_TOOLS = [
     sessionId: { type: 'string', description: 'Optional session ID or name' },
     action: {
      type: 'string',
-     enum: ['create-table', 'import-table', 'delete-table', 'add-column', 'add-row', 'upsert-row', 'update-row', 'delete-row', 'clear-rows'],
+     enum: ['create-table', 'import-table', 'delete-table', 'add-column', 'add-row', 'upsert-row', 'update-row', 'set-flag', 'delete-row', 'clear-rows'],
     },
     table: { type: 'string', description: 'Table name or table ID' },
     sourceLane: { type: 'string', description: 'Owner lane ID or title when action is import-table' },
     sourceTable: { type: 'string', description: 'Owner table name or ID when action is import-table' },
     mode: { type: 'string', enum: ['read-only', 'read-write'], description: 'Remote table access mode when action is import-table' },
     localName: { type: 'string', description: 'Optional local table name override when action is import-table' },
-    rowId: { type: 'string', description: 'Row ID (for update-row, upsert-row, delete-row)' },
+    rowId: { type: 'string', description: 'Row ID (for update-row, upsert-row, set-flag, delete-row)' },
     values: { type: 'object', description: 'Row values keyed by column name or column ID' },
+    flags: { type: 'object', description: 'Per-cell flags keyed by column name or column ID (unknown | incorrect | none)' },
+    column: { type: 'string', description: 'Column name or ID when action is set-flag' },
+    flag: { type: 'string', enum: ['unknown', 'incorrect', 'none'], description: 'Cell flag value when action is set-flag' },
     columns: { type: 'array', description: 'Columns array when creating a table' },
     column: { type: 'object', description: 'Column definition when action is add-column' },
    },

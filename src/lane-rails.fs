@@ -1156,6 +1156,9 @@
           { $open-m.backdrop : !restore-node $lane.body $open-m.backdrop $body-ref }
          ]
         )
+        [ match
+         { $lane-control.sync-lane-modals-position : !lane-control.sync-lane-modals-position $lane }
+        ]
        ) }
       ]
      ) }
@@ -1220,6 +1223,9 @@
          { $open-m.backdrop : !preview-body.appendChild $open-m.backdrop }
         ]
        )
+       [ match
+        { $lane-control.sync-lane-modals-position : !lane-control.sync-lane-modals-position $lane }
+       ]
       ) }
      ]
      ; to restore-lbl ; add 'Restore ' $lane.title

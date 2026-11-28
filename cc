@@ -228,6 +228,9 @@ async function handleTableRowWithTrigger({
  tableQuery,
  rowId,
  values,
+ rowFlags,
+ column,
+ flag,
  rowFlag,
 }) {
  const out = await agentMutateLaneTable(rootKv, {
@@ -238,6 +241,9 @@ async function handleTableRowWithTrigger({
   table: tableQuery,
   rowId: rowId || rowFlag,
   values,
+  ...(rowFlags ? { flags: rowFlags } : {}),
+  ...(column !== undefined ? { column } : {}),
+  ...(flag !== undefined ? { flag } : {}),
  })
  if (out.ok && out.triggeredEval && out.triggeredEval.requiresPackageUnlock && Array.isArray(out.triggeredEval.lockedPackages) && out.triggeredEval.lockedPackages.length > 0) {
   const sess = await agentGetSession(rootKv, { sessionId, dataDir }).catch(() => null)
@@ -330,8 +336,9 @@ Usage:
   ./cc delete-input <laneIdOrTitle> <name> [--session <idOrName>]
   ./cc create-table <laneIdOrTitle> <tableName> <jsonColumns> [--session <idOrName>]
   ./cc import-table <laneIdOrTitle> <sourceLaneIdOrTitle> <sourceTableNameOrId> [--mode read-only|read-write] [--as <localName>] [--session <idOrName>]
-  ./cc add-row <laneIdOrTitle> <tableNameOrId> <jsonValues> [--session <idOrName>]
-  ./cc update-row <laneIdOrTitle> <tableNameOrId> <rowId> <jsonValues> [--session <idOrName>]
+  ./cc add-row <laneIdOrTitle> <tableNameOrId> <jsonValues> [--flags <jsonFlags>] [--session <idOrName>]
+  ./cc update-row <laneIdOrTitle> <tableNameOrId> <rowId> <jsonValues> [--flags <jsonFlags>] [--session <idOrName>]
+  ./cc set-flag <laneIdOrTitle> <tableNameOrId> <rowId> <columnNameOrId> <unknown|incorrect|none> [--session <idOrName>]
   ./cc delete-row <laneIdOrTitle> <tableNameOrId> <rowId> [--session <idOrName>]
   ./cc deployments [--ping] [--session <idOrName>]
   ./cc mcp
@@ -727,6 +734,7 @@ async function main() {
   const tableQuery = positional[2] || ''
   const rawJson = positional.slice(3).join(' ') || '{}'
   const values = JSON.parse(rawJson)
+  const rowFlags = typeof flags.flags === 'string' ? JSON.parse(flags.flags) : undefined
   await handleTableRowWithTrigger({
    rootKv,
    notify,
@@ -738,6 +746,7 @@ async function main() {
    tableQuery,
    rowFlag: typeof flags.row === 'string' ? flags.row : undefined,
    values,
+   rowFlags,
   })
   return
  }
@@ -748,6 +757,7 @@ async function main() {
   const rowId = positional[3] || ''
   const rawJson = positional.slice(4).join(' ') || '{}'
   const values = JSON.parse(rawJson)
+  const rowFlags = typeof flags.flags === 'string' ? JSON.parse(flags.flags) : undefined
   await handleTableRowWithTrigger({
    rootKv,
    notify,
@@ -759,6 +769,29 @@ async function main() {
    tableQuery,
    rowId,
    values,
+   rowFlags,
+  })
+  return
+ }
+
+ if (cmd === 'set-flag' || cmd === 'set-cell-flag') {
+  const laneQuery = positional[1] || ''
+  const tableQuery = positional[2] || ''
+  const rowId = positional[3] || ''
+  const column = positional[4] || (typeof flags.column === 'string' ? flags.column : '')
+  const flag = positional[5] !== undefined ? positional[5] : flags.flag
+  await handleTableRowWithTrigger({
+   rootKv,
+   notify,
+   isInteractive,
+   sessionId,
+   dataDir,
+   laneQuery,
+   action: 'set-flag',
+   tableQuery,
+   rowId,
+   column,
+   flag,
   })
   return
  }

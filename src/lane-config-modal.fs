@@ -351,7 +351,7 @@
      { $document.body.appendChild : !document.body.appendChild $backdrop }
     ]
     [ match
-     { $title-input.focus : !title-input.focus }
+     { $title-input.focus : !title-input.focus [ object { preventScroll true } ] }
     ]
     [ match
      { $title-input.select : !title-input.select }
@@ -367,14 +367,14 @@
   ; set '' width-input.value
   !sync-reset-buttons
   [ match
-   { $width-input.focus : !width-input.focus }
+   { $width-input.focus : !width-input.focus [ object { preventScroll true } ] }
   ]
  )
  !path-reset-btn.addEventListener click (
   ; set '' path-input.value
   !sync-reset-buttons
   [ match
-   { $path-input.focus : !path-input.focus }
+   { $path-input.focus : !path-input.focus [ object { preventScroll true } ] }
   ]
  )
  !copy-agent-btn.addEventListener click (

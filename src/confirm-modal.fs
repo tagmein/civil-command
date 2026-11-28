@@ -213,7 +213,7 @@
    { $document.body.appendChild : !document.body.appendChild $backdrop }
   ]
   [ match
-   { $cancel-btn.focus : !cancel-btn.focus }
+   { $cancel-btn.focus : !cancel-btn.focus [ object { preventScroll true } ] }
   ]
   $modal
  )

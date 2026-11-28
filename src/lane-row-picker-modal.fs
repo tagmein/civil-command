@@ -942,11 +942,11 @@
      ; set $local-val native-picker.value
      [ match
       { $native-picker.showPicker : ; try ( !native-picker.showPicker ) (
-       [ match { $native-picker.focus : !native-picker.focus } ]
+       [ match { $native-picker.focus : !native-picker.focus [ object { preventScroll true } ] } ]
        [ match { $native-picker.click : !native-picker.click } ]
       ) }
       { true (
-       [ match { $native-picker.focus : !native-picker.focus } ]
+       [ match { $native-picker.focus : !native-picker.focus [ object { preventScroll true } ] } ]
        [ match { $native-picker.click : !native-picker.click } ]
       ) }
      ]
@@ -1465,7 +1465,7 @@
         ; set '' inline-search.value
         ; set false inline-picker-el.hidden
         !render-inline-options
-        [ match { $inline-search.focus : !inline-search.focus } ]
+        [ match { $inline-search.focus : !inline-search.focus [ object { preventScroll true } ] } ]
        )
 
        ; to close-inline-picker (
@@ -1605,7 +1605,7 @@
          { [ propertyIsGreaterThanOrEqual 0 focus-idx ] (
           ; to target-it [ get item-recs $focus-idx ]
           [ match
-           { $target-it.input-el.focus : !target-it.input-el.focus }
+           { $target-it.input-el.focus : !target-it.input-el.focus [ object { preventScroll true } ] }
           ]
          ) }
         ]
@@ -1736,7 +1736,7 @@
     !modal.sync-add-visibility
     ; to first-f [ get modal.add-fields 0 ]
     [ match
-     { $first-f.input-el.focus : !first-f.input-el.focus }
+     { $first-f.input-el.focus : !first-f.input-el.focus [ object { preventScroll true } ] }
     ]
    )
   )
@@ -1776,7 +1776,7 @@
       ; set $failure.error add-error-el.textContent
       ; set false add-error-el.hidden
       [ match
-       { $failure.focus-el.focus : !failure.focus-el.focus }
+       { $failure.focus-el.focus : !failure.focus-el.focus [ object { preventScroll true } ] }
       ]
       ; object { ok false } { error $failure.error }
      ) }
@@ -2353,7 +2353,7 @@
    { $document.body.appendChild : !document.body.appendChild $backdrop }
   ]
   [ match
-   { $search-input.focus : !search-input.focus }
+   { $search-input.focus : !search-input.focus [ object { preventScroll true } ] }
   ]
   !modal.ensure-loaded
   $modal

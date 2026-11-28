@@ -989,7 +989,7 @@ export function mountTerminalView(container, options = {}) {
 
  function focus() {
   if (typeof screenEl.focus === 'function') {
-   screenEl.focus()
+   screenEl.focus({ preventScroll: true })
   }
  }
 

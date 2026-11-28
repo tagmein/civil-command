@@ -16,6 +16,7 @@ import {
  clearAllLaneSourceDrafts,
  clearTargetLaneLineSetBy,
  collectLaneSyncBundle,
+ computeLaneModalTopOffset,
  computeLaneScrollLeft,
  computeLaneScrollTop,
  createIdleTracker,
@@ -3058,7 +3059,7 @@ test('PWA manifest, Civil icon assets, index.html metadata, server MIME types, a
  await Promise.all(waitPromises)
  assert.equal(skipWaitingCalled, true)
  const srcFiles = (await fs.readdir(new URL('./src', rootUrl))).filter(f => f.endsWith('.fs'))
- const activeCache = cacheStorage.get('civil-command-v5')
+ const activeCache = cacheStorage.get('civil-command-v12')
  assert.ok(activeCache.has('/kv-config.mjs'), 'sw.js APP_SHELL should precache /kv-config.mjs')
  assert.ok(activeCache.has('/sandbox.mjs'), 'sw.js APP_SHELL should precache /sandbox.mjs')
  assert.ok(activeCache.has('/source-worker.mjs'), 'sw.js APP_SHELL should precache /source-worker.mjs')
@@ -3072,7 +3073,7 @@ test('PWA manifest, Civil icon assets, index.html metadata, server MIME types, a
  await Promise.all(activatePromises)
  assert.equal(clientsClaimCalled, true)
  assert.equal(cacheStorage.has('civil-command-v0'), false)
- assert.equal(cacheStorage.has('civil-command-v5'), true)
+ assert.equal(cacheStorage.has('civil-command-v12'), true)
 
  // Fetch bypasses /api/data and non-GET requests
  let apiIntercepted = false
@@ -3858,7 +3859,10 @@ test('Lanes remember last navigated path across close/reopen, show Path and Widt
     return child
    },
    addEventListener(event, handler) { this.listeners[event] = handler },
-   focus() { this.focused = true },
+   focus(opts) {
+    this.focused = true
+    this.lastFocusOptions = opts
+   },
    select() {},
    remove() {
     this.removed = true
@@ -4191,6 +4195,100 @@ test('computeLaneScrollLeft calculates horizontal scroll target with side-rail a
  assert.equal(computeLaneScrollTop(0, 800, NaN, 130), null)
 })
 
+test('computeLaneModalTopOffset floats lane modals to the current viewport/anchor vertical region without horizontal changes', () => {
+ // Unscrolled short lane with click near top of viewport -> 0 offset
+ assert.equal(computeLaneModalTopOffset({
+  hostTop: 24,
+  hostHeight: 420,
+  basePanelTop: 34,
+  panelHeight: 180,
+  viewportTop: 24,
+  viewportBottom: 884,
+  anchorClientY: 80,
+ }), 0)
+
+ // Unscrolled lane with lower click gently floats panel toward click (120 - 63 = 57 -> 57 - 34 = 23)
+ assert.equal(computeLaneModalTopOffset({
+  hostTop: 24,
+  hostHeight: 420,
+  basePanelTop: 34,
+  panelHeight: 180,
+  viewportTop: 24,
+  viewportBottom: 884,
+  anchorClientY: 120,
+ }), 23)
+
+ // Scrolled-down tall lane (hostTop < 0): floats down near anchorClientY (460 - 63 = 397 -> 397 - (-610) = 1007)
+ assert.equal(computeLaneModalTopOffset({
+  hostTop: -620,
+  hostHeight: 2000,
+  basePanelTop: -610,
+  panelHeight: 180,
+  viewportTop: 24,
+  viewportBottom: 884,
+  anchorClientY: 460,
+ }), 1007)
+
+ // Pointer near very bottom of viewport clamps inside viewportBottom - panelHeight (884 - 180 = 704 -> 704 - (-610) = 1314)
+ assert.equal(computeLaneModalTopOffset({
+  hostTop: -620,
+  hostHeight: 2000,
+  basePanelTop: -610,
+  panelHeight: 180,
+  viewportTop: 24,
+  viewportBottom: 884,
+  anchorClientY: 870,
+ }), 1314)
+
+ // Fallback without pointer anchor still brings modal cleanly into viewport top + comfortable slack (24 + 64 = 88 -> 88 - (-610) = 698)
+ assert.equal(computeLaneModalTopOffset({
+  hostTop: -620,
+  hostHeight: 2000,
+  basePanelTop: -610,
+  panelHeight: 180,
+  viewportTop: 24,
+  viewportBottom: 884,
+ }), 698)
+
+ // Tall modal fits inside viewport bottom (884 - 620 = 264 -> 264 - (-610) = 874)
+ assert.equal(computeLaneModalTopOffset({
+  hostTop: -620,
+  hostHeight: 2000,
+  basePanelTop: -610,
+  panelHeight: 620,
+  viewportTop: 24,
+  viewportBottom: 884,
+  anchorClientY: 850,
+ }), 874)
+
+ // Host ending above viewport bottom clamps panel inside host bottom pad (400 - 10 - 250 = 140 -> 140 - (-190) = 330)
+ assert.equal(computeLaneModalTopOffset({
+  hostTop: -200,
+  hostHeight: 600,
+  basePanelTop: -190,
+  panelHeight: 250,
+  viewportTop: 24,
+  viewportBottom: 884,
+  anchorClientY: 700,
+ }), 330)
+
+ // Partially scrolled-off shorter lane leaves >= 96px visible at bottom -> 0 when not taller than needed
+ assert.equal(computeLaneModalTopOffset({
+  hostTop: -200,
+  hostHeight: 280,
+  basePanelTop: -190,
+  panelHeight: 180,
+  viewportTop: 24,
+  viewportBottom: 884,
+  anchorClientY: 60,
+ }), 174)
+
+ // Invalid inputs safely return 0
+ assert.equal(computeLaneModalTopOffset(null), 0)
+ assert.equal(computeLaneModalTopOffset({ hostTop: 0, hostHeight: 0, basePanelTop: 0, panelHeight: 100, viewportTop: 0, viewportBottom: 800 }), 0)
+ assert.equal(computeLaneModalTopOffset({ hostTop: NaN, hostHeight: 500, basePanelTop: 0, panelHeight: 100, viewportTop: 0, viewportBottom: 800 }), 0)
+})
+
 test('Lane scroll landing clears right margin across add/open/restore without clobbering sync/reload, and Data lane CSS enforces non-overlapping 240px/25% bounds', async () => {
  const indexHtml = await fs.readFile(new URL('./index.html', import.meta.url), 'utf8')
  // Verify root scroll-padding and Data lane split button non-overlap & 240px / 25% flex rules
@@ -4279,7 +4377,10 @@ test('Lane scroll landing clears right margin across add/open/restore without cl
     return child
    },
    addEventListener(event, handler) { this.listeners[event] = handler },
-   focus() { this.focused = true },
+   focus(opts) {
+    this.focused = true
+    this.lastFocusOptions = opts
+   },
    select() {},
    remove() {
     this.removed = true
@@ -4831,7 +4932,10 @@ test('Export to Lane: scope APIs, multi-target overwrite, live deploy status pil
     return child
    },
    addEventListener(event, handler) { this.listeners[event] = handler },
-   focus() { this.focused = true },
+   focus(opts) {
+    this.focused = true
+    this.lastFocusOptions = opts
+   },
    select() {},
    remove() {
     this.removed = true
@@ -5301,7 +5405,10 @@ test('Lane-scoped modals: block only their lane, expand normal & pinned/floating
     for (const n of nodes) this.appendChild(n)
    },
    addEventListener(event, handler) { this.listeners[event] = handler },
-   focus() { this.focused = true },
+   focus(opts) {
+    this.focused = true
+    this.lastFocusOptions = opts
+   },
    select() {},
    remove() {
     this.removed = true
@@ -5385,6 +5492,12 @@ test('Lane-scoped modals: block only their lane, expand normal & pinned/floating
 
  try {
   const mockBody = createMockElement('body')
+  const docEl = Object.assign(createMockElement('html'), {
+   scrollTop: 0,
+   scrollLeft: 0,
+   clientHeight: 900,
+   clientWidth: 1440,
+  })
   const f = field({
    ...DATA_RUNTIME_ENV,
    console: { log() {} },
@@ -5393,7 +5506,7 @@ test('Lane-scoped modals: block only their lane, expand normal & pinned/floating
    defaultValueForType,
    document: {
     body: mockBody,
-    documentElement: createMockElement('html'),
+    documentElement: docEl,
     defaultView: mockWindow,
     createElement: createMockElement,
     addEventListener() {},
@@ -5580,6 +5693,44 @@ test('Lane-scoped modals: block only their lane, expand normal & pinned/floating
   assert.equal(confirmModal['is-open'], false)
   assert.equal(lane1.body.style.width, '140px')
   assert.equal(lane1.body.style.minHeight, '')
+
+  // 4. Removing an array item down at row #8 floats Confirm modal vertically to the user's current position without scrolling to top or altering horizontal scroll
+  await dv1['add-col-btn'].listeners.click()
+  dv1['schema-rows'][1]['name-el'].value = 'phone'
+  await dv1['schema-rows'][1]['name-el'].listeners.input()
+  await dv1['schema-rows'][1]['multi-btn'].listeners.click()
+  while (dv1['grid-rows'].length < 8) {
+   await dv1['add-row']()
+  }
+  const phoneCell8 = dv1['grid-rows'][7].cells[1]
+  await phoneCell8['add-btn'].listeners.click()
+  await phoneCell8['add-btn'].listeners.click()
+  assert.equal(phoneCell8.items.length, 2)
+
+  // Simulate scrolled viewport at row #8 (horizontal scroll 180px must stay untouched; vertical scroll 740px must not reset to top)
+  docEl.scrollTop = 740
+  docEl.scrollLeft = 180
+  lane1.body.rect = { top: -620, bottom: 1380, left: 0, width: 640, height: 2000 }
+  confirmModal.panel.rect = { top: -610, bottom: -430, left: 12, width: 420, height: 180 }
+  for (const h of windowListeners.pointerdown || []) {
+   await h({ type: 'pointerdown', clientY: 460 })
+  }
+
+  await phoneCell8.items[0]['remove-btn'].listeners.click()
+  assert.equal(confirmModal['is-open'], true)
+  assert.equal(confirmModal['message-el'].textContent, 'Remove item #1 ("") from "phone" in row #8?')
+  assert.equal(confirmModal.panel.style.marginTop, '1007px')
+  assert.equal(confirmModal['top-offset'], 1007)
+  assert.equal(confirmModal['cancel-btn'].lastFocusOptions?.preventScroll, true)
+  assert.equal(docEl.scrollTop, 740)
+  assert.equal(docEl.scrollLeft, 180)
+
+  await confirmModal['confirm-btn'].listeners.click()
+  assert.equal(confirmModal['is-open'], false)
+  assert.equal(confirmModal.panel.style.marginTop, '')
+  assert.equal(dv1['grid-rows'][7].cells[1].items.length, 1)
+  assert.equal(docEl.scrollTop, 740)
+  assert.equal(docEl.scrollLeft, 180)
  }
  finally {
   globalThis.fetch = origFetch
@@ -6128,7 +6279,10 @@ test('Export to Lane enforces atomic package-lock staging, sequential Open/Unloc
     return child
    },
    addEventListener(event, handler) { this.listeners[event] = handler },
-   focus() { this.focused = true },
+   focus(opts) {
+    this.focused = true
+    this.lastFocusOptions = opts
+   },
    select() {},
    remove() {
     this.removed = true
@@ -6509,7 +6663,10 @@ test('lane-notebook and tab views show in-flight loading states before script, i
     for (const node of nodes) this.appendChild(node)
    },
    addEventListener(event, handler) { this.listeners[event] = handler },
-   focus() { this.focused = true },
+   focus(opts) {
+    this.focused = true
+    this.lastFocusOptions = opts
+   },
    select() {},
    remove() {
     this.removed = true

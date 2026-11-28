@@ -281,7 +281,7 @@
    { $document.body.appendChild : !document.body.appendChild $backdrop }
   ]
   [ match
-   { $ok-btn.focus : !ok-btn.focus }
+   { $ok-btn.focus : !ok-btn.focus [ object { preventScroll true } ] }
   ]
   $modal
  )

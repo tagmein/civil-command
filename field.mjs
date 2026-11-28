@@ -3179,6 +3179,93 @@ export const WORKFLOW_COLUMN_TYPES = [
  'boolean',
 ]
 
+export const CELL_FLAGS = Object.freeze(['unknown', 'incorrect'])
+
+export function normalizeCellFlag(raw) {
+ if (raw === null || raw === undefined || raw === false || raw === '') {
+  return null
+ }
+ const clean = String(raw).trim().toLowerCase()
+ if (clean === 'unknown') {
+  return 'unknown'
+ }
+ if (clean === 'incorrect') {
+  return 'incorrect'
+ }
+ if (clean === 'none' || clean === 'unset' || clean === 'normal' || clean === '') {
+  return null
+ }
+ return null
+}
+
+export function normalizeRowFlags(rawFlags, columns = null) {
+ const out = {}
+ if (!rawFlags || typeof rawFlags !== 'object' || Array.isArray(rawFlags)) {
+  return out
+ }
+ let allowedIds = null
+ if (Array.isArray(columns)) {
+  allowedIds = new Set()
+  for (const col of columns) {
+   if (col && typeof col === 'object' && typeof col.id === 'string' && col.id.trim().length > 0) {
+    allowedIds.add(col.id.trim())
+   }
+  }
+ }
+ for (const key of Object.keys(rawFlags)) {
+  const cleanKey = String(key || '').trim()
+  if (!cleanKey || FORBIDDEN_PROPERTY_KEY_SET.has(cleanKey)) {
+   continue
+  }
+  if (allowedIds && !allowedIds.has(cleanKey)) {
+   continue
+  }
+  const norm = normalizeCellFlag(rawFlags[key])
+  if (norm === 'unknown' || norm === 'incorrect') {
+   out[cleanKey] = norm
+  }
+ }
+ return out
+}
+
+export function getRowCellFlag(row, colId) {
+ if (!row || typeof row !== 'object' || !row.flags || typeof row.flags !== 'object' || Array.isArray(row.flags)) {
+  return null
+ }
+ const key = String(colId || '').trim()
+ if (!key || FORBIDDEN_PROPERTY_KEY_SET.has(key)) {
+  return null
+ }
+ return Object.hasOwn(row.flags, key) ? normalizeCellFlag(row.flags[key]) : null
+}
+
+export function setRowCellFlag(row, colId, flag) {
+ if (!row || typeof row !== 'object') {
+  return { changed: false, previousFlag: null, flag: null }
+ }
+ const key = String(colId || '').trim()
+ if (!key || FORBIDDEN_PROPERTY_KEY_SET.has(key)) {
+  return { changed: false, previousFlag: null, flag: null }
+ }
+ const previousFlag = getRowCellFlag(row, key)
+ const nextFlag = normalizeCellFlag(flag)
+ const nextFlags = normalizeRowFlags(row.flags)
+ if (nextFlag === 'unknown' || nextFlag === 'incorrect') {
+  nextFlags[key] = nextFlag
+  row.flags = nextFlags
+ }
+ else {
+  delete nextFlags[key]
+  if (Object.keys(nextFlags).length > 0) {
+   row.flags = nextFlags
+  }
+  else {
+   delete row.flags
+  }
+ }
+ return { changed: previousFlag !== nextFlag, previousFlag, flag: nextFlag }
+}
+
 const DATA_CONSTRAINT_META = Object.freeze({
  workflow: Object.freeze({ type: 'workflow', label: 'Workflow', shortTag: 'workflow' }),
  min: Object.freeze({ type: 'min', label: 'Minimum', shortTag: 'min' }),
@@ -3428,6 +3515,52 @@ export function computeLaneScrollTop(
   target = Math.max(0, Math.round(absTop - visibleTop))
  }
  return target === Math.round(cur) ? null : target
+}
+
+export function computeLaneModalTopOffset(options = {}) {
+ if (!options || typeof options !== 'object') {
+  return 0
+ }
+ const hostTop = Number(options.hostTop)
+ const hostHeight = Number(options.hostHeight)
+ const basePanelTop = Number(options.basePanelTop)
+ const panelHeight = Number(options.panelHeight)
+ const viewportTop = Number(options.viewportTop)
+ const viewportBottom = Number(options.viewportBottom)
+ if (
+  !Number.isFinite(hostTop) ||
+  !Number.isFinite(hostHeight) ||
+  hostHeight <= 0 ||
+  !Number.isFinite(basePanelTop) ||
+  !Number.isFinite(panelHeight) ||
+  panelHeight < 0 ||
+  !Number.isFinite(viewportTop) ||
+  !Number.isFinite(viewportBottom) ||
+  viewportBottom <= viewportTop
+ ) {
+  return 0
+ }
+ const bottomPad = Math.max(8, Math.round(Math.max(0, basePanelTop - hostTop)))
+ const hostBottom = hostTop + hostHeight
+ const maxFitTop = Math.max(basePanelTop, hostBottom - bottomPad - panelHeight)
+ const minTop = basePanelTop < viewportTop
+  ? Math.min(viewportTop, Math.max(basePanelTop, hostBottom - 96))
+  : basePanelTop
+ const maxTop = Math.max(minTop, Math.min(viewportBottom - panelHeight, maxFitTop))
+ const rawAnchor = options.anchorClientY
+ const hasAnchor = typeof rawAnchor === 'number' && Number.isFinite(rawAnchor)
+ let desiredTop
+ if (hasAnchor) {
+  const lead = Math.min(96, Math.max(36, Math.round(panelHeight * 0.35)))
+  desiredTop = Math.min(maxTop, Math.max(minTop, rawAnchor - lead))
+ }
+ else {
+  const slack = Math.max(0, maxTop - minTop)
+  desiredTop = minTop + Math.min(64, Math.round(slack * 0.2))
+ }
+ const maxAllowedTop = Math.max(minTop, maxFitTop)
+ const clampedTop = Math.min(maxAllowedTop, Math.max(basePanelTop, desiredTop))
+ return Math.max(0, Math.round(clampedTop - basePanelTop))
 }
 
 export const DEFAULT_MINIMAP_SCALE = 1
@@ -5682,7 +5815,8 @@ export function parseStoredTables(stored) {
      values[col.id] = defaultDataValue(col, col.multiple)
     }
    }
-   table.rows.push({ id: rowId, values })
+   const flags = normalizeRowFlags(row.flags, table.columns)
+   table.rows.push(Object.keys(flags).length > 0 ? { id: rowId, values, flags } : { id: rowId, values })
   }
  }
  return out
@@ -6942,8 +7076,30 @@ export function syncTableRowsInMemory(tables, tableNameOrId, rawRecords, keyColu
    }
   }
 
+  const nextFlags = matchedRow ? normalizeRowFlags(matchedRow.flags, cols) : {}
+  if (rec._flags && typeof rec._flags === 'object' && !Array.isArray(rec._flags)) {
+   for (const [rawKey, rawFlag] of Object.entries(rec._flags)) {
+    const cleanKey = String(rawKey || '').trim()
+    if (!cleanKey) {
+     continue
+    }
+    const lowerKey = cleanKey.toLowerCase()
+    const col = cols.find(c => c && (c.id === cleanKey || c.name === cleanKey || String(c.name || '').trim().toLowerCase() === lowerKey)) || null
+    if (!col || !col.id || FORBIDDEN_PROPERTY_KEY_SET.has(col.id)) {
+     continue
+    }
+    const normFlag = normalizeCellFlag(rawFlag)
+    if (normFlag === 'unknown' || normFlag === 'incorrect') {
+     nextFlags[col.id] = normFlag
+    }
+    else {
+     delete nextFlags[col.id]
+    }
+   }
+  }
+
   const rowId = matchedRow ? matchedRow.id : makeSyncedRowId()
-  nextRows.push({ id: rowId, values: nextValues })
+  nextRows.push(Object.keys(nextFlags).length > 0 ? { id: rowId, values: nextValues, flags: nextFlags } : { id: rowId, values: nextValues })
   if (matchedRow) {
    updated += 1
   }
@@ -6966,6 +7122,10 @@ export function syncTableRowsInMemory(tables, tableNameOrId, rawRecords, keyColu
    const nextVals = nextRow.values && typeof nextRow.values === 'object' ? nextRow.values : {}
    for (const col of cols) {
     if (!dataValuesEqual(prevVals[col.id], nextVals[col.id], col, col.multiple)) {
+     changed = true
+     break
+    }
+    if (getRowCellFlag(prevRow, col.id) !== getRowCellFlag(nextRow, col.id)) {
      changed = true
      break
     }
@@ -7012,6 +7172,45 @@ const FILTER_OP_IS_EMPTY = Object.freeze({
  inputKind: 'none',
 })
 
+const FILTER_OP_FLAGGED_UNKNOWN = Object.freeze({
+ op: 'flagged_unknown',
+ label: 'is flagged Unknown',
+ shortLabel: 'flagged: Unknown',
+ arity: 0,
+ inputKind: 'none',
+})
+
+const FILTER_OP_FLAGGED_INCORRECT = Object.freeze({
+ op: 'flagged_incorrect',
+ label: 'is flagged Incorrect',
+ shortLabel: 'flagged: Incorrect',
+ arity: 0,
+ inputKind: 'none',
+})
+
+const FILTER_OP_IS_FLAGGED = Object.freeze({
+ op: 'is_flagged',
+ label: 'is flagged',
+ shortLabel: 'is flagged',
+ arity: 0,
+ inputKind: 'none',
+})
+
+const FILTER_OP_NOT_FLAGGED = Object.freeze({
+ op: 'not_flagged',
+ label: 'is not flagged',
+ shortLabel: 'not flagged',
+ arity: 0,
+ inputKind: 'none',
+})
+
+const FILTER_FLAG_OPERATORS = Object.freeze([
+ FILTER_OP_FLAGGED_UNKNOWN,
+ FILTER_OP_FLAGGED_INCORRECT,
+ FILTER_OP_IS_FLAGGED,
+ FILTER_OP_NOT_FLAGGED,
+])
+
 function buildScalarFilterOperators(parsed, col, tables) {
  switch (parsed.type) {
   case 'integer':
@@ -7029,6 +7228,7 @@ function buildScalarFilterOperators(parsed, col, tables) {
     { op: 'not_between', label: 'not between', shortLabel: 'not between', arity: 2, inputKind: kind },
     FILTER_OP_HAS_VALUE,
     FILTER_OP_IS_EMPTY,
+    ...FILTER_FLAG_OPERATORS,
    ]
   }
   case 'boolean':
@@ -7037,6 +7237,7 @@ function buildScalarFilterOperators(parsed, col, tables) {
     { op: 'is_false', label: 'is false', shortLabel: 'is false', arity: 0, inputKind: 'none' },
     FILTER_OP_HAS_VALUE,
     FILTER_OP_IS_EMPTY,
+    ...FILTER_FLAG_OPERATORS,
    ]
   case 'date':
    return [
@@ -7053,6 +7254,7 @@ function buildScalarFilterOperators(parsed, col, tables) {
     { op: 'in_next_days', label: 'in the next N days', shortLabel: 'next', arity: 1, inputKind: 'integer' },
     FILTER_OP_HAS_VALUE,
     FILTER_OP_IS_EMPTY,
+    ...FILTER_FLAG_OPERATORS,
    ]
   case 'datetime':
    return [
@@ -7069,6 +7271,7 @@ function buildScalarFilterOperators(parsed, col, tables) {
     { op: 'in_next_days', label: 'in the next N days', shortLabel: 'next', arity: 1, inputKind: 'integer' },
     FILTER_OP_HAS_VALUE,
     FILTER_OP_IS_EMPTY,
+    ...FILTER_FLAG_OPERATORS,
    ]
   case 'json':
    return [
@@ -7079,6 +7282,7 @@ function buildScalarFilterOperators(parsed, col, tables) {
     { op: 'is_not', label: 'is not', shortLabel: 'is not', arity: 1, inputKind: 'text' },
     FILTER_OP_HAS_VALUE,
     FILTER_OP_IS_EMPTY,
+    ...FILTER_FLAG_OPERATORS,
    ]
   case 'row': {
    const target = Array.isArray(tables) ? resolveRowTarget(tables, col) : null
@@ -7091,6 +7295,7 @@ function buildScalarFilterOperators(parsed, col, tables) {
     { op: 'is_any_of', label: 'is any of', shortLabel: 'any of', arity: 1, inputKind: 'list' },
     FILTER_OP_HAS_VALUE,
     FILTER_OP_IS_EMPTY,
+    ...FILTER_FLAG_OPERATORS,
    ]
   }
   case 'lane':
@@ -7102,6 +7307,7 @@ function buildScalarFilterOperators(parsed, col, tables) {
     { op: 'is_any_of', label: 'is any of', shortLabel: 'any of', arity: 1, inputKind: 'list' },
     FILTER_OP_HAS_VALUE,
     FILTER_OP_IS_EMPTY,
+    ...FILTER_FLAG_OPERATORS,
    ]
   case 'url':
   case 'email':
@@ -7120,6 +7326,7 @@ function buildScalarFilterOperators(parsed, col, tables) {
      { op: 'matches_regex', label: 'matches regex', shortLabel: '~', arity: 1, inputKind: 'text' },
      FILTER_OP_HAS_VALUE,
      FILTER_OP_IS_EMPTY,
+     ...FILTER_FLAG_OPERATORS,
     ]
    }
    return [
@@ -7133,6 +7340,7 @@ function buildScalarFilterOperators(parsed, col, tables) {
     { op: 'matches_regex', label: 'matches regex', shortLabel: '~', arity: 1, inputKind: 'text' },
     FILTER_OP_HAS_VALUE,
     FILTER_OP_IS_EMPTY,
+    ...FILTER_FLAG_OPERATORS,
    ]
   }
  }
@@ -7192,7 +7400,8 @@ export function getFilterOperatorsForColumn(col, tables = null) {
   { op: 'count_gte', label: 'item count ≥', shortLabel: 'count ≥', arity: 1, inputKind: 'integer' },
   { op: 'count_lte', label: 'item count ≤', shortLabel: 'count ≤', arity: 1, inputKind: 'integer' },
   FILTER_OP_HAS_VALUE,
-  FILTER_OP_IS_EMPTY
+  FILTER_OP_IS_EMPTY,
+  ...FILTER_FLAG_OPERATORS
  )
  return ops
 }
@@ -7933,6 +8142,18 @@ export function evaluateTableFilter(row, filter, col, options = {}) {
  const parsed = parseColumnType(col)
  const op = filter.operator
 
+ if (op === 'flagged_unknown') {
+  return getRowCellFlag(row, col.id) === 'unknown'
+ }
+ if (op === 'flagged_incorrect') {
+  return getRowCellFlag(row, col.id) === 'incorrect'
+ }
+ if (op === 'is_flagged') {
+  return getRowCellFlag(row, col.id) !== null
+ }
+ if (op === 'not_flagged') {
+  return getRowCellFlag(row, col.id) === null
+ }
  if (op === 'has_value') {
   return !isDataCellValueEmpty(rawVal, parsed)
  }
