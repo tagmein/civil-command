@@ -8571,9 +8571,14 @@
    { true : ; object }
   ]
   ; to initial-tables !loadLaneTables $data $lane.data $lane.id $load-opts
+  ; to initial-table-details [ match
+   { $loadLaneTableDetails : !loadLaneTableDetails $data $lane.data $lane.id $initial-tables }
+   { true : null }
+  ]
   ; to needs-catalog ; object { hit false }
   ; each $initial-tables (
-   ; to { tbl } $argv
+   ; to { tbl tbl-index } $argv
+   ; to details [ match { $initial-table-details : ; get initial-table-details $tbl-index } ]
    ; to view.used-ids $tbl.id true
    ; to is-rem !view.is-remote-table $tbl
    ; condition { propertyIs true is-rem } : ; set true needs-catalog.hit
@@ -8587,14 +8592,18 @@
     ; to view.used-ids $row.id true
    )
    [ match
+    { $details : ; to view.table-updates $tbl.id $details.updates }
     { $loadTableUpdates (
      ; to loaded-upds !loadTableUpdates $data $lane.data $lane.id $tbl.id
      ; to view.table-updates $tbl.id $loaded-upds
     ) }
    ]
    [ match
-    { $loadTableViews (
-     ; to loaded-views !loadTableViews $data $lane.data $lane.id $tbl.id $tbl.columns $initial-tables
+    { [ match { $details : true } { true : $loadTableViews } ] (
+     ; to loaded-views [ match
+      { $details : $details.views }
+      { true : !loadTableViews $data $lane.data $lane.id $tbl.id $tbl.columns $initial-tables }
+     ]
      ; to active-box ; object { v null }
      ; each $loaded-views.views (
       ; to { lv } $argv

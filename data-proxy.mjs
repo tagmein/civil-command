@@ -3,6 +3,8 @@ import http from 'node:http'
 import https from 'node:https'
 import os from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
+import { gzip } from 'node:zlib'
 import {
  SESSION_TOKEN_HEADER,
  TOKEN_BOOTSTRAP_HEADER,
@@ -13,6 +15,7 @@ import {
  stripDiskModeQueryParams,
 } from './data.mjs'
 import {
+ acceptsGzip,
  hasJsonContentType,
  isAllowedLocalOrigin,
 } from './http-security.mjs'
@@ -39,6 +42,7 @@ import {
  isForbiddenDirectKvKey,
  kvGetChunked,
  loadLaneSecretRecord,
+ mapConcurrent,
  openPackageInSession,
  packageMetaKey,
  resolveLaneSecret,
@@ -54,6 +58,11 @@ import {
 } from './storage.mjs'
 
 const MAX_PROXY_BODY_BYTES = 8 * 1024 * 1024
+export const MAX_KV_BATCH_KEYS = 1000
+const BATCH_CONCURRENCY = 32
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 64 })
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 64 })
+const gzipAsync = promisify(gzip)
 
 export function resolveDefaultVaultStorePath(env = process.env) {
  if (env && typeof env.CC_VAULT_KEY_FILE === 'string' && env.CC_VAULT_KEY_FILE.trim()) {
@@ -129,6 +138,40 @@ function sendJson(res, status, payload, extraHeaders = null) {
   ...(extraHeaders || {}),
  })
  res.end(body)
+}
+
+async function sendKvRead(req, res, body, headers) {
+ const outHeaders = { ...headers, 'cache-control': 'no-store' }
+ delete outHeaders['transfer-encoding']
+ if (body.length >= 1024 && !outHeaders['content-encoding']) {
+  const vary = String(outHeaders.vary || '')
+  if (!vary.split(',').some(value => /^(?:accept-encoding|\*)$/i.test(value.trim()))) {
+   outHeaders.vary = vary ? `${vary}, Accept-Encoding` : 'Accept-Encoding'
+  }
+  if (acceptsGzip(req)) {
+   body = await gzipAsync(body)
+   outHeaders['content-encoding'] = 'gzip'
+  }
+ }
+ outHeaders['content-length'] = String(body.length)
+ res.writeHead(200, outHeaders)
+ res.end(body)
+}
+
+function memoizePerBatch(map, key, read) {
+ if (!map.has(key)) {
+  map.set(key, read())
+ }
+ return map.get(key)
+}
+
+function createBatchAuthCache() {
+ return {
+  contexts: new Map(),
+  lanePackages: new Map(),
+  dotOwners: new Map(),
+  packagePermissions: new Map(),
+ }
 }
 
 function readRawBody(req, maxBytes = MAX_PROXY_BODY_BYTES) {
@@ -296,9 +339,11 @@ function requestBackendBuffer(backendUrl, method, bodyBuf, contentType = '') {
     path: `${parsed.pathname}${parsed.search}`,
     method,
     headers,
+    agent: lib === https ? httpsAgent : httpAgent,
    },
    upstreamRes => {
     const chunks = []
+    upstreamRes.on('error', reject)
     upstreamRes.on('data', chunk => {
      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
     })
@@ -547,14 +592,13 @@ export function createDataProxyHandler(options = {}) {
  }
 
  async function isLaneAllowedForAuth(sessionKv, basePath, laneId, authCtx) {
-  const cleanLane = String(laneId || '').trim()
-  if (!cleanLane) {
+  if (typeof laneId !== 'string' || !laneId || laneId.trim() !== laneId) {
    return false
   }
   if (Array.isArray(authCtx.claims.lanes)) {
-   return authCtx.claims.lanes.includes(cleanLane)
+   return authCtx.claims.lanes.includes(laneId)
   }
-  const ownerPkg = await getLanePackageId(sessionKv, cleanLane)
+  const ownerPkg = await getLanePackageId(sessionKv, laneId)
   return isPackageAllowedForAuth(sessionKv, basePath, ownerPkg, authCtx)
  }
 
@@ -1086,6 +1130,7 @@ export function createDataProxyHandler(options = {}) {
   readBodyText = null,
   allowUnlockedAnyDir = false,
   allowDeployRegistryFallback = true,
+  batchAuth = null,
  }) {
   if (isForbiddenDirectKvKey(rawKey)) {
    return {
@@ -1108,7 +1153,8 @@ export function createDataProxyHandler(options = {}) {
    (classified.kind === 'package-data' && classified.packageId === DEFAULT_PACKAGE_ID && rawKey.startsWith('packages#default/sessions')) ||
    (allowDeployRegistryFallback && isDeployRegistryKey(rawKey))
 
-  const authCtx = resolveRawTokenAuth(rawToken, normDir, allowRegistryFallback, allowUnlockedAnyDir)
+  const resolveAuth = () => resolveRawTokenAuth(rawToken, normDir, allowRegistryFallback, allowUnlockedAnyDir)
+  const authCtx = batchAuth ? memoizePerBatch(batchAuth.contexts, allowRegistryFallback, resolveAuth) : resolveAuth()
   if (!authCtx.ok) {
    return authCtx
   }
@@ -1119,6 +1165,15 @@ export function createDataProxyHandler(options = {}) {
   }
 
   const sessionKv = getBoundSessionKv(normDir)
+  // All successful contexts in one batch have the same token, directory and grants.
+  const packageAllowed = packageId => {
+   const check = () => isPackageAllowedForAuth(sessionKv, normDir, packageId, authCtx)
+   return batchAuth ? memoizePerBatch(batchAuth.packagePermissions, packageId, check) : check()
+  }
+  const dotOwner = candidateLaneIds => {
+   const lookup = () => resolveDotKeyOwnerPackage(sessionKv, candidateLaneIds)
+   return batchAuth ? memoizePerBatch(batchAuth.dotOwners, candidateLaneIds[0], lookup) : lookup()
+  }
 
   if (Array.isArray(authCtx.claims.lanes)) {
    if (classified.kind === 'lane') {
@@ -1127,7 +1182,7 @@ export function createDataProxyHandler(options = {}) {
     }
    }
    else if (classified.kind === 'lane-dot') {
-    const owner = await resolveDotKeyOwnerPackage(sessionKv, classified.candidateLaneIds)
+    const owner = await dotOwner(classified.candidateLaneIds)
     const matched = classified.candidateLaneIds.some(id => authCtx.claims.lanes.includes(id))
     if (!matched || (owner.laneId && !authCtx.claims.lanes.includes(owner.laneId))) {
      return { ok: false, status: 403, needsBootstrap: false, error: 'Lane capability token is not authorized for this lane' }
@@ -1140,7 +1195,7 @@ export function createDataProxyHandler(options = {}) {
   else {
    if (classified.kind === 'package-meta') {
     if (method === 'POST' || method === 'DELETE') {
-     if (!(await isPackageAllowedForAuth(sessionKv, normDir, classified.packageId, authCtx))) {
+     if (!(await packageAllowed(classified.packageId))) {
       return { ok: false, status: 403, needsBootstrap: false, error: 'Access denied: package is locked or unopened in this session' }
      }
      if (method === 'POST' && typeof effectiveBodyText === 'string') {
@@ -1164,7 +1219,7 @@ export function createDataProxyHandler(options = {}) {
      classified.packageId === DEFAULT_PACKAGE_ID &&
      rawKey.startsWith('packages#default/sessions')
     if (!isDefaultSessionIndex) {
-     if (!(await isPackageAllowedForAuth(sessionKv, normDir, classified.packageId, authCtx))) {
+     if (!(await packageAllowed(classified.packageId))) {
       return { ok: false, status: 403, needsBootstrap: false, error: 'Access denied: package is locked or unopened in this session' }
      }
     }
@@ -1209,13 +1264,21 @@ export function createDataProxyHandler(options = {}) {
     }
    }
    else if (classified.kind === 'lane') {
-    if (!(await isLaneAllowedForAuth(sessionKv, normDir, classified.laneId, authCtx))) {
+    const { laneId } = classified
+    if (typeof laneId !== 'string' || !laneId || laneId.trim() !== laneId) {
+     return { ok: false, status: 400, needsBootstrap: false, error: 'Invalid KV key' }
+    }
+    const allowed = batchAuth
+     ? await packageAllowed(await memoizePerBatch(batchAuth.lanePackages, laneId,
+      () => getLanePackageId(sessionKv, laneId)))
+     : await isLaneAllowedForAuth(sessionKv, normDir, laneId, authCtx)
+    if (!allowed) {
      return { ok: false, status: 403, needsBootstrap: false, error: 'Access denied: lane belongs to a locked or unopened package' }
     }
    }
    else if (classified.kind === 'lane-dot') {
-    const owner = await resolveDotKeyOwnerPackage(sessionKv, classified.candidateLaneIds)
-    if (!(await isPackageAllowedForAuth(sessionKv, normDir, owner.packageId, authCtx))) {
+    const owner = await dotOwner(classified.candidateLaneIds)
+    if (!(await packageAllowed(owner.packageId))) {
      return { ok: false, status: 403, needsBootstrap: false, error: 'Access denied: lane belongs to a locked or unopened package' }
     }
    }
@@ -1230,16 +1293,98 @@ export function createDataProxyHandler(options = {}) {
   }
  }
 
+ async function handleBatchRead(req, res, url, method) {
+  if (method !== 'POST') {
+   return sendJson(res, 405, { ok: false, error: 'Method not allowed' }, { Allow: 'POST' })
+  }
+  if (!hasJsonContentType(req)) {
+   return sendJson(res, 415, { ok: false, error: 'Content-Type must be application/json' })
+  }
+  let body
+  try {
+   body = await readJsonBody(req)
+  }
+  catch (err) {
+   return sendJson(res, err.status || 400, { ok: false, error: err.message || 'Invalid request body' })
+  }
+  const queryBasePath = normalizeDataDir(url.searchParams.get('modeOptions.disk.basePath'))
+  const bodyBasePath = normalizeDataDir(body.basePath)
+  if (sessionDirsDisabled && (queryBasePath !== null || bodyBasePath !== null)) {
+   return sendJson(res, 403, { ok: false, error: 'Session directory selection is disabled on this server' })
+  }
+  const { keys } = body
+  if (!Array.isArray(keys) || keys.length > MAX_KV_BATCH_KEYS || keys.some(key => typeof key !== 'string' || !key)) {
+   return sendJson(res, 400, { ok: false, error: `Expected an array of up to ${MAX_KV_BATCH_KEYS} non-empty KV keys` })
+  }
+  const requestedBasePath = queryBasePath ?? bodyBasePath
+  const rawToken = extractRequestToken(req)
+  const uniqueKeys = Array.from(new Set(keys))
+  const batchAuth = createBatchAuthCache()
+  const sendAuthFailure = auth => sendJson(res, auth.status, { ok: false, error: auth.error },
+   auth.needsBootstrap ? { [TOKEN_BOOTSTRAP_HEADER]: '/api/vault/session' } : null)
+  try {
+   if (uniqueKeys.length === 0) {
+    const auth = resolveRawTokenAuth(rawToken, requestedBasePath)
+    return auth.ok ? sendJson(res, 200, { ok: true, values: [] }) : sendAuthFailure(auth)
+   }
+   const checks = await mapConcurrent(uniqueKeys, BATCH_CONCURRENCY, rawKey => authorizeKvAccess({
+    rawToken, method: 'GET', requestedBasePath, rawKey, batchAuth,
+   }))
+   const denied = checks.find(auth => !auth.ok)
+   if (denied) {
+    return sendAuthFailure(denied)
+   }
+
+   const upstreamBase = buildDataUrl(backendBaseUrl, requestedBasePath, { disableSessionDirs: sessionDirsDisabled })
+   const uniqueValues = await mapConcurrent(uniqueKeys, BATCH_CONCURRENCY, async (key, index) => {
+    const { classified, sessionKv } = checks[index]
+    let value
+    if (options.backendKv) {
+     value = await sessionKv.get(key)
+    }
+    else {
+     const targetUrl = new URL(upstreamBase)
+     targetUrl.searchParams.set('key', key)
+     const upstream = await requestBackendBuffer(targetUrl, 'GET', null)
+     if (upstream.statusCode === 404) {
+      return null
+     }
+     if (upstream.statusCode !== 200) {
+      throw new Error(`KV backend returned HTTP ${upstream.statusCode}`)
+     }
+     value = upstream.body.toString('utf8')
+    }
+    return sanitizeKvReadValue(value, classified)
+   })
+   const byKey = new Map(uniqueKeys.map((key, index) => [key, uniqueValues[index]]))
+   const payload = Buffer.from(JSON.stringify({ ok: true, values: keys.map(key => byKey.get(key)) }))
+   return await sendKvRead(req, res, payload, { 'content-type': 'application/json; charset=utf-8' })
+  }
+  catch {
+   return sendJson(res, 502, { ok: false, error: 'Bad gateway: KV batch read failed' })
+  }
+ }
+
+ function sanitizeKvReadValue(value, classified) {
+  if (value === null || value === undefined) {
+   return null
+  }
+  return classified.kind === 'package-meta' ? sanitizePackageMetaJsonText(String(value)) : String(value)
+ }
+
  async function handleDataProxyRequest(req, res) {
   if (!isAllowedLocalOrigin(req, options)) {
    return sendJson(res, 403, { ok: false, error: 'Cross-origin data proxy access denied' })
   }
   const method = String(req.method || 'GET').toUpperCase()
+  const url = new URL(req.url || '/', 'http://localhost')
+  if (url.pathname === '/api/data/batch') {
+   return handleBatchRead(req, res, url, method)
+  }
   if (method !== 'GET' && method !== 'POST' && method !== 'DELETE' && method !== 'HEAD') {
    return sendJson(res, 405, { ok: false, error: 'Method not allowed' })
   }
 
-  const url = new URL(req.url || '/', 'http://localhost')
   const rawKey = url.searchParams.get('key')
   if (rawKey === null || rawKey === '') {
    return sendJson(res, 400, { ok: false, error: 'Missing required key query parameter' })
@@ -1298,6 +1443,9 @@ export function createDataProxyHandler(options = {}) {
      const outText = classified.kind === 'package-meta'
       ? sanitizePackageMetaJsonText(String(val))
       : String(val)
+     if (method === 'GET') {
+      return await sendKvRead(req, res, Buffer.from(outText), { 'content-type': 'text/plain; charset=utf-8' })
+     }
      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' })
      res.end(method === 'HEAD' ? '' : outText)
      return
@@ -1329,6 +1477,9 @@ export function createDataProxyHandler(options = {}) {
    if ((method === 'GET' || method === 'HEAD') && upstream.statusCode === 200 && classified.kind === 'package-meta') {
     const scrubbed = sanitizePackageMetaJsonText(responseBody.toString('utf8'))
     responseBody = Buffer.from(scrubbed, 'utf8')
+   }
+   if (method === 'GET' && upstream.statusCode === 200) {
+    return await sendKvRead(req, res, responseBody, upstream.headers)
    }
    const outHeaders = { ...upstream.headers }
    delete outHeaders['transfer-encoding']
@@ -1371,13 +1522,14 @@ export function createDataProxyHandler(options = {}) {
    }
    const rawStorageClient = unwrapKv(getBoundSessionKv(cleanBasePath))
 
-   const authOrThrow = async (method, fullKey, bodyText = undefined) => {
+   const authOrThrow = async (method, fullKey, bodyText = undefined, batchAuth = null) => {
     const auth = await authorizeKvAccess({
      rawToken: currentToken,
      method,
      requestedBasePath: cleanBasePath,
      rawKey: fullKey,
      bodyText,
+     batchAuth,
      allowUnlockedAnyDir: true,
      allowDeployRegistryFallback: true,
     })
@@ -1624,13 +1776,20 @@ export function createDataProxyHandler(options = {}) {
     async get(key) {
      const fullKey = qualify(key)
      const auth = await authOrThrow('GET', fullKey)
-     const val = await rawStorageClient.get(fullKey)
-     if (val === null || val === undefined) {
-      return null
-     }
-     return auth.classified.kind === 'package-meta'
-      ? sanitizePackageMetaJsonText(String(val))
-      : String(val)
+     return sanitizeKvReadValue(await rawStorageClient.get(fullKey), auth.classified)
+    },
+    async getMany(keys) {
+     const fullKeys = keys.map(qualify)
+     const uniqueKeys = Array.from(new Set(fullKeys))
+     if (uniqueKeys.length === 0) return []
+     const batchAuth = createBatchAuthCache()
+     const checks = await mapConcurrent(uniqueKeys, BATCH_CONCURRENCY,
+      key => authOrThrow('GET', key, undefined, batchAuth))
+     const values = typeof rawStorageClient.getMany === 'function'
+      ? await rawStorageClient.getMany(uniqueKeys)
+      : await mapConcurrent(uniqueKeys, BATCH_CONCURRENCY, key => rawStorageClient.get(key))
+     const byKey = new Map(uniqueKeys.map((key, index) => [key, sanitizeKvReadValue(values[index], checks[index].classified)]))
+     return fullKeys.map(key => byKey.get(key))
     },
     async set(key, value, opts = null) {
      const fullKey = qualify(key)
@@ -1715,6 +1874,9 @@ export function createDataProxyHandler(options = {}) {
    },
    get(key) {
     return activeClient.get(key)
+   },
+   getMany(keys) {
+    return activeClient.getMany(keys)
    },
    set(key, value, opts) {
     return activeClient.set(key, value, opts)

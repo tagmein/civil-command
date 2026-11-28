@@ -62,12 +62,23 @@ import {
  isReadOnlyRemoteTable,
  isRemoteTable,
  isTriggerExcludedKey,
+ kvGetChunkedMany,
+ kvGetMany,
+ kvSetChunked,
+ lanePackageKey,
+ laneScriptBase,
  laneServerSource,
  laneServersModalSource,
  laneStorySource,
+ laneTablesBase,
  laneTerminalModalSource,
  lineInfoModalSource,
+ listPackageLanes,
+ loadLaneScript,
+ loadLaneTableDetails,
  loadLaneTables,
+ loadSessionCatalog,
+ loadTableUpdates,
  loadTableViews,
  lookupRowDisplay,
  normalizeColumnConstraint,
@@ -83,6 +94,9 @@ import {
  normalizeTableImportMode,
  normalizeTableRemoteSpec,
  normalizeTableViewsRecord,
+ packageLaneKey,
+ packageLanesBase,
+ packageMetaKey,
  packageModalSource,
  parse,
  parseCellValue,
@@ -96,6 +110,7 @@ import {
  parseStoredTables,
  parseTableFilterInput,
  parseWorkflowOptionValue,
+ readPagedIds,
  registerLaneInPackage,
  resolveImportValue,
  resolveInboundSubtables,
@@ -112,14 +127,256 @@ import {
  saveImportedTableLink,
  saveLaneTables,
  saveTableViews,
+ scriptLineKey,
  serializeTableRow,
  sessionModalSource,
  setRowCellFlag,
  syncTableRowsInMemory,
+ tableRowKey,
+ tableRowsBase,
+ tableSchemaKey,
+ tableUpdatesKey,
  tableViewFiltersEqual,
  tableViewsKey,
  validateColumnConstraints,
 } from './field.fixtures.mjs'
+
+function makeReadTrackingKv(store, { batch = true, denied = new Set() } = {}) {
+ const gets = []
+ const batches = []
+ const read = key => {
+  if (denied.has(key)) {
+   throw Object.assign(new Error('Access denied'), { status: 403 })
+  }
+  return store.get(key) ?? null
+ }
+ function makeKv(prefix = '', root = null) {
+  const qualify = key => prefix ? `${prefix}.${key}` : key
+  const kv = {
+   get root() { return root || kv },
+   namespace(name) { return makeKv(qualify(name), kv.root) },
+   async get(key) {
+    const fullKey = qualify(key)
+    gets.push(fullKey)
+    return read(fullKey)
+   },
+   async set(key, text) { store.set(qualify(key), text) },
+   async delete(key) { store.delete(qualify(key)) },
+  }
+  if (batch) {
+   kv.getMany = async keys => {
+    const fullKeys = keys.map(qualify)
+    batches.push(fullKeys)
+    return fullKeys.map(read)
+   }
+  }
+  return kv
+ }
+ return { kv: makeKv(), batches, gets }
+}
+
+test('KV batch reads align scoped strings, missing values, and complete or incomplete chunk manifests', async () => {
+ const store = new Map([
+  ['lane.v1.title', 'Scoped title'],
+  ['lane.v1.path', ''],
+  ['title', 'Root title'],
+  ['mixed', '{"__cc_chunks":1,"n":3}'],
+  ['mixed.chunks/0', 'a🌱'],
+  ['mixed.chunks/1', ''],
+  ['mixed.chunks/2', 'β'],
+  ['incomplete', '{"__cc_chunks":1,"n":2}'],
+  ['incomplete.chunks/1', 'second'],
+  ['zero', '{"__cc_chunks":1,"n":0}'],
+  ['plain', 'plain'],
+  ['empty', ''],
+ ])
+ const config = { denied: new Set(['lane.v1.features']) }
+ const { kv, batches, gets } = makeReadTrackingKv(store, config)
+ const legacy = makeReadTrackingKv(store, { ...config, batch: false }).kv
+ const keys = ['title', 'missing', 'path', 'title']
+ for (const root of [kv, legacy]) {
+  assert.deepEqual(await kvGetMany(root.namespace('lane.v1'), keys), ['Scoped title', null, '', 'Scoped title'])
+  assert.deepEqual(
+   await kvGetChunkedMany(root, ['plain', 'incomplete', 'mixed', 'zero', 'empty', 'missing', 'mixed']),
+   ['plain', null, 'a🌱β', '', null, null, 'a🌱β']
+  )
+ }
+ assert.deepEqual(batches[0], keys.map(key => `lane.v1.${key}`))
+ assert.ok(batches.some(keys => keys.includes('mixed.chunks/2') && keys.includes('incomplete.chunks/0')))
+ await assert.rejects(kvGetMany(kv.namespace('lane.v1'), ['title', 'features']), { status: 403 })
+ assert.deepEqual(gets, [])
+})
+
+test('lane batch loaders preserve paged row and script order, schemas, flags, and table details', async () => {
+ const store = new Map()
+ const { kv, batches, gets } = makeReadTrackingKv(store)
+ const legacy = makeReadTrackingKv(store, { batch: false }).kv
+ const laneId = 'batch.lane'
+ const laneData = kv.namespace(laneId)
+ const tableIds = ['first', 'broken-schema', 'second']
+ const [first, , second] = tableIds
+ const rowBase = tableRowsBase(laneId, first)
+ const rowKey = id => tableRowKey(laneId, first, id)
+ const scriptBase = laneScriptBase(laneId)
+ const lineKey = id => scriptLineKey(laneId, id)
+ const longText = 'テスト🌿'.repeat(22)
+ const column = { id: 'value', name: 'Value', type: 'text' }
+ const setJson = (key, value) => kv.set(key, JSON.stringify(value))
+
+ await setJson(`${laneTablesBase(laneId)}-index`, { ids: tableIds })
+ await kvSetChunked(kv, tableSchemaKey(laneId, first), JSON.stringify({ id: first, name: longText, columns: [column] }), 32)
+ await kv.set(tableSchemaKey(laneId, 'broken-schema'), '{bad')
+ await setJson(tableSchemaKey(laneId, second), { name: 'Second', columns: [column] })
+ await setJson(`${rowBase}-index`, { pages: 4 })
+ await kvSetChunked(kv, `${rowBase}-pages/0`, JSON.stringify(['row/chunked', 'missing', 'bad-row']), 16)
+ await kv.set(`${rowBase}-pages/2`, 'not valid json')
+ await setJson(`${rowBase}-pages/3`, ['last'])
+ await kvSetChunked(kv, rowKey('row/chunked'), JSON.stringify({ values: { value: longText }, flags: { value: 'unknown' } }), 32)
+ await kv.set(rowKey('bad-row'), '{bad')
+ await setJson(rowKey('last'), { values: { value: 'last' } })
+ await setJson(`${tableRowsBase(laneId, second)}-index`, { ids: ['sole'] })
+ await setJson(tableRowKey(laneId, second, 'sole'), { values: { value: 'other table' } })
+
+ const updatedAt = '2026-04-04T14:00:00.000Z'
+ const firstLine = { id: 'b', text: `-- ${longText}`, updatedAt, setBy: { laneId: 'owner', lineId: 'source' } }
+ await setJson(`${scriptBase}-index`, { pages: 2 })
+ await setJson(`${scriptBase}-pages/0`, ['b', 'missing'])
+ await setJson(`${scriptBase}-pages/1`, ['a'])
+ await kvSetChunked(kv, lineKey('b'), JSON.stringify(firstLine), 32)
+ await kv.set(lineKey('a'), '-- legacy raw line')
+
+ await kvSetChunked(kv, tableUpdatesKey(laneId, first), JSON.stringify([{ id: 'u1', triggeredAt: updatedAt, deployedAt: updatedAt }]), 32)
+ await setJson(tableViewsKey(laneId, first), { activeViewId: 'custom', views: [{ id: 'custom', name: 'My view', filters: [] }] })
+ await kv.set(tableViewsKey(laneId, second), '{bad')
+
+ const before = new Map(store)
+ gets.length = 0
+ batches.length = 0
+ const tables = await loadLaneTables(kv, laneData, laneId)
+ assert.deepEqual(tables, await loadLaneTables(legacy, legacy.namespace(laneId), laneId))
+ assert.deepEqual(tables.map(table => table.id), [first, second])
+ assert.equal(tables[0].name, longText)
+ assert.deepEqual(tables[0].rows, [
+  { id: 'row/chunked', values: { value: longText }, flags: { value: 'unknown' } },
+  { id: 'last', values: { value: 'last' } },
+ ])
+ assert.deepEqual(tables[1].rows, [{ id: 'sole', values: { value: 'other table' } }])
+ const schemaKeys = tableIds.map(id => tableSchemaKey(laneId, id))
+ const rowIndexKeys = [first, second].map(id => `${tableRowsBase(laneId, id)}-index`)
+ for (const group of [schemaKeys, rowIndexKeys]) {
+  assert.deepEqual(batches.filter(keys => keys.some(key => group.includes(key))), [group])
+  assert.ok(group.every(key => !gets.includes(key)), 'Table metadata must not be fetched individually')
+ }
+ assert.deepEqual(await readPagedIds(kv, rowBase), { exists: true, ids: ['row/chunked', 'missing', 'bad-row', 'last'] })
+
+ const script = await loadLaneScript(kv, laneData, laneId)
+ assert.deepEqual(script, await loadLaneScript(legacy, legacy.namespace(laneId), laneId))
+ assert.deepEqual(script, {
+  initialized: true,
+  records: [firstLine, { id: 'a', text: '-- legacy raw line', updatedAt: null }],
+ })
+
+ const details = await loadLaneTableDetails(kv, laneData, laneId, tables)
+ for (let i = 0; i < tables.length; i++) {
+  const { id, columns } = tables[i]
+  assert.deepEqual(details[i].updates, await loadTableUpdates(legacy, null, laneId, id))
+  assert.deepEqual(details[i].views, await loadTableViews(legacy, null, laneId, id, columns, tables))
+ }
+ assert.equal(details[0].updates[0].id, 'u1')
+ assert.equal(details[0].views.activeViewId, 'custom')
+ assert.equal(details[1].views.activeViewId, DEFAULT_TABLE_VIEW_ID)
+ assert.ok(batches.some(keys => keys.includes(rowKey('row/chunked')) && keys.includes(tableRowKey(laneId, second, 'sole'))))
+ for (const group of [
+  [0, 1, 2, 3].map(i => `${rowBase}-pages/${i}`),
+  [lineKey('b'), lineKey('missing'), lineKey('a')],
+  [tableUpdatesKey(laneId, first), tableViewsKey(laneId, first), tableUpdatesKey(laneId, second), tableViewsKey(laneId, second)],
+ ]) {
+  assert.ok(batches.some(keys => group.every(key => keys.includes(key))), `Expected batch for ${group}`)
+  assert.ok(group.every(key => !gets.includes(key)), 'Batched keys must not be fetched individually')
+ }
+ assert.deepEqual(store, before)
+})
+
+test('lane batch loaders still migrate legacy scripts and tables', async () => {
+ const store = new Map()
+ const { kv } = makeReadTrackingKv(store)
+ const laneId = 'legacy-lane'
+ const laneData = kv.namespace(laneId)
+ const legacyTable = { id: 'kept', name: 'Legacy', columns: [{ id: 'value', name: 'Value', type: 'text' }], rows: [{ id: 'r1', values: { value: 'Legacy row' } }] }
+ await saveLaneTables(kv, laneData, laneId, [{ ...legacyTable, rows: [{ id: 'stale', values: { value: 'old' } }] }])
+ await laneData.set('tables', JSON.stringify([legacyTable]))
+ assert.equal((await loadLaneTables(kv, laneData, laneId))[0].rows[0].values.value, 'Legacy row')
+ assert.equal(await laneData.get('tables'), null)
+ assert.equal(await kv.get(tableRowKey(laneId, 'kept', 'stale')), null)
+ assert.deepEqual((await loadLaneTables(kv, laneData, laneId))[0].rows, legacyTable.rows)
+
+ await kv.set(`${laneScriptBase(laneId)}-index`, '{"ids":["stale"]}')
+ await kv.set(scriptLineKey(laneId, 'stale'), '-- obsolete')
+ await laneData.set('script', '["-- first","-- second"]')
+ const migrated = await loadLaneScript(kv, laneData, laneId)
+ assert.deepEqual(migrated.records.map(record => record.text), ['-- first', '-- second'])
+ assert.equal(await laneData.get('script'), null)
+ assert.equal(await kv.get(scriptLineKey(laneId, 'stale')), null)
+ assert.deepEqual(await loadLaneScript(kv, laneData, laneId), migrated)
+})
+
+test('catalog and remote table batches isolate access denials', async () => {
+ const store = new Map()
+ const denied = new Set([packageLaneKey('locked', 'b')])
+ const { kv, batches, gets } = makeReadTrackingKv(store, { denied })
+ const setJson = (key, value) => kv.set(key, JSON.stringify(value))
+ for (const [pkg, ids] of [['locked', ['x', 'b']], ['open', ['ok', 'missing']], ['shared', ['ok', 'z']]]) {
+  await setJson(packageMetaKey(pkg), { id: pkg, name: pkg.toUpperCase() })
+  await setJson(`${packageLanesBase(pkg)}-index`, { ids })
+ }
+ await kvSetChunked(kv, packageLaneKey('open', 'ok'), JSON.stringify({ title: 'Unicode lane 東京' }), 12)
+ await kv.set(packageLaneKey('shared', 'z'), 'Legacy title')
+ const expected = [
+  { id: 'ok', title: 'Unicode lane 東京', packageId: 'open', packageName: 'OPEN' },
+  { id: 'missing', title: 'missing', packageId: 'open', packageName: 'OPEN' },
+  { id: 'z', title: 'Legacy title', packageId: 'shared', packageName: 'SHARED' },
+ ]
+ const catalog = await loadSessionCatalog(kv, ['locked', 'open', 'shared'])
+ assert.deepEqual(catalog.accessiblePackageIds, ['open', 'shared'])
+ assert.deepEqual(catalog.list, expected)
+ assert.deepEqual(catalog.catalog, Object.fromEntries(expected.map(entry => [entry.id, entry])))
+ assert.deepEqual((await listPackageLanes(kv, 'open')).lanes, expected.slice(0, 2).map(({ packageName, ...lane }) => lane))
+ await assert.rejects(listPackageLanes(kv, 'locked'), { status: 403 })
+
+ const column = { id: 'name', name: 'Name', type: 'text' }
+ for (const owner of ['allowed-owner', 'blocked-owner', 'closed-owner']) {
+  await kv.set(lanePackageKey(owner), owner === 'closed-owner' ? 'locked' : 'open')
+  await saveLaneTables(kv, kv.namespace(owner), owner, [
+   { id: 'main', name: owner, columns: [column], rows: [
+    { id: 'r1', values: { name: 'first' } },
+    { id: 'r2', values: { name: 'second' } },
+   ] },
+  ])
+ }
+ const consumer = kv.namespace('consumer')
+ const ownerIds = ['allowed-owner', 'blocked-owner', 'closed-owner', 'missing-owner']
+ await saveLaneTables(kv, consumer, 'consumer', ownerIds.map(owner => ({
+  id: owner,
+  name: `Link to ${owner}`,
+  columns: [],
+  remote: { laneId: owner, tableId: 'main', mode: 'read-only' },
+ })))
+ denied.add(tableRowKey('blocked-owner', 'main', 'r2'))
+ batches.length = 0
+ gets.length = 0
+ const remoteTables = await loadLaneTables(kv, consumer, 'consumer', { openPackageIds: ['open', DEFAULT_PACKAGE_ID] })
+ assert.deepEqual(remoteTables.map(table => [table.id, table.remote.accessDenied, table.remote.missing]), [
+  ['allowed-owner', false, false],
+  ['blocked-owner', true, false],
+  ['closed-owner', true, false],
+  ['missing-owner', false, true],
+ ])
+ assert.deepEqual(remoteTables[0].rows.map(row => row.values.name), ['first', 'second'])
+ assert.deepEqual(remoteTables[1].rows, [])
+ assert.ok(batches.some(keys => keys.includes(tableRowKey('blocked-owner', 'main', 'r2'))))
+ assert.ok(!gets.includes(tableRowKey('blocked-owner', 'main', 'r1')), 'Denied batch must not retry individual reads')
+ assert.ok(![...gets, ...batches.flat()].some(key => key.startsWith('lanes#closed-owner/tables/')))
+})
 
 test('DATA_COLUMN_TYPES, cell parsing/coercion, change impact detection, stored table parsing, and scope export', () => {
  assert.deepEqual(DATA_COLUMN_TYPES, [
@@ -6612,6 +6869,7 @@ test('Data tab table views & column filters UI: View selector popover, Edit tabl
  }
 
  const stores = new Map()
+ const batches = []
  function getStore(dirKey) {
   if (!stores.has(dirKey)) stores.set(dirKey, new Map())
   return stores.get(dirKey)
@@ -6631,6 +6889,11 @@ test('Data tab table views & column filters UI: View selector popover, Edit tabl
    namespace(name) { return makeKv(dirKey, q(name), kv.root, kv.defaultRoot) },
    hashNamespace(name) { return makeKv(dirKey, q(name), kv.root, kv.defaultRoot) },
    async get(k) { return store.has(q(k)) ? store.get(q(k)) : null },
+   async getMany(keys) {
+    const qualified = keys.map(q)
+    batches.push(qualified)
+    return qualified.map(key => store.get(key) ?? null)
+   },
    async set(k, v) { store.set(q(k), String(v)) },
    async delete(k) { store.delete(q(k)) },
   }
@@ -6674,7 +6937,7 @@ test('Data tab table views & column filters UI: View selector popover, Edit tabl
   throw new Error(`Unexpected fetch: ${url}`)
  }
 
- const bootApp = async (initialPathname = '/') => {
+ const bootApp = async (initialPathname = '/', withBatchHelpers = true) => {
   const windowListeners = {}
   const documentListeners = {}
   const mockWindow = {
@@ -6725,6 +6988,7 @@ test('Data tab table views & column filters UI: View selector popover, Edit tabl
   }
   const f = field({
    ...DATA_RUNTIME_ENV,
+   ...(withBatchHelpers ? {} : { kvGetMany: undefined, loadLaneTableDetails: undefined }),
    console: { log() {} },
    createIdleTracker,
    data: defaultRootKv,
@@ -7045,20 +7309,39 @@ test('Data tab table views & column filters UI: View selector popover, Edit tabl
 
   // Reload fresh browser instance against same defaultRootKv and verify saved views & filters persist
   const savedPathname = app1.mockWindow.location.pathname
-  const app2 = await bootApp(savedPathname)
-  const laneReloaded = app2.f.state.lanes[0]
-  const dv2 = laneReloaded.notebook['data-view']
-  assert.equal(dv2.tables[0].id, issuesTbl.id)
-  assert.equal(dv2['view-name-el'].textContent, 'Auth all dates')
-  assert.equal(dv2['view-dirty-badge'].hidden, true)
-  assert.equal(dv2['view-count-badge'].textContent, '2')
-  assert.equal(dv2['rows-title'].textContent, 'Rows (2 of 4)')
-  assert.deepEqual(dv2['grid-rows'].map(gr => gr['num-el'].textContent), [1, 3])
-  await dv2['view-btn'].listeners.click({})
-  assert.equal(dv2['view-option-els'].length, 2)
-  await dv2['view-option-els'][0].el.listeners.click({})
-  assert.equal(dv2['view-name-el'].textContent, 'issues')
-  assert.equal(dv2['rows-title'].textContent, 'Rows (1 of 4)')
+  for (const withBatchHelpers of [true, false]) {
+   batches.length = 0
+   const app2 = await bootApp(savedPathname, withBatchHelpers)
+   const laneReloaded = app2.f.state.lanes[0]
+   const dv2 = laneReloaded.notebook['data-view']
+   assert.equal(dv2.tables[0].id, issuesTbl.id)
+   assert.equal(dv2['view-name-el'].textContent, 'Auth all dates')
+   assert.equal(dv2['view-dirty-badge'].hidden, true)
+   assert.equal(dv2['view-count-badge'].textContent, '2')
+   assert.equal(dv2['rows-title'].textContent, 'Rows (2 of 4)')
+   assert.deepEqual(dv2['grid-rows'].map(gr => gr['num-el'].textContent), [1, 3])
+   const metadataKeys = ['title', 'width', 'minimized', 'path', 'features'].map(key => `${laneReloaded.id}/${key}`)
+   const hasMetaBatch = () => batches.some(keys => metadataKeys.every(key => keys.includes(key)))
+   assert.equal(hasMetaBatch(), withBatchHelpers)
+   assert.equal(batches.some(keys => keys.includes(tableViewsKey(laneReloaded.id, issuesTbl.id)) &&
+    keys.includes(tableUpdatesKey(laneReloaded.id, issuesTbl.id))), withBatchHelpers)
+
+   batches.length = 0
+   await laneReloaded.data.set('title', `Reloaded via ${withBatchHelpers ? 'batch' : 'fallback'}`)
+   await app2.f.state['lane-control'].reload(laneReloaded.id)
+   const laneAfterReload = app2.f.state.lanes[0]
+   assert.equal(laneAfterReload.title, `Reloaded via ${withBatchHelpers ? 'batch' : 'fallback'}`)
+   assert.equal(hasMetaBatch(), withBatchHelpers)
+
+   const reloadedView = laneAfterReload.notebook['data-view']
+   await reloadedView['view-btn'].listeners.click({})
+   assert.equal(reloadedView['view-option-els'].length, 2)
+   await reloadedView['view-option-els'][0].el.listeners.click({})
+   assert.equal(reloadedView['view-name-el'].textContent, 'issues')
+   assert.equal(reloadedView['rows-title'].textContent, 'Rows (1 of 4)')
+   await reloadedView['view-btn'].listeners.click({})
+   await reloadedView['view-option-els'][1].el.listeners.click({})
+  }
  }
  finally {
   globalThis.fetch = origFetch

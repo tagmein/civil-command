@@ -230,6 +230,17 @@ export async function mapConcurrent(items, limit, fn) {
  return results
 }
 
+export async function kvGetMany(kv, keys) {
+ if (!kv) {
+  return keys.map(() => null)
+ }
+ if (keys.length > 1 && typeof kv.getMany === 'function') {
+  // Keep the receiver's namespace and let batch failures propagate just like get().
+  return kv.getMany(keys)
+ }
+ return mapConcurrent(keys, CONCURRENCY_LIMIT, async key => (await kv.get(key)) ?? null)
+}
+
 function parseChunkManifest(raw) {
  if (typeof raw !== 'string' || !raw.startsWith('{')) {
   return null
@@ -264,38 +275,39 @@ async function resolvePrevChunkCount(kv, key) {
 }
 
 export async function kvGetChunked(kv, key) {
+ const [value] = await kvGetChunkedMany(kv, [key])
+ return value
+}
+
+export async function kvGetChunkedMany(kv, keys) {
  const targetKv = unwrapKv(kv)
- if (!targetKv) {
-  return null
- }
- const raw = await targetKv.get(key)
- if (isMissingValue(raw)) {
-  if (typeof targetKv === 'object') {
-   getKvMap(chunkCountCache, targetKv).set(key, 0)
+ const cache = targetKv && typeof targetKv === 'object' ? getKvMap(chunkCountCache, targetKv) : null
+ const raws = await kvGetMany(targetKv, keys)
+ const chunkKeys = []
+ const manifests = []
+ const values = raws.map((raw, i) => {
+  const count = parseChunkManifest(raw)
+  const key = keys[i]
+  cache?.set(key, count ?? 0)
+  if (count === null) {
+   return isMissingValue(raw) ? null : raw
   }
-  return null
- }
- const chunkCount = parseChunkManifest(raw)
- if (chunkCount === null) {
-  if (typeof targetKv === 'object') {
-   getKvMap(chunkCountCache, targetKv).set(key, 0)
+  if (count > 0) {
+   manifests.push({ i, start: chunkKeys.length, count })
+   for (let part = 0; part < count; part++) {
+    chunkKeys.push(`${key}.chunks/${part}`)
+   }
   }
-  return raw
- }
- if (typeof targetKv === 'object') {
-  getKvMap(chunkCountCache, targetKv).set(key, chunkCount)
- }
- if (chunkCount === 0) {
   return ''
- }
- const indices = Array.from({ length: chunkCount }, (_, i) => i)
- const parts = await mapConcurrent(indices, CONCURRENCY_LIMIT, idx => targetKv.get(`${key}.chunks/${idx}`))
- for (const part of parts) {
-  if (part === null || part === undefined) {
-   return null
+ })
+ if (chunkKeys.length > 0) {
+  const parts = await kvGetMany(targetKv, chunkKeys)
+  for (const { i, start, count } of manifests) {
+   const chunks = parts.slice(start, start + count)
+   values[i] = chunks.some(part => part === null || part === undefined) ? null : chunks.join('')
   }
  }
- return parts.join('')
+ return values
 }
 
 async function kvSetChunkedUnlocked(kv, key, rawString, maxBytes = MAX_KV_VALUE_BYTES) {
@@ -375,41 +387,51 @@ function packIdsIntoPages(ids, maxBytes = MAX_KV_VALUE_BYTES) {
 }
 
 export async function readPagedIds(kv, basePrefix) {
+ const [result] = await readPagedIdsMany(kv, [basePrefix])
+ return result
+}
+
+async function readPagedIdsMany(kv, basePrefixes) {
  const targetKv = unwrapKv(kv)
- if (!targetKv) {
-  return { exists: false, ids: [] }
- }
- const indexKey = `${basePrefix}-index`
- const raw = await kvGetChunked(targetKv, indexKey)
- if (isMissingValue(raw)) {
-  if (typeof targetKv === 'object') {
-   getKvMap(pagedIndexCache, targetKv).delete(basePrefix)
+ const cache = targetKv && typeof targetKv === 'object' ? getKvMap(pagedIndexCache, targetKv) : null
+ const indexes = await kvGetChunkedMany(targetKv, basePrefixes.map(prefix => `${prefix}-index`))
+ const pageKeys = []
+ const paged = []
+ const results = indexes.map((raw, i) => {
+  const basePrefix = basePrefixes[i]
+  if (isMissingValue(raw)) {
+   cache?.delete(basePrefix)
+   return { exists: false, ids: [] }
+  }
+  let parsed
+  try {
+   parsed = JSON.parse(raw)
+  }
+  catch {
+   return { exists: false, ids: [] }
+  }
+  if (!parsed || typeof parsed !== 'object') {
+   return { exists: false, ids: [] }
+  }
+  if (Array.isArray(parsed.ids)) {
+   cache?.set(basePrefix, { pageCount: 0, pageJsons: [] })
+   return { exists: true, ids: parsed.ids.map(String) }
+  }
+  if (Number.isInteger(parsed.pages) && parsed.pages >= 0) {
+   paged.push({ i, start: pageKeys.length, count: parsed.pages })
+   for (let page = 0; page < parsed.pages; page++) {
+    pageKeys.push(`${basePrefix}-pages/${page}`)
+   }
+   return { exists: true, ids: [] }
   }
   return { exists: false, ids: [] }
- }
- let parsed
- try {
-  parsed = JSON.parse(raw)
- }
- catch {
-  return { exists: false, ids: [] }
- }
- if (!parsed || typeof parsed !== 'object') {
-  return { exists: false, ids: [] }
- }
- if (Array.isArray(parsed.ids)) {
-  const ids = parsed.ids.map(String)
-  if (typeof targetKv === 'object') {
-   getKvMap(pagedIndexCache, targetKv).set(basePrefix, { pageCount: 0, pageJsons: [] })
-  }
-  return { exists: true, ids }
- }
- if (Number.isInteger(parsed.pages) && parsed.pages >= 0) {
-  const pageIndices = Array.from({ length: parsed.pages }, (_, i) => i)
-  const rawPages = await mapConcurrent(pageIndices, CONCURRENCY_LIMIT, idx => kvGetChunked(targetKv, `${basePrefix}-pages/${idx}`))
-  const ids = []
+ })
+ const rawPages = await kvGetChunkedMany(targetKv, pageKeys)
+ for (const { i, start, count } of paged) {
+  const { ids } = results[i]
   const pageJsons = []
-  for (const pageRaw of rawPages) {
+  for (let page = start; page < start + count; page++) {
+   const pageRaw = rawPages[page]
    if (isMissingValue(pageRaw)) {
     pageJsons.push('')
     continue
@@ -427,12 +449,9 @@ export async function readPagedIds(kv, basePrefix) {
     // ignore malformed page
    }
   }
-  if (typeof targetKv === 'object') {
-   getKvMap(pagedIndexCache, targetKv).set(basePrefix, { pageCount: parsed.pages, pageJsons })
-  }
-  return { exists: true, ids }
+  cache?.set(basePrefixes[i], { pageCount: count, pageJsons })
  }
- return { exists: false, ids: [] }
+ return results
 }
 
 async function resolvePrevPagedInfo(kv, basePrefix) {
@@ -712,7 +731,7 @@ async function loadOwnerReferencedSchemas(kv, ownerLaneId, seedColumns, visitedI
  const refSchemas = []
  while (pending.length > 0) {
   const batch = pending.splice(0, pending.length)
-  const raws = await mapConcurrent(batch, CONCURRENCY_LIMIT, refId => kvGetChunked(kv, tableSchemaKey(ownerLaneId, refId)))
+  const raws = await kvGetChunkedMany(kv, batch.map(refId => tableSchemaKey(ownerLaneId, refId)))
   for (let i = 0; i < batch.length; i++) {
    const raw = raws[i]
    if (isMissingValue(raw)) {
@@ -757,7 +776,7 @@ export async function loadLaneTables(rootKv, laneData, laneId, options = {}) {
   if (modernTablesIdx.exists) {
    const oldTableIdSet = new Set(modernTablesIdx.ids)
    const overlappingIds = newTableIds.filter(id => oldTableIdSet.has(id))
-   const oldIndices = await mapConcurrent(overlappingIds, CONCURRENCY_LIMIT, id => readPagedIds(kv, tableRowsBase(laneId, id)))
+   const oldIndices = await readPagedIdsMany(kv, overlappingIds.map(id => tableRowsBase(laneId, id)))
    for (let i = 0; i < overlappingIds.length; i++) {
     if (oldIndices[i].exists) {
      oldRowsByTable.set(overlappingIds[i], oldIndices[i].ids)
@@ -791,8 +810,8 @@ export async function loadLaneTables(rootKv, laneData, laneId, options = {}) {
   return []
  }
 
- const tableEntries = await mapConcurrent(modernTablesIdx.ids, CONCURRENCY_LIMIT, async tableId => {
-  const schemaRaw = await kvGetChunked(kv, tableSchemaKey(laneId, tableId))
+ const schemaRaws = await kvGetChunkedMany(kv, modernTablesIdx.ids.map(tableId => tableSchemaKey(laneId, tableId)))
+ const tableEntries = schemaRaws.map((schemaRaw, i) => {
   if (isMissingValue(schemaRaw)) {
    return null
   }
@@ -803,17 +822,22 @@ export async function loadLaneTables(rootKv, laneData, laneId, options = {}) {
   catch {
    return null
   }
+  const tableId = modernTablesIdx.ids[i]
   const schema = normalizeSchemaRecord(parsedSchema, tableId)
-  if (!schema) {
-   return null
-  }
-  if (schema.remote) {
-   return { schema, rowIds: [], rawRows: [] }
-  }
-  const rowsIdx = await readPagedIds(kv, tableRowsBase(laneId, tableId))
-  const rawRows = await mapConcurrent(rowsIdx.ids, CONCURRENCY_LIMIT, rowId => kvGetChunked(kv, tableRowKey(laneId, tableId, rowId)))
-  return { schema, rowIds: rowsIdx.ids, rawRows }
+  return schema ? { tableId, schema } : null
  })
+ const localEntries = tableEntries.filter(entry => entry && !entry.schema.remote)
+ const rowIndexes = await readPagedIdsMany(kv, localEntries.map(({ tableId }) => tableRowsBase(laneId, tableId)))
+ const localRowRaws = await kvGetChunkedMany(kv, localEntries.flatMap(({ tableId }, i) =>
+  rowIndexes[i].ids.map(rowId => tableRowKey(laneId, tableId, rowId))
+ ))
+ let rowOffset = 0
+ for (let i = 0; i < localEntries.length; i++) {
+  const rowIds = rowIndexes[i].ids
+  localEntries[i].rowIds = rowIds
+  localEntries[i].rawRows = localRowRaws.slice(rowOffset, rowOffset + rowIds.length)
+  rowOffset += rowIds.length
+ }
 
  const openPackageIds = options && Array.isArray(options.openPackageIds) && options.openPackageIds.length > 0
   ? options.openPackageIds
@@ -902,7 +926,7 @@ export async function loadLaneTables(rootKv, laneData, laneId, options = {}) {
     continue
    }
 
-   const rawOwnerRows = await mapConcurrent(ownerRowsIdx.ids, CONCURRENCY_LIMIT, rowId => kvGetChunked(kv, tableRowKey(ownerLaneId, ownerTableId, rowId)))
+   const rawOwnerRows = await kvGetChunkedMany(kv, ownerRowsIdx.ids.map(rowId => tableRowKey(ownerLaneId, ownerTableId, rowId)))
    const ownerTableForCoercion = { id: ownerSchema.id, name: ownerSchema.name, columns: ownerSchema.columns, rows: [] }
    const visitedRefIds = new Set([ownerSchema.id])
    const ownerRefTables = await loadOwnerReferencedSchemas(kv, ownerLaneId, ownerSchema.columns, visitedRefIds)
@@ -1178,7 +1202,10 @@ export async function loadTableUpdates(rootKv, laneData, laneId, tableId) {
  if (!kv) {
   return []
  }
- const raw = await kvGetChunked(kv, tableUpdatesKey(laneId, tableId))
+ return parseTableUpdates(await kvGetChunked(kv, tableUpdatesKey(laneId, tableId)), tableId)
+}
+
+function parseTableUpdates(raw, tableId) {
  if (isMissingValue(raw)) {
   return []
  }
@@ -1236,7 +1263,10 @@ export async function loadTableViews(rootKv, laneData, laneId, tableId, columns 
  if (!kv) {
   return normalizeTableViewsRecord(null, columns, tables)
  }
- const raw = await kvGetChunked(kv, tableViewsKey(laneId, tableId))
+ return parseTableViews(await kvGetChunked(kv, tableViewsKey(laneId, tableId)), columns, tables)
+}
+
+function parseTableViews(raw, columns, tables) {
  if (isMissingValue(raw)) {
   return normalizeTableViewsRecord(null, columns, tables)
  }
@@ -1247,6 +1277,27 @@ export async function loadTableViews(rootKv, laneData, laneId, tableId, columns 
  catch {
   return normalizeTableViewsRecord(null, columns, tables)
  }
+}
+
+export async function loadLaneTableDetails(rootKv, laneData, laneId, tables) {
+ const { kv } = resolveLaneStorage(rootKv, laneData, laneId)
+ const keys = []
+ const offsets = tables.map(({ id }) => {
+  if (!laneId || !id) {
+   return -1
+  }
+  const offset = keys.length
+  keys.push(tableUpdatesKey(laneId, id), tableViewsKey(laneId, id))
+  return offset
+ })
+ const raws = await kvGetChunkedMany(kv, keys)
+ return tables.map(({ id, columns }, i) => {
+  const offset = offsets[i]
+  return {
+   updates: parseTableUpdates(raws[offset], id),
+   views: parseTableViews(raws[offset + 1], columns, tables),
+  }
+ })
 }
 
 export async function saveTableViews(rootKv, laneData, laneId, tableId, viewsRecord, columns = null, tables = null) {
@@ -1397,7 +1448,7 @@ export async function loadLaneScript(rootKv, laneData, laneId, win) {
   if (modernIdx.ids.length === 0) {
    return { initialized: true, records: [] }
   }
-  const raws = await mapConcurrent(modernIdx.ids, CONCURRENCY_LIMIT, lineId => kvGetChunked(kv, scriptLineKey(laneId, lineId)))
+  const raws = await kvGetChunkedMany(kv, modernIdx.ids.map(lineId => scriptLineKey(laneId, lineId)))
   const records = []
   for (let i = 0; i < modernIdx.ids.length; i++) {
    const lineId = modernIdx.ids[i]
@@ -2285,7 +2336,7 @@ export async function listPackageLanes(rootKv, packageId) {
  if (!laneIdx.exists || laneIdx.ids.length === 0) {
   return { packageId: cleanPkg, lanes: [] }
  }
- const raws = await mapConcurrent(laneIdx.ids, CONCURRENCY_LIMIT, laneId => kvGetChunked(kv, packageLaneKey(cleanPkg, laneId)))
+ const raws = await kvGetChunkedMany(kv, laneIdx.ids.map(laneId => packageLaneKey(cleanPkg, laneId)))
  const lanes = []
  for (let i = 0; i < laneIdx.ids.length; i++) {
   const laneId = laneIdx.ids[i]
@@ -3691,7 +3742,8 @@ export async function loadSessionCatalog(rootKv, openPackageIds) {
    if (!pkgMeta || !laneIdx.exists || laneIdx.ids.length === 0) {
     return { pkgId, denied: false, entries: [] }
    }
-   const laneRaws = await mapConcurrent(laneIdx.ids, CONCURRENCY_LIMIT, laneId => kvGetChunked(kv, packageLaneKey(pkgId, laneId)))
+   // Keep authorization failures isolated to this package's catalog entries.
+   const laneRaws = await kvGetChunkedMany(kv, laneIdx.ids.map(laneId => packageLaneKey(pkgId, laneId)))
    const entries = []
    for (let i = 0; i < laneIdx.ids.length; i++) {
     const laneId = laneIdx.ids[i]
@@ -4760,9 +4812,8 @@ export async function collectLaneSyncBundle(rootKv, laneId, options = {}) {
   }
 
   const laneData = kv.namespace(curId)
-  const [title, inputsRaw, loadedScript, tables] = await Promise.all([
-   laneData.get('title'),
-   laneData.get('inputs'),
+  const [[title, inputsRaw], loadedScript, tables] = await Promise.all([
+   kvGetMany(laneData, ['title', 'inputs']),
    loadLaneScript(kv, laneData, curId, win),
    loadLaneTables(kv, laneData, curId),
   ])
@@ -5099,13 +5150,8 @@ export async function inspectSessionForAgent(rootKv, options = {}) {
  let lane = null
  if (resolvedLaneId && sessionKv) {
   const laneData = sessionKv.namespace(resolvedLaneId)
-  const [title, path, width, minimized, featuresRaw, inputsRaw, scriptLoaded, tables, packageId] = await Promise.all([
-   laneData.get('title'),
-   laneData.get('path'),
-   laneData.get('width'),
-   laneData.get('minimized'),
-   laneData.get('features'),
-   laneData.get('inputs'),
+  const [[title, path, width, minimized, featuresRaw, inputsRaw], scriptLoaded, tables, packageId] = await Promise.all([
+   kvGetMany(laneData, ['title', 'path', 'width', 'minimized', 'features', 'inputs']),
    loadLaneScript(sessionKv, laneData, resolvedLaneId, opts.win || null),
    loadLaneTables(sessionKv, laneData, resolvedLaneId, { openPackageIds: accessiblePackageIds }),
    getLanePackageId(sessionKv, resolvedLaneId),
@@ -5534,6 +5580,10 @@ function decodeKeySegment(encoded) {
  }
 }
 
+function isValidDecodedKvId(id) {
+ return id.length > 0 && id.trim() === id
+}
+
 export function isForbiddenDirectKvKey(rawKey) {
  if (typeof rawKey !== 'string' || rawKey.length === 0) {
   return true
@@ -5571,7 +5621,7 @@ export function classifyKvKey(rawKey) {
   const rest = slashIdx === -1 ? '' : rel.slice(slashIdx + 1)
   if (ns === 'lanes') {
    const laneId = decodeKeySegment(firstSeg.replace(/\.chunks$/, ''))
-   if (!laneId) {
+   if (!isValidDecodedKvId(laneId)) {
     return { kind: 'invalid' }
    }
    if (rest === 'package' || rest.startsWith('package.chunks/')) {
@@ -5581,19 +5631,19 @@ export function classifyKvKey(rawKey) {
   }
   if (ns === 'stories') {
    const laneId = decodeKeySegment(firstSeg)
-   return laneId ? { kind: 'lane', laneId } : { kind: 'invalid' }
+   return isValidDecodedKvId(laneId) ? { kind: 'lane', laneId } : { kind: 'invalid' }
   }
   if (ns === 'triggers') {
    if (rel.startsWith('lanes/')) {
     const restLane = rel.slice('lanes/'.length).split('/')[0]
     const laneId = decodeKeySegment(restLane.replace(/\.chunks$/, ''))
-    return laneId ? { kind: 'lane', laneId } : { kind: 'invalid' }
+    return isValidDecodedKvId(laneId) ? { kind: 'lane', laneId } : { kind: 'invalid' }
    }
    return { kind: 'workspace' }
   }
   if (ns === 'packages') {
    const packageId = decodeKeySegment(firstSeg)
-   if (!packageId) {
+   if (!isValidDecodedKvId(packageId)) {
     return { kind: 'invalid' }
    }
    if (rest === 'meta' || rest.startsWith('meta.chunks/')) {
@@ -5603,7 +5653,7 @@ export function classifyKvKey(rawKey) {
   }
   if (ns === 'sessions') {
    const sessionId = decodeKeySegment(firstSeg)
-   if (!sessionId) {
+   if (!isValidDecodedKvId(sessionId)) {
     return { kind: 'invalid' }
    }
    if (rest === 'packages' || rest.startsWith('packages-') || rest.startsWith('packages.')) {

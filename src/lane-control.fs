@@ -5030,6 +5030,15 @@
  ]
  !scope.recompute-session-dirty
 )
+
+; to scope.load-lane-metadata (
+ ; to { lane-data } $argv
+ [ match
+  { $kvGetMany : !kvGetMany $lane-data { title width minimized path features } }
+  { true : { [ !lane-data.get title ] [ !lane-data.get width ] [ !lane-data.get minimized ] [ !lane-data.get path ] [ !lane-data.get features ] } }
+ ]
+)
+
 ; to scope.reload (
  -- Reloads an open lane from scratch from persisted KV storage (enforcing package access control) while preserving its position and selected tab
  ; to { id } $argv
@@ -5068,12 +5077,8 @@
            { true : $lane.tab }
           ]
           ; to current-tab !normalizeLaneTab $raw-tab
-          ; to stored-title !lane.data.get title
-          ; to stored-width !lane.data.get width
-          ; to stored-minimized !lane.data.get minimized
-          ; to stored-path-raw !lane.data.get path
+          ; to { stored-title stored-width stored-minimized stored-path-raw stored-features-raw } !scope.load-lane-metadata $lane.data
           ; to stored-path !normalizeLanePath $stored-path-raw
-          ; to stored-features-raw !lane.data.get features
           ; to next-features [ match
            { $parseLaneFeatures : !parseLaneFeatures $stored-features-raw }
            { true : ; object { httpServer false } { runEvery30Minutes false } }
@@ -5793,12 +5798,8 @@
         ) }
        ] }
       ]
-      ; to stored-title !lane-data.get title
-      ; to stored-width !lane-data.get width
-      ; to stored-minimized !lane-data.get minimized
-      ; to stored-path-raw !lane-data.get path
+      ; to { stored-title stored-width stored-minimized stored-path-raw stored-features-raw } !scope.load-lane-metadata $lane-data
       ; to stored-path !normalizeLanePath $stored-path-raw
-      ; to stored-features-raw !lane-data.get features
       ; to parsed-features [ match
        { $parseLaneFeatures : !parseLaneFeatures $stored-features-raw }
        { true : ; object { httpServer false } { runEvery30Minutes false } }

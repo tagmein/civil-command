@@ -2,6 +2,7 @@
 const http = require('http')
 const fs = require('fs')
 const path = require('path')
+const zlib = require('node:zlib')
 
 const rootDir = path.resolve('.')
 const indexPath = path.join(rootDir, 'index.html')
@@ -127,28 +128,68 @@ const mimeTypes = {
  '.wasm': 'application/wasm',
 }
 
-function serveFile(filePath, res) {
+const compressibleExtensions = new Set(['.html', '.js', '.mjs', '.fs', '.css', '.json', '.webmanifest', '.svg'])
+
+function serveFile(filePath, req, res, stat, acceptsGzip) {
  const ext = path.extname(filePath).toLowerCase()
- const contentType = mimeTypes[ext] || 'application/octet-stream'
- const headers = { 'Content-Type': contentType }
- if (path.basename(filePath) === 'sw.js') {
-  headers['Cache-Control'] = 'no-cache'
+ const etag = `W/"${stat.size.toString(16)}-${stat.mtimeMs.toString(16)}"`
+ const headers = {
+  'Content-Type': mimeTypes[ext] || 'application/octet-stream',
+  'Cache-Control': 'no-cache',
+  ETag: etag,
+ }
+ const compressible = compressibleExtensions.has(ext) && stat.size >= 1024
+ if (compressible) {
+  headers.Vary = 'Accept-Encoding'
+ }
+ if (req.method === 'GET' || req.method === 'HEAD') {
+  const validators = String(req.headers['if-none-match'] || '').split(',')
+  if (validators.some(value => value.trim() === '*' || value.trim().replace(/^W\//, '') === etag.slice(2))) {
+   res.writeHead(304, headers)
+   return res.end()
+  }
+ }
+ if (req.method === 'HEAD') {
+  res.writeHead(200, { ...headers, 'Content-Length': stat.size })
+  return res.end()
  }
 
- fs.createReadStream(filePath)
+ const compress = req.method === 'GET' && compressible && acceptsGzip(req)
+ if (compress) {
+  headers['Content-Encoding'] = 'gzip'
+ }
+ else {
+  headers['Content-Length'] = stat.size
+ }
+ const source = fs.createReadStream(filePath)
+ const gzip = compress ? zlib.createGzip() : null
+ const onError = () => {
+  source.destroy()
+  gzip?.destroy()
+  if (res.headersSent) {
+   return res.destroy()
+  }
+  res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+  res.end('Not found')
+ }
+ res.on('close', () => {
+  source.destroy()
+  gzip?.destroy()
+ })
+ source
  .on('open', () => {
   res.writeHead(200, headers)
- })
- .on('error', () => {
-  if (!res.headersSent) {
-   res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+  if (gzip) {
+   source.pipe(gzip.on('error', onError)).pipe(res)
   }
-  res.end('Not found')
+  else {
+   source.pipe(res)
+  }
  })
- .pipe(res)
+ .on('error', onError)
 }
 
-function handleIncomingRequest(req, res) {
+function handleIncomingRequest(req, res, acceptsGzip) {
  const reqPathname = (req.url || '/').split('?')[0]
  if (reqPathname === '/api/fs' || reqPathname.startsWith('/api/fs/')) {
   return Promise.all([fsApiPromise, dataProxyPromise])
@@ -226,16 +267,22 @@ function handleIncomingRequest(req, res) {
 
  fs.stat(filePath, (err, stat) => {
   if (!err && stat.isFile()) {
-   return serveFile(filePath, res)
+   return serveFile(filePath, req, res, stat, acceptsGzip)
   }
   // SPA fallback for client-side routes (e.g., /dashboard/settings)
-  serveFile(indexPath, res)
+  fs.stat(indexPath, (indexErr, indexStat) => {
+   if (!indexErr && indexStat.isFile()) {
+    return serveFile(indexPath, req, res, indexStat, acceptsGzip)
+   }
+   res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+   res.end('Not found')
+  })
  })
 }
 
 const server = http.createServer((req, res) => {
  httpSecurityPromise
-  .then(({ isAllowedLocalHost }) => {
+  .then(({ acceptsGzip, isAllowedLocalHost }) => {
    if (!isAllowedLocalHost(req, { requireHost: true })) {
     const reqPathname = (req.url || '/').split('?')[0]
     if (reqPathname === '/api' || reqPathname.startsWith('/api/')) {
@@ -248,7 +295,7 @@ const server = http.createServer((req, res) => {
     }
     return
    }
-   handleIncomingRequest(req, res)
+   handleIncomingRequest(req, res, acceptsGzip)
   })
   .catch(err => {
    if (!res.headersSent) {

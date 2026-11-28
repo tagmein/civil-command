@@ -36,6 +36,8 @@ node start
 
 Open [http://localhost:8080](http://localhost:8080) in your browser.
 
+For remote deployments, see the [Nginx setup and performance verification guide](documentation/SETUP.md). Civil Command batches KV reads without changing the backend's split storage format.
+
 ### Local Configuration (`.env.local`)
 
 Machine-specific server settings can be placed in a `.env.local` file next to `start` (one `KEY=value` per line, `#` comments and optional `export ` prefixes supported). Values already present in the process environment take precedence, so systemd `Environment=` entries and shell exports win over the file.
