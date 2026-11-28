@@ -1,12 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import fs from 'node:fs'
 import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { gunzipSync } from 'node:zlib'
 import {
  DATA_RUNTIME_ENV,
  DEFAULT_PACKAGE_ID,
@@ -175,6 +177,64 @@ test('explicit process environment takes precedence over .env.local', async t =>
  })
  assert.equal(server.host, '127.0.0.1')
  assert.equal(server.port, envPort)
+})
+
+test('start gzips static assets and revalidates them with a weak ETag', async t => {
+ const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'cc-static-'))
+ let server
+ t.after(async () => {
+  if (server && server.child.exitCode === null && server.child.signalCode === null) {
+   const exited = once(server.child, 'exit')
+   server.child.kill('SIGTERM')
+   await exited
+  }
+  await fs.promises.rm(dir, { recursive: true, force: true })
+ })
+ const port = await freePort()
+ const source = await fs.promises.readFile(path.join(repoRoot, 'field.mjs'))
+ await fs.promises.writeFile(path.join(dir, 'field.mjs'), source)
+ await fs.promises.copyFile(path.join(repoRoot, 'sw.js'), path.join(dir, 'sw.js'))
+ server = await startServer(dir, childEnvironment(dir, {
+  HOST: '127.0.0.1',
+  PORT: String(port),
+  CC_VAULT_KEY_FILE: path.join(dir, 'vault.json'),
+ }))
+
+ const request = (pathname, method = 'GET', headers = {}) => new Promise((resolve, reject) => {
+  const req = http.request({ hostname: '127.0.0.1', port, path: pathname, method, headers }, res => {
+   const chunks = []
+   res.on('data', chunk => chunks.push(chunk))
+   res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }))
+   res.on('error', reject)
+  })
+  req.on('error', reject)
+  req.end()
+ })
+ const compressed = await request('/field.mjs', 'GET', { 'Accept-Encoding': 'gzip' })
+ assert.equal(compressed.status, 200)
+ assert.equal(compressed.headers['cache-control'], 'no-cache')
+ assert.equal(compressed.headers['content-encoding'], 'gzip')
+ assert.match(compressed.headers.vary, /Accept-Encoding/i)
+ assert.match(compressed.headers.etag, /^W\/".+"$/)
+ assert.deepEqual(gunzipSync(compressed.body), source)
+ const cached = await request('/field.mjs', 'GET', {
+  'Accept-Encoding': 'gzip',
+  'If-None-Match': compressed.headers.etag,
+ })
+ assert.equal(cached.status, 304)
+ assert.equal(cached.body.length, 0)
+ assert.equal(cached.headers.etag, compressed.headers.etag)
+ const head = await request('/field.mjs', 'HEAD')
+ assert.equal(head.status, 200)
+ assert.equal(head.headers.etag, compressed.headers.etag)
+ assert.equal(head.body.length, 0)
+ const uncompressed = await request('/field.mjs', 'GET', { 'Accept-Encoding': 'gzip;q=0' })
+ assert.equal(uncompressed.status, 200)
+ assert.equal(uncompressed.headers['content-encoding'], undefined)
+ assert.deepEqual(uncompressed.body, source)
+ const worker = await request('/sw.js')
+ assert.equal(worker.status, 200)
+ assert.equal(worker.headers['cache-control'], 'no-cache')
 })
 
 function createMemoryStorage(initialEntries = null) {

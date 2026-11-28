@@ -215,3 +215,15 @@ export function hasJsonContentType(req) {
  const mediaType = raw.split(';')[0].trim().toLowerCase()
  return mediaType === 'application/json'
 }
+
+export function acceptsGzip(req) {
+ const encodings = String(req.headers['accept-encoding'] || '').split(',')
+ return encodings.some(entry => {
+  const [encoding, ...params] = entry.trim().toLowerCase().split(';')
+  if (encoding.trim() !== 'gzip') {
+   return false
+  }
+  const quality = params.map(param => param.trim()).find(param => param.startsWith('q='))
+  return quality === undefined || Number(quality.slice(2)) > 0
+ })
+}

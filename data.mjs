@@ -4,6 +4,8 @@ function encodeSegment(segment) {
 
 export const TRIGGER_INTERNAL_PREFIX = 'triggers#'
 export const LANE_TRIGGER_KEY_PREFIX = 'triggers#lanes/'
+const DEFAULT_BATCH_SLICE = 500
+const FALLBACK_READ_CONCURRENCY = 16
 
 export function laneTriggerKey(laneId) {
  const clean = laneId === null || laneId === undefined ? '' : String(laneId).trim()
@@ -361,6 +363,9 @@ export function withKvTriggers(kv, triggers = true) {
    if (rawClient.root && rawClient.root !== rawClient) {
     return wrapClient(rawClient.root, null, '')
    }
+   if (typeof rawClient.getMany === 'function') {
+    wrapper.getMany = keys => rawClient.getMany(keys)
+   }
    return wrapper
   }
 
@@ -657,6 +662,7 @@ export function httpKV({
   inFlightBootstrap: new Map(),
   activeSessionId: '',
   fallbackToken: typeof sessionToken === 'string' ? sessionToken.trim() : '',
+  batchUnsupported: false,
   vaultUnavailable: false,
   sessionDirsDisabled: explicitDisableDirs !== null
    ? explicitDisableDirs
@@ -1043,6 +1049,9 @@ export function httpKV({
    get(key) {
     return activeClient.get(key)
    },
+   getMany(keys) {
+    return activeClient.getMany(keys)
+   },
    set(key, value, opts) {
     return activeClient.set(key, value, opts)
    },
@@ -1151,6 +1160,54 @@ export function httpKV({
    }
 
    return resp.text()
+  },
+
+  async getMany(keys) {
+   if (!Array.isArray(keys) || keys.length === 0) return []
+   const fullKeys = keys.map(key => String(qualify(key)))
+   const originalKeys = new Map(fullKeys.map((key, index) => [key, keys[index]]))
+   const uniqueKeys = Array.from(originalKeys.keys())
+   const byKey = new Map()
+   let offset = 0
+   if (apiOrigin && !tokenStore.batchUnsupported) {
+    const url = new URL(`${apiOrigin}/api/data/batch`)
+    if (effectiveDir() !== null) {
+     url.searchParams.set('modeOptions.disk.basePath', effectiveDir())
+    }
+    const batchUrl = url.toString()
+    for (; offset < uniqueKeys.length; offset += DEFAULT_BATCH_SLICE) {
+     const slice = uniqueKeys.slice(offset, offset + DEFAULT_BATCH_SLICE)
+     const resp = await performKvFetch(batchUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keys: slice }),
+     })
+     if (resp.status === 404 || resp.status === 405) {
+      await resp.body?.cancel()
+      tokenStore.batchUnsupported = true
+      break
+     }
+     if (!resp.ok) {
+      throw new Error(`POST ${batchUrl}: HTTP ${resp.status}: ${resp.statusText}: ${await resp.text()}`)
+     }
+     const result = await resp.json()
+     const values = result?.values
+     if (result?.ok !== true || !Array.isArray(values) || values.length !== slice.length ||
+         values.some(value => value !== null && typeof value !== 'string')) {
+      throw new Error(`POST ${batchUrl}: Invalid KV batch response`)
+     }
+     slice.forEach((key, index) => byKey.set(key, values[index]))
+    }
+   }
+   if (offset < uniqueKeys.length) {
+    await Promise.all(Array.from({ length: Math.min(FALLBACK_READ_CONCURRENCY, uniqueKeys.length - offset) }, async () => {
+     while (offset < uniqueKeys.length) {
+      const key = uniqueKeys[offset++]
+      byKey.set(key, await client.get(originalKeys.get(key)))
+     }
+    }))
+   }
+   return fullKeys.map(key => byKey.get(key))
   },
 
   async set(key, value, opts = null) {

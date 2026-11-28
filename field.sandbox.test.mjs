@@ -1847,9 +1847,12 @@ function createSwitchableMemoryBackendKv() {
 test('attenuateKv wraps env.data in a frozen null-prototype capability object without root/defaultRoot/withBasePath/hashNamespace', async () => {
  const rawBackend = createSwitchableMemoryBackendKv()
  const laneRaw = rawBackend.namespace('lane-att-1')
+ laneRaw.getMany = keys => Promise.all(keys.map(key => laneRaw.get(key)))
  const wrapped = attenuateKv(laneRaw)
 
  assert.ok(wrapped)
+ assert.deepEqual(Object.keys(wrapped), ['get', 'set', 'delete', 'namespace'])
+ assert.equal(wrapped.getMany, undefined)
  assert.equal(Object.getPrototypeOf(wrapped), null)
  assert.equal(Object.isFrozen(wrapped), true)
  assert.deepEqual(
@@ -2105,6 +2108,34 @@ test('server-only secret store removes vault#master-key & passphrase hashes from
 
   // Public lane in Default package IS accessible to Session B
   assert.equal(await clientB.namespace(publicLaneId).get('title'), 'Public Board')
+
+  const validKey = `lanes#${publicLaneId}/script-index`
+  const kvHeaders = { [SESSION_TOKEN_HEADER]: tokenBLocked }
+  const validRead = await fetch(`${proxyDataUrl}&key=${encodeURIComponent(validKey)}`, { headers: kvHeaders })
+  assert.equal(validRead.status, 200)
+  const index = await validRead.text()
+  assert.deepEqual(await clientB.getMany([validKey]), [index])
+  assert.deepEqual(await clientB.getMany(null), [])
+  for (const key of [
+   `lanes#%20${publicLaneId}/script-index`,
+   `lanes#${publicLaneId}%20/script-index`,
+   'lanes#%20%20/script-index',
+   `stories#%20${publicLaneId}/idx/root`,
+   `triggers#lanes/${publicLaneId}%20`,
+   `packages#${DEFAULT_PACKAGE_ID}%20/meta`,
+   'sessions#%20%20/meta',
+  ]) {
+   const single = await fetch(`${proxyDataUrl}&key=${encodeURIComponent(key)}`, { headers: kvHeaders })
+   assert.equal(single.status, 400, key)
+   assert.deepEqual(await single.json(), { ok: false, error: 'Invalid KV key' })
+   const batch = await fetch(`${proxyOrigin}/api/data/batch`, {
+    method: 'POST',
+    headers: { ...kvHeaders, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ keys: [validKey, key] }),
+   })
+   assert.equal(batch.status, 400, key)
+   assert.deepEqual(await batch.json(), { ok: false, error: 'Invalid KV key' })
+  }
 
   // Package ownership & sanitized package meta ARE readable so UI can display Locked Lane prompt without leaking hash/salt
   const ownerPkgResp = await fetch(
@@ -2797,6 +2828,167 @@ test('Hardened :8080 HTTP/WS boundary: Origin: null, Sec-Fetch-Site, Content-Typ
   }
   await new Promise(resolve => server.close(resolve))
   await fs.rm(tmpDir, { recursive: true, force: true })
+ }
+})
+
+async function listenKvTestServer(t, handler) {
+ const server = http.createServer(handler)
+ t.after(() => new Promise(resolve => {
+  server.close(resolve)
+  server.closeAllConnections()
+ }))
+ await new Promise((resolve, reject) => {
+  server.once('error', reject)
+  server.listen(0, '127.0.0.1', resolve)
+ })
+ return `http://127.0.0.1:${server.address().port}`
+}
+
+test('data batch authorizes all reads before fetching, memoizes lane ownership, and scrubs package metadata', async t => {
+ const rows = Array.from({ length: 60 }, (_, i) => `lanes#batch-${i % 2}/tables/table/rows/${i}`)
+ const owners = ['lanes#batch-0/package', 'lanes#batch-1/package']
+ const missing = 'lanes#batch-0/tables/table/rows/missing'
+ const metaKey = packageMetaKey('locked')
+ const meta = { id: 'locked', name: 'Locked package', hasPassphrase: true }
+ const values = new Map([
+  ...owners.map(key => [key, DEFAULT_PACKAGE_ID]),
+  ...rows.map((key, index) => [key, `row ${index}`]),
+  [metaKey, JSON.stringify({ ...meta, passphraseHash: 'test-verifier', passphraseSalt: 'test-salt' })],
+  [packageMetaKey('unopened'), JSON.stringify({ id: 'unopened', hasPassphrase: false })],
+ ])
+ const upstreamReads = []
+ const upstream = await listenKvTestServer(t, (req, res) => {
+  const key = new URL(req.url, 'http://localhost').searchParams.get('key')
+  upstreamReads.push(key)
+  res.writeHead(values.has(key) ? 200 : 404)
+  res.end(values.get(key))
+ })
+ const secretStore = createServerSecretStore({ useEnv: false })
+ const proxy = createDataProxyHandler({
+  backendBaseUrl: upstream,
+  secretStore,
+  disableSessionDirs: true,
+  setAsDefaultStore: false,
+ })
+ const trace = []
+ const origin = await listenKvTestServer(t, (req, res) => {
+  res.on('finish', () => trace.push([req.url, res.statusCode]))
+  if (req.url === '/api/vault/session') return proxy.handleVaultApiRequest(req, res)
+  return proxy.handleDataProxyRequest(req, res)
+ })
+ const token = createCapabilityToken({ packages: [DEFAULT_PACKAGE_ID] }, secretStore)
+ const expired = createCapabilityToken({ exp: Date.now() - 1 }, secretStore)
+ const post = (body, { capability = token, headers = {}, query = '' } = {}) => fetch(`${origin}/api/data/batch${query}`, {
+  method: 'POST',
+  headers: {
+   'Content-Type': 'application/json',
+   ...(capability ? { [SESSION_TOKEN_HEADER]: capability } : {}),
+   ...headers,
+  },
+  body: JSON.stringify(body),
+ })
+
+ const keys = [rows[0], missing, ...rows, rows[1], metaKey]
+ const accepted = await post({ keys }, { headers: { Origin: origin } })
+ assert.equal(accepted.status, 200)
+ assert.deepEqual(await accepted.json(), {
+  ok: true,
+  values: keys.map(key => key === metaKey ? JSON.stringify(meta) : values.get(key) ?? null),
+ })
+ for (const key of new Set([...owners, ...keys])) {
+  assert.equal(upstreamReads.filter(read => read === key).length, 1, key)
+ }
+ upstreamReads.length = 0
+
+ const noType = await fetch(`${origin}/api/data/batch`, {
+  method: 'POST',
+  headers: { [SESSION_TOKEN_HEADER]: token },
+  body: Buffer.from(JSON.stringify({ keys: [rows[0]] })),
+ })
+ assert.equal(noType.status, 415)
+ await noType.json()
+ for (const [body, opts] of [
+  [{ keys: [rows[0]] }, { headers: { Origin: 'https://other.example' } }],
+  [{ keys: [rows[0]], basePath: 'another-workspace' }, {}],
+  [{ keys: [rows[0]] }, { query: '?modeOptions.disk.basePath=another-workspace' }],
+ ]) {
+  const denied = await post(body, opts)
+  assert.equal(denied.status, 403)
+  await denied.json()
+ }
+ for (const key of ['vault#master-key', 'lanes#batch-0/secrets/key', 'packages#locked/lanes-index', 'packages#unopened/lanes-index']) {
+  const denied = await post({ keys: [rows[0], key] })
+  assert.equal(denied.status, 403, key)
+  assert.equal((await denied.json()).ok, false)
+ }
+ assert.ok(upstreamReads.every(key => key === owners[0]), 'A denied batch may check ownership but must not fetch any requested value')
+
+ for (const capability of [null, expired]) {
+  const denied = await post({ keys: [rows[0]] }, { capability })
+  assert.equal(denied.status, 401)
+  assert.equal(denied.headers.get(TOKEN_BOOTSTRAP_HEADER), '/api/vault/session')
+  await denied.json()
+  trace.length = 0
+  const kv = httpKV({ baseUrl: `${origin}/api/data`, proxyCapabilities: true, sessionToken: capability })
+  assert.deepEqual(await kv.getMany([rows[0], missing]), [values.get(rows[0]), null])
+  assert.deepEqual(trace, [
+   ['/api/data/batch', 401],
+   ['/api/vault/session', 200],
+   ['/api/data/batch', 200],
+  ])
+ }
+})
+
+test('httpKV.getMany slices distinct keys and restores the requested order', async t => {
+ const batches = []
+ const origin = await listenKvTestServer(t, async (req, res) => {
+  if (req.method !== 'POST' || req.url !== '/api/data/batch') {
+   res.writeHead(500).end('Expected a batch POST')
+   return
+  }
+  const chunks = []
+  for await (const chunk of req) chunks.push(chunk)
+  const { keys } = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  batches.push(keys)
+  res.writeHead(200, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({ ok: true, values: keys.map(key => key === 'scope.key-500' ? null : `value:${key}`) }))
+ })
+ const kv = httpKV({ baseUrl: `${origin}/api/data`, switchable: true }).namespace('scope')
+ const distinct = Array.from({ length: 503 }, (_, i) => `key-${i}`)
+ const requested = [distinct[0], ...distinct, distinct[501], distinct[499]]
+ const fullKeys = distinct.map(key => `scope.${key}`)
+ assert.deepEqual(await kv.getMany(requested), requested.map(key => key === 'key-500' ? null : `value:scope.${key}`))
+ assert.deepEqual(batches, [fullKeys.slice(0, 500), fullKeys.slice(500)])
+})
+
+test('httpKV.getMany falls back to single reads when the backend does not support batching', async t => {
+ for (const status of [404, 405]) {
+  await t.test(`HTTP ${status}`, async t => {
+   let batchAttempts = 0
+   const gets = []
+   const origin = await listenKvTestServer(t, (req, res) => {
+    const url = new URL(req.url, 'http://localhost')
+    if (url.pathname === '/api/data/batch' && req.method === 'POST') {
+     batchAttempts++
+     req.resume()
+     res.writeHead(status).end('Batching unavailable')
+     return
+    }
+    if (url.pathname !== '/api/data' || req.method !== 'GET') {
+     res.writeHead(500).end('Expected a KV GET')
+     return
+    }
+    const key = url.searchParams.get('key')
+    gets.push(key)
+    if (key === 'missing') res.writeHead(404).end('Not found')
+    else res.writeHead(200).end(`value:${key}`)
+   })
+   const kv = httpKV({ baseUrl: `${origin}/api/data`, switchable: true })
+   assert.deepEqual(await kv.getMany(['b', 'missing', 'a', 'b']), ['value:b', null, 'value:a', 'value:b'])
+   assert.deepEqual(await kv.namespace('scope').getMany(['b']), ['value:scope.b'])
+   assert.equal(batchAttempts, 1)
+   assert.deepEqual(gets.sort(), ['a', 'b', 'missing', 'scope.b'])
+  })
  }
 })
 
